@@ -166,6 +166,20 @@ describe('IndexedDbVectorStore', () => {
     ]);
   });
 
+  it('큰 저장소에서도 정확한 파일 경로로 검색하면 해당 문서를 찾는다', async () => {
+    const store = createStore(createDbName(), { hydrateAllEntryLimit: 1, pageSize: 1 });
+    await store.add([
+      createEntry('notes/target.md', 0, [1, 0], 'target'),
+      createEntry('notes/other.md', 0, [1, 0], 'other'),
+    ]);
+    const results = await store.search({
+      queryVector: [1, 0],
+      topK: 5,
+      filter: { filePathPrefixes: ['notes/target.md'] },
+    });
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['notes/target.md']);
+  });
+
   it('large store search는 전체 entries cache를 hydrate하지 않고 page 단위로 점수화한다', async () => {
     const store = createStore(createDbName(), {
       hydrateAllEntryLimit: 2,
@@ -222,6 +236,32 @@ describe('IndexedDbVectorStore', () => {
     expect(store.getRuntimeCacheStats()).toEqual(
       expect.objectContaining({ entriesCacheLoaded: false, workerSearchActive: true }),
     );
+  });
+
+  it('큰 폴더 검색도 작업자에 범위를 전달하고 외부 결과는 제거한다', async () => {
+    const search = vi.fn<VectorSearchWorkerLike['search']>(() =>
+      Promise.resolve([
+        { id: 'notes/a.md::0', score: 1 },
+        { id: 'outside.md::0', score: 0.9 },
+      ]),
+    );
+    const store = createStore(createDbName(), {
+      hydrateAllEntryLimit: 1,
+      vectorSearchWorkerFactory: () => ({ search, close: vi.fn() }),
+    });
+    await store.add([
+      createEntry('notes/a.md', 0, [1, 0], 'a'),
+      createEntry('outside.md', 0, [0.9, 0.1], 'b'),
+    ]);
+    const results = await store.search({
+      queryVector: [1, 0],
+      topK: 2,
+      filter: { filePathPrefixes: ['notes'] },
+    });
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ filter: { filePathPrefixes: ['notes'] } }),
+    );
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['notes/a.md']);
   });
 
   it('검색/runtime index cache는 설정한 LRU 예산 안에서만 유지된다', async () => {
@@ -536,6 +576,23 @@ describe('VectorStore contract', () => {
 });
 
 describe('legacy JSON vector import', () => {
+  it('새 청크 계약에서는 이전 ID를 완료로 가져오지 않고 원본 JSON은 보존한다', async () => {
+    const adapter = new TestJsonAdapter();
+    const legacy = createEntry('legacy.md', 0, [1, 0], 'legacy');
+    const current = createEntry('current.md', 0, [0, 1], 'current');
+    current.id = 'current.md::chunk::0123456789abcdef::0';
+    current.metadata.chunkHash = '0123456789abcdef';
+    const malformed = { ...current, id: 'current.md::chunk::0123456789abcdef::00' };
+    adapter.setRaw('vectors.json', JSON.stringify([legacy, current, malformed]));
+    const store = createStore();
+    expect(
+      await importLegacyJsonVectorStore(adapter.asDataAdapter(), store, 'vectors.json', {
+        requireSourceChunkIds: true,
+      }),
+    ).toEqual({ imported: 1, skipped: false });
+    expect((await store.getEntries()).map(({ id }) => id)).toEqual([current.id]);
+    expect(JSON.parse(await adapter.asDataAdapter().read('vectors.json'))).toHaveLength(3);
+  });
   it('기존 JSON 벡터 파일을 IndexedDB로 한 번만 가져온다', async () => {
     const adapter = new TestJsonAdapter();
     adapter.setRaw('vectors.json', JSON.stringify([createEntry('legacy.md', 0, [1, 0], 'legacy')]));

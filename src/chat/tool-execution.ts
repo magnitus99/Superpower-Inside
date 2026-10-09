@@ -14,6 +14,7 @@ import {
   planResearchAnswerContractRust,
   planToolResultSourceReferencesRust,
   planToolCallBlocksRust,
+  planToolResultSummaryRust,
   type RustResearchAnswerViolationCode,
   type RustToolCallBlockReason,
 } from '../rag/rust-core';
@@ -23,6 +24,12 @@ import {
   prepareToolCallsForExecution,
   type MCPRegistryLike,
 } from './mcp-tool-execution';
+import type { McpToolBindingAllowlist } from './mcp-tool-wire';
+
+/** 여러 툴 라운드가 provider context를 독점하지 않도록 유지하는 전체 결과 예산입니다. */
+export const MAX_TOOL_TRANSCRIPT_BYTES = 192 * 1024;
+const TOOL_RESULT_SUMMARY_BYTES = 8 * 1024;
+const MINIMAL_TOOL_RESULT_SUMMARY_BYTES = 128;
 
 interface AssistantToolOptions {
   toolCalls: ToolCallRecord[];
@@ -33,6 +40,7 @@ interface AssistantToolOptions {
 
 export interface PrepareAssistantToolCallsOptions extends AssistantToolOptions {
   mcpMode: ToolExecutionPolicy['mode'];
+  mcpToolBindings?: McpToolBindingAllowlist;
 }
 
 export interface ExecuteAssistantToolCallsOptions extends AssistantToolOptions {
@@ -63,6 +71,7 @@ export async function prepareAssistantToolCalls(
     options.registry,
     options.preferredServerNames,
     options.mcpMode,
+    options.mcpToolBindings,
   );
   preparedMcpCalls.forEach((toolCall, index) => {
     const targetIndex = mcpIndices[index];
@@ -110,7 +119,10 @@ export function collectToolCitations(
   const citationsById = new Map(baseCitations.map((citation) => [citation.id, citation]));
   for (const toolCall of toolCalls) {
     for (const citation of toolCall.citations ?? []) {
-      if (!citationsById.has(citation.id)) citationsById.set(citation.id, citation);
+      const existing = citationsById.get(citation.id);
+      if (!existing || (existing.status === 'candidate' && citation.status === 'verified')) {
+        citationsById.set(citation.id, citation);
+      }
     }
   }
   return [...citationsById.values()];
@@ -136,7 +148,10 @@ export function collectCompletedMcpServerNames(toolCalls: readonly ToolCallRecor
 export interface NativeToolAnswerContractResult {
   content: string;
   violationCodes: RustResearchAnswerViolationCode[];
+  safeCoverageText?: string;
 }
+
+export type ToolTranscriptProtocol = 'native' | 'compatibility';
 
 /**
  * 네이티브 볼트 도구가 실제로 확인한 범위보다 넓은 전수·부재 결론을 표시하지 않습니다.
@@ -170,16 +185,38 @@ export function enforceNativeToolAnswerContract(
   return plan.allowed
     ? { content, violationCodes: [] }
     : {
-        content: t('vaultResearchAnswerContractFallback'),
+        content: plan.safeAnswer
+          ? `${plan.safeAnswer}\n\n${t('vaultResearchAnswerClaimsRemoved')}`
+          : t('vaultResearchAnswerContractFallback'),
         violationCodes: [...plan.violationCodes],
+        safeCoverageText: plan.safeCoverageText,
       };
+}
+
+/** 근거 계약 위반 답변을 유용한 내용을 보존한 채 한 번만 다시 쓰도록 지시합니다. */
+export function createNativeToolAnswerRepairPrompt(
+  violationCodes: readonly RustResearchAnswerViolationCode[],
+  safeCoverageText?: string,
+): string {
+  return [
+    '[Superpower Inside grounded answer repair]',
+    `Remove or precisely scope these unsupported coverage claims: ${violationCodes.join(', ')}.`,
+    safeCoverageText?.trim()
+      ? `Use this verified coverage boundary: ${safeCoverageText.trim()}`
+      : '',
+    'Preserve every useful finding that is supported by the verified tool results and source paths.',
+    'Do not claim that the whole vault or whole file was read, and do not claim absence beyond the completed search scope.',
+    'Return only the revised, direct final answer. Do not mention this repair instruction or call another tool.',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 export function markRepeatedToolCalls(
   history: readonly ToolCallRecord[],
   candidates: readonly ToolCallRecord[],
   maxRepeats = 2,
-  maxNativeSearchCalls = 4,
+  maxNativeSearchCalls = 8,
 ): ToolCallRecord[] {
   const completedHistory = history.filter(
     (toolCall) => toolCall.status === 'success' || toolCall.status === 'error',
@@ -223,34 +260,242 @@ export function appendAssistantToolRound(
   messages: readonly ChatMessage[],
   assistantContent: string,
   toolCalls: readonly ToolCallRecord[],
+  protocol: ToolTranscriptProtocol = 'native',
+  assistantReasoning?: string,
+  maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
+): ChatMessage[] {
+  return protocol === 'native'
+    ? encodeNativeToolTranscript(
+        messages,
+        assistantContent,
+        toolCalls,
+        assistantReasoning,
+        maxBytes,
+      )
+    : encodeCompatibilityToolTranscript(messages, assistantContent, toolCalls, maxBytes);
+}
+
+export function encodeNativeToolTranscript(
+  messages: readonly ChatMessage[],
+  assistantContent: string,
+  toolCalls: readonly ToolCallRecord[],
+  assistantReasoning?: string,
+  maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
 ): ChatMessage[] {
   const completedToolCalls = selectProviderReinjectableToolCalls(toolCalls).flatMap((toolCall) => {
     const providerPayload = getToolReinjectionPayload(toolCall);
     return providerPayload === undefined ? [] : [{ toolCall, providerPayload }];
   });
   if (completedToolCalls.length === 0) return [...messages];
-  return [
-    ...messages,
-    {
-      role: 'assistant',
-      content: assistantContent,
-      toolCalls: completedToolCalls.map(({ toolCall }) => ({
-        id: toolCall.id,
-        type: 'function' as const,
-        function: {
-          name: toolCall.name,
-          arguments: toolCall.arguments,
-        },
+  return boundToolTranscript(
+    [
+      ...messages,
+      {
+        role: 'assistant',
+        content: assistantContent,
+        ...(assistantReasoning ? { reasoning: assistantReasoning } : {}),
+        toolCalls: completedToolCalls.map(({ toolCall }) => ({
+          id: toolCall.id,
+          type: 'function' as const,
+          function: {
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+          },
+        })),
+      },
+      ...completedToolCalls.map(({ toolCall, providerPayload }) => ({
+        role: 'tool' as const,
+        content: providerPayload,
+        tool_call_id: toolCall.id,
+        name: toolCall.name,
+        tool_result_is_error: toolCall.status === 'error',
       })),
-    },
-    ...completedToolCalls.map(({ toolCall, providerPayload }) => ({
-      role: 'tool' as const,
-      content: providerPayload,
-      tool_call_id: toolCall.id,
-      name: toolCall.name,
-      tool_result_is_error: toolCall.status === 'error',
-    })),
-  ];
+    ],
+    maxBytes,
+  );
+}
+
+export function encodeCompatibilityToolTranscript(
+  messages: readonly ChatMessage[],
+  assistantContent: string,
+  toolCalls: readonly ToolCallRecord[],
+  maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
+): ChatMessage[] {
+  // 후속 라운드에서 downgrade되어도 이전 네이티브 이력이 provider에 남지 않게 합니다.
+  const compatibleMessages = messages.map((message): ChatMessage => {
+    if (message.role === 'tool') {
+      return {
+        role: 'user',
+        content: encodeCompatibilityToolResults([
+          {
+            toolCallId: message.tool_call_id,
+            name: message.name,
+            status: message.tool_result_is_error ? 'error' : 'success',
+            content: message.content,
+          },
+        ]),
+      };
+    }
+    if (message.role === 'assistant' && message.toolCalls?.length) {
+      return {
+        role: 'assistant',
+        content: joinAssistantToolRoundText(
+          message.content,
+          message.toolCalls
+            .map(
+              (call) =>
+                `<tool_call>${serializeCompatibilityPayload({
+                  name: call.function.name,
+                  arguments: parseCompatibilityToolArguments(call.function.arguments),
+                })}</tool_call>`,
+            )
+            .join('\n'),
+        ),
+        ...(message.reasoning ? { reasoning: message.reasoning } : {}),
+      };
+    }
+    return { ...message };
+  });
+  const completedToolCalls = selectProviderReinjectableToolCalls(toolCalls).flatMap((toolCall) => {
+    const providerPayload = getToolReinjectionPayload(toolCall);
+    return providerPayload === undefined ? [] : [{ toolCall, providerPayload }];
+  });
+  if (completedToolCalls.length === 0) return boundToolTranscript(compatibleMessages, maxBytes);
+
+  const toolRequestBlocks = completedToolCalls.map(
+    ({ toolCall }) =>
+      `<tool_call>${serializeCompatibilityPayload({
+        name: toolCall.name,
+        arguments: parseCompatibilityToolArguments(toolCall.arguments),
+      })}</tool_call>`,
+  );
+  const toolResults = completedToolCalls.map(({ toolCall, providerPayload }) => ({
+    toolCallId: toolCall.id,
+    name: toolCall.name,
+    status: toolCall.status,
+    content: providerPayload,
+  }));
+
+  return boundToolTranscript(
+    [
+      ...compatibleMessages,
+      {
+        role: 'assistant',
+        content: joinAssistantToolRoundText(assistantContent, toolRequestBlocks.join('\n')),
+      },
+      {
+        role: 'user',
+        content: encodeCompatibilityToolResults(toolResults),
+      },
+    ],
+    maxBytes,
+  );
+}
+
+function encodeCompatibilityToolResults(results: readonly unknown[]): string {
+  return [
+    '[Superpower Inside tool results]',
+    t('llmEvidenceDataBoundary'),
+    serializeCompatibilityPayload({ results }),
+    'Use these results to call another tool or answer the user.',
+  ].join('\n');
+}
+
+/**
+ * 개별 결과 상한만으로는 라운드가 누적될 때 provider 입력이 무한히 커집니다.
+ * 오래된 결과부터 원문 대신 재탐색 가능한 compact envelope로 바꿔 최신 근거를 우선 보존합니다.
+ */
+export function boundToolTranscript(
+  messages: readonly ChatMessage[],
+  maxBytes = MAX_TOOL_TRANSCRIPT_BYTES,
+  preserveNewest = true,
+): ChatMessage[] {
+  const bounded = messages.map((message) => ({ ...message }));
+  const question =
+    [...messages]
+      .reverse()
+      .find((message) => message.role === 'user' && !isToolTranscriptMessage(message))?.content ??
+    '';
+  const encoder = new TextEncoder();
+  const byteLength = (message: ChatMessage): number =>
+    encoder.encode(JSON.stringify(message)).byteLength;
+  let totalBytes = bounded.reduce((total, message) => total + byteLength(message), 0);
+  if (totalBytes <= maxBytes) return bounded;
+  const newestToolIndex = bounded.reduce(
+    (latest, message, index) => (isToolTranscriptMessage(message) ? index : latest),
+    -1,
+  );
+
+  for (let index = 0; index < bounded.length && totalBytes > maxBytes; index += 1) {
+    const message = bounded[index];
+    if (
+      !message ||
+      !isToolTranscriptMessage(message) ||
+      (preserveNewest && index === newestToolIndex)
+    )
+      continue;
+    const previousBytes = byteLength(message);
+    const compactContent = createToolResultSummaryEnvelope(
+      message.content,
+      TOOL_RESULT_SUMMARY_BYTES,
+      question,
+    );
+    if (compactContent === message.content) continue;
+    bounded[index] = { ...message, content: compactContent };
+    totalBytes += byteLength(bounded[index]) - previousBytes;
+  }
+
+  if (totalBytes > maxBytes) {
+    for (let index = 0; index < bounded.length && totalBytes > maxBytes; index += 1) {
+      const message = bounded[index];
+      if (
+        !message ||
+        !isToolTranscriptMessage(message) ||
+        (preserveNewest && index === newestToolIndex)
+      )
+        continue;
+      const previousBytes = byteLength(message);
+      const compactContent = createToolResultSummaryEnvelope('', MINIMAL_TOOL_RESULT_SUMMARY_BYTES);
+      bounded[index] = { ...message, content: compactContent };
+      totalBytes += byteLength(bounded[index]) - previousBytes;
+    }
+  }
+
+  return bounded;
+}
+
+function isToolTranscriptMessage(message: ChatMessage): boolean {
+  return (
+    message.role === 'tool' ||
+    (message.role === 'user' && message.content.startsWith('[Superpower Inside tool results]'))
+  );
+}
+
+function createToolResultSummaryEnvelope(
+  content: string,
+  maxSummaryBytes = TOOL_RESULT_SUMMARY_BYTES,
+  question = '',
+): string {
+  const planned = planToolResultSummaryRust(content, question, maxSummaryBytes);
+  if (planned) return planned;
+  const payload: ToolResultSummaryResumePayload = {
+    kind: 'tool-result-summary',
+    summary: '',
+    originalResultAvailable: false,
+  };
+  return JSON.stringify(payload);
+}
+
+function parseCompatibilityToolArguments(argumentsJson: string): unknown {
+  try {
+    return JSON.parse(argumentsJson);
+  } catch {
+    return argumentsJson;
+  }
+}
+
+function serializeCompatibilityPayload(value: unknown): string {
+  return JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
 }
 
 export function selectProviderReinjectableToolCalls(
@@ -332,8 +577,8 @@ async function executeNativeToolCall(
   toolCall.serverName = NATIVE_VAULT_TOOL_LABEL;
   try {
     const result = signal
-      ? await nativeTool.execute(toolCall.arguments, signal)
-      : await nativeTool.execute(toolCall.arguments);
+      ? await nativeTool.execute(toolCall.arguments, signal, toolCall.name)
+      : await nativeTool.execute(toolCall.arguments, undefined, toolCall.name);
     toolCall.result = result.displayText;
     toolCall.resultSummary = result.displayText;
     toolCall.normalizedResult = result.modelText;

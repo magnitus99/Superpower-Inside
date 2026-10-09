@@ -73,8 +73,8 @@ pub fn plan_native_vault_lexical_hit_json(query: &str, content: &str, match_mode
     serde_json::to_string(&JsonValue::Object(output)).unwrap_or_default()
 }
 
-/// Extracts stable primary terms without the tokenizer's Unicode n-gram expansions.
-fn primary_query_terms(query: &str) -> Vec<String> {
+/// 토크나이저의 확장 토큰을 필수 조건으로 요구하지 않는 원래 검색어를 선택합니다.
+pub fn primary_query_terms(query: &str) -> Vec<String> {
     let mut terms = BTreeSet::new();
     let mut part = String::new();
     for character in query.chars() {

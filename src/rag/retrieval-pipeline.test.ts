@@ -94,6 +94,28 @@ describe('RagRetrievalPipeline', () => {
     expect(signals[0]?.aborted).toBe(true);
   });
 
+  it('외부 취소는 응답하지 않는 provider deadline을 기다리지 않고 즉시 전파한다', async () => {
+    const providerSignal = vi.fn();
+    const hangingProvider: CandidateProvider = {
+      id: 'hanging-provider',
+      source: 'vector',
+      deadlineMs: 60_000,
+      getCandidates: (_request, signal) => {
+        if (signal) providerSignal(signal);
+        return new Promise<RetrievalCandidate[]>(() => undefined);
+      },
+    };
+    const controller = new AbortController();
+    const pipeline = new RagRetrievalPipeline([hangingProvider]);
+    const execution = pipeline.retrieve(createRequest([1, 0], 5), controller.signal);
+    await vi.waitFor(() => expect(providerSignal).toHaveBeenCalledOnce());
+
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+    expect((providerSignal.mock.calls[0]?.[0] as AbortSignal | undefined)?.aborted).toBe(true);
+  });
+
   it('orchestrator는 cold provider를 호출하지 않고 readiness diagnostic으로 남긴다', async () => {
     let coldCalls = 0;
     let readyCalls = 0;
@@ -101,13 +123,13 @@ describe('RagRetrievalPipeline', () => {
     const coldProvider: CandidateProvider & {
       getReadiness(): { readiness: 'cold'; estimatedCost: 'high'; reason: string };
     } = {
-      id: 'cold-graph',
-      source: 'graph-local',
+      id: 'cold-structural',
+      source: 'structural',
       deadlineMs: 50,
       getReadiness: () => ({
         readiness: 'cold',
         estimatedCost: 'high',
-        reason: 'GraphRAG index has not been built yet.',
+        reason: '검색 인덱스가 아직 준비되지 않았습니다.',
       }),
       getCandidates: () => {
         coldCalls++;
@@ -135,12 +157,12 @@ describe('RagRetrievalPipeline', () => {
     expect(result.candidates.map((candidate) => candidate.entry.id)).toEqual([readyEntry.id]);
     expect(result.diagnostics).toEqual([
       expect.objectContaining({
-        providerId: 'cold-graph',
-        source: 'graph-local',
+        providerId: 'cold-structural',
+        source: 'structural',
         status: 'skipped',
         readiness: 'cold',
         estimatedCost: 'high',
-        skippedReason: 'GraphRAG index has not been built yet.',
+        skippedReason: '검색 인덱스가 아직 준비되지 않았습니다.',
       }),
       expect.objectContaining({
         providerId: 'ready-vector',
@@ -155,14 +177,14 @@ describe('RagRetrievalPipeline', () => {
   it('provider readiness 계산 실패도 전체 retrieval 실패로 전파하지 않는다', async () => {
     const provider: CandidateProvider = {
       id: 'broken-readiness',
-      source: 'graph-local',
+      source: 'structural',
       deadlineMs: 50,
       getReadiness: () => {
         throw new Error('readiness failed');
       },
       getCandidates: () =>
         Promise.resolve([
-          { entry: createEntry('broken.md', [1, 0], '깨진 후보'), source: 'graph-local' },
+          { entry: createEntry('broken.md', [1, 0], '깨진 후보'), source: 'structural' },
         ]),
     };
     const pipeline = new RagRetrievalPipeline([provider]);
@@ -453,6 +475,28 @@ describe('RagRetrievalPipeline', () => {
       'linked.md',
     ]);
     expect(candidates.every((candidate) => candidate.source === 'structural')).toBe(true);
+  });
+
+  it('구조 검색은 임베딩 없이 BM25 seed와 공통 원문으로 링크를 따라간다', async () => {
+    const corpus = new MemoryVectorStore();
+    await corpus.add([
+      createEntry('seed.md', [], 'seedterm'),
+      createEntry('linked.txt', [], 'linked evidence'),
+    ]);
+    const bm25 = await createBm25([['seed.md::1', 'seedterm', 'seed.md']]);
+    const provider = new StructuralGraphCandidateProvider(
+      null,
+      createMetadataContext({ resolvedLinks: { 'seed.md': { 'linked.txt': 1 } } }),
+      1,
+      30,
+      corpus,
+      bm25,
+    );
+    const candidates = await provider.getCandidates({
+      ...createRequest([], 10),
+      question: 'seedterm',
+    });
+    expect(candidates.map(({ entry }) => entry.metadata.filePath)).toEqual(['linked.txt']);
   });
 
   it('StructuralGraphCandidateProvider는 같은 heading 주변 chunk 후보를 추가한다', async () => {

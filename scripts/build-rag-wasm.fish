@@ -66,6 +66,18 @@ end
 "$WASM_BINDGEN_BIN" --target web --out-dir "$BINDGEN_DIR" --out-name rag_wasm "$WASM_INPUT"
 or exit $status
 
+set -l WASM_OPT_BIN "$REPO_ROOT/node_modules/.bin/wasm-opt"
+if not test -x "$WASM_OPT_BIN"
+    echo "ERROR: wasm-opt를 찾을 수 없습니다. npm install로 개발 의존성을 설치하세요."
+    exit 1
+end
+
+set -l OPTIMIZED_WASM "$BINDGEN_DIR/rag_wasm_bg.optimized.wasm"
+"$WASM_OPT_BIN" -Oz "$BINDGEN_DIR/rag_wasm_bg.wasm" -o "$OPTIMIZED_WASM"
+or exit $status
+mv "$OPTIMIZED_WASM" "$BINDGEN_DIR/rag_wasm_bg.wasm"
+or exit $status
+
 cp "$BINDGEN_DIR/rag_wasm.js" "$OUT_DIR/rag_wasm.js"
 cp "$BINDGEN_DIR/rag_wasm.d.ts" "$OUT_DIR/rag_wasm.d.ts"
 node scripts/patch-rag-wasm-dts.mjs "$OUT_DIR/rag_wasm.d.ts"

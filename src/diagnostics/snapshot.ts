@@ -1,14 +1,15 @@
-import type { GraphRagStatusSummary } from '../graph/status';
 import type { MCPConnectionState, MCPServerConnectionStatus } from '../mcp/connection-state';
 import type { PerformanceGuardState } from '../rag/performance-guard';
 import type { RagIndexingSchedulerStatus } from '../rag/indexing-scheduler';
 import type { RagStatusSummary } from '../rag/status';
 import {
+  getProviderProfileDisplayName,
   PROVIDER_KEYS,
   PROVIDER_LABELS,
   type CustomOpenAIProviderConfig,
   type ProviderConfig,
   type ProviderKey,
+  type ProviderProfileConfig,
   type SuperpowerInsideSettings,
 } from '../settings';
 import type { RefreshDomain } from '../utils/refresh-bus';
@@ -43,12 +44,9 @@ export interface AgentDiagnosticsMcpServerRuntime {
 
 export interface AgentDiagnosticsRuntimeState {
   ragStatus: RagStatusSummary | null;
-  graphRagStatus: GraphRagStatusSummary | null;
   mcpConnectionState: MCPConnectionState;
   mcpServers: readonly AgentDiagnosticsMcpServerRuntime[];
   isRagIndexing: boolean;
-  isGraphRagIndexing: boolean;
-  hasGraphRagRunner: boolean;
   ragIndexingStatus: RagIndexingSchedulerStatus | null;
   performanceGuardState: PerformanceGuardState | null;
   nextAutoUpdateAt: number | null;
@@ -69,7 +67,6 @@ export interface AgentDiagnosticsRagRuntimeInitState {
 
 export interface AgentDiagnosticsRuntimeFlags {
   vectorStoreReady: boolean;
-  knowledgeGraphStoreReady: boolean;
   ragEngineReady: boolean;
   providerReady: boolean;
 }
@@ -129,7 +126,6 @@ export interface AgentDiagnosticsRefreshEvent {
   status: RefreshResult['status'];
   detail?: string;
   runId?: number;
-  source?: RefreshResult['source'];
 }
 
 export interface AgentDiagnosticsFileWriteState {
@@ -203,8 +199,6 @@ export interface AgentDiagnosticsSnapshot {
       embeddingProvider: SuperpowerInsideSettings['rag']['embeddingProvider'];
       embeddingModel: string;
       autoUpdateEnabled: boolean;
-      graphRagEnabled: boolean;
-      graphRagModelConfigured: boolean;
       enableBM25: boolean;
       annEnabled: boolean;
     };
@@ -218,11 +212,6 @@ export interface AgentDiagnosticsSnapshot {
     lastAutoUpdateResult: IndexingResult | null;
     performanceGuard: PerformanceGuardState | null;
     init: AgentDiagnosticsRagRuntimeInitState;
-  };
-  graphRag: {
-    status: GraphRagStatusSummary | null;
-    isIndexing: boolean;
-    hasRunner: boolean;
   };
   mcp: {
     state: MCPConnectionState;
@@ -287,12 +276,11 @@ export function getAgentDiagnosticsSafeModeFilePath(configDir: string, pluginId:
 export function buildAgentDiagnosticsSnapshot(
   input: AgentDiagnosticsSnapshotInput,
 ): AgentDiagnosticsSnapshot {
-  const diagnosticFilePath = input.fileWrite?.path ?? getAgentDiagnosticsFilePath(
-    input.vault.configDir,
-    input.manifest.id,
-  );
+  const diagnosticFilePath =
+    input.fileWrite?.path ?? getAgentDiagnosticsFilePath(input.vault.configDir, input.manifest.id);
   const eventLogPath =
-    input.eventLog?.path ?? getAgentDiagnosticsEventLogPath(input.vault.configDir, input.manifest.id);
+    input.eventLog?.path ??
+    getAgentDiagnosticsEventLogPath(input.vault.configDir, input.manifest.id);
   const safeModeFlagPath = getAgentDiagnosticsSafeModeFilePath(
     input.vault.configDir,
     input.manifest.id,
@@ -315,7 +303,7 @@ export function buildAgentDiagnosticsSnapshot(
       safeModeFlagPath,
     },
     diagnosis,
-    providers: buildProviderSnapshot(input.settings),
+    providers: buildAgentDiagnosticsProviderSnapshot(input.settings),
     settingsSummary: buildSettingsSummary(input.settings),
     rag: {
       status: input.runtime.ragStatus,
@@ -326,11 +314,6 @@ export function buildAgentDiagnosticsSnapshot(
       lastAutoUpdateResult: input.runtime.lastAutoUpdateResult,
       performanceGuard: input.runtime.performanceGuardState,
       init: { ...input.runtime.ragRuntimeInit },
-    },
-    graphRag: {
-      status: input.runtime.graphRagStatus,
-      isIndexing: input.runtime.isGraphRagIndexing,
-      hasRunner: input.runtime.hasGraphRagRunner,
     },
     mcp: {
       state: input.runtime.mcpConnectionState,
@@ -399,12 +382,10 @@ function inferSuspectedCause(
 ): string | null {
   if (!operation) {
     if (input.runtime.isRagIndexing) return 'rag-indexing';
-    if (input.runtime.isGraphRagIndexing) return 'graph-rag-indexing';
     if (input.runtime.mcpConnectionState === 'connecting') return 'mcp-connection';
     return null;
   }
   if (operation.phase.startsWith('rag.')) return 'rag-runtime-or-indexing';
-  if (operation.phase.startsWith('graph.')) return 'graph-rag-indexing';
   if (operation.phase.startsWith('mcp.')) return 'mcp-connection';
   if (operation.phase.startsWith('plugin.')) return 'plugin-startup';
   return operation.phase;
@@ -425,7 +406,6 @@ function buildRecommendedActions(
           enableBM25: false,
           structuralGraphEnabled: false,
           annEnabled: false,
-          graphRagAutoSyncEnabled: false,
         },
       },
     },
@@ -435,7 +415,8 @@ function buildRecommendedActions(
     actions.unshift({
       id: 'disable-rag-startup-work',
       label: 'Disable RAG startup work',
-      detail: 'Turn off RAG auto update, BM25, structural graph, and ANN before reopening the vault.',
+      detail:
+        'Turn off RAG auto update, BM25, structural graph, and ANN before reopening the vault.',
       settingsPatch: {
         rag: {
           autoUpdateEnabled: false,
@@ -461,18 +442,35 @@ function formatOperation(operation: AgentDiagnosticsActiveOperationState | null)
   return operation.detail ? `${operation.phase}:${operation.detail}` : operation.phase;
 }
 
-function buildProviderSnapshot(settings: SuperpowerInsideSettings): {
+export function buildAgentDiagnosticsProviderSnapshot(settings: SuperpowerInsideSettings): {
   enabledCount: number;
   rows: AgentDiagnosticsProviderRow[];
 } {
-  const fixedRows = PROVIDER_KEYS.map((key) =>
-    toProviderRow(key, PROVIDER_LABELS[key], settings[key]),
-  );
-  const customRows = settings.customOpenAIProviders.map(toCustomProviderRow);
-  const rows = [...fixedRows, ...customRows];
+  const rows =
+    settings.providerProfiles.length > 0
+      ? settings.providerProfiles
+          .filter((profile) => profile.strategy !== 'ternlight')
+          .map(toProfileProviderRow)
+      : [
+          ...PROVIDER_KEYS.map((key) => toProviderRow(key, PROVIDER_LABELS[key], settings[key])),
+          ...settings.customOpenAIProviders.map(toCustomProviderRow),
+        ];
   return {
     enabledCount: rows.filter((row) => row.enabled).length,
     rows,
+  };
+}
+
+function toProfileProviderRow(config: ProviderProfileConfig): AgentDiagnosticsProviderRow {
+  const models = config.models.map((model) => model.id);
+  return {
+    id: `profile:${config.id}`,
+    label: getProviderProfileDisplayName(config),
+    enabled: config.enabled,
+    apiKeyConfigured: config.apiKey.trim().length > 0,
+    modelCount: models.length,
+    models,
+    baseUrl: sanitizeDiagnosticsBaseUrl(config.baseUrl),
   };
 }
 
@@ -488,7 +486,7 @@ function toProviderRow(
     apiKeyConfigured: config.apiKey.trim().length > 0,
     modelCount: config.models.length,
     models: [...config.models],
-    baseUrl: config.baseUrl ?? '',
+    baseUrl: sanitizeDiagnosticsBaseUrl(config.baseUrl),
   };
 }
 
@@ -500,11 +498,28 @@ function toCustomProviderRow(config: CustomOpenAIProviderConfig): AgentDiagnosti
     apiKeyConfigured: config.apiKey.trim().length > 0,
     modelCount: config.models.length,
     models: [...config.models],
-    baseUrl: config.baseUrl ?? '',
+    baseUrl: sanitizeDiagnosticsBaseUrl(config.baseUrl),
   };
 }
 
-function buildSettingsSummary(settings: SuperpowerInsideSettings): AgentDiagnosticsSnapshot['settingsSummary'] {
+function sanitizeDiagnosticsBaseUrl(value: string | undefined): string {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed) return '';
+  try {
+    const url = new URL(trimmed);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return '[invalid URL]';
+  }
+}
+
+function buildSettingsSummary(
+  settings: SuperpowerInsideSettings,
+): AgentDiagnosticsSnapshot['settingsSummary'] {
   return {
     language: settings.language,
     agentDiagnosticsEnabled: settings.agentDiagnostics.enabled,
@@ -519,8 +534,6 @@ function buildSettingsSummary(settings: SuperpowerInsideSettings): AgentDiagnost
       embeddingProvider: settings.rag.embeddingProvider,
       embeddingModel: settings.rag.embeddingModel,
       autoUpdateEnabled: settings.rag.autoUpdateEnabled,
-      graphRagEnabled: settings.rag.graphRagEnabled,
-      graphRagModelConfigured: settings.rag.graphRagModel.trim().length > 0,
       enableBM25: settings.rag.enableBM25,
       annEnabled: settings.rag.annEnabled,
     },
@@ -552,9 +565,7 @@ function toLogSnapshot(entry: LogEntry): AgentDiagnosticsLogSnapshot {
   };
 }
 
-function toBreadcrumbSnapshot(
-  entry: AgentDiagnosticsBreadcrumb,
-): AgentDiagnosticsBreadcrumb {
+function toBreadcrumbSnapshot(entry: AgentDiagnosticsBreadcrumb): AgentDiagnosticsBreadcrumb {
   return {
     ...entry,
     data: entry.data === undefined ? undefined : redactLogValue(entry.data),

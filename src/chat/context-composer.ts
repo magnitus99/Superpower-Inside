@@ -6,19 +6,6 @@ import type {
   SourceCitation,
 } from './types';
 
-export interface ContextAttachmentView {
-  id: string;
-  className: string;
-  label: string;
-  statusText: string;
-  reasonText?: string;
-  sizeText?: string;
-  detail?: string;
-  pinned: boolean;
-  excluded: boolean;
-  sourceIds: string[];
-}
-
 export interface ContextBudgetInput {
   maxChars: number;
   usedChars: number;
@@ -38,6 +25,7 @@ export interface DataBoundaryInput {
 }
 
 export interface DataBoundaryProviderUsage {
+  recentConversationMessages?: number;
   toolResultCount?: number;
   researchDocumentCount?: number;
   mcpServerNames?: readonly string[];
@@ -47,34 +35,6 @@ export interface ResearchDataBoundaryInput {
   providerLabel?: string;
   model?: string;
   previousUserQuestionCount: number;
-}
-
-export function createContextAttachmentViews(
-  attachments: readonly ContextAttachment[],
-): ContextAttachmentView[] {
-  return attachments.map((attachment) => {
-    const excluded = Boolean(attachment.excluded) || isExcludedStatus(attachment.status);
-    const actualChars = attachment.actualChars ?? attachment.estimatedChars;
-    return {
-      id: attachment.id,
-      className: `superpower-inside-chat-context-chip ${attachment.type} ${attachment.status}${
-        attachment.pinned ? ' pinned' : ''
-      }${excluded ? ' excluded' : ''}`,
-      label: attachment.label,
-      statusText: excluded
-        ? t('contextAttachmentExcluded')
-        : getContextStatusText(attachment.status),
-      reasonText: attachment.reason,
-      sizeText:
-        actualChars === undefined
-          ? undefined
-          : t('contextAttachmentChars', { count: actualChars.toLocaleString('ko-KR') }),
-      detail: attachment.detail,
-      pinned: Boolean(attachment.pinned),
-      excluded,
-      sourceIds: [...(attachment.sourceIds ?? [])],
-    };
-  });
 }
 
 export function createContextBudgetSnapshot(input: ContextBudgetInput): ContextBudgetSnapshot {
@@ -182,6 +142,10 @@ export function withDataBoundaryProviderUsage(
   }
   const nextPayload = {
     ...providerPayload,
+    recentConversationMessages:
+      usage.recentConversationMessages === undefined
+        ? providerPayload.recentConversationMessages
+        : Math.max(0, Math.trunc(usage.recentConversationMessages)),
     toolResults:
       usage.toolResultCount === undefined
         ? providerPayload.toolResults
@@ -236,21 +200,6 @@ function formatProviderPayload(
         )
       : null,
   ].filter((item): item is string => item !== null);
-}
-
-function getContextStatusText(status: ContextAttachment['status']): string {
-  switch (status) {
-    case 'attached':
-      return t('contextAttachmentAttached');
-    case 'partial':
-      return t('contextAttachmentPartial');
-    case 'missing':
-      return t('contextAttachmentMissing');
-    case 'error':
-      return t('contextAttachmentError');
-    case 'low-relevance':
-      return t('contextAttachmentLowRelevance');
-  }
 }
 
 function isExcludedStatus(status: ContextAttachment['status']): boolean {

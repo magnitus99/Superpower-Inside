@@ -19,6 +19,10 @@ export interface ToolCallRecord {
   resumePayloadSource?: 'resultSummary';
   status: 'running' | 'success' | 'error';
   serverName?: string;
+  /** provider alias와 분리해 MCP client에 전달할 실제 서버 도구 이름 */
+  actualToolName?: string;
+  /** modern bounded catalog binding과 레거시 서버 한정 복구를 구분합니다. */
+  mcpBindingSource?: 'catalog' | 'legacy';
   approved?: boolean;
   executionKind?: 'native' | 'mcp';
   citations?: SourceCitation[];
@@ -74,8 +78,8 @@ export interface AssistantQuestion {
 }
 
 export type SourceSelectionReason =
-  | 'strong-graph-evidence'
-  | 'graph-structural-evidence'
+  | 'strong-structural-evidence'
+  | 'structural-evidence'
   | 'keyword-vector'
   | 'keyword'
   | 'vector'
@@ -105,7 +109,6 @@ export interface SourceCitation {
   preview: string;
   previewTruncated?: boolean;
   selectionReason?: SourceSelectionReason;
-  graphType?: 'entity' | 'relation' | 'community';
 }
 
 export interface SourceValidationWarning {
@@ -117,7 +120,7 @@ export interface SourceValidationWarning {
 
 export interface ContextAttachment {
   id: string;
-  type: 'file' | 'folder' | 'reference' | 'rag' | 'graph-rag' | 'mcp-server';
+  type: 'file' | 'folder' | 'tag' | 'reference' | 'rag' | 'mcp-server';
   name: string;
   label: string;
   status: 'attached' | 'partial' | 'missing' | 'error' | 'low-relevance';
@@ -126,9 +129,11 @@ export interface ContextAttachment {
   reason?: string;
   estimatedChars?: number;
   actualChars?: number;
+  alreadyAttached?: boolean;
   pinned?: boolean;
   excluded?: boolean;
   fileCount?: number;
+  scopeOnly?: boolean;
   filteredCount?: number;
   autoRagReason?: AutoRagReason;
   folderLimitReason?: FolderLimitReason;
@@ -160,6 +165,7 @@ export interface ToolRoundLog {
 }
 
 export interface ContextBudgetSnapshot {
+  modelContext?: import('../rag/rust-core').ModelContextBudget;
   maxChars: number;
   usedChars: number;
   remainingChars?: number;
@@ -249,7 +255,7 @@ export interface ChatSession {
 export interface SessionState {
   /** 볼트 내 상대 경로 (.md 파일), 미저장 시 null */
   filePath: string | null;
-  /** 세션 제목 (첫 사용자 메시지에서 자동 생성 또는 사용자 지정) */
+  /** 세션 제목 (응답 완료 후 대화 요약 또는 사용자 지정) */
   title: string;
   /** 마지막 저장 이후 변경 사항이 있으면 true */
   isDirty: boolean;

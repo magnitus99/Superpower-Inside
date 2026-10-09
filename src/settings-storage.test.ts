@@ -10,25 +10,15 @@ describe('resolveSettingsLoadData', () => {
         excludePaths: ['**/.git', '**/node_modules', '**/.obsidian'],
         autoUpdateEnabled: true,
         enableBM25: true,
-        graphRagEnabled: false,
-        graphRagAutoSyncEnabled: false,
       },
       mcpServers: [{ name: 'context7', command: 'npx', args: ['-y', '@upstash/context7-mcp'] }],
     };
     const legacyRaw = {
       language: 'ko',
       rag: {
-        excludePaths: [
-          '**/.git',
-          '**/node_modules',
-          '**/.obsidian',
-          '**/.venv',
-          '**/__pycache__',
-        ],
+        excludePaths: ['**/.git', '**/node_modules', '**/.obsidian', '**/.venv', '**/__pycache__'],
         autoUpdateEnabled: false,
         enableBM25: false,
-        graphRagEnabled: false,
-        graphRagAutoSyncEnabled: false,
       },
       mcpServers: [],
     };
@@ -37,13 +27,7 @@ describe('resolveSettingsLoadData', () => {
 
     expect(result.migratedFromLegacyData).toBe(false);
     expect(result.raw.rag).toMatchObject({
-      excludePaths: [
-        '**/.git',
-        '**/node_modules',
-        '**/.obsidian',
-        '**/.venv',
-        '**/__pycache__',
-      ],
+      excludePaths: ['**/.git', '**/node_modules', '**/.obsidian', '**/.venv', '**/__pycache__'],
       autoUpdateEnabled: false,
       enableBM25: false,
     });

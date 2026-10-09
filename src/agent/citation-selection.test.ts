@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { SourceCitation } from '../chat/types';
-import { selectAnswerCitations, selectDisplayedAnswerCitations } from './citation-selection';
+import {
+  selectAnswerCitations,
+  selectDisplayedAnswerCitations,
+  selectGroundedRepairCitations,
+} from './citation-selection';
 
 describe('최종 답변 citation 선택', () => {
   it('답변에서 실제 언급한 citation만 보존한다', () => {
@@ -56,6 +60,38 @@ describe('최종 답변 citation 선택', () => {
         citations,
       ),
     ).toEqual([citations[1], citations[2]]);
+  });
+
+  it('답변 교정이 source ID를 지워도 교정 전 검증 출처 카드를 보존한다', () => {
+    const citations = [
+      citation('vault:Alpha.md:1-10'),
+      citation('vault:Beta.md:2-4'),
+      citation('vault:Unused.md:1-1'),
+    ];
+
+    expect(
+      selectGroundedRepairCitations(
+        'Alpha와 Beta를 확인했습니다. [vault:Alpha.md:1-10] `Beta.md`',
+        '확인한 범위 안에서 Alpha와 Beta의 차이는 다음과 같습니다.',
+        citations,
+      ),
+    ).toEqual([citations[0], citations[1]]);
+  });
+
+  it('교정 답변의 새 출처를 먼저 두고 기존 출처와 id 기준으로 합친다', () => {
+    const citations = [
+      citation('vault:Alpha.md:1-10'),
+      citation('vault:Beta.md:2-4'),
+      citation('vault:Gamma.md:3-5'),
+    ];
+
+    expect(
+      selectGroundedRepairCitations(
+        '기존 [vault:Alpha.md:1-10] [vault:Beta.md:2-4]',
+        '교정 [vault:Beta.md:2-4] [vault:Gamma.md:3-5]',
+        citations,
+      ),
+    ).toEqual([citations[1], citations[2], citations[0]]);
   });
 });
 

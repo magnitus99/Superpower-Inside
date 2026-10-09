@@ -3,31 +3,32 @@ import { t } from '../i18n';
 import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
 import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
-import type { KnowledgeGraphStore, GraphEntityRecord } from '../graph/store';
-import { createContentHash } from '../rag/hash';
+import { readSourceFileSnapshot } from '../rag/source-snapshot';
+import { isSourceRevisionCurrentRust } from '../rag/rust-core';
 import {
-  createContextPreviewRust,
   planChatContextMentionsRust,
-  planGraphMentionContextRust,
-  planContextGraphVerificationRust,
+  planTagMentionsRust,
   planContextSourcesRust,
+  planChatEvidenceRust,
+  planChatUniqueResultIndicesRust,
   planFolderLexicalEvidenceIndicesRust,
   planFolderMentionFilesRust,
   planImplicitFolderQueryPathsRust,
+  planModelContextRust,
   type RustAutoRagReason,
   type RustContextSourceInput,
   type RustContextSourceVerification,
-  type RustGraphMentionEntityInput,
-  type RustGraphMentionRelationInput,
 } from '../rag/rust-core';
 import type { ContextAttachment, FolderLimitReason, SourceCitation } from './types';
 import { createContextBudget, type ContextBlock } from './context-budget';
 import { createContextBudgetSnapshot } from './context-composer';
 import { expandReferencedVaultFiles } from './context-expansion';
-import { type ParsedMention, parseMentions, type MentionResolver } from './mention-parser';
+import { parseMentions, type MentionResolver } from './mention-parser';
 import { appLogger } from '../utils/logger';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { isRagIndexableFile } from '../utils/vault';
+import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
+import { collectTagMentionFiles, resolveTagMentionFiles } from './tag-mentions';
 export {
   parseMentions,
   shouldUseAutoRagForMentions,
@@ -46,6 +47,8 @@ export interface RagQueryLike {
 }
 
 export interface ContextBuildResult {
+  preparedMcpServerNames?: string[];
+  pluginDocumentationFailure?: string;
   systemPrompt: string | null;
   attachments: ContextAttachment[];
   citations: SourceCitation[];
@@ -65,19 +68,24 @@ export async function resolveChatRagEngine(
 
 interface BuildContextOptions {
   app: App;
+  workspaceFiles?: WorkspaceMentionFiles;
+  candidatePaths?: ReadonlySet<string>;
   ragEngine?: RagQueryLike | null;
   mcpRegistry?: MCPRegistry | null;
-  knowledgeGraphStore?: KnowledgeGraphStore | null;
   maxFolderFiles?: number;
   maxContextChars?: number;
   maxReferenceFiles?: number;
   ragTopK?: number;
   ragMinScore?: number;
-  queryExpander?: (question: string) => Promise<string>;
+  queryExpander?: (question: string) => Promise<string | { query: string; variants: string[] }>;
+  /** 활성 도구 루프가 후보 검색·읽기를 맡을 때 비싼 암시적 폴더 전체 선별을 건너뜁니다. */
+  deferImplicitFolderEvidenceToTools?: boolean;
+  /** 플러그인 전용 생성에서는 명시한 자료만 읽고 자동 검색을 하지 않습니다. */
+  explicitContextOnly?: boolean;
 }
 
 const DEFAULT_MAX_FOLDER_FILES = 12;
-const DEFAULT_MAX_CONTEXT_CHARS = 24_000;
+const DEFAULT_MAX_CONTEXT_CHARS = planModelContextRust({})?.evidenceChars ?? 0;
 const DEFAULT_MAX_REFERENCE_FILES = 6;
 const DEFAULT_RAG_TOP_K = 5;
 function getVaultContextRules(): string {
@@ -87,6 +95,19 @@ function getVaultContextRules(): string {
     t('contextRuleNoEvidence'),
   ].join('\n');
 }
+
+interface AppendedEvidence {
+  complete: boolean;
+  actualChars: number;
+  sourceIds: string[];
+}
+
+type AppendEvidence = (
+  source: RustContextSourceInput,
+  prefix: string,
+  label: string,
+  remainingSources?: number,
+) => AppendedEvidence;
 
 export async function buildChatContext(
   question: string,
@@ -99,65 +120,135 @@ export async function buildChatContext(
   const budget = createContextBudget(maxContextChars);
   const attachments: ContextAttachment[] = [];
   const citations: SourceCitation[] = [];
+  const attachedPaths = new Set<string>();
   const warnings: string[] = [];
-  const graphEntities = options.knowledgeGraphStore
-    ? await options.knowledgeGraphStore.getEntities()
-    : undefined;
   const resolver = createAppMentionResolver(
     options.app,
     options.mcpRegistry,
-    options.knowledgeGraphStore,
-    graphEntities,
+    options.workspaceFiles,
   );
   const mentions = parseMentions(question, resolver);
   const mentionPlan = planChatContextMentionsRust(mentions.map((mention) => mention.type)) ?? {
     fileIndices: [],
     folderIndices: [],
-    entityIndices: [],
+    tagIndices: [],
     serverIndices: [],
     useAutoRag: false,
     autoRagReason: 'disabled',
   };
-  const shouldUseAutoRag = mentionPlan.useAutoRag;
+  // 명시 태그는 해당 문서의 원문을 첨부하며 전체 볼트 RAG로 범위를 넓히지 않는다.
+  const shouldUseAutoRag = mentionPlan.useAutoRag && options.explicitContextOnly !== true;
+  const expansion =
+    options.queryExpander &&
+    options.explicitContextOnly !== true &&
+    (shouldUseAutoRag || mentionPlan.folderIndices.length > 0)
+      ? await options.queryExpander(question).catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === 'AbortError') throw error;
+          return question;
+        })
+      : question;
+  const queryPlan = typeof expansion === 'string' ? { query: expansion, variants: [] } : expansion;
+  const queries = [queryPlan.query, ...queryPlan.variants];
+  const expandedQuery = queryPlan.variants.length ? JSON.stringify(queries) : queryPlan.query;
 
   const appendBlock = (block: ContextBlock): boolean => {
-    if (block.citation) citations.push(block.citation);
-    return budget.append(block);
+    return budget.append({
+      ...block,
+      text: `${budget.getBlocks().length > 0 ? '\n\n---\n\n' : ''}${block.text}`,
+    });
+  };
+  const appendEvidence: AppendEvidence = (source, prefix, label, remainingSources = 1) => {
+    const plan = planChatEvidenceRust({
+      question: expandedQuery,
+      source,
+      sourceId: `${prefix}-${citations.length + 1}`,
+      label,
+      remainingSources,
+      maxChars: budget.getRemainingChars(),
+    });
+    const sourceIds: string[] = [];
+    const before = budget.getRemainingChars();
+    for (const block of plan?.blocks ?? []) {
+      if (!appendBlock({ text: block.text })) break;
+      const citation = plan?.citations.find((item) => item.id === block.sourceId);
+      if (citation) {
+        citations.push(citation);
+        sourceIds.push(citation.id);
+        attachedPaths.add(citation.filePath);
+      }
+    }
+    return {
+      complete: plan?.complete === true && sourceIds.length === plan.sourceIds.length,
+      actualChars: before - budget.getRemainingChars(),
+      sourceIds,
+    };
   };
 
-  for (const mention of selectByRustIndices(mentions, mentionPlan.fileIndices, { dedupe: true })) {
+  const explicitFiles = selectByRustIndices(mentions, mentionPlan.fileIndices, { dedupe: true });
+  const explicitFolders = selectByRustIndices(mentions, mentionPlan.folderIndices, {
+    dedupe: true,
+  });
+  const explicitTags = selectByRustIndices(mentions, mentionPlan.tagIndices, { dedupe: true });
+  const fileResults: Array<{ file: TFile; content: string }> = [];
+  const requestedPaths = new Set<string>();
+  for (const [index, mention] of explicitFiles.entries()) {
+    if (requestedPaths.has(mention.name)) continue;
+    requestedPaths.add(mention.name);
     const fileResult = await appendFileMention(
       mention.name,
       options.app,
-      appendBlock,
+      appendEvidence,
       attachments,
-      citations,
+      options.candidatePaths,
+      explicitFiles.length - index + explicitFolders.length + explicitTags.length,
     );
     if (!fileResult) continue;
+    fileResults.push(fileResult);
+  }
 
+  for (const [index, mention] of explicitFolders.entries()) {
+    await appendFolderMention(
+      mention.name,
+      options.app,
+      appendEvidence,
+      attachments,
+      maxFolderFiles,
+      options.candidatePaths,
+      expandedQuery,
+      options.ragEngine,
+      explicitFolders.length - index - 1,
+      options.deferImplicitFolderEvidenceToTools,
+      queries,
+    );
+  }
+
+  for (const [index, mention] of explicitTags.entries()) {
+    await appendTagMention(
+      mention.name,
+      options,
+      appendEvidence,
+      attachments,
+      citations,
+      attachedPaths,
+      maxFolderFiles,
+      explicitTags.length - index - 1,
+    );
+  }
+
+  for (const fileResult of options.explicitContextOnly ? [] : fileResults) {
     const expansion = await expandReferencedVaultFiles(
       fileResult.file,
       fileResult.content,
       options.app,
       maxReferenceFiles,
+      options.candidatePaths,
     );
     warnings.push(...expansion.warnings);
     for (const reference of expansion.references) {
-      appendReferenceFile(reference.file, reference.content, appendBlock, attachments, citations);
+      if (attachedPaths.has(reference.file.path)) continue;
+      appendReferenceFile(reference.file, reference.content, appendEvidence, attachments);
+      attachedPaths.add(reference.file.path);
     }
-  }
-
-  for (const mention of selectByRustIndices(mentions, mentionPlan.folderIndices, {
-    dedupe: true,
-  })) {
-    await appendFolderMention(
-      mention.name,
-      options.app,
-      appendBlock,
-      attachments,
-      citations,
-      maxFolderFiles,
-    );
   }
 
   const explicitFolderPaths = new Set(
@@ -165,25 +256,22 @@ export async function buildChatContext(
       (mention) => mention.name,
     ),
   );
-  const expandedQuery =
-    shouldUseAutoRag && options.queryExpander
-      ? await options.queryExpander(question).catch(() => question)
-      : question;
-  const implicitFolderPaths = shouldUseAutoRag
-    ? (
-        planImplicitFolderQueryPathsRust(question, collectTopLevelFolderPaths(options.app)) ?? []
-      ).filter((path) => !explicitFolderPaths.has(path))
-    : [];
+  const implicitFolderPaths =
+    shouldUseAutoRag && options.deferImplicitFolderEvidenceToTools !== true
+      ? (
+          planImplicitFolderQueryPathsRust(question, collectTopLevelFolderPaths(options.app)) ?? []
+        ).filter((path) => !explicitFolderPaths.has(path))
+      : [];
   if (implicitFolderPaths.length > 0) {
     for (const folderPath of implicitFolderPaths) {
       await appendImplicitFolderEvidence(
         folderPath,
         expandedQuery,
         options.app,
-        appendBlock,
+        appendEvidence,
         attachments,
-        citations,
         Math.min(3, maxFolderFiles),
+        options.candidatePaths,
       );
     }
   }
@@ -192,11 +280,23 @@ export async function buildChatContext(
       attachment.id.startsWith('folder:auto:') && (attachment.sourceIds?.length ?? 0) > 0,
   );
 
-  if (options.ragEngine && shouldUseAutoRag && !hasImplicitFolderEvidence) {
+  const deferredFolder = attachments.some((attachment) => attachment.scopeOnly);
+  if (options.ragEngine && shouldUseAutoRag && !hasImplicitFolderEvidence && !deferredFolder) {
     try {
-      let results = await options.ragEngine.query(expandedQuery, ragTopK, options.ragMinScore);
+      const prefixes = explicitFolders.length
+        ? explicitFolders.map((folder) => folder.name)
+        : undefined;
+      const retrieve = (query: string, topK: number, minScore?: number): Promise<QueryResult[]> =>
+        prefixes
+          ? options.ragEngine!.query(query, topK, minScore, prefixes)
+          : options.ragEngine!.query(query, topK, minScore);
+      let results = (
+        await Promise.all(queries.map((query) => retrieve(query, ragTopK, options.ragMinScore)))
+      ).flat();
       if (results.length === 0) {
-        const fallbackCandidates = await options.ragEngine.query(expandedQuery, ragTopK * 3, 0);
+        const fallbackCandidates = (
+          await Promise.all(queries.map((query) => retrieve(query, ragTopK * 3, 0)))
+        ).flat();
         const fallbackIndices =
           planFolderLexicalEvidenceIndicesRust(
             expandedQuery,
@@ -211,24 +311,24 @@ export async function buildChatContext(
           dedupe: true,
         });
       }
-      const attachedPaths = new Set(citations.map((citation) => citation.filePath));
-      const uniqueResults = dedupeQueryResults(results).filter(
-        (result) => !attachedPaths.has(result.entry.metadata.filePath),
+      const deduped = dedupeQueryResults(results);
+      const uniqueResults = selectByRustIndices(
+        deduped,
+        planChatUniqueResultIndicesRust(
+          deduped.map(contextSourceInputFromQueryResult),
+          citations,
+        ) ?? [],
+        { dedupe: true },
+      ).filter(
+        (result) =>
+          (!options.candidatePaths || options.candidatePaths.has(result.entry.metadata.filePath)) &&
+          (!prefixes ||
+            prefixes.some((prefix) => result.entry.metadata.filePath.startsWith(`${prefix}/`))),
       );
       const sourceInputs: RustContextSourceInput[] = [];
       const verifications: RustContextSourceVerification[] = [];
       for (const result of uniqueResults) {
-        const graphPlan = planContextGraphVerificationRust(
-          result.entry.metadata.filePath,
-          t('contextUnsupportedGraphRagSource'),
-        );
-        const verified =
-          graphPlan?.isGraphSource === true
-            ? (graphPlan.verification ?? {
-                status: 'missing',
-                detail: t('contextUnsupportedGraphRagSource'),
-              })
-            : await verifyQueryResult(result, options.app);
+        const verified = await verifyQueryResult(result, options.app);
         sourceInputs.push(contextSourceInputFromQueryResult(result));
         verifications.push(verified);
       }
@@ -238,9 +338,16 @@ export async function buildChatContext(
         citations.length + 1,
         'rag',
       ) ?? { citations: [], blocks: [], sourceIds: [], rejectedCount: 0 };
-      citations.push(...sourcePlan.citations);
-      for (const block of sourcePlan.blocks) {
-        appendBlock({ text: block.text });
+      citations.push(...sourcePlan.citations.filter((citation) => citation.status !== 'verified'));
+      const ragSourceIds: string[] = [];
+      let ragChars = 0;
+      let ragPartial = false;
+      for (const [index, source] of sourceInputs.entries()) {
+        if (verifications[index]?.status !== 'verified') continue;
+        const result = appendEvidence(source, 'rag', 'Source');
+        ragSourceIds.push(...result.sourceIds);
+        ragChars += result.actualChars;
+        ragPartial ||= !result.complete;
       }
       const diagnosticsText = formatRetrievalDiagnostics(
         options.ragEngine.getLastRetrievalDiagnostics?.() ?? [],
@@ -249,10 +356,11 @@ export async function buildChatContext(
         id: 'rag:auto',
         type: 'rag',
         name: 'auto',
-        label: t('contextAutoRagDetail', { count: sourcePlan.sourceIds.length }),
-        status: sourcePlan.sourceIds.length > 0 ? 'attached' : 'low-relevance',
+        label: t('contextAutoRagDetail', { count: ragSourceIds.length }),
+        status: ragPartial ? 'partial' : ragSourceIds.length > 0 ? 'attached' : 'low-relevance',
+        alreadyAttached: results.length > 0 && uniqueResults.length === 0,
         detail:
-          sourcePlan.sourceIds.length > 0
+          ragSourceIds.length > 0
             ? combineAttachmentDetails([
                 formatAutoRagReason(mentionPlan.autoRagReason),
                 sourcePlan.rejectedCount > 0
@@ -260,25 +368,23 @@ export async function buildChatContext(
                   : null,
                 diagnosticsText,
               ])
-            : t('contextNoRelevantDocs'),
+            : combineAttachmentDetails([
+                results.length > 0 && uniqueResults.length === 0
+                  ? t('contextRagAlreadyAttached')
+                  : sourcePlan.rejectedCount > 0
+                    ? t('contextRejectedCandidatesExcluded', { count: sourcePlan.rejectedCount })
+                    : uniqueResults.length > 0
+                      ? t('contextFolderPartialBudget')
+                      : t('contextNoRelevantDocs'),
+                diagnosticsText,
+              ]),
         reason: t('contextAutoRagTitle'),
         estimatedChars: sourcePlan.blocks.reduce((total, block) => total + block.text.length, 0),
-        actualChars: sourcePlan.blocks.reduce((total, block) => total + block.text.length, 0),
-        sourceIds: sourcePlan.sourceIds,
+        actualChars: ragChars,
+        sourceIds: ragSourceIds,
+        excluded: ragPartial && ragSourceIds.length === 0,
         autoRagReason: mentionPlan.autoRagReason,
       });
-      const graphContributionCount = countVerifiedGraphContributions(uniqueResults, verifications);
-      if (graphContributionCount > 0) {
-        attachments.push({
-          id: 'graph-rag:auto',
-          type: 'graph-rag',
-          name: 'auto',
-          label: t('contextGraphContributionTitle'),
-          status: 'attached',
-          detail: t('contextGraphContributionDetail', { count: graphContributionCount }),
-          sourceIds: sourcePlan.sourceIds,
-        });
-      }
     } catch (err) {
       appLogger.warn('Auto RAG context build failed.', {
         source: 'chat.context',
@@ -294,7 +400,7 @@ export async function buildChatContext(
         detail: stringifyError(err),
       });
     }
-  } else if (options.ragEngine && !shouldUseAutoRag) {
+  } else if (options.ragEngine && !shouldUseAutoRag && mentionPlan.tagIndices.length === 0) {
     attachments.push({
       id: 'rag:auto',
       type: 'rag',
@@ -307,20 +413,6 @@ export async function buildChatContext(
     });
   }
 
-  const entityMentions: ParsedMention[] = selectByRustIndices(mentions, mentionPlan.entityIndices, {
-    dedupe: true,
-  });
-  if (entityMentions.length > 0 && options.knowledgeGraphStore) {
-    await appendGraphEntityContext(
-      entityMentions,
-      options.knowledgeGraphStore,
-      appendBlock,
-      attachments,
-      citations,
-      graphEntities,
-    );
-  }
-
   for (const mention of selectByRustIndices(mentions, mentionPlan.serverIndices, {
     dedupe: true,
   })) {
@@ -331,12 +423,27 @@ export async function buildChatContext(
     .getBlocks()
     .map((block) => block.text)
     .filter(Boolean)
-    .join('\n\n---\n\n');
+    .join('');
   const warningText = warnings.length > 0 ? `\n\n[Context Warnings]\n${warnings.join('\n')}` : '';
+  const scopeText = explicitFolders.length
+    ? t('contextFolderScopePrompt', {
+        paths: JSON.stringify(explicitFolders.map((folder) => folder.name)),
+      })
+    : '';
+  const tagScopeText = explicitTags.length
+    ? t('contextTagScopePrompt', { tags: JSON.stringify(explicitTags.map((tag) => tag.name)) })
+    : '';
   return {
-    systemPrompt: contextText
-      ? `[Vault Context Rules]\n${getVaultContextRules()}\n\n[Vault Context]\n${contextText}${warningText}`
-      : warningText.trim() || null,
+    systemPrompt:
+      [
+        scopeText,
+        tagScopeText,
+        contextText
+          ? `[Vault Context Rules]\n${getVaultContextRules()}\n\n[Vault Context]\n${contextText}${warningText}`
+          : warningText.trim(),
+      ]
+        .filter(Boolean)
+        .join('\n\n') || null,
     attachments,
     citations,
     warnings,
@@ -353,13 +460,17 @@ async function appendImplicitFolderEvidence(
   folderPath: string,
   expandedQuery: string,
   app: App,
-  appendBlock: (block: ContextBlock) => boolean,
+  appendEvidence: AppendEvidence,
   attachments: ContextAttachment[],
-  citations: SourceCitation[],
   topK: number,
+  candidatePaths?: ReadonlySet<string>,
 ): Promise<void> {
   const prefix = `${folderPath}/`;
-  const folderFiles = app.vault.getFiles().filter((file) => file.path.startsWith(prefix));
+  const folderFiles = app.vault
+    .getFiles()
+    .filter(
+      (file) => file.path.startsWith(prefix) && (!candidatePaths || candidatePaths.has(file.path)),
+    );
   const indexableFlags = await Promise.all(
     folderFiles.map((file) => isRagIndexableFile(app.vault, file)),
   );
@@ -389,24 +500,16 @@ async function appendImplicitFolderEvidence(
   let attachedChars = 0;
   let partial = false;
 
-  for (const { file, content } of selected) {
-    const citation: SourceCitation = {
-      id: `folder-auto-${citations.length + 1}`,
-      filePath: file.path,
-      status: 'verified',
-      preview: createContextPreviewRust(content) ?? '',
-    };
-    sourceIds.push(citation.id);
-    attachedChars += content.length;
-    if (
-      !appendBlock({
-        citation,
-        text: `[Automatically selected vault file: ${file.path}]\n${content}`,
-      })
-    ) {
-      partial = true;
-      break;
-    }
+  for (const [index, { file, content }] of selected.entries()) {
+    const result = appendEvidence(
+      { filePath: file.path, text: content },
+      'folder-auto',
+      'Automatically selected vault file',
+      selected.length - index,
+    );
+    sourceIds.push(...result.sourceIds);
+    attachedChars += result.actualChars;
+    partial ||= !result.complete;
   }
 
   attachments.push({
@@ -414,7 +517,7 @@ async function appendImplicitFolderEvidence(
     type: 'folder',
     name: folderPath,
     label: t('contextImplicitFolderDetail', { name: folderPath, count: sourceIds.length }),
-    status: sourceIds.length === 0 ? 'missing' : partial ? 'partial' : 'attached',
+    status: partial ? 'partial' : sourceIds.length === 0 ? 'missing' : 'attached',
     detail:
       sourceIds.length === 0
         ? t('contextImplicitFolderNoMatch', { name: folderPath })
@@ -422,6 +525,7 @@ async function appendImplicitFolderEvidence(
     reason: t('contextAutoRagTitle'),
     estimatedChars: selected.reduce((total, item) => total + item.content.length, 0),
     actualChars: attachedChars,
+    excluded: partial && sourceIds.length === 0,
     fileCount: sourceIds.length,
     filteredCount: Math.max(0, indexableFiles.length - selected.length),
     sourceIds,
@@ -447,47 +551,18 @@ function dedupeQueryResults(results: readonly QueryResult[]): QueryResult[] {
   });
 }
 
-function countVerifiedGraphContributions(
-  results: readonly QueryResult[],
-  verifications: readonly RustContextSourceVerification[],
-): number {
-  let count = 0;
-  for (const [index, result] of results.entries()) {
-    if (verifications[index]?.status !== 'verified') continue;
-    if (
-      result.retrievalSources?.some(
-        (source) => source === 'graph-local' || source === 'graph-global' || source === 'evidence',
-      )
-    ) {
-      count++;
-    }
-  }
-  return count;
-}
-
 export function createAppMentionResolver(
   app: App,
   registry?: MCPRegistry | null,
-  knowledgeGraphStore?: KnowledgeGraphStore | null,
-  graphEntities?: readonly GraphEntityRecord[],
+  workspaceFiles?: WorkspaceMentionFiles,
 ): MentionResolver {
-  let entityNames = new Set<string>();
-  if (knowledgeGraphStore && graphEntities) {
-    const names = new Set<string>();
-    for (const entity of graphEntities) {
-      names.add(entity.canonicalName.toLowerCase());
-      for (const alias of entity.aliases) {
-        names.add(alias.toLowerCase());
-      }
-    }
-    entityNames = names;
-  }
   return {
+    workspaceFiles: workspaceFiles ?? captureWorkspaceMentionFiles(app),
+    tagFiles: (tag) => resolveTagMentionFiles(app, tag),
     isServer: (name: string) =>
       registry ? registry.getEnabledServers().some((server) => server.name === name) : false,
     isFile: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFile,
     isFolder: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFolder,
-    isEntity: (name: string) => entityNames.has(name.toLowerCase()),
   };
 }
 
@@ -586,10 +661,22 @@ async function verifyQueryResult(result: QueryResult, app: App): Promise<QueryRe
   if (metadata.sourceMtime !== file.stat.mtime || metadata.sourceSize !== file.stat.size) {
     return { status: 'stale', detail: t('contextFileModified') };
   }
-  const content = await app.vault.cachedRead(file);
-  if (createContentHash(content) !== metadata.contentHash) {
+  const snapshot = await readSourceFileSnapshot(app.vault, file);
+  if (
+    !snapshot ||
+    !isSourceRevisionCurrentRust(
+      {
+        filePath: metadata.filePath,
+        sourceMtime: metadata.sourceMtime,
+        sourceSize: metadata.sourceSize,
+        contentHash: metadata.contentHash,
+      },
+      snapshot.revision,
+    )
+  ) {
     return { status: 'stale', detail: t('contextHashChanged') };
   }
+  const content = snapshot.content;
   const lineCount = content.split('\n').length;
   if (
     metadata.startLine < 0 ||
@@ -606,12 +693,13 @@ type QueryResultVerification = RustContextSourceVerification;
 async function appendFileMention(
   path: string,
   app: App,
-  appendBlock: (block: ContextBlock) => boolean,
+  appendEvidence: AppendEvidence,
   attachments: ContextAttachment[],
-  citations: SourceCitation[],
+  candidatePaths?: ReadonlySet<string>,
+  remainingSources = 1,
 ): Promise<{ file: TFile; content: string } | null> {
   const file = app.vault.getAbstractFileByPath(path);
-  if (!(file instanceof TFile)) {
+  if (!(file instanceof TFile) || (candidatePaths && !candidatePaths.has(file.path))) {
     attachments.push({
       id: `file:${path}`,
       type: 'file',
@@ -625,28 +713,25 @@ async function appendFileMention(
 
   try {
     const content = await app.vault.cachedRead(file);
-    const citation: SourceCitation = {
-      id: `file-${citations.length + 1}`,
-      filePath: file.path,
-      status: 'verified',
-      preview: createContextPreviewRust(content) ?? '',
-    };
-    const attachedFully = appendBlock({
-      citation,
-      text: `[File: ${file.path}]\n${content}`,
-    });
+    const result = appendEvidence(
+      { filePath: file.path, text: content },
+      'file',
+      'File',
+      remainingSources,
+    );
     attachments.push({
       id: `file:${file.path}`,
       type: 'file',
       name: file.path,
       label: file.path,
-      status: attachedFully ? 'attached' : 'partial',
-      detail: attachedFully ? undefined : t('contextPartialBudget'),
+      status: result.complete ? 'attached' : 'partial',
+      detail: result.complete ? undefined : t('contextPartialBudget'),
       reason: t('chatFileMentionChip', { name: file.path }),
       estimatedChars: content.length,
-      actualChars: content.length,
+      actualChars: result.actualChars,
       pinned: true,
-      sourceIds: [citation.id],
+      sourceIds: result.sourceIds,
+      excluded: result.sourceIds.length === 0,
     });
     return { file, content };
   } catch (err) {
@@ -670,41 +755,119 @@ async function appendFileMention(
 function appendReferenceFile(
   file: TFile,
   content: string,
-  appendBlock: (block: ContextBlock) => boolean,
+  appendEvidence: AppendEvidence,
   attachments: ContextAttachment[],
-  citations: SourceCitation[],
 ): void {
-  const citation: SourceCitation = {
-    id: `reference-${citations.length + 1}`,
-    filePath: file.path,
-    status: 'verified',
-    preview: createContextPreviewRust(content) ?? '',
-  };
-  const attachedFully = appendBlock({
-    citation,
-    text: `[Reference File: ${file.path}]\n${content}`,
-  });
+  const result = appendEvidence(
+    { filePath: file.path, text: content },
+    'reference',
+    'Reference File',
+  );
   attachments.push({
     id: `reference:${file.path}`,
     type: 'reference',
     name: file.path,
     label: file.path,
-    status: attachedFully ? 'attached' : 'partial',
-    detail: attachedFully ? undefined : t('contextPartialBudget'),
+    status: result.complete ? 'attached' : 'partial',
+    detail: result.complete ? undefined : t('contextPartialBudget'),
     reason: t('chatFileMentionChip', { name: file.path }),
     estimatedChars: content.length,
-    actualChars: content.length,
-    sourceIds: [citation.id],
+    actualChars: result.actualChars,
+    sourceIds: result.sourceIds,
+    excluded: result.sourceIds.length === 0,
+  });
+}
+
+async function appendTagMention(
+  tag: string,
+  options: BuildContextOptions,
+  appendEvidence: AppendEvidence,
+  attachments: ContextAttachment[],
+  citations: SourceCitation[],
+  attachedPaths: ReadonlySet<string>,
+  maxFiles: number,
+  remainingTags: number,
+): Promise<void> {
+  const snapshot = collectTagMentionFiles(options.app);
+  const allMatches = planTagMentionsRust(snapshot.tags, tag);
+  const matches = selectByRustIndices(
+    snapshot.files.map((file, index) => ({ file, tags: snapshot.tags[index] ?? [] })),
+    allMatches?.fileIndices,
+    { dedupe: true },
+  );
+  const eligible = await Promise.all(
+    matches.map(
+      async ({ file }) =>
+        (!options.candidatePaths || options.candidatePaths.has(file.path)) &&
+        (await isRagIndexableFile(options.app.vault, file)),
+    ),
+  );
+  const files = matches.filter((_file, index) => eligible[index]);
+  const plan = planTagMentionsRust(
+    files.map((row) => row.tags),
+    tag,
+    maxFiles,
+  );
+  const selected = selectByRustIndices(files, plan?.fileIndices, { dedupe: true });
+  const fileAttachments: ContextAttachment[] = [];
+  const sourceIds: string[] = [];
+  for (const [index, { file }] of selected.entries()) {
+    if (attachedPaths.has(file.path)) {
+      sourceIds.push(
+        ...citations
+          .filter((citation) => citation.filePath === file.path)
+          .map((citation) => citation.id),
+      );
+      continue;
+    }
+    await appendFileMention(
+      file.path,
+      options.app,
+      appendEvidence,
+      fileAttachments,
+      options.candidatePaths,
+      selected.length - index + remainingTags,
+    );
+  }
+  sourceIds.push(...fileAttachments.flatMap((attachment) => attachment.sourceIds ?? []));
+  const partial =
+    (plan?.matchedCount ?? 0) > selected.length ||
+    fileAttachments.some((attachment) => attachment.status !== 'attached');
+  attachments.push({
+    id: `tag:${tag}`,
+    type: 'tag',
+    name: tag,
+    label: `@${tag}`,
+    status: partial ? 'partial' : sourceIds.length ? 'attached' : 'missing',
+    reason: t('chatTagMentionCount', { count: files.length }),
+    detail: partial
+      ? t('chatTagMentionPartial', { total: files.length, count: maxFiles })
+      : files.length
+        ? undefined
+        : t('chatTagMentionEmpty'),
+    fileCount: selected.length,
+    filteredCount: files.length - selected.length,
+    sourceIds,
+    actualChars: fileAttachments.reduce(
+      (sum, attachment) => sum + (attachment.actualChars ?? 0),
+      0,
+    ),
+    excluded: sourceIds.length === 0,
   });
 }
 
 async function appendFolderMention(
   path: string,
   app: App,
-  appendBlock: (block: ContextBlock) => boolean,
+  appendEvidence: AppendEvidence,
   attachments: ContextAttachment[],
-  citations: SourceCitation[],
   maxFolderFiles: number,
+  candidatePaths?: ReadonlySet<string>,
+  question = '',
+  ragEngine?: RagQueryLike | null,
+  remainingFolders = 0,
+  deferEvidenceToTools = false,
+  queries: readonly string[] = [question],
 ): Promise<void> {
   const folder = app.vault.getAbstractFileByPath(path);
   if (!(folder instanceof TFolder)) {
@@ -720,7 +883,12 @@ async function appendFolderMention(
   }
 
   const folderPrefix = `${path}/`;
-  const folderFiles = app.vault.getFiles().filter((file) => file.path.startsWith(folderPrefix));
+  const folderFiles = app.vault
+    .getFiles()
+    .filter(
+      (file) =>
+        file.path.startsWith(folderPrefix) && (!candidatePaths || candidatePaths.has(file.path)),
+    );
   const indexableFlags = await Promise.all(
     folderFiles.map((file) => isRagIndexableFile(app.vault, file)),
   );
@@ -730,31 +898,92 @@ async function appendFolderMention(
     indexableFiles.map((file) => file.path),
     maxFolderFiles,
   );
-  const files = selectByRustIndices(indexableFiles, filePlan?.indices, { dedupe: true });
+  if (filePlan?.partial && deferEvidenceToTools) {
+    attachments.push({
+      id: `folder:${path}`,
+      type: 'folder',
+      name: path,
+      label: path,
+      status: 'attached',
+      scopeOnly: true,
+      reason: t('contextFolderSearchScope'),
+      detail: t('contextFolderSearchScopeDetail', { count: indexableFiles.length }),
+      fileCount: indexableFiles.length,
+      filteredCount: 0,
+      sourceIds: [],
+      actualChars: 0,
+      excluded: false,
+    });
+    return;
+  }
+  let files = selectByRustIndices(indexableFiles, filePlan?.indices, { dedupe: true });
+  // 작은 폴더는 그대로 첨부하고, 제한된 폴더는 기존 검색으로 질문에 맞는 원문을 우선합니다.
+  if (filePlan?.partial && question) {
+    const results = ragEngine
+      ? (
+          await Promise.all(
+            queries.map((query) =>
+              ragEngine.query(query, maxFolderFiles, undefined, [path]).catch(() => []),
+            ),
+          )
+        ).flat()
+      : [];
+    const filesByPath = new Map(indexableFiles.map((file) => [file.path, file]));
+    const rankedFiles = [
+      ...new Map(
+        results.flatMap((result) => {
+          const file = filesByPath.get(result.entry.metadata.filePath);
+          return file ? [[file.path, file] as const] : [];
+        }),
+      ).values(),
+    ];
+    if (rankedFiles.length > 0) {
+      const rankedPlan = planFolderMentionFilesRust(
+        path,
+        rankedFiles.map((file) => file.path),
+        maxFolderFiles,
+      );
+      files = selectByRustIndices(rankedFiles, rankedPlan?.indices, { dedupe: true });
+    } else {
+      const samples: string[] = [];
+      for (let offset = 0; offset < indexableFiles.length; offset += 8) {
+        samples.push(
+          ...(await Promise.all(
+            indexableFiles
+              .slice(offset, offset + 8)
+              .map(
+                async (file) => `${file.path}\n${await app.vault.cachedRead(file).catch(() => '')}`,
+              ),
+          )),
+        );
+      }
+      const indices =
+        planFolderLexicalEvidenceIndicesRust(question, samples, maxFolderFiles, 'any') ?? [];
+      if (indices.length > 0)
+        files = selectByRustIndices(indexableFiles, indices, { dedupe: true });
+    }
+  }
   const sourceIds: string[] = [];
   let partial = filePlan?.partial ?? false;
   let folderLimitReason: FolderLimitReason | undefined =
     filePlan?.limitReason === 'max-files' ? 'max-files' : undefined;
   let readErrorCount = 0;
+  let actualChars = 0;
 
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
     try {
       const content = await app.vault.cachedRead(file);
-      const citation: SourceCitation = {
-        id: `folder-${citations.length + 1}`,
-        filePath: file.path,
-        status: 'verified',
-        preview: createContextPreviewRust(content) ?? '',
-      };
-      sourceIds.push(citation.id);
-      const attachedFully = appendBlock({
-        citation,
-        text: `[Folder File: ${file.path}]\n${content}`,
-      });
-      if (!attachedFully) {
+      const result = appendEvidence(
+        { filePath: file.path, text: content },
+        'folder',
+        'Folder File',
+        files.length - index + remainingFolders + (filePlan?.partial ? DEFAULT_RAG_TOP_K : 0),
+      );
+      sourceIds.push(...result.sourceIds);
+      actualChars += result.actualChars;
+      if (!result.complete) {
         partial = true;
         folderLimitReason = 'budget';
-        break;
       }
     } catch {
       partial = true;
@@ -768,7 +997,7 @@ async function appendFolderMention(
     type: 'folder',
     name: path,
     label: path,
-    status: sourceIds.length === 0 ? 'missing' : partial ? 'partial' : 'attached',
+    status: partial ? 'partial' : sourceIds.length === 0 ? 'missing' : 'attached',
     detail: partial
       ? formatFolderPartialDetail(folderLimitReason, maxFolderFiles, readErrorCount)
       : undefined,
@@ -776,6 +1005,8 @@ async function appendFolderMention(
     fileCount: files.length,
     filteredCount: filePlan?.matchedCount ? Math.max(0, filePlan.matchedCount - files.length) : 0,
     sourceIds,
+    actualChars,
+    excluded: sourceIds.length === 0,
     folderLimitReason,
   });
 }
@@ -856,85 +1087,6 @@ async function appendServerMention(
       detail: stringifyError(err),
     });
   }
-}
-
-async function appendGraphEntityContext(
-  entityMentions: ParsedMention[],
-  graphStore: KnowledgeGraphStore,
-  appendBlock: (block: ContextBlock) => boolean,
-  attachments: ContextAttachment[],
-  citations: SourceCitation[],
-  graphEntities?: readonly GraphEntityRecord[],
-): Promise<void> {
-  const [entities, relations] = await Promise.all([
-    graphEntities ? Promise.resolve([...graphEntities]) : graphStore.getEntities(),
-    graphStore.getRelations(),
-  ]);
-
-  const mentionPlan = planGraphMentionContextRust(
-    entityMentions.map((mention) => mention.name),
-    entities.map(
-      (entity): RustGraphMentionEntityInput => ({
-        id: entity.id,
-        canonicalName: entity.canonicalName,
-        aliases: entity.aliases,
-        typeId: entity.typeId,
-        description: entity.description,
-      }),
-    ),
-    relations.map(
-      (relation): RustGraphMentionRelationInput => ({
-        sourceEntityId: relation.sourceEntityId,
-        targetEntityId: relation.targetEntityId,
-        relationTypeId: relation.relationTypeId,
-        description: relation.description,
-      }),
-    ),
-  );
-  const matchedEntities = mentionPlan?.matchedEntityIndices
-    ? selectByRustIndices(entities, mentionPlan.matchedEntityIndices, { dedupe: true })
-    : [];
-
-  if (matchedEntities.length === 0) {
-    attachments.push({
-      id: 'graph-rag:auto',
-      type: 'graph-rag',
-      name: 'auto',
-      label: t('contextGraphRagEntitiesTitle'),
-      status: 'missing',
-      detail: t('contextGraphRagEntityNotFound'),
-    });
-    return;
-  }
-
-  const graphText = mentionPlan?.contextLines.join('\n') ?? '';
-  appendBlock({ text: graphText });
-
-  const entityCitation = createGraphCitation(matchedEntities, citations.length + 1);
-  citations.push(entityCitation);
-
-  attachments.push({
-    id: 'graph-rag:auto',
-    type: 'graph-rag',
-    name: 'auto',
-    label: t('contextGraphRagEntitiesDetail', { count: matchedEntities.length }),
-    status: 'attached',
-    detail: t('contextGraphRagRelationsDetail', {
-      count: mentionPlan?.matchedRelationIndices.length ?? 0,
-    }),
-    sourceIds: [entityCitation.id],
-  });
-}
-
-function createGraphCitation(entities: GraphEntityRecord[], index: number): SourceCitation {
-  const names = entities.map((e) => e.canonicalName).join(', ');
-  return {
-    id: `graph-${index}`,
-    filePath: `graph://entities`,
-    status: 'verified',
-    preview: `Graph entities: ${createContextPreviewRust(names) ?? ''}`,
-    graphType: 'entity',
-  };
 }
 
 function stringifyError(err: unknown): string {

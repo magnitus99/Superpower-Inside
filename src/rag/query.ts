@@ -1,9 +1,8 @@
 import type { EmbeddingProvider } from '../llm/embedding';
-import type { LLMProvider } from '../llm/providers';
 import type { VectorStore, VectorEntry } from './store';
 import type { IndexedDbBM25Index } from './bm25';
+import { DEFAULT_SEARCH_QUALITY } from './search-defaults';
 import { BM25DocumentCorpusStore, FallbackRetrievalCorpusStore } from './corpus-store';
-import { GraphRagCandidateProvider, type GraphRagQueryEngine } from '../graph/query-engine';
 import {
   BM25CandidateProvider,
   ExactVectorCandidateProvider,
@@ -14,34 +13,30 @@ import {
   type RetrievalProviderReadiness,
   type RetrievalProviderDiagnostic,
   type StructuralMetadataContext,
+  type RetrievalCandidate,
 } from './retrieval-pipeline';
 import {
   countKeywordMatchesRust,
   cosineSimilarityRust,
+  isSourceRevisionCurrentRust,
   planDiverseResultIndicesRust,
+  planRagStatusRust,
   planQueryResultScoreRust,
-  planRerankMessagesRust,
   selectRelevantResultIndicesRust,
-  planRerankResponseWithStatusRust,
-  planRerankResultOrderRust,
   tokenizeRust,
-  type RustRerankStatus,
   type RustSourceSelectionReason,
+  type RustRagStatusPlan,
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
+import { appLogger } from '../utils/logger';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
-const DEFAULT_RERANK_CANDIDATE_LIMIT = 32;
-const DEFAULT_RERANK_TIMEOUT_MS = 2500;
-
-export interface RAGResultReranker {
-  rerank(
-    question: string,
-    results: readonly QueryResult[],
-    signal?: AbortSignal,
-  ): Promise<readonly string[]>;
-  getLastRerankStatus?(): RustRerankStatus | null;
-}
+const INDEX_READINESS_REASONS = {
+  missing: 'missing',
+  legacy: 'legacy',
+  staleFile: 'stale-file',
+  embeddingChanged: 'embedding-changed',
+} as const;
 
 export interface QueryResult {
   entry: VectorEntry;
@@ -52,8 +47,8 @@ export interface QueryResult {
   retrievalSources?: string[];
   sourceEvidenceScore?: number;
   bestEvidenceRank?: number;
-  hasGraphOrStructuralEvidence?: boolean;
-  hasStrongGraphOrStructuralEvidence?: boolean;
+  hasStructuralEvidence?: boolean;
+  hasStrongStructuralEvidence?: boolean;
   selectionReason?: RustSourceSelectionReason;
   sourcePath: string;
   chunkRange: {
@@ -64,49 +59,58 @@ export interface QueryResult {
 }
 
 export interface RAGQueryEngineOptions {
+  corpusStore?: import('./corpus-store').RetrievalCorpusStore;
+  getCandidatePaths?: () => Promise<ReadonlySet<string>>;
   annEnabled?: boolean;
   annClusterCount?: number;
   annProbeCount?: number;
   annMinEntryCount?: number;
   structuralGraphEnabled?: boolean;
   structuralMetadataContext?: StructuralMetadataContext;
-  graphRagEnabled?: boolean;
-  graphRagQueryEngine?: GraphRagQueryEngine;
-  graphRagReadiness?: () => RetrievalProviderReadiness;
-  reranker?: RAGResultReranker;
-  rerankCandidateLimit?: number;
   embeddingModel?: string;
+  embeddingProvider?: string;
+}
+
+export interface RAGQueryOptions {
+  signal?: AbortSignal;
+}
+
+export interface RAGIndexFileSnapshot {
+  path: string;
+  mtime: number;
+  size: number;
 }
 
 export class RAGQueryEngine {
+  private readonly corpusStore: import('./corpus-store').RetrievalCorpusStore | undefined;
+  private readonly getCandidatePaths: RAGQueryEngineOptions['getCandidatePaths'];
+  private vectorStore: VectorStore | null;
   private embeddingProvider: EmbeddingProvider | null;
   private bm25Index: IndexedDbBM25Index | undefined;
   private bm25Weight: number;
   private minScore: number;
   private retrievalPipeline: RagRetrievalPipeline;
-  private reranker: RAGResultReranker | undefined;
-  private rerankCandidateLimit: number;
   private embeddingModel: string | undefined;
+  private embeddingProviderId: string | undefined;
   private lastRetrievalDiagnostics: RetrievalProviderDiagnostic[] = [];
 
   constructor(
     vectorStore: VectorStore | null,
     embeddingProvider: EmbeddingProvider | null,
     bm25Index?: IndexedDbBM25Index,
-    bm25Weight = 0.3,
-    minScore = 0.5,
+    bm25Weight: number = DEFAULT_SEARCH_QUALITY.bm25Weight,
+    minScore: number = DEFAULT_SEARCH_QUALITY.minScore,
     options: RAGQueryEngineOptions = {},
   ) {
+    this.corpusStore = options.corpusStore;
+    this.getCandidatePaths = options.getCandidatePaths;
+    this.vectorStore = vectorStore;
     this.embeddingProvider = embeddingProvider;
     this.bm25Index = bm25Index;
     this.bm25Weight = bm25Weight;
     this.minScore = minScore;
-    this.reranker = options.reranker;
     this.embeddingModel = options.embeddingModel;
-    this.rerankCandidateLimit = Math.max(
-      1,
-      Math.floor(options.rerankCandidateLimit ?? DEFAULT_RERANK_CANDIDATE_LIMIT),
-    );
+    this.embeddingProviderId = options.embeddingProvider;
     const providers: CandidateProvider[] = [];
     if (vectorStore && embeddingProvider) {
       providers.push(
@@ -123,27 +127,25 @@ export class RAGQueryEngine {
       const bm25Corpus = new BM25DocumentCorpusStore(bm25Index);
       providers.push(
         new BM25CandidateProvider(
-          vectorStore
-            ? new FallbackRetrievalCorpusStore(vectorStore, bm25Corpus)
-            : bm25Corpus,
+          options.corpusStore ??
+            (vectorStore ? new FallbackRetrievalCorpusStore(vectorStore, bm25Corpus) : bm25Corpus),
           bm25Index,
         ),
       );
     }
     if (
-      vectorStore &&
+      (options.corpusStore || vectorStore) &&
       options.structuralGraphEnabled === true &&
       options.structuralMetadataContext
     ) {
       providers.push(
-        new StructuralGraphCandidateProvider(vectorStore, options.structuralMetadataContext),
-      );
-    }
-    if (options.graphRagEnabled === true && options.graphRagQueryEngine) {
-      providers.push(
-        new GraphRagCandidateProvider(
-          options.graphRagQueryEngine,
-          options.graphRagReadiness ?? defaultGraphRagReadiness,
+        new StructuralGraphCandidateProvider(
+          vectorStore,
+          options.structuralMetadataContext,
+          1,
+          undefined,
+          options.corpusStore ?? vectorStore ?? undefined,
+          bm25Index,
         ),
       );
     }
@@ -155,38 +157,88 @@ export class RAGQueryEngine {
     topK = 5,
     minScore?: number,
     filePathPrefixes?: readonly string[],
+    options: RAGQueryOptions = {},
   ): Promise<QueryResult[]> {
+    throwIfQueryAborted(options.signal);
     const threshold = minScore ?? this.minScore;
-    const qVector = this.embeddingProvider ? await this.embeddingProvider.embed(question) : [];
-    const retrieval = await this.retrievalPipeline.retrieve({
-      question,
-      queryVector: qVector,
-      candidateLimit: topK * 8,
-      vectorFilter:
-        qVector.length > 0
-          ? {
-              embeddingModel: this.embeddingModel,
-              dimension: qVector.length,
-              filePathPrefixes,
-            }
+    const candidatePaths = await this.getCandidatePaths?.();
+    const isInScope = (entry: VectorEntry): boolean =>
+      (!candidatePaths || candidatePaths.has(entry.metadata.filePath)) &&
+      this.isEntryInQueryScope(entry, filePathPrefixes);
+    let qVector: number[] = [];
+    let embeddingFailure = false;
+    if (this.embeddingProvider) {
+      try {
+        qVector = await this.embeddingProvider.embed(question, { signal: options.signal });
+      } catch (error) {
+        if (options.signal?.aborted) throw error;
+        embeddingFailure = true;
+        appLogger.warn('Query embedding failed; continuing with lexical retrieval.', {
+          source: 'rag.query',
+          error,
+        });
+      }
+    }
+    throwIfQueryAborted(options.signal);
+    const retrieval = await this.retrievalPipeline.retrieve(
+      {
+        question,
+        queryVector: qVector,
+        candidateLimit: topK * 8,
+        requireSourceRevision: this.corpusStore !== undefined,
+        vectorFilter:
+          qVector.length > 0
+            ? {
+                embeddingProvider: this.embeddingProviderId,
+                embeddingModel: this.embeddingModel,
+                dimension: qVector.length,
+                filePathPrefixes,
+              }
+            : undefined,
+        isEntryCompatible: (entry) =>
+          isInScope(entry) && this.isEntryCompatible(entry, qVector, filePathPrefixes),
+        isEntryInScope: isInScope,
+        filterCurrentCandidates: this.corpusStore
+          ? (candidates) => this.filterCurrentCandidates(candidates)
           : undefined,
-      isEntryCompatible: (entry) => this.isEntryCompatible(entry, qVector, filePathPrefixes),
-      isEntryInScope: (entry) => this.isEntryInPathScope(entry, filePathPrefixes),
-    });
-    this.lastRetrievalDiagnostics = retrieval.diagnostics;
+      },
+      options.signal,
+    );
+    throwIfQueryAborted(options.signal);
+    this.lastRetrievalDiagnostics = [
+      ...(embeddingFailure
+        ? [
+            {
+              providerId: 'query-embedding',
+              source: 'embedding' as const,
+              status: 'error' as const,
+              durationMs: 0,
+              candidateCount: 0,
+              readiness: 'degraded' as const,
+              estimatedCost: 'medium' as const,
+              skippedReason: 'query-embedding-failed',
+            },
+          ]
+        : []),
+      ...retrieval.diagnostics,
+    ];
     const queryTokens = tokenizeRust(question) ?? [];
 
     const scored: QueryResult[] = [];
     for (let index = 0; index < retrieval.candidates.length; index++) {
       const candidate = retrieval.candidates[index];
       const entry = candidate.entry;
-      if (!this.isEntryInPathScope(entry, filePathPrefixes)) continue;
+      if (!isInScope(entry)) {
+        continue;
+      }
       const vectorScore =
-        qVector.length > 0 && entry.vector.length === qVector.length
-          ? cosineSimilarityRust(qVector, entry.vector)
-          : candidate.sources.includes('bm25')
-            ? 0
-            : null;
+        qVector.length > 0
+          ? entry.vector.length === qVector.length
+            ? cosineSimilarityRust(qVector, entry.vector)
+            : entry.vector.length === 0 || candidate.sources.includes('bm25')
+              ? 0
+              : null
+          : 0;
       if (vectorScore === null) {
         continue;
       }
@@ -212,8 +264,8 @@ export class RAGQueryEngine {
         retrievalSources: [...candidate.sources],
         sourceEvidenceScore: scorePlan.sourceEvidenceScore,
         bestEvidenceRank: scorePlan.bestEvidenceRank,
-        hasGraphOrStructuralEvidence: scorePlan.hasGraphOrStructuralEvidence,
-        hasStrongGraphOrStructuralEvidence: scorePlan.hasStrongGraphOrStructuralEvidence,
+        hasStructuralEvidence: scorePlan.hasStructuralEvidence,
+        hasStrongStructuralEvidence: scorePlan.hasStrongStructuralEvidence,
         selectionReason: scorePlan.selectionReason,
         sourcePath: entry.metadata.filePath,
         chunkRange: {
@@ -231,19 +283,131 @@ export class RAGQueryEngine {
       threshold,
       this.bm25Index?.isReady ?? false,
     );
-    if (this.reranker && relevantResults.length > 1) {
-      const diversePool = selectDiverseResults(
-        relevantResults,
-        Math.min(relevantResults.length, Math.max(topK, this.rerankCandidateLimit)),
-      );
-      const rerankedResults = await this.rerankResults(question, diversePool);
-      return rerankedResults.slice(0, topK);
-    }
-    return selectDiverseResults(relevantResults, topK);
+    // 네트워크·작업자 대기 중 바뀐 제외 정책도 응답 직전에 적용합니다.
+    const currentPaths = await this.getCandidatePaths?.();
+    throwIfQueryAborted(options.signal);
+    return selectDiverseResults(
+      currentPaths
+        ? relevantResults.filter((result) => currentPaths.has(result.sourcePath))
+        : relevantResults,
+      topK,
+    );
   }
 
   getLastRetrievalDiagnostics(): RetrievalProviderDiagnostic[] {
     return [...this.lastRetrievalDiagnostics];
+  }
+
+  private async filterCurrentCandidates(
+    candidates: RetrievalCandidate[],
+  ): Promise<RetrievalCandidate[]> {
+    if (!this.corpusStore) return candidates;
+    const entries = await this.corpusStore.getEntriesByIds(candidates.map(({ entry }) => entry.id));
+    const currentById = new Map(entries.map((entry) => [entry.id, entry]));
+    return candidates.filter(({ entry }) => {
+      const current = currentById.get(entry.id);
+      return (
+        current !== undefined &&
+        isSourceRevisionCurrentRust(
+          {
+            filePath: entry.metadata.filePath,
+            sourceMtime: entry.metadata.sourceMtime ?? -1,
+            sourceSize: entry.metadata.sourceSize ?? -1,
+            contentHash: entry.metadata.contentHash ?? '',
+          },
+          {
+            filePath: current.metadata.filePath,
+            sourceMtime: current.metadata.sourceMtime ?? -1,
+            sourceSize: current.metadata.sourceSize ?? -1,
+            contentHash: current.metadata.contentHash ?? '',
+          },
+        )
+      );
+    });
+  }
+
+  async getIndexReadiness(
+    files: readonly RAGIndexFileSnapshot[],
+  ): Promise<RetrievalProviderReadiness | null> {
+    const plans: RustRagStatusPlan[] = [];
+    if (this.vectorStore) {
+      const records = await this.vectorStore.getFileIndexRecords();
+      const contractRecord = records.find(
+        (record) => record.embeddingProvider && record.embeddingModel,
+      );
+      const plan = planRagStatusRust({
+        includedFiles: files,
+        records,
+        totalVaultFiles: files.length,
+        embeddingProvider: this.embeddingProviderId ?? contractRecord?.embeddingProvider ?? '',
+        embeddingModel: this.embeddingModel ?? contractRecord?.embeddingModel ?? '',
+        reasons: INDEX_READINESS_REASONS,
+      });
+      if (plan) plans.push(plan);
+    }
+    if (this.bm25Index?.isReady) {
+      const documents = await this.bm25Index.getCorpusDocumentsBySourcePaths(
+        files.map((file) => file.path),
+      );
+      const recordsByPath = new Map<
+        string,
+        {
+          document: (typeof documents)[number];
+          vectorCount: number;
+        }
+      >();
+      for (const document of documents) {
+        const existing = recordsByPath.get(document.sourcePath);
+        if (existing) {
+          existing.vectorCount++;
+        } else {
+          recordsByPath.set(document.sourcePath, { document, vectorCount: 1 });
+        }
+      }
+      const plan = planRagStatusRust({
+        includedFiles: files,
+        records: [...recordsByPath.values()].map(({ document, vectorCount }) => {
+          const hasCompleteMetadata =
+            document.sourceMtime !== undefined &&
+            document.sourceSize !== undefined &&
+            document.indexedAt !== undefined &&
+            document.contentHash !== undefined;
+          return {
+            filePath: document.sourcePath,
+            sourceMtime: document.sourceMtime,
+            sourceSize: document.sourceSize,
+            contentHash: document.contentHash,
+            indexedAt: document.indexedAt,
+            embeddingProvider: hasCompleteMetadata ? 'bm25' : undefined,
+            embeddingModel: hasCompleteMetadata ? 'bm25' : undefined,
+            hasCompleteMetadata,
+            vectorCount,
+          };
+        }),
+        totalVaultFiles: files.length,
+        embeddingProvider: 'bm25',
+        embeddingModel: 'bm25',
+        reasons: INDEX_READINESS_REASONS,
+      });
+      if (plan) plans.push(plan);
+    }
+    if (plans.length === 0) return null;
+    if (plans.some((plan) => plan.staleDocuments > 0 || plan.unknownDocuments > 0)) {
+      return {
+        readiness: 'stale',
+        estimatedCost: 'low',
+        reason: 'Current vault metadata differs from indexed file metadata.',
+      };
+    }
+    if (plans.some((plan) => plan.updateRequiredDocuments.length === 0)) {
+      return { readiness: 'ready', estimatedCost: 'low' };
+    }
+    const healthyDocuments = plans.reduce((total, plan) => total + plan.healthyDocuments, 0);
+    return {
+      readiness: healthyDocuments > 0 ? 'partial' : 'cold',
+      estimatedCost: 'low',
+      reason: 'The current vault contains files not covered by a healthy index.',
+    };
   }
 
   private isEntryCompatible(
@@ -251,14 +415,30 @@ export class RAGQueryEngine {
     queryVector: readonly number[],
     filePathPrefixes?: readonly string[],
   ): boolean {
-    if (entry.vector.length !== queryVector.length) return false;
-    if (
-      this.embeddingModel &&
-      entry.metadata.embeddingModel &&
-      entry.metadata.embeddingModel !== this.embeddingModel
-    ) {
-      return false;
+    if (queryVector.length > 0 && entry.vector.length > 0) {
+      if (entry.vector.length !== queryVector.length) return false;
+      if (
+        this.embeddingProviderId &&
+        entry.metadata.embeddingProvider &&
+        entry.metadata.embeddingProvider !== this.embeddingProviderId
+      ) {
+        return false;
+      }
+      if (
+        this.embeddingModel &&
+        entry.metadata.embeddingModel &&
+        entry.metadata.embeddingModel !== this.embeddingModel
+      ) {
+        return false;
+      }
     }
+    return this.isEntryInQueryScope(entry, filePathPrefixes);
+  }
+
+  private isEntryInQueryScope(
+    entry: VectorEntry,
+    filePathPrefixes: readonly string[] | undefined,
+  ): boolean {
     return this.isEntryInPathScope(entry, filePathPrefixes);
   }
 
@@ -269,8 +449,10 @@ export class RAGQueryEngine {
     if (!filePathPrefixes || filePathPrefixes.length === 0) return true;
     return filePathPrefixes.some((rawPrefix) => {
       const prefix = rawPrefix.trim().replace(/\/+$/, '');
-      return prefix.length > 0 &&
-        (entry.metadata.filePath === prefix || entry.metadata.filePath.startsWith(`${prefix}/`));
+      return (
+        prefix.length > 0 &&
+        (entry.metadata.filePath === prefix || entry.metadata.filePath.startsWith(`${prefix}/`))
+      );
     });
   }
 
@@ -286,166 +468,10 @@ export class RAGQueryEngine {
       )
       .join('\n\n---\n\n');
   }
-
-  private async rerankResults(
-    question: string,
-    results: readonly QueryResult[],
-  ): Promise<QueryResult[]> {
-    if (!this.reranker || results.length <= 1) return [...results];
-
-    const candidates = results.slice(0, this.rerankCandidateLimit);
-    const startedAt = Date.now();
-    try {
-      const rankedIds = await this.reranker.rerank(question, candidates);
-      const rerankStatus =
-        this.reranker.getLastRerankStatus?.() ??
-        (rankedIds.length > 0 ? 'applied' : 'empty-rank-plan');
-      const order = planRerankResultOrderRust(
-        results.map((result) => result.entry.id),
-        rankedIds,
-      );
-      if (!order || order.length !== results.length) {
-        this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
-        return [...results];
-      }
-      const reranked = selectByRustIndices(results, order, { dedupe: true });
-      if (reranked.length === results.length) {
-        this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
-        return reranked;
-      }
-      this.recordRerankDiagnostic(rerankStatus, Date.now() - startedAt, candidates.length);
-      return [...results];
-    } catch (error) {
-      this.recordRerankDiagnostic('error', Date.now() - startedAt, candidates.length, error);
-      return [...results];
-    }
-  }
-
-  private recordRerankDiagnostic(
-    status: RustRerankStatus | 'error',
-    durationMs: number,
-    candidateCount: number,
-    error?: unknown,
-  ): void {
-    this.lastRetrievalDiagnostics = [
-      ...this.lastRetrievalDiagnostics,
-      {
-        providerId: 'llm-reranker',
-        source: 'reranker',
-        status: status === 'applied' ? 'ok' : 'error',
-        durationMs,
-        candidateCount,
-        readiness: 'ready',
-        estimatedCost: 'medium',
-        skippedReason: status,
-        ...(error instanceof Error ? { error: error.message } : {}),
-      },
-    ];
-  }
-}
-
-function defaultGraphRagReadiness(): RetrievalProviderReadiness {
-  return { readiness: 'partial', estimatedCost: 'free' };
-}
-
-export class LLMRAGResultReranker implements RAGResultReranker {
-  private lastRerankStatus: RustRerankStatus | null = null;
-
-  constructor(
-    private readonly provider: LLMProvider,
-    private readonly timeoutMs = DEFAULT_RERANK_TIMEOUT_MS,
-  ) {}
-
-  async rerank(
-    question: string,
-    results: readonly QueryResult[],
-    signal?: AbortSignal,
-  ): Promise<readonly string[]> {
-    this.lastRerankStatus = null;
-    if (results.length === 0) return [];
-    const messagePlan = planRerankMessagesRust(
-      question,
-      results.map((result) => ({
-        id: result.entry.id,
-        sourcePath: result.sourcePath,
-        heading: result.entry.metadata.heading ?? '',
-        text: result.entry.metadata.text,
-      })),
-      700,
-    );
-    if (!messagePlan) return [];
-    const response = await withTimeout(
-      this.provider.chat(
-        [
-          {
-            role: 'system' as const,
-            content: messagePlan.systemContent,
-          },
-          {
-            role: 'user' as const,
-            content: messagePlan.userContent,
-          },
-        ],
-        0,
-        undefined,
-        { signal },
-      ),
-      this.timeoutMs,
-      signal,
-    );
-    const responsePlan = planRerankResponseWithStatusRust(
-      response,
-      results.map((result) => result.entry.id),
-    );
-    this.lastRerankStatus = responsePlan?.rerankStatus ?? 'invalid-json';
-    return responsePlan?.rankedIds ?? [];
-  }
-
-  getLastRerankStatus(): RustRerankStatus | null {
-    return this.lastRerankStatus;
-  }
 }
 
 function countKeywordMatches(queryTokens: string[], text: string): number {
   return countKeywordMatchesRust(queryTokens, text) ?? 0;
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
-  if (timeoutMs <= 0 && !signal) return promise;
-
-  let timeoutId: number | undefined;
-  return new Promise<T>((resolve, reject) => {
-    const cleanup = (): void => {
-      if (timeoutId) window.clearTimeout(timeoutId);
-      signal?.removeEventListener('abort', onAbort);
-    };
-    const onAbort = (): void => {
-      cleanup();
-      reject(new Error('RAG reranking cancelled'));
-    };
-
-    if (signal?.aborted) {
-      onAbort();
-      return;
-    }
-    signal?.addEventListener('abort', onAbort, { once: true });
-    if (timeoutMs > 0) {
-      timeoutId = window.setTimeout(() => {
-        cleanup();
-        reject(new Error('RAG reranking timed out'));
-      }, timeoutMs);
-    }
-    promise.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
-  });
 }
 
 function selectRelevantResults(
@@ -490,4 +516,8 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, 0);
   });
+}
+
+function throwIfQueryAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('RAG query cancelled', 'AbortError');
 }

@@ -2,7 +2,7 @@ import type { ToolDefinition } from '../llm/providers';
 import { withDataBoundaryProviderUsage } from './context-composer';
 import { selectPreviousUserQuestions } from './conversation-variants';
 import { selectProviderReinjectableToolCalls } from './tool-execution';
-import { createCompatibilityToolPrompt, createNativeVaultEvidencePrompt } from './tool-protocol';
+import { createCompatibilityToolPrompt, createToolEvidencePrompt } from './tool-protocol';
 import type { ChatMessageWithMeta, DataBoundarySnapshot, ToolCallRecord } from './types';
 
 export interface ToolApprovalQuestionContext {
@@ -42,7 +42,7 @@ export function createToolApprovalResumePlan(input: {
   dataBoundarySnapshot?: DataBoundarySnapshot;
 }): ToolApprovalResumePlan {
   const toolPrompt = input.providerSupportsToolCalling
-    ? createNativeVaultEvidencePrompt(input.toolDefinitions)
+    ? createToolEvidencePrompt(input.toolDefinitions)
     : createCompatibilityToolPrompt(input.toolDefinitions);
   const systemPrompt =
     [input.promptSystemPrompt, toolPrompt]

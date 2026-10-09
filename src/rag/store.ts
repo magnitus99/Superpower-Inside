@@ -1,8 +1,13 @@
 import Dexie from 'dexie';
+import {
+  GeneratedArtifactDatabase,
+  type GeneratedArtifactBinding,
+} from '../storage/generated-artifacts';
 import type { DataAdapter } from 'obsidian';
 import { readJsonFromVault } from '../utils/vault';
 import {
   planFileIndexRecordsRust,
+  planSourceChunkImportIndicesRust,
   planVectorStoreAddRust,
   planVectorStoreLookupByFilePathsRust,
   planVectorStoreLookupByIdsRust,
@@ -37,6 +42,7 @@ export interface VectorEntry {
     sourceMtime?: number;
     sourceSize?: number;
     contentHash?: string;
+    chunkHash?: string;
     indexedAt?: number;
     embeddingProvider?: string;
     embeddingModel?: string;
@@ -65,6 +71,7 @@ export interface VectorStoreStats {
 }
 
 export interface IndexedDbVectorStoreOptions {
+  artifactOwnership?: GeneratedArtifactBinding;
   hydrateAllEntryLimit?: number;
   pageSize?: number;
   maxRuntimePayloadBytes?: number;
@@ -79,7 +86,7 @@ export interface VectorSearchWorkerLike {
     dbName: string;
     queryVector: readonly number[];
     topK: number;
-    filter?: Omit<VectorSearchFilter, 'filePathPrefixes'>;
+    filter?: VectorSearchFilter;
     signal?: AbortSignal;
   }): Promise<Array<{ id: string; score: number }>>;
   close(reason?: Error): void;
@@ -163,6 +170,7 @@ export interface LegacyJsonVectorImportResult {
 
 export interface LegacyJsonVectorImportOptions {
   maxBytes?: number;
+  requireSourceChunkIds?: boolean;
 }
 
 const LEGACY_JSON_VECTOR_IMPORT_KEY = 'legacy-json-vector-import:v1';
@@ -193,13 +201,13 @@ interface VectorStoreMetaRecord {
   updated: number;
 }
 
-class VectorStoreDB extends Dexie {
+class VectorStoreDB extends GeneratedArtifactDatabase {
   vectors!: Dexie.Table<IndexedDbVectorRecord, string>;
   fileIndex!: Dexie.Table<FileIndexRecord, string>;
   meta!: Dexie.Table<VectorStoreMetaRecord, string>;
 
-  constructor(name: string) {
-    super(name);
+  constructor(name: string, ownership?: GeneratedArtifactBinding) {
+    super(name, ownership);
     this.version(1).stores({
       vectors: 'id, filePath, updated',
     });
@@ -548,7 +556,7 @@ export class IndexedDbVectorStore implements VectorStore {
   } | null = null;
 
   constructor(dbName = 'SuperpowerInsideVectorStore', options: IndexedDbVectorStoreOptions = {}) {
-    this.db = new VectorStoreDB(dbName);
+    this.db = new VectorStoreDB(dbName, options.artifactOwnership);
     this.hydrateAllEntryLimit = Math.max(
       1,
       Math.floor(options.hydrateAllEntryLimit ?? DEFAULT_HYDRATE_ALL_ENTRY_LIMIT),
@@ -646,10 +654,7 @@ export class IndexedDbVectorStore implements VectorStore {
   async search(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
     const totalEntries = await this.db.vectors.count();
     if (totalEntries > this.hydrateAllEntryLimit) {
-      if (
-        this.vectorSearchWorkerAvailable &&
-        normalizeFilePathPrefixes(request.filter?.filePathPrefixes).length === 0
-      ) {
+      if (this.vectorSearchWorkerAvailable) {
         try {
           return await this.searchInWorker(request);
         } catch (error) {
@@ -1011,6 +1016,14 @@ export class IndexedDbVectorStore implements VectorStore {
         await scorePages((offset) =>
           this.db.vectors
             .where('filePath')
+            .equals(prefix)
+            .offset(offset)
+            .limit(this.pageSize)
+            .toArray(),
+        );
+        await scorePages((offset) =>
+          this.db.vectors
+            .where('filePath')
             .startsWith(`${prefix}/`)
             .offset(offset)
             .limit(this.pageSize)
@@ -1031,13 +1044,7 @@ export class IndexedDbVectorStore implements VectorStore {
       dbName: this.db.name,
       queryVector: request.queryVector,
       topK: request.topK,
-      filter: request.filter
-        ? {
-            embeddingProvider: request.filter.embeddingProvider,
-            embeddingModel: request.filter.embeddingModel,
-            dimension: request.filter.dimension,
-          }
-        : undefined,
+      filter: request.filter,
       signal: request.signal,
     });
     throwIfAborted(request.signal);
@@ -1045,8 +1052,7 @@ export class IndexedDbVectorStore implements VectorStore {
     return hits.flatMap((hit, index) => {
       const record = records[index];
       if (!record || !matchesVectorRecordSearchFilter(record, request.filter)) return [];
-      // The large-vault worker builds a Rust exact runtime index. Report the
-      // algorithm that actually ran even when the caller merely preferred ANN.
+      // 대형 볼트 작업자는 정확 검색 인덱스를 사용하므로 실제 실행한 알고리즘을 표시한다.
       return [{ entry: vectorEntryFromRecord(record), score: hit.score, mode: 'exact' }];
     });
   }
@@ -1224,13 +1230,24 @@ export async function importLegacyJsonVectorStore(
   }
 
   const data = await readJsonFromVault(adapter, path);
-  const entries = Array.isArray(data)
+  let entries = Array.isArray(data)
     ? data.filter(isVectorEntryLike).map((entry) => ({
         id: entry.id,
         vector: [...entry.vector],
         metadata: { ...entry.metadata },
       }))
     : [];
+  if (options.requireSourceChunkIds) {
+    const indices = planSourceChunkImportIndicesRust(
+      entries.map((entry) => ({
+        id: entry.id,
+        filePath: entry.metadata.filePath,
+        chunkHash: entry.metadata.chunkHash,
+      })),
+    );
+    if (indices === null) throw new Error('Source chunk import planning is unavailable.');
+    entries = selectByRustIndices(entries, indices);
+  }
   if (entries.length > 0) {
     await store.add(entries);
   }

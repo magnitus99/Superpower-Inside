@@ -9,6 +9,23 @@ const MAX_RESEARCH_RETRY_DELAY_MS: u64 = 30_000;
 /// Floating-point form used for JavaScript numeric Retry-After validation.
 const MAX_RESEARCH_RETRY_DELAY_MS_F64: f64 = 30_000.0;
 
+/// 명시 폴더의 개념 비교와 종합은 인용문 한 곳을 찾는 요청과 구분한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn is_scoped_vault_research_intent(question: &str) -> bool {
+    let normalized = question.to_lowercase();
+    let has_action = [
+        "종합", "비교", "개요", "관계", "전체", "모든", "요약", "정리", "분석", "조사", "concept",
+        "compare", "synthes", "overview", "summar",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term));
+    let narrow_quote = ["인용", "구절", "문단", "quote", "quotation"]
+        .iter()
+        .any(|term| normalized.contains(term));
+    has_action && !narrow_quote
+}
+
 /// Detects explicit requests that require whole-vault coverage instead of top-k retrieval.
 #[must_use]
 #[wasm_bindgen]
@@ -323,13 +340,14 @@ fn parse_tool_call_signatures(raw: &str) -> Option<Vec<ToolCallSignature>> {
                 return None;
             }
             let parsed_arguments = serde_json::from_str::<JsonValue>(arguments).ok();
-            let is_native_search = name == "superpower_inside"
+            let is_legacy_native_search = name == "superpower_inside"
                 && parsed_arguments
                     .as_ref()
                     .and_then(JsonValue::as_object)
                     .and_then(|object| object.get("action"))
                     .and_then(JsonValue::as_str)
                     == Some("search");
+            let is_native_search = name == "superpower_inside_search" || is_legacy_native_search;
             let canonical_arguments = parsed_arguments
                 .map_or_else(|| arguments.to_owned(), |value| canonical_json(&value));
             Some(ToolCallSignature {
@@ -449,9 +467,9 @@ mod tests {
     #[test]
     fn citation_selection_keeps_only_bounded_markers_from_the_final_answer() {
         let raw = plan_research_citation_indices_json(
-            "결론 [vault:Alpha.md:1-10] 및 Source graph-2",
-            r#"["vault:Alpha.md:1-1","vault:Alpha.md:1-10","graph-2","unused"]"#,
-            r#"["Alpha.md","Alpha.md","graph://2","Unused.md"]"#,
+            "결론 [vault:Alpha.md:1-10] 및 Source links-2",
+            r#"["vault:Alpha.md:1-1","vault:Alpha.md:1-10","links-2","unused"]"#,
+            r#"["Alpha.md","Alpha.md","Links.md","Unused.md"]"#,
             2,
         );
 
@@ -572,6 +590,23 @@ mod tests {
             {"name":"superpower_inside","arguments":"{\"action\":\"search\",\"query\":\"four\"}"},
             {"name":"superpower_inside","arguments":"{\"action\":\"search\",\"query\":\"five\"}"},
             {"name":"superpower_inside","arguments":"{\"action\":\"read\",\"path\":\"Alpha.md\"}"}
+        ]"#;
+
+        assert_eq!(
+            plan_repeated_tool_call_indices_json("[]", candidates, 2, 4),
+            r#"[{"candidateIndex":4,"reason":"native-search-budget-exceeded"}]"#,
+        );
+    }
+
+    #[test]
+    fn named_native_search_calls_share_the_per_turn_budget() {
+        let candidates = r#"[
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"one\"}"},
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"two\"}"},
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"three\"}"},
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"four\"}"},
+            {"name":"superpower_inside_search","arguments":"{\"query\":\"five\"}"},
+            {"name":"superpower_inside_read","arguments":"{\"path\":\"Alpha.md\"}"}
         ]"#;
 
         assert_eq!(

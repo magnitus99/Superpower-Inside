@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  getLanguage,
-  isLocalizedValue,
-  resolveUiLanguage,
-  setLanguage,
-  t,
-} from './i18n';
+import { getLanguage, isLocalizedValue, resolveUiLanguage, setLanguage, t } from './i18n';
 
 afterEach(() => {
   setLanguage('en');
@@ -27,22 +21,22 @@ describe('UI 언어 계약', () => {
     setLanguage('en');
 
     expect(getLanguage()).toBe('en');
-    expect(t('tabProviders')).toBe('Providers');
+    expect(t('tabProviders')).toBe('AI connections');
     expect(t('providerNewName')).toBe('New provider');
     expect(/[가-힣]/u.test(`${t('tabProviders')} ${t('providerNewName')}`)).toBe(false);
-  });
-
-  it('RAG 안내는 공통 파일 범위와 GraphRAG의 .md 예외를 함께 밝힌다', () => {
-    setLanguage('en');
-
-    expect(t('ragFoundationDescription')).toContain('embeddings, BM25');
-    expect(t('ragFoundationDescription')).toContain('built-in vault tools');
-    expect(t('ragGraphSectionDescription')).toContain('.md notes');
   });
 
   it('양쪽 언어의 자동 생성 기본값을 식별한다', () => {
     expect(isLocalizedValue('providerNewName', '새 프로바이더')).toBe(true);
     expect(isLocalizedValue('providerNewName', 'New provider')).toBe(true);
     expect(isLocalizedValue('providerNewName', 'Research endpoint')).toBe(false);
+  });
+  it.each(['ko', 'en'] as const)('%s MCP 안내는 설정 관례와 지원 필드를 설명한다', (lang) => {
+    setLanguage(lang);
+    expect(t('mcpServersSectionDesc')).toContain('Claude Desktop');
+    expect(t('mcpServersSectionDesc')).toContain('mcpServers');
+    expect(t('mcpServersSectionDesc')).toContain('stdio');
+    for (const field of ['mcpServers', 'command', 'args', 'env'])
+      expect(t('settingsMcpJsonFormatHelp')).toContain(field);
   });
 });

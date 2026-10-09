@@ -6,7 +6,9 @@ import {
   getEffectiveExcludePaths,
   getRagCandidateFiles,
   getRagFileTypeSummary,
+  getFrontmatterExcludedFiles,
   isRagCandidateFile,
+  isRagFileExcluded,
   countFilesByExtensions,
   isExcludedExt,
   isExcludedPath,
@@ -28,13 +30,6 @@ const baseRagConfig: RAGConfig = {
   annClusterCount: 0,
   annProbeCount: 4,
   structuralGraphEnabled: true,
-  entityAutoMergeThreshold: 0.88,
-  entityPendingMergeThreshold: 0.72,
-  graphRagEnabled: false,
-  graphRagModel: '',
-  graphRagMaxFilesPerRun: 50,
-  graphRagMaxConcurrentRequests: 1,
-  graphRagQueryMode: 'auto',
   enableBM25: true,
   bm25Weight: 0.3,
   performanceTuningMode: 'auto',
@@ -43,8 +38,6 @@ const baseRagConfig: RAGConfig = {
   indexingYieldMs: 25,
   slowEventLoopThresholdMs: 150,
   slowBatchThresholdMs: 3000,
-  graphRagAutoSyncEnabled: false,
-  graphRagAutoSyncIntervalMin: 30,
 };
 
 const baseChatConfig: ChatConfig = {
@@ -133,6 +126,85 @@ describe('RAG 제외 패턴', () => {
 });
 
 describe('RAG 후보 파일', () => {
+  it('YAML 제외 목록은 경로 제외 문서도 표시하며 본문을 변경하지 않는다', async () => {
+    const files = [
+      createFile('hidden.md'),
+      createFile('Archive/hidden.md'),
+      createFile('visible.md'),
+    ];
+    const contents = new Map(
+      files.map((file) => [file.path, '---\nsuperpower-inside-exclude: true\n---\nsecret']),
+    );
+    contents.set('visible.md', '---\nsuperpower-inside-exclude: false\n---\npublic');
+    const vault = createVault(files, contents);
+    expect((await getFrontmatterExcludedFiles(vault)).map((file) => file.path)).toEqual([
+      'hidden.md',
+      'Archive/hidden.md',
+    ]);
+    expect(contents.get('hidden.md')).toContain('superpower-inside-exclude: true');
+  });
+  it('최상위 속성은 false 외에 모두 제외하고 변경·해제는 캐시 갱신 없이 반영한다', async () => {
+    const hidden = createFile('hidden.md');
+    const contents = new Map([
+      ['hidden.md', '---\n"superpower-inside-exclude": true # 비공개\n---\nsecret'],
+      ['visible.md', '---\nsuperpower-inside-exclude: false\n---\npublic'],
+      ['quoted.md', '---\nsuperpower-inside-exclude: "true"\n---\npublic'],
+      ['body.md', '# 본문\nsuperpower-inside-exclude: true'],
+    ]);
+    const vault = createVault(
+      [hidden, ...['visible.md', 'quoted.md', 'body.md'].map((path) => createFile(path))],
+      contents,
+    );
+    expect(
+      (await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig)).map((file) => file.path),
+    ).toEqual(['visible.md', 'body.md']);
+    await expect(isRagCandidateFile(vault, hidden, baseRagConfig, baseChatConfig)).resolves.toBe(
+      false,
+    );
+    contents.set(hidden.path, '---\nsuperpower-inside-exclude: false\n---\npublic');
+    await expect(isRagCandidateFile(vault, hidden, baseRagConfig, baseChatConfig)).resolves.toBe(
+      true,
+    );
+  });
+  it.each(['true', '"true"', '0', '1', '트루', '""', 'null', '', '[]', '{}'])(
+    'YAML 값 %s는 설정 목록·전체 후보·개별 파일 정책에서 함께 제외한다',
+    async (value) => {
+      const hidden = createFile('hidden.md');
+      const visible = createFile('visible.md');
+      const contents = new Map([
+        [hidden.path, `---\nsuperpower-inside-exclude: ${value}\n---\nsecret`],
+        [visible.path, '---\nnested:\n  superpower-inside-exclude: true\n---\npublic'],
+      ]);
+      const vault = createVault([hidden, visible], contents);
+      expect(await getFrontmatterExcludedFiles(vault)).toEqual([hidden]);
+      expect(await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig)).toEqual([visible]);
+      expect(await isRagFileExcluded(vault, hidden, baseRagConfig, baseChatConfig)).toBe(true);
+      contents.set(hidden.path, 'public');
+      expect(await getFrontmatterExcludedFiles(vault)).toEqual([]);
+      expect(await isRagCandidateFile(vault, hidden, baseRagConfig, baseChatConfig)).toBe(true);
+    },
+  );
+  it.each(['false', '"false"'])(
+    '값 %s는 설정 목록에서 빠지고 후보 목록과 개별 파일 정책에서 허용한다',
+    async (value) => {
+      const file = createFile('visible.md');
+      const vault = createVault(
+        [file],
+        new Map([[file.path, `---\nsuperpower-inside-exclude: ${value}\n---\npublic`]]),
+      );
+      expect(await getFrontmatterExcludedFiles(vault)).toEqual([]);
+      expect(await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig)).toEqual([file]);
+      expect(await isRagFileExcluded(vault, file, baseRagConfig, baseChatConfig)).toBe(false);
+    },
+  );
+  it('YAML을 읽을 수 없는 문서는 후보와 개별 인덱싱에서 함께 차단한다', async () => {
+    const file = createFile('private.md');
+    const vault = createVault([file]);
+    vault.cachedRead = () => Promise.reject(new Error('unreadable'));
+    expect(await getRagCandidateFiles(vault, baseRagConfig, baseChatConfig)).toEqual([]);
+    expect(await isRagCandidateFile(vault, file, baseRagConfig, baseChatConfig)).toBe(false);
+    expect(await isRagFileExcluded(vault, file, baseRagConfig, baseChatConfig)).toBe(true);
+  });
   it('마크다운 외 텍스트 파일도 후보에 포함하고 제외 확장자와 경로를 적용한다', async () => {
     const vault = createVault([
       createFile('note.md'),
@@ -278,6 +350,10 @@ describe('RAG 후보 파일', () => {
 });
 
 describe('RAG 제외 확장자 판정', () => {
+  it('경로 제외와 겹치는 파일은 확장자 제외 개수에 중복 집계하지 않는다', () => {
+    const vault = createVault([createFile('Code/main.ts'), createFile('notes/main.ts')]);
+    expect(countFilesByExtensions(vault, ['ts'], ['./Code/'])).toEqual({ ts: 1 });
+  });
   it('확장자 키 정규화를 적용해 파일 경로 확장자를 판정한다', () => {
     expect(isExcludedExt('note.MD', ['MD'])).toBe(true);
     expect(isExcludedExt('notes/asset.PNG', [' .png ', 'jpg'])).toBe(true);

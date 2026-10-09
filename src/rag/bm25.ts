@@ -1,4 +1,8 @@
 import Dexie from 'dexie';
+import {
+  GeneratedArtifactDatabase,
+  type GeneratedArtifactBinding,
+} from '../storage/generated-artifacts';
 import type { DataAdapter } from 'obsidian';
 import { planStaleIndexSourcePathsRust, RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
 import {
@@ -76,17 +80,18 @@ interface BM25Snapshot {
 }
 
 export interface IndexedDbBM25IndexOptions {
+  artifactOwnership?: GeneratedArtifactBinding;
   maxSnapshotBytes?: number;
   workerFactory?: BM25WorkerFactory;
 }
 
-class BM25IndexDB extends Dexie {
+class BM25IndexDB extends GeneratedArtifactDatabase {
   meta!: Dexie.Table<BM25MetaRecord, string>;
   documents!: Dexie.Table<BM25DocumentRecord, string>;
   mutations!: Dexie.Table<BM25MutationRecord, string>;
 
-  constructor(name: string) {
-    super(name);
+  constructor(name: string, ownership?: GeneratedArtifactBinding) {
+    super(name, ownership);
     this.version(1).stores({
       meta: 'key',
     });
@@ -116,6 +121,7 @@ export class IndexedDbBM25Index {
   private workerTokenizerCurrent = false;
   private workerTotalDocs = 0;
   private workerFailure: Error | null = null;
+  private recovery: Promise<void> | null = null;
   private rebuildReplayOperations: BM25PendingOperation[] | null = null;
 
   constructor(
@@ -124,7 +130,7 @@ export class IndexedDbBM25Index {
     legacyPath = '.superpower-inside/bm25-index.json',
     options: IndexedDbBM25IndexOptions = {},
   ) {
-    this.db = new BM25IndexDB(dbName);
+    this.db = new BM25IndexDB(dbName, options.artifactOwnership);
     this.legacyAdapter = legacyAdapter;
     this.legacyPath = legacyPath;
     this.runtime = null;
@@ -444,8 +450,25 @@ export class IndexedDbBM25Index {
     return (
       this.loaded &&
       this.workerFailure === null &&
-      (this.workerRuntime ? this.workerReady : (this.runtime?.isReady() ?? false))
+      (this.workerRuntime
+        ? this.workerReady && !this.workerRuntime.isClosed
+        : (this.runtime?.isReady() ?? false))
     );
+  }
+
+  async recoverClosedWorker(): Promise<void> {
+    await this.workerQueue;
+    if (!this.workerRuntime?.isClosed) return;
+    this.recovery ??= this.workerQueue
+      .then(async () => {
+        // 기록 대기 중인 변경을 먼저 저장하고 같은 코퍼스에서 작업자만 복원한다.
+        await this.persist();
+        await this.load();
+      })
+      .finally(() => {
+        this.recovery = null;
+      });
+    await this.recovery;
   }
 
   get isTokenizerCurrent(): boolean {

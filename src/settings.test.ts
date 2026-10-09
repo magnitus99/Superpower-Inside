@@ -1,3 +1,5 @@
+import { connectTestChatGPT } from './test/chatgpt';
+import { chatGPTOAuth } from './llm/chatgpt-oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const modalPromptMocks = vi.hoisted(() => ({
@@ -25,10 +27,6 @@ import {
   buildEmbeddingModelOptions,
   resolveProviderReadiness,
   selectInitialEmbeddingModel,
-  buildGraphRagActionGroups,
-  getGraphRagIndexingResultNotice,
-  getGraphRagLiveStatusPresentation,
-  getGraphRagControlState,
   getRagIndexingControlState,
   getChatFolderExcludeDescription,
   normalizeRagPerformanceTuningMode,
@@ -51,11 +49,134 @@ import {
   normalizeAgentDiagnosticsSettings,
   normalizeChatSaveFolder,
   parseProviderModelRef,
+  resetProviderProfileVerification,
+  resolveProviderProfileTone,
+  resolveProviderProfileState,
+  getProviderStrategyLabels,
+  resolveUsableProviderModelRef,
   SuperpowerInsideSettingTab,
   upsertProviderProfileModel,
 } from './settings';
 import { CONTEXT7_MCP_SERVER_NAME, shouldShowPluginAwareContext7Warning } from './mcp/context7';
 import { setLanguage, t } from './i18n';
+
+describe('프로바이더 모델 제거', () => {
+  const setup = () => {
+    const profile = {
+      id: 'sample',
+      name: 'Sample',
+      strategy: 'openAI' as const,
+      enabled: true,
+      apiKey: '',
+      models: [
+        {
+          id: 'chat-sample',
+          kind: 'general' as const,
+          verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+        },
+        {
+          id: 'embedding-sample',
+          kind: 'embedding' as const,
+          verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+        },
+      ],
+    };
+    const plugin = {
+      settings: { ...structuredClone(DEFAULT_SETTINGS), providerProfiles: [profile] },
+      saveSettings: vi.fn().mockResolvedValue({ success: true }),
+      refreshBus: { emit: vi.fn() },
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const state = tab as unknown as {
+      removeProviderProfileModel(
+        target: typeof profile,
+        modelId: string,
+        button: HTMLButtonElement,
+      ): Promise<void>;
+      refreshProvidersTab(profileId: string): void;
+    };
+    const refresh = vi.spyOn(state, 'refreshProvidersTab').mockImplementation(() => {});
+    const button = { disabled: false } as HTMLButtonElement;
+    modalPromptMocks.confirmWithModal.mockResolvedValue(true);
+    return { profile, plugin, state, refresh, button };
+  };
+
+  it.each(['chat-sample', 'embedding-sample'])(
+    '확인 후 %s만 제거하고 저장·모델 목록을 갱신한다',
+    async (modelId) => {
+      const { profile, plugin, state, refresh, button } = setup();
+      await state.removeProviderProfileModel(profile, modelId, button);
+      expect(profile.models.map((model) => model.id)).toEqual(
+        modelId === 'chat-sample' ? ['embedding-sample'] : ['chat-sample'],
+      );
+      expect(plugin.saveSettings).toHaveBeenCalledWith({ reinitRag: true, reinitMcp: false });
+      expect(plugin.refreshBus.emit).toHaveBeenCalledWith('models', { status: 'success' });
+      expect(refresh).toHaveBeenCalledWith(profile.id);
+      expect(button.disabled).toBe(false);
+    },
+  );
+
+  it('확인을 취소하면 모델과 저장 상태를 보존한다', async () => {
+    const { profile, plugin, state, button } = setup();
+    const previousModels = profile.models;
+    modalPromptMocks.confirmWithModal.mockResolvedValueOnce(false);
+    await state.removeProviderProfileModel(profile, 'chat-sample', button);
+    expect(profile.models).toBe(previousModels);
+    expect(plugin.saveSettings).not.toHaveBeenCalled();
+    expect(plugin.refreshBus.emit).not.toHaveBeenCalled();
+  });
+
+  it.each(['result', 'throw'])(
+    '저장 실패(%s) 시 모델을 복원하고 성공 갱신을 하지 않는다',
+    async (failure) => {
+      const { profile, plugin, state, button } = setup();
+      const previousModels = profile.models;
+      if (failure === 'result') plugin.saveSettings.mockResolvedValueOnce({ success: false });
+      else plugin.saveSettings.mockRejectedValueOnce(new Error('save failed'));
+      await state.removeProviderProfileModel(profile, 'chat-sample', button);
+      expect(profile.models).toBe(previousModels);
+      expect(plugin.refreshBus.emit).not.toHaveBeenCalled();
+      expect(button.disabled).toBe(false);
+    },
+  );
+});
+
+it('모델 한도는 설정 마이그레이션과 검증 갱신에서 보존한다', () => {
+  const profile = {
+    id: 'limits',
+    name: 'Limits',
+    strategy: 'openRouter' as const,
+    enabled: true,
+    apiKey: '',
+    models: [
+      {
+        id: 'selected',
+        kind: 'general' as const,
+        contextLength: 128000,
+        maxInputTokens: 120000,
+        maxOutputTokens: 4096,
+        verification: { chatStatus: 'success' as const, embeddingStatus: 'unknown' as const },
+      },
+    ],
+  };
+  const settings = migrateLegacyProviderProfiles({
+    ...structuredClone(DEFAULT_SETTINGS),
+    providerProfiles: [profile],
+  });
+  const model = settings.providerProfiles.find((item) => item.id === 'limits')!.models[0];
+  expect(model).toMatchObject({
+    contextLength: 128000,
+    maxInputTokens: 120000,
+    maxOutputTokens: 4096,
+  });
+  expect(
+    upsertProviderProfileModel([model], {
+      id: model.id,
+      kind: 'general',
+      verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+    })[0].contextLength,
+  ).toBe(128000);
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -65,6 +186,79 @@ afterEach(() => {
 });
 
 describe('RAG 설정 표시 헬퍼', () => {
+  it('모델 옵션은 custom provider 내부 id 대신 사용자가 정한 이름을 표시한다', () => {
+    const options = buildChatModelOptions(
+      {
+        ...DEFAULT_SETTINGS,
+        customOpenAIProviders: [
+          {
+            id: 'custom-1',
+            name: 'Onyx Provider',
+            apiKey: 'key',
+            baseUrl: 'https://example.com/v1',
+            models: ['auto'],
+            enabled: true,
+            useRequestUrl: true,
+          },
+        ],
+      },
+      { currentModel: 'customOpenAI:custom-1:auto', includeEmpty: true },
+    );
+
+    expect(options).toContainEqual({
+      value: 'customOpenAI:custom-1:auto',
+      label: 'Onyx Provider / auto',
+    });
+    expect(options.map((option) => option.label).join('\n')).not.toContain('custom-1');
+  });
+
+  it('ChatGPT OAuth는 기기 로그인으로 준비 상태를 판정하고 기존 설정 값을 보존한다', () => {
+    connectTestChatGPT('subscription');
+    const settings = migrateLegacyProviderProfiles({
+      ...structuredClone(DEFAULT_SETTINGS),
+      providerProfiles: [
+        {
+          id: 'subscription',
+          name: 'My ChatGPT',
+          strategy: 'openAIChatGPT',
+          enabled: true,
+          apiKey: 'preserved-api-key',
+          relayApiKey: 'relay-key',
+          baseUrl: 'http://127.0.0.1:8317/v1',
+          models: [
+            {
+              id: 'selected-model',
+              kind: 'general',
+              verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+            },
+          ],
+        },
+      ],
+    });
+    const profile = settings.providerProfiles.find((item) => item.id === 'subscription');
+    expect(profile).toMatchObject({
+      strategy: 'openAIChatGPT',
+      apiKey: 'preserved-api-key',
+      relayApiKey: 'relay-key',
+    });
+    if (!profile) throw new Error('프로필이 없습니다');
+    expect(resolveProviderProfileState(profile)).toMatchObject({
+      tone: 'ready',
+      chatUsable: true,
+      embeddingSupported: false,
+    });
+    profile.apiKey = '';
+    profile.relayApiKey = '';
+    expect(resolveProviderProfileTone(profile)).toBe('ready');
+    profile.baseUrl = '';
+    expect(resolveProviderProfileTone(profile)).toBe('ready');
+    chatGPTOAuth.disconnect(profile.id);
+    expect(resolveProviderProfileTone(profile)).toBe('needs-key');
+    expect(getProviderStrategyLabels().openai).toBe('OpenAI API');
+    expect(getProviderStrategyLabels().openAIChatGPT).toContain('OAuth');
+    setLanguage('en');
+    expect(getProviderStrategyLabels().openAIChatGPT).toBe('OpenAI ChatGPT (OAuth)');
+  });
   it('provider profile model refs preserve provider id and colon-containing model ids', () => {
     const value = buildProviderModelRef('local-ollama', 'qwen3:8b-q8_0');
 
@@ -148,6 +342,244 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toEqual(['profile:local:qwen3-embed']);
   });
 
+  it('프로바이더 프로필 상태는 설정 완료와 연결 확인을 구분한다', () => {
+    const baseProfile = {
+      id: 'custom',
+      name: 'Custom',
+      strategy: 'openAICompatible' as const,
+      apiKey: '',
+      baseUrl: 'https://example.com/v1',
+      enabled: true,
+      models: [
+        {
+          id: 'auto',
+          kind: 'general' as const,
+          verification: {
+            chatStatus: 'unknown' as const,
+            embeddingStatus: 'unknown' as const,
+          },
+        },
+      ],
+    };
+
+    expect(resolveProviderProfileTone(baseProfile)).toBe('configured');
+    expect(resolveProviderProfileTone({ ...baseProfile, baseUrl: '' })).toBe('needs-url');
+    expect(
+      resolveProviderProfileTone({
+        ...baseProfile,
+        models: [
+          {
+            ...baseProfile.models[0],
+            verification: { chatStatus: 'failed', embeddingStatus: 'unknown' },
+          },
+        ],
+      }),
+    ).toBe('failed');
+    expect(
+      resolveProviderProfileTone({
+        ...baseProfile,
+        models: [
+          {
+            ...baseProfile.models[0],
+            verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+          },
+        ],
+      }),
+    ).toBe('ready');
+  });
+
+  it('지원하지 않는 strategy의 embedding-only 모델은 준비된 연결로 집계하지 않는다', () => {
+    const settings = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      providerProfiles: [
+        {
+          id: 'claude-embedding',
+          name: 'Claude embedding',
+          strategy: 'claude' as const,
+          apiKey: 'test-key',
+          enabled: true,
+          models: [
+            {
+              id: 'unsupported-embed',
+              kind: 'embedding' as const,
+              verification: {
+                chatStatus: 'unknown' as const,
+                embeddingStatus: 'success' as const,
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(resolveProviderProfileTone(settings.providerProfiles[0])).toBe('needs-models');
+    expect(buildEmbeddingProfileModelOptions(settings, { currentModel: '' })).toEqual([]);
+  });
+
+  it('프로바이더 연결 정보가 바뀌면 저장된 모델 검증 결과를 초기화한다', () => {
+    const profile = {
+      id: 'custom',
+      name: 'Custom',
+      strategy: 'openAICompatible' as const,
+      apiKey: 'old-key',
+      baseUrl: 'https://old.example.com/v1',
+      enabled: true,
+      models: [
+        {
+          id: 'auto',
+          kind: 'general' as const,
+          verification: {
+            chatStatus: 'success' as const,
+            embeddingStatus: 'failed' as const,
+            lastCheckedAt: 123,
+            lastError: 'old failure',
+          },
+        },
+      ],
+    };
+
+    resetProviderProfileVerification(profile);
+
+    expect(profile.models[0]?.verification).toEqual({
+      chatStatus: 'unknown',
+      embeddingStatus: 'unknown',
+    });
+  });
+
+  it('필수 연결 정보가 없는 프로필은 채팅 모델 선택지에서 제외한다', () => {
+    const settings = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      providerProfiles: [
+        {
+          id: 'missing-key',
+          name: 'Missing key',
+          strategy: 'openRouter' as const,
+          apiKey: '',
+          enabled: true,
+          models: [
+            {
+              id: 'remote',
+              kind: 'general' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+        {
+          id: 'missing-url',
+          name: 'Missing URL',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: '',
+          enabled: true,
+          models: [
+            {
+              id: 'auto',
+              kind: 'general' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+        {
+          id: 'usable',
+          name: 'Usable',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: 'https://example.com/v1',
+          enabled: true,
+          models: [
+            {
+              id: 'auto',
+              kind: 'general' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(buildChatModelOptions(settings, { currentModel: '' })).toEqual([
+      { value: 'profile:usable:auto', label: 'Usable / auto' },
+    ]);
+  });
+
+  it('RAG 실행용 임베딩 모델도 연결 정보, 검증 실패, strategy 지원을 함께 점검한다', () => {
+    const settings = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      providerProfiles: [
+        {
+          id: 'missing-url',
+          name: 'Missing URL',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: '',
+          enabled: true,
+          models: [
+            {
+              id: 'embed',
+              kind: 'embedding' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+        {
+          id: 'failed',
+          name: 'Failed',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: 'https://failed.example.com/v1',
+          enabled: true,
+          models: [
+            {
+              id: 'embed',
+              kind: 'embedding' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'failed' as const },
+            },
+          ],
+        },
+        {
+          id: 'unsupported',
+          name: 'Unsupported',
+          strategy: 'claude' as const,
+          apiKey: 'test-key',
+          enabled: true,
+          models: [
+            {
+              id: 'embed',
+              kind: 'embedding' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'success' as const },
+            },
+          ],
+        },
+        {
+          id: 'usable',
+          name: 'Usable',
+          strategy: 'openAICompatible' as const,
+          apiKey: '',
+          baseUrl: 'https://usable.example.com/v1',
+          enabled: true,
+          models: [
+            {
+              id: 'embed',
+              kind: 'embedding' as const,
+              verification: { chatStatus: 'unknown' as const, embeddingStatus: 'unknown' as const },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(
+      resolveUsableProviderModelRef(settings, 'profile:missing-url:embed', 'embedding'),
+    ).toBeNull();
+    expect(resolveUsableProviderModelRef(settings, 'profile:failed:embed', 'embedding')).toBeNull();
+    expect(
+      resolveUsableProviderModelRef(settings, 'profile:unsupported:embed', 'embedding'),
+    ).toBeNull();
+    expect(
+      resolveUsableProviderModelRef(settings, 'profile:usable:embed', 'embedding'),
+    ).toMatchObject({ modelId: 'embed', profile: { id: 'usable' } });
+  });
+
   it('untouched default RAG settings create the built-in Ternlight embedding profile', () => {
     const migrated = migrateLegacyProviderProfiles({
       ...DEFAULT_SETTINGS,
@@ -169,6 +601,60 @@ describe('RAG 설정 표시 헬퍼', () => {
       verification: { embeddingStatus: 'success' },
     });
     expect(migrated.rag.embeddingModelRef).toBe('profile:ternlight:ternlight-base');
+  });
+
+  it('기존 Ternlight 프로필의 채팅 모델은 마이그레이션에서 제거한다', () => {
+    const migrated = migrateLegacyProviderProfiles({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [
+        {
+          id: 'legacy-ternlight',
+          name: 'Ternlight',
+          strategy: 'ternlight',
+          apiKey: '',
+          enabled: true,
+          models: [
+            {
+              id: 'legacy-chat-model',
+              kind: 'general',
+              verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(
+      migrated.providerProfiles.find((profile) => profile.strategy === 'ternlight')?.models,
+    ).toEqual([
+      expect.objectContaining({ id: 'ternlight-base', kind: 'embedding' }),
+      expect.objectContaining({ id: 'embeddinggemma-300m', kind: 'embedding' }),
+    ]);
+    expect(buildChatModelOptions(migrated, { currentModel: '' })).toEqual([]);
+  });
+
+  it('추가 기본 모델의 선택과 검증 기록을 마이그레이션 후에도 유지한다', () => {
+    const initial = migrateLegacyProviderProfiles({ ...DEFAULT_SETTINGS, providerProfiles: [] });
+    initial.rag = {
+      ...initial.rag,
+      embeddingModel: 'embeddinggemma-300m',
+      embeddingModelRef: 'profile:ternlight:embeddinggemma-300m',
+    };
+    const gemma = initial.providerProfiles
+      .find((profile) => profile.strategy === 'ternlight')
+      ?.models.find((model) => model.id === 'embeddinggemma-300m');
+    if (!gemma) throw new Error('모델이 없습니다.');
+    gemma.verification = { chatStatus: 'unknown', embeddingStatus: 'failed', lastError: 'offline' };
+    const migrated = migrateLegacyProviderProfiles(initial);
+    expect(migrated.rag.embeddingModelRef).toBe('profile:ternlight:embeddinggemma-300m');
+    expect(
+      migrated.providerProfiles.find((profile) => profile.strategy === 'ternlight')?.models[1]
+        .verification,
+    ).toEqual(gemma.verification);
+    expect(resolveRagPerformanceSettings('ternlight', 'embeddinggemma-300m')).toMatchObject({
+      enabled: true,
+      maxEmbeddingBatchSize: 4,
+    });
   });
 
   it('저장된 자동 프로바이더 이름은 현재 언어로 표시하고 사용자 이름은 보존한다', () => {
@@ -248,6 +734,7 @@ describe('RAG 설정 표시 헬퍼', () => {
             id: 'ternlight-base',
             kind: 'embedding',
           }),
+          expect.objectContaining({ id: 'embeddinggemma-300m', kind: 'embedding' }),
         ],
       }),
     );
@@ -292,14 +779,54 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(migrated.rag.embeddingModelRef).toBe('profile:openai:text-embedding-3-small');
   });
 
+  it('built-in과 custom provider ID가 충돌해도 custom 모델을 올바른 프로필로 마이그레이션한다', () => {
+    const migrated = migrateLegacyProviderProfiles({
+      ...structuredClone(DEFAULT_SETTINGS),
+      openai: {
+        apiKey: 'built-in-key',
+        baseUrl: 'https://api.openai.com',
+        enabled: true,
+        models: ['shared-model'],
+      },
+      customOpenAIProviders: [
+        {
+          id: 'openai',
+          name: 'Private Gateway',
+          apiKey: '',
+          baseUrl: 'https://private.example.com/v1',
+          enabled: true,
+          models: ['shared-model'],
+        },
+      ],
+      chat: {
+        ...structuredClone(DEFAULT_SETTINGS.chat),
+        defaultModel: 'customOpenAI:openai:shared-model',
+      },
+    });
+
+    expect(migrated.chat.defaultModel).toBe('profile:custom-openai:shared-model');
+    expect(
+      migrated.providerProfiles.find((profile) => profile.id === 'custom-openai'),
+    ).toMatchObject({
+      strategy: 'openAICompatible',
+      baseUrl: 'https://private.example.com/v1',
+    });
+  });
+
   it('설정 탭 라벨은 현재 언어로 매번 다시 계산한다', () => {
     setLanguage('ko');
-    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('프로바이더');
+    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('AI 연결');
 
     setLanguage('en');
-    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('Providers');
+    expect(buildSettingsTabs().find((tab) => tab.id === 'providers')?.label).toBe('AI connections');
     expect(buildSettingsTabs().find((tab) => tab.id === 'chat')?.label).toBe('Chat');
-    expect(buildSettingsTabs().find((tab) => tab.id === 'advanced')?.label).toBe('Advanced');
+    expect(buildSettingsTabs().map((tab) => tab.id)).toEqual([
+      'general',
+      'providers',
+      'rag',
+      'chat',
+      'mcp',
+    ]);
   });
 
   it('채팅 저장 폴더 제외 설명에 현재 폴더를 표시한다', () => {
@@ -427,8 +954,12 @@ describe('RAG 설정 표시 헬퍼', () => {
     const models = buildEmbeddingModels();
     const providerOptions = buildEmbeddingProviderOptions([]);
 
-    expect(providerOptions).toContainEqual({ value: 'ternlight', label: 'Ternlight (Local)' });
-    expect(models.ternlight.map((model) => model.id)).toEqual(['ternlight-base']);
+    expect(providerOptions).toContainEqual({ value: 'ternlight', label: '기본 로컬 모델' });
+    expect(models.ternlight.map((model) => model.id)).toEqual([
+      'ternlight-base',
+      'embeddinggemma-300m',
+    ]);
+    expect(models.ternlight[1].dimensions).toBe(768);
     expect(models.ternlight[0]).toMatchObject({
       name: '@ternlight/base',
       dimensions: 384,
@@ -464,32 +995,6 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(options.some((option) => option.value === 'customOpenAI:disabled')).toBe(false);
   });
 
-  it('GraphRAG 모델 옵션은 custom provider 내부 id 대신 사용자가 정한 이름을 표시한다', () => {
-    const options = buildChatModelOptions(
-      {
-        ...DEFAULT_SETTINGS,
-        customOpenAIProviders: [
-          {
-            id: 'custom-1',
-            name: 'Onyx Graph Provider',
-            apiKey: 'key',
-            baseUrl: 'https://example.com/v1',
-            models: ['auto'],
-            enabled: true,
-            useRequestUrl: true,
-          },
-        ],
-      },
-      { currentModel: 'customOpenAI:custom-1:auto', includeEmpty: true },
-    );
-
-    expect(options).toContainEqual({
-      value: 'customOpenAI:custom-1:auto',
-      label: 'Onyx Graph Provider / auto',
-    });
-    expect(options.map((option) => option.label).join('\n')).not.toContain('custom-1');
-  });
-
   it('채팅 저장 폴더 값은 레거시 이름이어도 저장된 값을 그대로 보존한다', () => {
     expect(normalizeChatSaveFolder('SuperObsidianByAI')).toBe('SuperObsidianByAI');
     expect(normalizeChatSaveFolder('SuperObsidianByAIChats')).toBe('SuperObsidianByAIChats');
@@ -512,11 +1017,12 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(DEFAULT_SETTINGS.rag.indexingYieldMs).toBe(25);
     expect(DEFAULT_SETTINGS.rag.slowEventLoopThresholdMs).toBe(150);
     expect(DEFAULT_SETTINGS.rag.slowBatchThresholdMs).toBe(3000);
-    expect(DEFAULT_SETTINGS.rag.graphRagMaxConcurrentRequests).toBe(1);
   });
 
-  it('자동 페이서는 정상 상태에서 고정 대기 없이 프로바이더별 최대 배치만 정한다', () => {
-    expect(resolveRagPerformanceSettings(DEFAULT_SETTINGS.rag)).toEqual({
+  it('내장 Ternlight는 페이싱 없이, 원격 프로바이더는 배치 제한과 함께 인덱싱한다', () => {
+    expect(resolveRagPerformanceSettings('ternlight')).toEqual({ enabled: false });
+
+    expect(resolveRagPerformanceSettings('openai')).toEqual({
       enabled: true,
       maxEmbeddingBatchSize: 32,
       indexingYieldMs: 0,
@@ -524,34 +1030,9 @@ describe('RAG 설정 표시 헬퍼', () => {
       slowBatchThresholdMs: 1500,
     });
 
-    expect(
-      resolveRagPerformanceSettings({
-        ...DEFAULT_SETTINGS.rag,
-        embeddingProvider: 'ollama',
-      }),
-    ).toEqual({
+    expect(resolveRagPerformanceSettings('ollama')).toEqual({
       enabled: true,
       maxEmbeddingBatchSize: 1,
-      indexingYieldMs: 0,
-      slowEventLoopThresholdMs: 24,
-      slowBatchThresholdMs: 1500,
-    });
-  });
-
-  it('레거시 수동 성능 값은 더 이상 런타임 페이싱을 바꾸지 않는다', () => {
-    expect(
-      resolveRagPerformanceSettings({
-        ...DEFAULT_SETTINGS.rag,
-        performanceTuningMode: 'custom',
-        performanceGuardEnabled: false,
-        maxEmbeddingBatchSize: 7,
-        indexingYieldMs: 80,
-        slowEventLoopThresholdMs: 220,
-        slowBatchThresholdMs: 4200,
-      }),
-    ).toEqual({
-      enabled: true,
-      maxEmbeddingBatchSize: 32,
       indexingYieldMs: 0,
       slowEventLoopThresholdMs: 24,
       slowBatchThresholdMs: 1500,
@@ -672,7 +1153,6 @@ describe('RAG 설정 표시 헬퍼', () => {
       vectorStore: null as typeof vectorStore | null,
       getRagRuntimeState: vi.fn(() => ({
         ragStatus: plugin.eventDrivenRagStats,
-        graphRagStatus: null,
         vectorStore: plugin.vectorStore,
         embeddingProvider: null,
         ragIndexingScheduler: null,
@@ -699,290 +1179,6 @@ describe('RAG 설정 표시 헬퍼', () => {
 
     expect(plugin.ensureRagRuntimeInitialized).toHaveBeenCalledOnce();
     expect(status?.totalDocuments).toBe(1);
-  });
-
-  it('GraphRAG 작업 버튼은 실행 범위와 차이를 라벨/설명에 드러낸다', () => {
-    const groups = buildGraphRagActionGroups({
-      controls: {
-        start: { disabled: false, reason: null },
-        cancel: { disabled: true, reason: '실행 중인 GraphRAG 인덱싱이 없습니다.' },
-        resume: { disabled: false, reason: null },
-      },
-      syncStale: { disabled: false, reason: null },
-      buildCommunities: { disabled: false, reason: null },
-      resetGraphRag: { disabled: false, reason: null },
-      openExplorer: { disabled: false, reason: null },
-      totalCandidateFiles: 50,
-      maxFilesPerRun: 20,
-      failedFileCount: 3,
-      staleFileCount: 7,
-    });
-
-    expect(groups.map((group) => group.label)).toEqual(['추출 실행', '그래프 정리', '결과 확인']);
-    expect(groups.flatMap((group) => group.actions.map((action) => action.label))).toEqual([
-      '전체 추출 실행',
-      '실행 중지',
-      '실패만 재시도 (3)',
-      '변경분 동기화 (7)',
-      '커뮤니티 다시 빌드',
-      'GraphRAG 데이터 초기화',
-      '탐색기 열기',
-    ]);
-    expect(groups[0]?.actions[0]?.description).toContain(
-      '대상 .md 노트 50개 중 최대 20개',
-    );
-    expect(groups[0]?.actions[2]?.description).toContain('성공한 파일은 건드리지 않습니다');
-    expect(groups[1]?.actions[1]?.description).toContain(
-      '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
-    );
-    expect(groups[1]?.actions[0]?.description).toContain('파일 재추출은 하지 않습니다');
-  });
-
-  it('GraphRAG live 상태는 현재 phase와 파일 진행률을 작은 패널 문구로 바꾼다', () => {
-    const status = getGraphRagLiveStatusPresentation({
-      isRunning: true,
-      phase: 'api-response-normalizing',
-      currentFile: 'folder/note.md',
-      processedFiles: 2,
-      skippedFiles: 1,
-      failedFiles: 1,
-      selectedFiles: 8,
-      processedChunks: 0,
-      skippedChunks: 0,
-      failedChunks: 0,
-      storedEvidence: 0,
-      storedEntities: 0,
-      storedRelations: 0,
-      storedClaims: 0,
-      storedRejectedFacts: 0,
-      cachedChunks: 0,
-    });
-
-    expect(status.active).toBe(true);
-    expect(status.title).toBe('지금 GraphRAG가 인덱싱 중입니다');
-    expect(status.phaseLabel).toBe('API 응답 정리 중');
-    expect(status.detail).toBe('4/8 파일 처리 중 (note.md) — 50%');
-    expect(status.chunkDetail).toBeNull();
-    expect(status.storageDetail).toBeNull();
-  });
-
-  it('GraphRAG live 상태는 청크 처리량과 저장 항목 수를 함께 보여준다', () => {
-    const status = getGraphRagLiveStatusPresentation({
-      isRunning: true,
-      phase: 'storing-results',
-      currentFile: 'folder/note.md',
-      processedFiles: 57,
-      skippedFiles: 0,
-      failedFiles: 2,
-      selectedFiles: 1406,
-      processedChunks: 12,
-      skippedChunks: 3,
-      failedChunks: 2,
-      storedEvidence: 12,
-      storedEntities: 38,
-      storedRelations: 21,
-      storedClaims: 9,
-      storedRejectedFacts: 2,
-      cachedChunks: 10,
-    });
-
-    expect(status.detail).toBe('59/1406 파일 처리 중 (note.md) — 4%');
-    expect(status.chunkDetail).toBe('청크 12개 저장 완료, 2개 실패');
-    expect(status.storageDetail).toBe('저장됨: 증거 12, 엔티티 38, 관계 21, 클레임 9, 거부 2');
-  });
-
-  it('GraphRAG live 상태는 실행 중이 아니면 비활성 패널 상태를 반환한다', () => {
-    expect(
-      getGraphRagLiveStatusPresentation({
-        isRunning: false,
-        phase: 'completed',
-        currentFile: null,
-        processedFiles: 5,
-        skippedFiles: 0,
-        failedFiles: 0,
-        selectedFiles: 5,
-        processedChunks: 3,
-        skippedChunks: 0,
-        failedChunks: 0,
-        storedEvidence: 3,
-        storedEntities: 2,
-        storedRelations: 1,
-        storedClaims: 1,
-        storedRejectedFacts: 0,
-        cachedChunks: 3,
-      }),
-    ).toEqual({
-      active: false,
-      title: 'GraphRAG 인덱싱 대기 중',
-      phaseLabel: '추출 완료',
-      detail: '실행 중인 GraphRAG 인덱싱이 없습니다.',
-      chunkDetail: null,
-      storageDetail: null,
-    });
-  });
-
-  it('변경분 동기화가 처리할 파일 없이 끝나면 완료 대신 이유를 안내한다', () => {
-    const notice = getGraphRagIndexingResultNotice(
-      {
-        totalCandidateFiles: 0,
-        selectedFiles: 0,
-        processedFiles: 0,
-        skippedFiles: 0,
-        failedFiles: 0,
-        processedChunks: 0,
-        skippedChunks: 0,
-        failedChunks: 0,
-        cancelled: false,
-        startedAt: 1,
-        finishedAt: 2,
-        runId: 1,
-      },
-      'syncStale',
-    );
-
-    expect(notice).toBe(
-      'GraphRAG 변경분 동기화: 다시 추출할 파일이 없습니다. 모든 파일이 최신 상태이거나 현재 RAG 인덱스에 남아 있는 변경 후보가 없습니다.',
-    );
-  });
-
-  it('resetGraphRag 액션은 확인창 승인 시 plugin.resetGraphRagData를 호출하고 상태 갱신합니다', async () => {
-    const refreshSpy = vi.fn();
-    const plugin = {
-      app: {} as never,
-      settings: {
-        ...DEFAULT_SETTINGS,
-        rag: {
-          ...DEFAULT_SETTINGS.rag,
-          graphRagEnabled: true,
-          graphRagModel: 'openai:gpt-4.1-mini',
-          graphRagMaxFilesPerRun: 10,
-        },
-      },
-      graphRagStatus: null,
-      knowledgeGraphStore: null,
-      vectorStore: null,
-      saveSettings: vi.fn(),
-      saveSettingsLight: vi.fn(),
-      reconnectMCP: vi.fn(),
-      setupAutoUpdate: vi.fn(),
-      isGraphRagIndexing: vi.fn(() => false),
-      cancelGraphRagIndexing: vi.fn(),
-      runGraphRagIndexing: vi.fn(),
-      resumeGraphRagIndexing: vi.fn(),
-      syncStaleGraphRag: vi.fn(),
-      buildGraphRagCommunities: vi.fn(),
-      resetGraphRagData: vi.fn(() => Promise.resolve()),
-      hasGraphRagRunner: vi.fn(() => true),
-      openGraphRagView: vi.fn(),
-      eventDrivenRagStats: null,
-      getRagRuntimeState: vi.fn(() => ({
-        ragStatus: null,
-        graphRagStatus: plugin.graphRagStatus,
-        vectorStore: plugin.vectorStore,
-        embeddingProvider: null,
-        ragIndexingScheduler: null,
-        ragIndexingStatus: null,
-        hasIndexer: false,
-        nextAutoUpdateAt: null,
-        lastAutoUpdateSkippedReason: null,
-        lastAutoUpdateResult: null,
-        lastInitError: null,
-        lastInitSkippedReason: null,
-      })),
-      initRAG: vi.fn(),
-      isRagIndexing: vi.fn(),
-      cancelRagIndexing: vi.fn(),
-      runRagIndexing: vi.fn(),
-      resumeRagIndexing: vi.fn(),
-      getRagPerformanceGuardState: vi.fn(),
-      createIndexedDbName: vi.fn(),
-      mcpRegistry: null,
-      refreshBus: {
-        on: vi.fn(() => refreshSpy),
-        emit: vi.fn(),
-      },
-      logger: {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        notice: vi.fn(),
-      },
-    };
-    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
-    const spy = vi
-      .spyOn(tab as unknown as { updateGraphRagStats: () => void }, 'updateGraphRagStats')
-      .mockImplementation(() => {
-        return;
-      });
-    const action = {
-      id: 'resetGraphRag' as const,
-      groupId: 'maintain',
-      groupLabel: '그래프 정리',
-      label: 'GraphRAG 데이터 초기화',
-      description:
-        '증거, 엔티티, 관계, 클레임, 커뮤니티, 캐시를 즉시 삭제하고 진행 상태를 초기화합니다.',
-      iconName: 'trash-2',
-      state: { disabled: false, reason: null },
-      tone: 'danger' as const,
-    };
-    await (
-      tab as unknown as {
-        handleGraphRagAction: (
-          action: {
-            id: 'resetGraphRag';
-          },
-          cost: { costLabel: string },
-        ) => Promise<void>;
-      }
-    ).handleGraphRagAction(action, { costLabel: 'local' });
-
-    expect(modalPromptMocks.confirmWithModal).toHaveBeenCalledOnce();
-    expect(plugin.resetGraphRagData).toHaveBeenCalledOnce();
-    expect(spy).toHaveBeenCalledOnce();
-    spy.mockRestore();
-  });
-
-  it('GraphRAG 추출 모델이 없으면 provider 상태보다 모델 선택 안내를 먼저 표시한다', () => {
-    const state = getGraphRagControlState({
-      enabled: true,
-      hasProvider: false,
-      hasModel: false,
-      isRunning: false,
-      totalCandidateFiles: 1,
-      failedFileCount: 0,
-    });
-
-    expect(state.start.reason).toBe('GraphRAG 추출 모델을 선택하세요.');
-  });
-
-  it('GraphRAG 모델은 있지만 runner가 없으면 provider와 모델 목록 설정을 안내한다', () => {
-    const state = getGraphRagControlState({
-      enabled: true,
-      hasProvider: false,
-      hasModel: true,
-      isRunning: false,
-      totalCandidateFiles: 1,
-      failedFileCount: 0,
-    });
-
-    expect(state.start.reason).toBe(
-      '선택한 GraphRAG 모델의 provider를 활성화하고 모델 목록에 추가하세요.',
-    );
-  });
-
-  it('GraphRAG가 켜져 있고 대상 파일만 없으면 비활성 대신 대상 없음 사유를 표시한다', () => {
-    const state = getGraphRagControlState({
-      enabled: true,
-      hasProvider: true,
-      hasModel: true,
-      isRunning: false,
-      totalCandidateFiles: 0,
-      failedFileCount: 0,
-    });
-
-    expect(state.start.reason).toBe(
-      '공통 파일 범위에 GraphRAG가 처리할 .md 노트가 없습니다.',
-    );
   });
 
   it('일반 설정 자동 저장은 RAG 런타임을 재초기화하지 않는다', async () => {
@@ -1049,6 +1245,49 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(DEFAULT_SETTINGS.autoSaveDebounceMs).toBe(1000);
   });
 
+  it('실패 결과를 저장 성공으로 처리하지 않고 재시도할 요구를 보존한다', async () => {
+    const saveSettings = vi.fn().mockResolvedValue({ success: false });
+    const tab = new SuperpowerInsideSettingTab(
+      {} as never,
+      {
+        settings: { ...DEFAULT_SETTINGS, autoSaveEnabled: false },
+        saveSettings,
+      } as never,
+    );
+    tab.debouncedSave({ reinitRag: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const state = tab as unknown as {
+      saveState: string;
+      pendingSaveOptions: { reinitRag: boolean };
+      saveSettingsWithFeedback(options: { reinitRag: boolean; reinitMcp: boolean }): Promise<void>;
+    };
+    expect(state.saveState).toBe('error');
+    expect(state.pendingSaveOptions.reinitRag).toBe(true);
+    saveSettings.mockResolvedValue({ success: true });
+    await state.saveSettingsWithFeedback({ reinitRag: true, reinitMcp: false });
+    expect(state.saveState).toBe('saved');
+  });
+
+  it('동시에 요청한 저장은 앞선 저장이 끝난 뒤 순서대로 수행한다', async () => {
+    let finishFirst: (() => void) | undefined;
+    const first = new Promise<{ success: boolean }>((resolve) => {
+      finishFirst = () => resolve({ success: true });
+    });
+    const saveSettings = vi.fn().mockReturnValueOnce(first).mockResolvedValue({ success: true });
+    const tab = new SuperpowerInsideSettingTab(
+      {} as never,
+      { settings: { ...DEFAULT_SETTINGS, autoSaveEnabled: false }, saveSettings } as never,
+    );
+    tab.debouncedSave();
+    tab.debouncedSave({ reinitRag: true });
+    await Promise.resolve();
+    expect(saveSettings).toHaveBeenCalledTimes(1);
+    finishFirst?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saveSettings).toHaveBeenCalledTimes(2);
+    expect(saveSettings.mock.calls[1][0]).toEqual({ reinitRag: true, reinitMcp: false });
+  });
+
   it('agent diagnostics settings default to disabled and normalize legacy data', () => {
     expect(DEFAULT_SETTINGS.agentDiagnostics.enabled).toBe(false);
     expect(normalizeAgentDiagnosticsSettings(undefined)).toEqual({ enabled: false });
@@ -1106,7 +1345,14 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(buildMcpJsonEditorValue([])).toBe(JSON.stringify({ mcpServers: {} }, null, 2));
   });
 
-  it('플러그인 인식 생성이 켜졌고 Context7가 없을 때만 경고한다', () => {
+  it('플러그인 인식 생성이 켜졌고 Context7가 없거나 연결되지 않았을 때 경고한다', () => {
+    expect(
+      shouldShowPluginAwareContext7Warning({
+        pluginAwareEnabled: true,
+        servers: DEFAULT_SETTINGS.mcpServers,
+        connected: false,
+      }),
+    ).toBe(true);
     expect(
       shouldShowPluginAwareContext7Warning({
         pluginAwareEnabled: true,
@@ -1206,7 +1452,7 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex - 3/10 files, ETA about 18s (calibrated speed from completed files)',
+      'Indexing: Full reindex · current file 0/1 chunks - 3/10 files, ETA about 18s (calibrated speed from completed files)',
     );
   });
 
@@ -1269,7 +1515,7 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex - 0/4 files, calculating ETA (recent batch speed only)',
+      'Indexing: Full reindex · current file 1/1 chunks - 0/4 files, calculating ETA (recent batch speed only)',
     );
   });
 });

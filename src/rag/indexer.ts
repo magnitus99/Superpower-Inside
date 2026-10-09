@@ -7,21 +7,25 @@ import {
   isExcludedPath,
   isExcludedExt,
   isRagIndexableFile,
+  isRagFileExcluded,
 } from '../utils/vault';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import type { IndexedDbBM25Index } from './bm25';
 import { createContentHash } from './hash';
 import {
-  chunkMarkdownRust,
-  chunkPlainTextRust,
   planEmptyFileIndexRecordRust,
   planIndexPendingFilesRust,
   planRagAutomaticRecoveryBatchRust,
+  isSourceRevisionCurrentRust,
 } from './rust-core';
 import type { PerformanceGuardState } from './performance-guard';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 import { normalizeRustIndices } from '../utils/rust-index-plan';
+import { chunkSourceFile, buildSearchText } from './source-document';
+import type { VaultDocumentCorpus } from './vault-document-corpus';
+import { readSourceFileSnapshot } from './source-snapshot';
+export { chunkMarkdown, chunkPlainText, buildSearchText, type Chunk } from './source-document';
 
 export class IndexingCancelledError extends Error {
   constructor() {
@@ -41,7 +45,7 @@ export interface IndexingOptions {
   signal?: AbortSignal;
   maxEmbeddingBatchSize?: number;
   indexingYieldMs?: number;
-  getMaxEmbeddingBatchSize?: () => number;
+  getMaxEmbeddingBatchSize?: () => number | undefined;
   getIndexingYieldMs?: () => number;
   onBatchComplete?: (durationMs: number, batchSize: number) => void | Promise<void>;
   onProgress?: (progress: RagIndexingProgressSnapshot) => void;
@@ -384,10 +388,7 @@ function estimateFileChunkCount(file: TFile, ragConfig: RAGConfig): number {
 }
 
 function countPlannedChunks(file: TFile, content: string, ragConfig: RAGConfig): number {
-  const chunks =
-    file.extension.toLowerCase() === 'md'
-      ? chunkMarkdown(content, ragConfig.chunkSize, ragConfig.overlap)
-      : chunkPlainText(content, ragConfig.chunkSize, ragConfig.overlap);
+  const chunks = chunkSourceFile(file, content, ragConfig);
   return Math.max(1, chunks.length);
 }
 
@@ -493,38 +494,35 @@ function buildPendingPlanFromUpdatePaths(
   };
 }
 
-export interface Chunk {
-  text: string;
-  metadata: {
-    filePath: string;
-    heading?: string;
-    startLine: number;
-    endLine: number;
-  };
-}
-
-/** 마크다운을 헤딩/코드블록/단락을 존중하며 청킹합니다. */
-export function chunkMarkdown(content: string, maxChunkSize: number, overlapChars = 0): Chunk[] {
-  const rustChunks = chunkMarkdownRust(content, maxChunkSize, overlapChars);
-  return rustChunks ?? [];
-}
-
-/** 일반 텍스트와 코드 파일을 줄 경계를 우선해 청킹합니다. */
-export function chunkPlainText(content: string, maxChunkSize: number, overlapChars = 0): Chunk[] {
-  const rustChunks = chunkPlainTextRust(content, maxChunkSize, overlapChars);
-  return rustChunks ?? [];
-}
-
-export function buildSearchText(file: TFile, chunk: Chunk): string {
-  const hints = [`File: ${file.path}`, `Title: ${file.basename}`];
-  if (chunk.metadata.heading) {
-    hints.push(`Heading: ${chunk.metadata.heading}`);
-  }
-  return `${hints.join('\n')}\n\n${chunk.text}`;
-}
-
 /** 볼트 인덱서 */
 export class VaultIndexer {
+  private readonly failedFiles = new Map<string, { mtime: number; size: number }>();
+  private readonly fileOwners = new Map<string, symbol>();
+
+  getFailedFilePaths(): string[] {
+    return [...this.failedFiles]
+      .filter(([path, revision]) => {
+        const current = this.vault.getAbstractFileByPath(path);
+        return (
+          isCurrentVaultFile(current) &&
+          isSourceRevisionCurrentRust(
+            {
+              filePath: path,
+              sourceMtime: revision.mtime,
+              sourceSize: revision.size,
+              contentHash: 'status',
+            },
+            {
+              filePath: path,
+              sourceMtime: current.stat.mtime,
+              sourceSize: current.stat.size,
+              contentHash: 'status',
+            },
+          )
+        );
+      })
+      .map(([path]) => path);
+  }
   private vault: Vault;
   private vectorStore: VectorStore;
   private embeddingProvider: EmbeddingProvider;
@@ -540,6 +538,7 @@ export class VaultIndexer {
     chatConfig: ChatConfig,
     private bm25Index?: IndexedDbBM25Index,
     logger?: AppLogger | ScopedLogger,
+    private readonly documentCorpus?: Pick<VaultDocumentCorpus, 'refreshFile' | 'removeFile'>,
   ) {
     this.chatConfig = chatConfig;
     this.vault = vault;
@@ -658,6 +657,31 @@ export class VaultIndexer {
     progressTracker?: IndexingProgressTracker,
     fileIndex = 0,
   ): Promise<IndexingResult> {
+    const path = file.path;
+    const owner = Symbol(path);
+    const revision = { mtime: file.stat.mtime, size: file.stat.size };
+    this.fileOwners.set(path, owner);
+    try {
+      const result = await this.indexFileInternal(file, options, progressTracker, fileIndex);
+      if (this.fileOwners.get(path) === owner) this.failedFiles.delete(path);
+      return result;
+    } catch (error) {
+      if (
+        this.fileOwners.get(path) === owner &&
+        !(error instanceof IndexingCancelledError) &&
+        !(error instanceof IndexingPerformancePausedError)
+      )
+        this.failedFiles.set(path, revision);
+      throw error;
+    }
+  }
+
+  private async indexFileInternal(
+    file: TFile,
+    options: IndexingOptions,
+    progressTracker?: IndexingProgressTracker,
+    fileIndex = 0,
+  ): Promise<IndexingResult> {
     const startedAt = performance.now();
     const currentFile = this.vault.getAbstractFileByPath(file.path);
     if (!isCurrentVaultFile(currentFile)) {
@@ -671,6 +695,22 @@ export class VaultIndexer {
       );
     }
     file = currentFile;
+    if (await isRagFileExcluded(this.vault, file, this.ragConfig, this.chatConfig)) {
+      await this.removeFile(file.path);
+      if (progressTracker) {
+        progressTracker.skipped += 1;
+        completeProgressFile(progressTracker, 0, 0);
+        emitIndexingProgress(options, progressTracker, 'file-complete');
+      }
+      this.logger.debug('File indexing skipped by the current exclusion policy.', {
+        data: { path: file.path },
+      });
+      return finishIndexingResult(
+        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        startedAt,
+        options,
+      );
+    }
     const tracker = progressTracker ?? createProgressTracker([file], this.ragConfig);
     if (!progressTracker) {
       emitIndexingProgress(options, tracker, 'plan');
@@ -690,9 +730,22 @@ export class VaultIndexer {
     this.logger.debug('File indexing started.', {
       data: { path: file.path, size: file.stat.size },
     });
-    const content = await this.vault.cachedRead(file);
+    const snapshot = await readSourceFileSnapshot(this.vault, file);
+    if (!snapshot) {
+      tracker.skipped += 1;
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      emitIndexingProgress(options, tracker, 'file-complete');
+      return finishIndexingResult(
+        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        startedAt,
+        options,
+      );
+    }
+    const content = snapshot.content;
+    file = snapshot.file;
     throwIfIndexingCancelled(options.signal);
     const sourceHash = createContentHash(content);
+    await this.documentCorpus?.refreshFile(currentFile);
     if (await this.isCurrentFileIndexRecord(file, sourceHash)) {
       const skipped = finishIndexingResult(
         { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
@@ -708,10 +761,7 @@ export class VaultIndexer {
       return skipped;
     }
     const indexedAt = Date.now();
-    const chunks =
-      file.extension.toLowerCase() === 'md'
-        ? chunkMarkdown(content, this.ragConfig.chunkSize, this.ragConfig.overlap)
-        : chunkPlainText(content, this.ragConfig.chunkSize, this.ragConfig.overlap);
+    const chunks = chunkSourceFile(file, content, this.ragConfig);
     throwIfIndexingCancelled(options.signal);
     if (chunks.length === 0) {
       const emptyRecord = planEmptyFileIndexRecordRust(
@@ -764,7 +814,7 @@ export class VaultIndexer {
         const text = texts[index];
         if (!chunk || text === undefined) continue;
         this.bm25Index.addCorpusDocument({
-          id: `${file.path}::${chunk.metadata.startLine}::${index}`,
+          id: chunk.id,
           text,
           sourcePath: file.path,
           heading: chunk.metadata.heading,
@@ -783,7 +833,7 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
 
     const entries: VectorEntry[] = chunks.map((chunk, i) => ({
-      id: `${file.path}::${chunk.metadata.startLine}::${i}`,
+      id: chunk.id,
       vector: vectors[i],
       metadata: {
         filePath: file.path,
@@ -794,12 +844,52 @@ export class VaultIndexer {
         sourceMtime: file.stat.mtime,
         sourceSize: file.stat.size,
         contentHash: sourceHash,
+        chunkHash: chunk.chunkHash,
         indexedAt,
         embeddingProvider: this.ragConfig.embeddingProvider,
         embeddingModel: this.ragConfig.embeddingModel,
       },
     }));
 
+    const latestFile = this.vault.getAbstractFileByPath(file.path);
+    const currentSnapshot = isCurrentVaultFile(latestFile)
+      ? await readSourceFileSnapshot(this.vault, latestFile)
+      : null;
+    if (
+      !currentSnapshot ||
+      !isSourceRevisionCurrentRust(snapshot.revision, currentSnapshot.revision)
+    ) {
+      if (
+        isCurrentVaultFile(latestFile) &&
+        (await isRagFileExcluded(this.vault, latestFile, this.ragConfig, this.chatConfig))
+      )
+        await this.removeFile(file.path);
+      this.logger.debug('Late embedding result skipped because source revision changed.', {
+        data: { path: file.path },
+      });
+      tracker.skipped += 1;
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      emitIndexingProgress(options, tracker, 'file-complete');
+      return finishIndexingResult(
+        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        startedAt,
+        options,
+      );
+    }
+    if (
+      await isRagFileExcluded(this.vault, currentSnapshot.file, this.ragConfig, this.chatConfig)
+    ) {
+      await this.removeFile(file.path);
+      tracker.skipped += 1;
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      emitIndexingProgress(options, tracker, 'file-complete');
+      return finishIndexingResult(
+        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        startedAt,
+        options,
+      );
+    }
+    throwIfIndexingCancelled(options.signal);
     await this.vectorStore.replaceFileEntries(file.path, entries);
 
     const finished = finishIndexingResult(
@@ -865,7 +955,32 @@ export class VaultIndexer {
     return finished;
   }
 
+  private async removeOrphanedSources(
+    files: readonly TFile[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const existingSourcePaths = new Set(await this.vectorStore.getIndexedFilePaths());
+    for (const sourcePath of (await this.bm25Index?.getSourcePaths()) ?? []) {
+      existingSourcePaths.add(sourcePath);
+    }
+    throwIfIndexingCancelled(signal);
+    const currentSourcePaths = new Set(files.map((file) => file.path));
+    let bm25Changed = false;
+    await this.withIndexBatch(async () => {
+      for (const sourcePath of existingSourcePaths) {
+        if (currentSourcePaths.has(sourcePath)) continue;
+        throwIfIndexingCancelled(signal);
+        await this.vectorStore.removeByFilePath(sourcePath);
+        this.bm25Index?.removeDocumentsBySource(sourcePath);
+        bm25Changed = true;
+      }
+      if (bm25Changed) await this.bm25Index?.persist();
+    });
+    throwIfIndexingCancelled(signal);
+  }
+
   async removeFile(filePath: string): Promise<number> {
+    await this.documentCorpus?.removeFile(filePath);
     const removed = await this.vectorStore.removeByFilePath(filePath);
     if (this.bm25Index) {
       this.bm25Index.removeDocumentsBySource(filePath);
@@ -881,6 +996,7 @@ export class VaultIndexer {
     emitIndexingProgress(options, progressTracker, 'plan');
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
+    await this.removeOrphanedSources(files, options.signal);
     const status = await calculateRagStatus(
       this.vault,
       this.vectorStore,
@@ -1127,8 +1243,7 @@ export function registerModifyEvent(
   const ref = vault.on('modify', async (file) => {
     if (!isTFileLike(file)) return;
     const f = file;
-    if (!shouldConsiderRagPath(f.path, excludePaths, excludeExts)) return;
-    if (!(await isRagIndexableFile(vault, f))) {
+    if (!(await shouldIndexRagFile(vault, f, excludePaths, excludeExts))) {
       await indexer.removeByFilePath?.(f.path);
       onComplete?.(f);
       return;

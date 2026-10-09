@@ -46,6 +46,39 @@ describe('대형 볼트 vector search worker', () => {
     }
   });
 
+  it('폴더·파일 범위와 형제 경로를 구별하고 범위별 캐시를 분리한다', async () => {
+    const worker = createNodeWorker();
+    const records = [
+      { id: 'inside', filePath: 'notes/a.md', dimension: 2, vector: [1, 0] },
+      { id: 'sibling', filePath: 'notes-other/a.md', dimension: 2, vector: [1, 0] },
+      { id: 'other', filePath: 'other.md', dimension: 2, vector: [1, 0] },
+    ];
+    try {
+      for (const [index, prefix, expected] of [
+        [1, 'notes', 'inside'],
+        [2, 'other.md', 'other'],
+      ] as const) {
+        const response = waitForNodeWorkerResponse(worker, index);
+        worker.postMessage({
+          id: index,
+          operation: 'search',
+          wasmBase64: RAG_WASM_BASE64,
+          dbName: 'scoped',
+          queryVector: [1, 0],
+          topK: 5,
+          filter: { dimension: 2, filePathPrefixes: [prefix] },
+          records,
+        });
+        await expect(response).resolves.toMatchObject({
+          indexedCount: 1,
+          hits: [{ id: expected, score: 1 }],
+        });
+      }
+    } finally {
+      await worker.terminate();
+    }
+  });
+
   it('취소된 요청만 거부하고 준비 중인 worker 자체는 유지한다', async () => {
     const fixture = createFakeWorker();
     const runtime = new VectorSearchWorkerRuntime(fixture.create);

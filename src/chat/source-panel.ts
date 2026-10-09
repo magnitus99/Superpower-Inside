@@ -1,4 +1,4 @@
-import { t } from '../i18n';
+import { getLanguage, t } from '../i18n';
 import { isDomInstance } from '../utils/dom';
 import type {
   ContextAttachment,
@@ -18,7 +18,6 @@ export interface CitationCardView {
   metaText?: string;
   detail?: string;
   preview: string;
-  graphKindText?: string;
 }
 
 export interface CitationSectionView {
@@ -87,8 +86,25 @@ export function createCitationCardView(citation: SourceCitation): CitationCardVi
     metaText: metaParts.length > 0 ? metaParts.join(' / ') : undefined,
     detail: normalizeSourceDetail(citation.detail),
     preview: citation.preview,
-    graphKindText: citation.graphType ? getGraphKindText(citation.graphType) : undefined,
   };
+}
+
+/** 내부 출처 ID는 연결에만 쓰고 화면에는 실제 파일과 원문 위치를 표시합니다. */
+export function createCitationMarkerView(citation: SourceCitation): {
+  label: string;
+  ariaLabel: string;
+} {
+  const line =
+    citation.line === undefined
+      ? ''
+      : t('sourceLineMeta', {
+          line:
+            citation.endLine !== undefined && citation.endLine > citation.line
+              ? `${citation.line}–${citation.endLine}`
+              : citation.line,
+        });
+  const label = [citation.filePath, line].filter(Boolean).join(' · ');
+  return { label, ariaLabel: t('citationMarkerAria', { id: label }) };
 }
 
 export function createSourceWarningViews(
@@ -130,12 +146,49 @@ export function createContextBudgetView(snapshot: ContextBudgetSnapshot): Contex
       count: includedCount,
       itemLabel: formatItemLabel(includedCount),
     }),
-    detailText: t('contextBudgetItemsLeftOut', {
-      count: excludedCount,
-      itemLabel: formatItemLabel(excludedCount),
-    }),
+    detailText: [
+      snapshot.modelContext
+        ? t(
+            snapshot.modelContext.maxInputTokens && !snapshot.modelContext.sharedContextTokens
+              ? 'contextModelInputLimit'
+              : 'contextModelLimit',
+            {
+              tokens: snapshot.modelContext.contextTokens.toLocaleString(getLanguage()),
+              source:
+                snapshot.modelContext.source === 'provider'
+                  ? t('contextModelSourceProvider')
+                  : t('contextModelSourceFallback'),
+            },
+          )
+        : '',
+      snapshot.modelContext
+        ? snapshot.modelContext.nativeOutput
+          ? t('contextModelNativeOutput')
+          : t('contextModelOutputLimit', {
+              output: snapshot.modelContext.outputTokens.toLocaleString(getLanguage()),
+              source:
+                snapshot.modelContext.outputSource === 'provider'
+                  ? t('contextModelSourceProvider')
+                  : t('contextModelSourceFallback'),
+            })
+        : '',
+      t('contextBudgetItemsLeftOut', {
+        count: excludedCount,
+        itemLabel: formatItemLabel(excludedCount),
+      }),
+    ]
+      .filter(Boolean)
+      .join(' · '),
     truncatedText: snapshot.truncated ? t('contextBudgetTruncated') : undefined,
   };
+}
+
+export function shouldRenderContextBudget(snapshot: ContextBudgetSnapshot): boolean {
+  return (
+    Boolean(snapshot.modelContext) ||
+    snapshot.truncated ||
+    (snapshot.excludedAttachmentIds?.length ?? 0) > 0
+  );
 }
 
 export interface DataBoundaryView {
@@ -172,6 +225,9 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
   switch (attachment.type) {
     case 'rag':
       if (isVaultSearchSkipped(attachment)) return t('contextChipVaultSearchSkipped');
+      if (attachment.alreadyAttached) return t('contextChipEvidenceAlreadyAttached');
+      if (attachment.status === 'error') return t('contextChipRelatedSearchFailed');
+      if (attachment.status === 'partial' && sourceCount === 0) return t('contextChipContextFull');
       if (attachment.status === 'attached' || attachment.status === 'partial') {
         return sourceCount > 0
           ? t('contextChipRelatedNotes', {
@@ -181,11 +237,8 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
           : t('contextChipNoRelatedNotes');
       }
       return t('contextChipNoRelatedNotes');
-    case 'graph-rag':
-      return attachment.status === 'attached' || attachment.status === 'partial'
-        ? t('contextChipKnowledgeGraph')
-        : t('contextChipKnowledgeGraphMissing');
     case 'folder': {
+      if (attachment.scopeOnly) return t('contextFolderScopeChip', { name });
       const fileCount = attachment.fileCount ?? attachment.sourceIds?.length ?? 0;
       return fileCount > 0
         ? t('contextChipFolderNotesUsed', {
@@ -195,6 +248,8 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
           })
         : name;
     }
+    case 'tag':
+      return `@${attachment.name}`;
     case 'reference':
       return t('contextChipReferenceAttached', { name });
     case 'file':
@@ -207,7 +262,11 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
 }
 
 function createContextAttachmentClassName(attachment: ContextAttachment): string {
-  const displayStatus = isVaultSearchSkipped(attachment) ? 'skipped' : attachment.status;
+  const displayStatus = isVaultSearchSkipped(attachment)
+    ? 'skipped'
+    : attachment.alreadyAttached
+      ? 'attached'
+      : attachment.status;
   return `superpower-inside-chat-context-chip ${attachment.type} ${displayStatus}`;
 }
 
@@ -215,6 +274,8 @@ function normalizeContextAttachmentDetail(attachment: ContextAttachment): string
   if (!attachment.detail) return undefined;
   if (attachment.type === 'rag') {
     if (isVaultSearchSkipped(attachment)) return t('contextChipDetailSkipped');
+    if (attachment.status === 'partial' && attachment.sourceIds?.length === 0)
+      return normalizeSourceDetail(attachment.detail);
     if (attachment.status === 'attached' || attachment.status === 'partial') {
       return t('contextChipDetailAuto');
     }
@@ -303,31 +364,46 @@ export class SourcePanel {
 
   constructor(private readonly handlers: SourcePanelHandlers) {}
 
-  renderCitationsSection(container: HTMLElement, citations: SourceCitation[]): void {
+  renderCitationsSection(
+    container: HTMLElement,
+    citations: SourceCitation[],
+    options: { mode?: 'disclosure' | 'embedded' } = {},
+  ): void {
     const existingSection = container.querySelector('.superpower-inside-chat-citations');
     if (citations.length === 0) {
       existingSection?.remove();
       return;
     }
     const view = createCitationSectionView(citations);
-    const disclosure = readDisclosureSnapshot(
-      existingSection,
-      '.superpower-inside-chat-citations-label',
-      !view.collapsedByDefault,
-    );
+    const mode = options.mode ?? 'disclosure';
+    const disclosure =
+      mode === 'embedded'
+        ? { expanded: true }
+        : readDisclosureSnapshot(
+            existingSection,
+            '.superpower-inside-chat-citations-label',
+            !view.collapsedByDefault,
+          );
     const section = isDomInstance(existingSection, HTMLElement)
       ? existingSection
       : container.createDiv({ cls: 'superpower-inside-chat-citations' });
     section.empty();
-    const content = this.renderDisclosure(section, {
-      buttonClassName: 'superpower-inside-chat-citations-label',
-      iconClassName: 'superpower-inside-chat-citations-toggle-icon',
-      contentClassName: 'superpower-inside-chat-citations-content',
-      contentId:
-        disclosure.contentId ?? `superpower-inside-chat-citations-${++this.sectionSequence}`,
-      label: view.labelText,
-      expanded: disclosure.expanded,
-    });
+    section.className =
+      mode === 'embedded'
+        ? 'superpower-inside-chat-citations embedded'
+        : 'superpower-inside-chat-citations';
+    const content =
+      mode === 'embedded'
+        ? section.createDiv({ cls: 'superpower-inside-chat-citations-content' })
+        : this.renderDisclosure(section, {
+            buttonClassName: 'superpower-inside-chat-citations-label',
+            iconClassName: 'superpower-inside-chat-citations-toggle-icon',
+            contentClassName: 'superpower-inside-chat-citations-content',
+            contentId:
+              disclosure.contentId ?? `superpower-inside-chat-citations-${++this.sectionSequence}`,
+            label: view.labelText,
+            expanded: disclosure.expanded,
+          });
 
     for (const [index, citation] of citations.entries()) {
       const cardView = view.cards[index];
@@ -335,7 +411,7 @@ export class SourcePanel {
       const card = content.createDiv({ cls: cardView.className });
       card.setAttribute('tabindex', '0');
       card.setAttribute('data-citation-id', cardView.id);
-      card.setAttribute('aria-label', t('citationMarkerAria', { id: cardView.id }));
+      card.setAttribute('aria-label', createCitationMarkerView(citation).ariaLabel);
       card.addEventListener('focus', () => this.setCitationHighlight(container, cardView.id, true));
       card.addEventListener('blur', () => this.setCitationHighlight(container, cardView.id, false));
       card.addEventListener('mouseenter', () =>
@@ -356,12 +432,6 @@ export class SourcePanel {
         cls: 'superpower-inside-chat-citation-status',
         text: cardView.statusText,
       });
-      if (cardView.graphKindText) {
-        title.createSpan({
-          cls: 'superpower-inside-chat-citation-graph-kind',
-          text: cardView.graphKindText,
-        });
-      }
       if (cardView.metaText) {
         card.createDiv({
           cls: 'superpower-inside-chat-citation-meta',
@@ -448,7 +518,7 @@ export class SourcePanel {
     snapshot: ContextBudgetSnapshot | undefined,
   ): void {
     let section = container.querySelector('.superpower-inside-chat-context-budget');
-    if (!snapshot) {
+    if (!snapshot || !shouldRenderContextBudget(snapshot)) {
       section?.remove();
       return;
     }
@@ -566,6 +636,7 @@ export class SourcePanel {
     if (!isDomInstance(bubble, HTMLElement)) return;
     const ids = citations.map((citation) => citation.id).filter(Boolean);
     if (ids.length === 0) return;
+    const citationsById = new Map(citations.map((citation) => [citation.id, citation]));
     const pattern = new RegExp(`\\b(${ids.map(escapeRegExp).join('|')})\\b`, 'g');
     const doc = container.ownerDocument;
     const walker = doc.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
@@ -591,12 +662,19 @@ export class SourcePanel {
           fragments.push(doc.createTextNode(text.slice(lastIndex, match.index)));
         }
         const citationId = match[1] ?? '';
-        const marker = doc.createElement('span');
+        const citation = citationsById.get(citationId);
+        if (!citation) continue;
+        const view = createCitationMarkerView(citation);
+        const marker = doc.createElement('a');
         marker.addClass('superpower-inside-chat-citation-marker');
-        marker.setAttribute('tabindex', '0');
+        marker.setAttribute('href', '#');
         marker.setAttribute('data-citation-id', citationId);
-        marker.setAttribute('aria-label', t('citationMarkerAria', { id: citationId }));
-        marker.setText(citationId);
+        marker.setAttribute('aria-label', view.ariaLabel);
+        marker.setText(view.label);
+        marker.addEventListener('click', (event) => {
+          event.preventDefault();
+          void this.handlers.openCitation(citation);
+        });
         marker.addEventListener('focus', () =>
           this.setCitationHighlight(container, citationId, true),
         );
@@ -684,25 +762,14 @@ function getCitationStatusText(status: NonNullable<SourceCitation['status']>): s
   }
 }
 
-function getGraphKindText(graphType: NonNullable<SourceCitation['graphType']>): string {
-  switch (graphType) {
-    case 'entity':
-      return t('sourceGraphEntity');
-    case 'relation':
-      return t('sourceGraphRelation');
-    case 'community':
-      return t('sourceGraphCommunity');
-  }
-}
-
 function getCitationSelectionReasonText(
   reason: NonNullable<SourceCitation['selectionReason']>,
 ): string {
   switch (reason) {
-    case 'strong-graph-evidence':
-      return t('sourceReasonStrongGraph');
-    case 'graph-structural-evidence':
-      return t('sourceReasonGraphStructural');
+    case 'strong-structural-evidence':
+      return t('sourceReasonStrongStructural');
+    case 'structural-evidence':
+      return t('sourceReasonStructural');
     case 'keyword-vector':
       return t('sourceReasonKeywordVector');
     case 'keyword':

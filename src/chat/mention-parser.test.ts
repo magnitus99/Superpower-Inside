@@ -1,24 +1,45 @@
 import { describe, expect, it } from 'vitest';
-import {
-  parseMentions,
-  shouldUseAutoRagForMentions,
-  type MentionResolver,
-} from './mention-parser';
+import { parseMentions, shouldUseAutoRagForMentions, type MentionResolver } from './mention-parser';
 
 function resolver(): MentionResolver {
   const servers = new Set(['browser', 'filesystem']);
   const files = new Set(['Notes/today.md', 'Project Plan.md']);
   const folders = new Set(['Notes', 'Projects/Alpha']);
-  const entities = new Set(['paul', 'augustine', 'romans']);
   return {
     isServer: (name) => servers.has(name),
     isFile: (name) => files.has(name),
     isFolder: (name) => folders.has(name),
-    isEntity: (name) => entities.has(name.toLowerCase()),
   };
 }
 
 describe('parseMentions', () => {
+  it('태그는 경로·서버와 구분하고 존재하지 않는 태그도 빈 범위로 보존한다', () => {
+    expect(
+      parseMentions('@#연구/설계 @#RESEARCH @#research @#missing @[#literal.md]', {
+        ...resolver(),
+        isFile: (name) => name === '#literal.md',
+      }),
+    ).toEqual([
+      { raw: '@[#literal.md]', type: 'file', name: '#literal.md' },
+      { raw: '@#연구/설계', type: 'tag', name: '#연구/설계' },
+      { raw: '@#RESEARCH', type: 'tag', name: '#research' },
+      { raw: '@#missing', type: 'tag', name: '#missing' },
+    ]);
+  });
+  it('현재 문서와 열린 탭을 실제 파일 참조로 확장하고 브래킷 경로를 보존한다', () => {
+    const host = {
+      ...resolver(),
+      workspaceFiles: { current: ['Notes/today.md'], tabs: ['Notes/today.md', 'Project Plan.md'] },
+    };
+    expect(parseMentions('@current @tabs', host)).toEqual([
+      { raw: '@current', type: 'file', name: 'Notes/today.md' },
+      { raw: '@tabs', type: 'file', name: 'Notes/today.md' },
+      { raw: '@tabs', type: 'file', name: 'Project Plan.md' },
+    ]);
+    expect(
+      parseMentions('@current @tabs', { ...resolver(), workspaceFiles: { current: [], tabs: [] } }),
+    ).toEqual([]);
+  });
   it('일반 파일, 폴더, MCP 서버 멘션을 분류한다', () => {
     expect(parseMentions('@browser @Notes/today.md @Notes', resolver())).toEqual([
       { raw: '@browser', type: 'server', name: 'browser' },

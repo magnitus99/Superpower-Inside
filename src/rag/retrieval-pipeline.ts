@@ -9,6 +9,7 @@ import {
   planBm25HitLookupRust,
   planBm25SourceLookupsRust,
   planMergedRetrievalCandidatesByEntryIdRust,
+  isSourceRevisionCurrentRust,
   planStructuralHeadingNeighborsRust,
   planStructuralLinkedPathsRust,
   type RustBm25EntryInput,
@@ -19,23 +20,18 @@ import {
   type RustMergedRetrievalCandidatePlan,
 } from './rust-core';
 
-export type RetrievalCandidateSource =
-  | 'vector'
-  | 'bm25'
-  | 'ann'
-  | 'structural'
-  | 'graph-local'
-  | 'graph-global'
-  | 'evidence';
-export type RetrievalDiagnosticSource = RetrievalCandidateSource | 'reranker';
+export type RetrievalCandidateSource = 'vector' | 'bm25' | 'ann' | 'structural';
+export type RetrievalDiagnosticSource = RetrievalCandidateSource | 'embedding' | 'reranker';
 
 export interface RagRetrievalRequest {
   question: string;
   queryVector: number[];
   candidateLimit: number;
+  requireSourceRevision?: boolean;
   vectorFilter?: VectorSearchFilter;
   isEntryCompatible?: (entry: VectorEntry) => boolean;
   isEntryInScope?: (entry: VectorEntry) => boolean;
+  filterCurrentCandidates?: (candidates: RetrievalCandidate[]) => Promise<RetrievalCandidate[]>;
 }
 
 export interface RetrievalCandidate {
@@ -71,6 +67,7 @@ export interface CandidateProvider {
   getReadiness?(
     request: RagRetrievalRequest,
   ): RetrievalProviderReadiness | Promise<RetrievalProviderReadiness>;
+  getDeadlineMs?(request: RagRetrievalRequest): number | Promise<number>;
   getCandidates(request: RagRetrievalRequest, signal?: AbortSignal): Promise<RetrievalCandidate[]>;
 }
 
@@ -99,7 +96,7 @@ export class ExactVectorCandidateProvider implements CandidateProvider {
 
   constructor(
     private readonly vectorStore: VectorStore,
-    readonly deadlineMs = 300,
+    readonly deadlineMs = 5_000,
   ) {}
 
   async getCandidates(
@@ -152,7 +149,7 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
   constructor(
     private readonly vectorStore: VectorStore,
     private readonly options: IvfVectorCandidateProviderOptions,
-    readonly deadlineMs = 300,
+    readonly deadlineMs = 5_000,
   ) {}
 
   async getCandidates(
@@ -234,7 +231,7 @@ export class BM25CandidateProvider implements CandidateProvider {
   constructor(
     private readonly corpusStore: RetrievalCorpusStore,
     private readonly bm25Index: IndexedDbBM25Index,
-    readonly deadlineMs = 80,
+    readonly deadlineMs = 2_000,
   ) {}
 
   getReadiness(): RetrievalProviderReadiness {
@@ -261,7 +258,31 @@ export class BM25CandidateProvider implements CandidateProvider {
     const hitPlan = planBm25HitLookupRust(hits, request.candidateLimit, 4);
     if (hitPlan === null || hitPlan.hits.length === 0) return [];
 
-    const foundEntries = await this.corpusStore.getEntriesByIds(hitPlan.lookupDocIds);
+    let foundEntries = await this.corpusStore.getEntriesByIds(hitPlan.lookupDocIds);
+    if (request.requireSourceRevision) {
+      const indexedDocuments = await this.bm25Index.getCorpusDocumentsByIds(hitPlan.lookupDocIds);
+      const indexedById = new Map(indexedDocuments.map((document) => [document.id, document]));
+      foundEntries = foundEntries.filter((entry) => {
+        const indexed = indexedById.get(entry.id);
+        return (
+          indexed !== undefined &&
+          isSourceRevisionCurrentRust(
+            {
+              filePath: indexed.sourcePath,
+              sourceMtime: indexed.sourceMtime ?? -1,
+              sourceSize: indexed.sourceSize ?? -1,
+              contentHash: indexed.contentHash ?? '',
+            },
+            {
+              filePath: entry.metadata.filePath,
+              sourceMtime: entry.metadata.sourceMtime ?? -1,
+              sourceSize: entry.metadata.sourceSize ?? -1,
+              contentHash: entry.metadata.contentHash ?? '',
+            },
+          )
+        );
+      });
+    }
     throwIfAborted(signal);
     const sourceLookupPaths = planBm25SourceLookupsRust(
       hitPlan.hits,
@@ -270,7 +291,7 @@ export class BM25CandidateProvider implements CandidateProvider {
     if (sourceLookupPaths === null) return [];
 
     const pathEntries =
-      sourceLookupPaths.length > 0
+      sourceLookupPaths.length > 0 && !request.requireSourceRevision
         ? await this.corpusStore.getEntriesByFilePaths(sourceLookupPaths)
         : [];
     throwIfAborted(signal);
@@ -335,10 +356,12 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
   readonly source = 'structural';
 
   constructor(
-    private readonly vectorStore: VectorStore,
+    private readonly vectorStore: VectorStore | null,
     private readonly metadata: StructuralMetadataContext,
     private readonly seedLimit = 1,
-    readonly deadlineMs = 30,
+    readonly deadlineMs = 5_000,
+    private readonly corpusStore: RetrievalCorpusStore = requireCorpusStore(vectorStore),
+    private readonly bm25Index?: IndexedDbBM25Index,
   ) {}
 
   async getCandidates(
@@ -346,26 +369,37 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     const seedLimit = Math.max(1, Math.min(this.seedLimit, request.candidateLimit));
-    const seedEntries = request.isEntryCompatible
-      ? (
-          await this.vectorStore.search({
-            queryVector: request.queryVector,
-            topK: seedLimit,
-            filter: request.vectorFilter,
-            signal,
-          })
-        )
-          .map((result) => result.entry)
-          .filter(request.isEntryCompatible)
-      : (
-          await this.vectorStore.search({
-            queryVector: request.queryVector,
-            topK: seedLimit,
-            filter: request.vectorFilter,
-            signal,
-          })
-        ).map((result) => result.entry);
+    let seedEntries =
+      request.queryVector.length === 0 || !this.vectorStore
+        ? []
+        : request.isEntryCompatible
+          ? (
+              await this.vectorStore.search({
+                queryVector: request.queryVector,
+                topK: seedLimit,
+                filter: request.vectorFilter,
+                signal,
+              })
+            )
+              .map((result) => result.entry)
+              .filter(request.isEntryCompatible)
+          : (
+              await this.vectorStore.search({
+                queryVector: request.queryVector,
+                topK: seedLimit,
+                filter: request.vectorFilter,
+                signal,
+              })
+            ).map((result) => result.entry);
     throwIfAborted(signal);
+    if (seedEntries.length === 0 && this.bm25Index?.isReady) {
+      seedEntries = (
+        await new BM25CandidateProvider(this.corpusStore, this.bm25Index).getCandidates(
+          { ...request, candidateLimit: seedLimit },
+          signal,
+        )
+      ).map((candidate) => candidate.entry);
+    }
     if (seedEntries.length === 0) return [];
 
     const seedIds = new Set(seedEntries.map((entry) => entry.id));
@@ -377,7 +411,7 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     );
 
     const linkedEntries =
-      targetPaths.size > 0 ? await this.vectorStore.getEntriesByFilePaths([...targetPaths]) : [];
+      targetPaths.size > 0 ? await this.corpusStore.getEntriesByFilePaths([...targetPaths]) : [];
     throwIfAborted(signal);
     const headingEntries = await this.collectStructuralHeadingEntries(seedEntries, request);
     const candidatesById = new Map<string, RetrievalCandidate>();
@@ -429,7 +463,7 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
     const paths = [...new Set(seedEntries.map((entry) => entry.metadata.filePath))];
     if (paths.length === 0) return [];
 
-    const entries = await this.vectorStore.getEntriesByFilePaths(paths);
+    const entries = await this.corpusStore.getEntriesByFilePaths(paths);
     const plan = planStructuralHeadingNeighborsRust({
       seeds: this.collectStructuralHeadingSeeds(seedEntries),
       entries: entries.map((entry) => toStructuralEntryInput(entry, request)),
@@ -482,10 +516,12 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
 export class RetrievalOrchestrator {
   constructor(private readonly providers: readonly CandidateProvider[]) {}
 
-  async retrieve(request: RagRetrievalRequest): Promise<RagRetrievalResult> {
+  async retrieve(request: RagRetrievalRequest, signal?: AbortSignal): Promise<RagRetrievalResult> {
+    throwIfAborted(signal);
     const providerResults = await Promise.all(
-      this.providers.map((provider) => this.runProvider(provider, request)),
+      this.providers.map((provider) => this.runProvider(provider, request, signal)),
     );
+    throwIfAborted(signal);
     return {
       candidates: mergeCandidates(providerResults.flatMap((result) => result.candidates)),
       diagnostics: providerResults.map((result) => result.diagnostic),
@@ -495,12 +531,34 @@ export class RetrievalOrchestrator {
   private async runProvider(
     provider: CandidateProvider,
     request: RagRetrievalRequest,
+    signal?: AbortSignal,
   ): Promise<{ candidates: RetrievalCandidate[]; diagnostic: RetrievalProviderDiagnostic }> {
     const startedAt = Date.now();
+    if (
+      request.queryVector.length === 0 &&
+      (provider.source === 'vector' || provider.source === 'ann')
+    ) {
+      return {
+        candidates: [],
+        diagnostic: {
+          providerId: provider.id,
+          source: provider.source,
+          status: 'skipped',
+          durationMs: Date.now() - startedAt,
+          candidateCount: 0,
+          readiness: 'degraded',
+          estimatedCost: 'low',
+          skippedReason: 'query-embedding-unavailable',
+        },
+      };
+    }
     let readiness: RetrievalProviderReadiness;
     try {
-      readiness = await resolveProviderReadiness(provider, request);
+      throwIfAborted(signal);
+      readiness = await withAbortSignal(resolveProviderReadiness(provider, request), signal);
+      throwIfAborted(signal);
     } catch (error) {
+      if (signal?.aborted) throw error;
       return {
         candidates: [],
         diagnostic: {
@@ -533,11 +591,28 @@ export class RetrievalOrchestrator {
 
     try {
       const abortController = new AbortController();
-      const candidates = await withProviderDeadline(
-        provider.getCandidates(request, abortController.signal),
-        provider.deadlineMs,
-        abortController,
-      );
+      const detachAbort = forwardAbortSignal(signal, abortController);
+      let candidates: RetrievalCandidate[];
+      try {
+        const deadlineMs = await withAbortSignal(
+          resolveProviderDeadlineMs(provider, request),
+          signal,
+        );
+        throwIfAborted(signal);
+        candidates = await withProviderDeadline(
+          provider.getCandidates(request, abortController.signal),
+          deadlineMs,
+          abortController,
+          signal,
+        );
+        throwIfAborted(signal);
+        if (request.filterCurrentCandidates) {
+          candidates = await withAbortSignal(request.filterCurrentCandidates(candidates), signal);
+          throwIfAborted(signal);
+        }
+      } finally {
+        detachAbort();
+      }
       const rankedCandidates = candidates.map((candidate, index) => ({
         ...candidate,
         rank: candidate.rank ?? index + 1,
@@ -555,6 +630,7 @@ export class RetrievalOrchestrator {
         },
       };
     } catch (error) {
+      if (signal?.aborted) throw error;
       const isTimeout = error instanceof ProviderTimeoutError;
       return {
         candidates: [],
@@ -573,7 +649,22 @@ export class RetrievalOrchestrator {
   }
 }
 
+async function resolveProviderDeadlineMs(
+  provider: CandidateProvider,
+  request: RagRetrievalRequest,
+): Promise<number> {
+  const deadlineMs = await provider.getDeadlineMs?.(request);
+  return typeof deadlineMs === 'number' && Number.isFinite(deadlineMs)
+    ? Math.max(0, deadlineMs)
+    : provider.deadlineMs;
+}
+
 export class RagRetrievalPipeline extends RetrievalOrchestrator {}
+
+function requireCorpusStore(store: RetrievalCorpusStore | null): RetrievalCorpusStore {
+  if (!store) throw new Error('Source corpus is required for structural retrieval.');
+  return store;
+}
 
 export function mergeRetrievalCandidateGroupsByEntryId(
   candidates: readonly RetrievalCandidate[],
@@ -695,15 +786,7 @@ function mergeCandidates(candidates: readonly RetrievalCandidate[]): MergedRetri
 }
 
 function toRetrievalCandidateSource(source: string): RetrievalCandidateSource | null {
-  if (
-    source === 'vector' ||
-    source === 'bm25' ||
-    source === 'ann' ||
-    source === 'structural' ||
-    source === 'graph-local' ||
-    source === 'graph-global' ||
-    source === 'evidence'
-  ) {
+  if (source === 'vector' || source === 'bm25' || source === 'ann' || source === 'structural') {
     return source;
   }
   return null;
@@ -713,19 +796,42 @@ function withProviderDeadline<T>(
   operation: Promise<T>,
   deadlineMs: number,
   abortController: AbortController,
+  signal?: AbortSignal,
 ): Promise<T> {
-  if (deadlineMs <= 0) return operation;
-
   let timeoutId: number | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = window.setTimeout(() => {
-      abortController.abort();
-      reject(new ProviderTimeoutError());
-    }, deadlineMs);
-  });
+  const operations: Promise<T>[] = [withAbortSignal(operation, signal)];
+  if (deadlineMs > 0) {
+    operations.push(
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          abortController.abort();
+          reject(new ProviderTimeoutError());
+        }, deadlineMs);
+      }),
+    );
+  }
 
-  return Promise.race([operation, timeout]).finally(() => {
+  return Promise.race(operations).finally(() => {
     if (timeoutId) window.clearTimeout(timeoutId);
+  });
+}
+
+function withAbortSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(new DOMException('Aborted', 'AbortError'));
+    signal.addEventListener('abort', abort, { once: true });
+    void operation.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
   });
 }
 
@@ -775,6 +881,20 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new DOMException('Aborted', 'AbortError');
   }
+}
+
+function forwardAbortSignal(
+  signal: AbortSignal | undefined,
+  controller: AbortController,
+): () => void {
+  if (!signal) return () => undefined;
+  const abort = (): void => controller.abort();
+  if (signal.aborted) {
+    abort();
+    return () => undefined;
+  }
+  signal.addEventListener('abort', abort, { once: true });
+  return () => signal.removeEventListener('abort', abort);
 }
 
 function stringifyError(error: unknown): string {

@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { setLanguage } from '../i18n';
 import {
-  createContextAttachmentViews,
   createContextBudgetSnapshot,
   createDataBoundarySnapshot,
   createResearchDataBoundarySnapshot,
@@ -55,27 +54,6 @@ describe('context composer contract', () => {
     { id: 'rag-1', filePath: 'Notes/B.md', status: 'low-relevance', preview: 'Candidate' },
   ];
 
-  it('creates composer attachment view state with status, reason, and size', () => {
-    expect(createContextAttachmentViews(attachments)).toEqual([
-      expect.objectContaining({
-        id: 'file:Notes/A.md',
-        statusText: 'Included',
-        reasonText: 'Explicit file mention',
-        sizeText: '1,180 chars',
-        pinned: true,
-      }),
-      expect.objectContaining({
-        id: 'rag:auto',
-        statusText: 'Partially included',
-        detail: 'Some candidates left out',
-      }),
-      expect.objectContaining({
-        id: 'mcp:search',
-        statusText: 'Excluded',
-      }),
-    ]);
-  });
-
   it('stores included, excluded, and truncated state in a per-turn budget snapshot', () => {
     expect(
       createContextBudgetSnapshot({
@@ -111,7 +89,7 @@ describe('context composer contract', () => {
     ).toEqual({
       providerLabel: 'Ollama',
       model: 'llama3.1',
-      localOnly: ['Draft and source-card state', 'Source-card state'],
+      localOnly: ['Draft and source state', 'Source state'],
       sentToProvider: [
         'Current question',
         '4 recent conversation messages',
@@ -184,6 +162,22 @@ describe('context composer contract', () => {
       'Answer instructions',
       '1 tool result',
     ]);
+  });
+
+  it('공통 입력 예산으로 제외된 대화를 실제 전송 개수에 반영한다', () => {
+    const initial = createDataBoundarySnapshot({
+      providerLabel: 'Ollama',
+      model: 'local',
+      hasUserQuestion: true,
+      recentConversationMessageCount: 24,
+      hasSystemPrompt: true,
+      attachments: [],
+      citations: [],
+      mcpServerNames: [],
+    });
+    const updated = withDataBoundaryProviderUsage(initial, { recentConversationMessages: 4 });
+    expect(updated.providerPayload?.recentConversationMessages).toBe(4);
+    expect(initial.providerPayload?.recentConversationMessages).toBe(24);
   });
 
   it('볼트 전체 조사는 실제 provider envelope만 데이터 경계에 표시한다', () => {

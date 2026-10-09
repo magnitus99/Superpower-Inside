@@ -17,9 +17,15 @@ function createMockButton(text = '새로고침') {
     disabled: false,
     textContent: text,
     classList: {
-      add(c: string) { classSet.add(c); },
-      remove(c: string) { classSet.delete(c); },
-      contains(c: string) { return classSet.has(c); },
+      add(c: string) {
+        classSet.add(c);
+      },
+      remove(c: string) {
+        classSet.delete(c);
+      },
+      contains(c: string) {
+        return classSet.has(c);
+      },
     },
     addEventListener(evt: string, fn: () => void) {
       (listeners[evt] ??= []).push(fn);
@@ -34,10 +40,18 @@ function createMockButton(text = '새로고침') {
     click() {
       listeners['click']?.forEach((fn) => fn());
     },
-    addClass(c: string) { classSet.add(c); },
-    removeClass(c: string) { classSet.delete(c); },
-    setText(t: string) { (btn as Record<string, unknown>).textContent = t; },
-    remove() { /* DOM 정리 mock */ },
+    addClass(c: string) {
+      classSet.add(c);
+    },
+    removeClass(c: string) {
+      classSet.delete(c);
+    },
+    setText(t: string) {
+      (btn as Record<string, unknown>).textContent = t;
+    },
+    remove() {
+      /* DOM 정리 mock */
+    },
   };
   return btn as unknown as HTMLButtonElement;
 }
@@ -225,5 +239,62 @@ describe('RefreshAction', () => {
     await vi.waitFor(() => action.getState() === 'idle', { timeout: 500 });
 
     expect(btn.textContent).toBe('로딩 중...');
+  });
+  it('성공 결과를 지정된 도메인에 emit한다', async () => {
+    const emitted: Array<{ domain: string; status: string; detail?: string }> = [];
+    const action = new RefreshAction({
+      action: () => Promise.resolve({ status: 'success' as const, detail: '완료' }),
+      refreshBus: {
+        emit: (domain, result) =>
+          emitted.push({ domain, status: result.status, detail: result.detail }),
+      },
+      refreshDomains: ['rag', 'models'],
+      successNotice: false,
+    });
+
+    await action.execute();
+
+    expect(emitted).toEqual([
+      { domain: 'rag', status: 'success', detail: '완료' },
+      { domain: 'models', status: 'success', detail: '완료' },
+    ]);
+  });
+
+  it('작업 오류 결과를 error 상태로 emit한다', async () => {
+    const emitted: Array<{ domain: string; status: string; detail?: string }> = [];
+    const action = new RefreshAction({
+      action: () => Promise.resolve({ status: 'error' as const, detail: '실패' }),
+      refreshBus: {
+        emit: (domain, result) =>
+          emitted.push({ domain, status: result.status, detail: result.detail }),
+      },
+      refreshDomains: ['rag'],
+      errorNotice: false,
+    });
+
+    await action.execute();
+
+    expect(emitted).toEqual([{ domain: 'rag', status: 'error', detail: '실패' }]);
+  });
+  it('AbortError 취소도 error 결과로 emit한다', async () => {
+    const emitted: Array<{ domain: string; status: string; detail?: string }> = [];
+    const action = new RefreshAction({
+      action: () => {
+        const error = new Error('사용자 취소');
+        error.name = 'AbortError';
+        return Promise.reject(error);
+      },
+      refreshBus: {
+        emit: (domain, result) =>
+          emitted.push({ domain, status: result.status, detail: result.detail }),
+      },
+      refreshDomains: ['rag'],
+      errorNotice: false,
+    });
+
+    const result = await action.execute();
+
+    expect(result.status).toBe('error');
+    expect(emitted).toEqual([{ domain: 'rag', status: 'error', detail: '취소됨' }]);
   });
 });

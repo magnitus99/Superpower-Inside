@@ -138,7 +138,7 @@ or begin
 end
 
 # 커밋
-git add manifest.json package.json package-lock.json versions.json main.js styles.css tern_engine_bg.wasm THIRD_PARTY_NOTICES.md scripts/validate-obsidian-review.mjs .github/workflows/release.yml scripts/bump-version.fish scripts/install-rust-security-tools.fish scripts/patch-rag-wasm-dts.mjs scripts/build-rag-wasm.fish scripts/copy-ternlight-assets.fish generated/rag-wasm/rag_wasm.d.ts README.md esbuild.config.mjs
+git add manifest.json package.json package-lock.json versions.json main.js styles.css tern_engine_bg.wasm THIRD_PARTY_NOTICES.md scripts/validate-obsidian-review.mjs scripts/bundle-size-policy.mjs scripts/bundle-size-policy.test.mjs .github/workflows/release.yml scripts/bump-version.fish scripts/install-rust-security-tools.fish scripts/patch-rag-wasm-dts.mjs scripts/build-rag-wasm.fish scripts/copy-ternlight-assets.fish generated/rag-wasm/rag_wasm.d.ts README.md esbuild.config.mjs
 and git commit -m "chore(release): $NEW_VERSION"
 or begin
     echo "ERROR: git commit 실패"

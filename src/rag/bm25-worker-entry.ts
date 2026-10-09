@@ -1,3 +1,4 @@
+import { readWorkerStorePages } from './worker-indexed-db';
 import { Bm25RuntimeIndex, initSync } from '../../generated/rag-wasm/rag_wasm';
 
 const TOKENIZER_VERSION = 2;
@@ -116,52 +117,15 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
   return runtimeState();
 }
 
-function hydratePersistedDocuments(
+async function hydratePersistedDocuments(
   dbName: string,
   requestId: number,
   knownUnique: boolean,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let processedDocuments = 0;
-    const batch: BM25WorkerDocument[] = [];
-    const openRequest = indexedDB.open(dbName);
-    openRequest.onerror = () =>
-      reject(openRequest.error ?? new Error('BM25 database open failed.'));
-    openRequest.onsuccess = () => {
-      const database = openRequest.result;
-      if (!database.objectStoreNames.contains('documents')) {
-        database.close();
-        resolve();
-        return;
-      }
-      const transaction = database.transaction('documents', 'readonly');
-      const cursorRequest = transaction.objectStore('documents').openCursor();
-      cursorRequest.onerror = () => reject(cursorRequest.error ?? new Error('BM25 cursor failed.'));
-      cursorRequest.onsuccess = () => {
-        const cursor = cursorRequest.result;
-        try {
-          if (!cursor) {
-            processedDocuments += addDocumentBatch(batch, knownUnique);
-            postHydrationProgress(requestId, processedDocuments);
-            return;
-          }
-          batch.push(parsePersistedDocument(cursor.value));
-          if (batch.length >= HYDRATION_PROGRESS_INTERVAL) {
-            processedDocuments += addDocumentBatch(batch, knownUnique);
-            postHydrationProgress(requestId, processedDocuments);
-          }
-          cursor.continue();
-        } catch (error) {
-          transaction.abort();
-          reject(error instanceof Error ? error : new Error(String(error)));
-        }
-      };
-      transaction.oncomplete = () => {
-        database.close();
-        resolve();
-      };
-      transaction.onerror = () => reject(transaction.error ?? new Error('BM25 read failed.'));
-    };
+  let processedDocuments = 0;
+  await readWorkerStorePages(dbName, 'documents', (records) => {
+    processedDocuments += addDocumentBatch(records.map(parsePersistedDocument), knownUnique);
+    postHydrationProgress(requestId, processedDocuments);
   });
 }
 

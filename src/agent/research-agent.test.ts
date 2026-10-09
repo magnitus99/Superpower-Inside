@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../llm/providers';
 import { setLanguage } from '../i18n';
+import { planModelContextRust } from '../rag/rust-core';
 import type {
   NativeVaultToolExecutionResult,
   NativeVaultToolRuntimeLike,
@@ -9,9 +10,104 @@ import {
   VaultResearchAgent,
   getVaultResearchPhaseLabel,
   isWholeVaultResearchRequest,
+  isScopedVaultResearchRequest,
 } from './research-agent';
 
 describe('로컬 선별 우선 Vault Research Agent', () => {
+  it('작은 모델 예산에서도 질문과 맞는 후반 구절의 실제 행을 전달한다', async () => {
+    const text =
+      'title: Synthetic inspection\ndate: not-recorded\n\n' +
+      'unrelated background.\n'.repeat(600) +
+      '\nCopper relay requires inspection.';
+    const line = text.split('\n').findIndex((value) => value.includes('Copper relay')) + 1;
+    const runtime = createRuntime(new Map([['fixtures/inspection.md', text]]));
+    const prompts: string[] = [];
+    const chat = vi.fn((messages: ChatMessage[]) => {
+      prompts.push(lastPrompt(messages));
+      return Promise.resolve(
+        'Inspection evidence [vault:fixtures/inspection.md:' + line + '-' + line + ']',
+      );
+    });
+    const result = await new VaultResearchAgent(
+      { chat, contextBudget: planModelContextRust({})! },
+      runtime,
+    ).run({ question: 'copper relay inspection을 비교해줘', scopePath: 'fixtures' });
+    const prompt = prompts.find((value) => value.includes('Analyze this locally selected'));
+    expect(prompt).toContain('Copper relay requires inspection.');
+    expect(prompt).toContain('not-recorded');
+    expect(result.providerTransfer.sentChars).toBeLessThanOrEqual(1704);
+    expect(result.coverage.reasonCodes).toContain('provider-omitted');
+    expect(result.coverage.exactNegativeAllowed).toBe(false);
+  });
+
+  it('한 행 중간에서 잘린 원문을 nextStartOffset으로 끝까지 이어 읽는다', async () => {
+    const runtime = createRuntime(new Map([['docs/Aurora.txt', 'Aurora 근거']]));
+    const execute = runtime.execute.getMockImplementation()!;
+    runtime.execute.mockImplementation(async (argumentsText, signal) => {
+      const request = JSON.parse(argumentsText) as { action: string; start_offset?: number };
+      if (request.action !== 'read') return execute(argumentsText, signal);
+      const continued = request.start_offset === 100;
+      const content = continued ? 'Aurora OFFSET_TAIL_EVIDENCE' : 'irrelevant '.repeat(100);
+      return result({
+        action: 'read',
+        path: 'docs/Aurora.txt',
+        startLine: 1,
+        endLine: 1,
+        totalLines: 1,
+        truncated: !continued,
+        nextStartLine: continued ? null : 1,
+        nextStartOffset: continued ? null : 100,
+        content,
+        citations: [
+          {
+            id: 'vault:docs/Aurora.txt:1-1',
+            filePath: 'docs/Aurora.txt',
+            line: 1,
+            endLine: 1,
+            preview: content,
+          },
+        ],
+      });
+    });
+    const prompts: string[] = [];
+    const chat = vi.fn((messages: ChatMessage[]) => {
+      prompts.push(lastPrompt(messages));
+      return Promise.resolve('Aurora 근거 [vault:docs/Aurora.txt:1-1]');
+    });
+    await new VaultResearchAgent({ chat }, runtime).run({ question: 'Aurora 개념을 종합해줘' });
+    expect(readRequests(runtime)).toEqual([
+      expect.objectContaining({ start_line: 1 }),
+      expect.objectContaining({ start_line: 1, start_offset: 100 }),
+    ]);
+    expect(prompts.some((value) => value.includes('OFFSET_TAIL_EVIDENCE'))).toBe(true);
+  });
+  it.each([
+    {
+      synthesis: '@[fixtures] 센서와 배선 점검 결과를 비교해줘',
+      quote: '@[fixtures] 센서 관련 인용 구절을 찾아줘',
+    },
+    {
+      synthesis: '@[fixtures] summarize the maintenance records',
+      quote: '@[fixtures] find a quotation about the relay',
+    },
+  ])('폴더 종합과 좁은 인용문 검색을 구분한다: $synthesis', ({ synthesis, quote }) => {
+    expect(isScopedVaultResearchRequest(synthesis)).toBe(true);
+    expect(isScopedVaultResearchRequest(quote)).toBe(false);
+  });
+  it('모든 inventory 페이지와 최종 답변이 지정 폴더 범위를 유지한다', async () => {
+    const runtime = createRuntime(new Map([['docs/a.md', 'Aurora concept evidence']]));
+    const chat = vi.fn().mockResolvedValue('확인한 Aurora 근거 [vault:docs/a.md:1-1]');
+    const result = await new VaultResearchAgent({ chat }, runtime).run({
+      question: 'Aurora 개념을 종합해줘',
+      scopePath: 'docs',
+    });
+    const lists = runtime.execute.mock.calls
+      .map((call) => JSON.parse(call[0]) as { action: string; path?: string })
+      .filter((request) => request.action === 'list');
+    expect(lists.every((request) => request.path === 'docs')).toBe(true);
+    expect(result.content).toContain('조사 범위: docs');
+    expect(result.totalFiles).toBe(1);
+  });
   beforeEach(() => {
     setLanguage('ko');
   });
@@ -59,6 +155,9 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
       expect.objectContaining({ path: 'Beta.md' }),
     ]);
     expect(chat).toHaveBeenCalledTimes(2);
+    expect(
+      chat.mock.calls.every(([messages]) => /비신뢰|untrusted/i.test(messages[0]?.content ?? '')),
+    ).toBe(true);
     expect(result.content).toContain('볼트 문서 2개를 로컬에서 확인했고');
     expect(result.content).toContain('볼트 전체 요약');
     expect(result.citations.map((citation) => citation.filePath)).toEqual(['Alpha.md', 'Beta.md']);
@@ -77,35 +176,58 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
     );
   });
 
-  it('이전 질문의 인물과 현재 질문의 주제를 결합하고 1,406개 중 51개만 provider에 보낸다', async () => {
+  it('사용자 답변 지침을 최종 합성과 교정에 전달하고 내부 자료 추출에는 섞지 않는다', async () => {
+    const runtime = createRuntime(new Map([['Alpha.md', 'Alpha 근거 '.repeat(2_000)]]));
+    const instruction = 'Answer in English with exactly three bullets.';
+    const chat = vi.fn((messages: ChatMessage[]) =>
+      Promise.resolve(
+        lastPrompt(messages).includes('Write the final answer')
+          ? '모든 파일을 전부 읽었습니다.'
+          : lastPrompt(messages).includes('Rewrite the answer')
+            ? '확인한 근거 [vault:Alpha.md:1-1]'
+            : 'Alpha 근거 [vault:Alpha.md:1-1]',
+      ),
+    );
+    await new VaultResearchAgent({ chat }, runtime).run({
+      question: 'Alpha 관련 모든 자료를 조사해줘',
+      systemPrompt: instruction,
+    });
+    const requests = chat.mock.calls.map(([messages]) => messages);
+    expect(requests[0]?.[0]?.content).not.toContain(instruction);
+    expect(requests[1]?.[0]?.content).toContain(instruction);
+    expect(requests[2]?.[0]?.content).toContain(instruction);
+    expect(
+      requests.every((messages) => messages[0]?.content.includes('never invent coverage')),
+    ).toBe(true);
+  });
+
+  it('이전 질문의 맥락과 현재 주제를 도메인 중립적으로 결합하고 1,406개 중 51개만 provider에 보낸다', async () => {
     const files = new Map<string, string>();
     for (let index = 0; index < 1_406; index++) {
       files.set(
         index < 51
-          ? `Bible/Genesis/${String(index).padStart(2, '0')}.md`
+          ? `Projects/Migration/${String(index).padStart(2, '0')}.md`
           : `Archive/${String(index).padStart(4, '0')}.md`,
-        index < 51 ? '창세기 본문' : '관련 없는 기록',
+        index < 51 ? 'Migration decision record' : '관련 없는 기록',
       );
     }
     const runtime = createRuntime(files);
     const chat = vi.fn((messages: ChatMessage[]) =>
       Promise.resolve(
         lastPrompt(messages).includes('Write the final answer')
-          ? '현재 검색 범위에서 직접 일치하는 네빌의 창세기 언급을 찾지 못했습니다.'
+          ? '현재 검색 범위에서 Aurora의 migration 근거를 정리했습니다.'
           : '선택 근거를 확인했습니다.',
       ),
     );
 
     const result = await new VaultResearchAgent({ chat }, runtime).run({
-      question: 'Genesis와 관련된 모든 자료를 조사해줘',
-      previousUserQuestions: ['네빌은 창세기를 어떻게 해석했어?'],
+      question: 'Migration과 관련된 모든 자료를 조사해줘',
+      previousUserQuestions: ['Aurora는 migration을 어떻게 설명했어?'],
     });
 
     expect(result.processedFiles).toBe(1_406);
     expect(result.selection.selectedIndices).toHaveLength(51);
-    expect(result.selection.terms).toEqual(
-      expect.arrayContaining(['네빌', 'Neville', 'Goddard', 'Genesis', '창세기']),
-    );
+    expect(result.selection.terms).toEqual(expect.arrayContaining(['migration', 'aurora']));
     expect(result.providerTransfer.sentFiles).toBe(51);
     expect(result.coverage.exactNegativeAllowed).toBe(true);
     expect(chat).toHaveBeenCalledTimes(8);
@@ -188,44 +310,44 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
     expect(result.content).toContain('전수 결론은 내리지 않았습니다');
   });
 
-  it('9,000자 뒤에 전송하지 않은 segment와 citation을 provider 계약에서 제외한다', async () => {
-    const firstContent = `창세기 첫 근거 ${'가'.repeat(9_500)}`;
+  it('부분 발췌의 실제 행과 후속 일치 구절을 함께 전달한다', async () => {
+    const firstContent = 'copper relay 점검 ' + '가'.repeat(9_500);
     const runtime = createSegmentedRuntime(
       new Map([
         [
-          'Notes/Research.md',
+          'fixtures/parts.md',
           [
             { startLine: 1, endLine: 400, content: firstContent },
-            { startLine: 401, endLine: 800, content: '창세기 OMITTED_SECOND_SEGMENT' },
+            { startLine: 401, endLine: 800, content: 'copper relay FOLLOWUP_SEGMENT' },
+            { startLine: 801, endLine: 1200, content: '무관한 UNSENT_SEGMENT' },
           ],
         ],
       ]),
     );
     const prompts: string[] = [];
     const chat = vi.fn((messages: ChatMessage[]) => {
-      const prompt = lastPrompt(messages);
-      prompts.push(prompt);
+      prompts.push(lastPrompt(messages));
       return Promise.resolve(
-        prompt.includes('Write the final answer')
-          ? '첫 근거 [vault:Notes/Research.md:1-400]'
-          : '첫 근거 [vault:Notes/Research.md:1-400]',
+        '근거 [vault:fixtures/parts.md:1-1] [vault:fixtures/parts.md:401-800]',
       );
     });
-
     const result = await new VaultResearchAgent({ chat }, runtime).run({
-      question: '창세기 관련 모든 내용을 조사해줘',
+      question: 'copper relay 점검을 비교해줘',
     });
-    const batchPrompt = prompts.find((prompt) =>
-      prompt.includes('Analyze this locally selected vault-evidence batch.'),
+    const prompt = prompts.find((value) =>
+      value.includes('Analyze this locally selected vault-evidence batch.'),
     );
-
-    expect(batchPrompt).toContain('vault:Notes/Research.md:1-400');
-    expect(batchPrompt).not.toContain('vault:Notes/Research.md:401-800');
-    expect(batchPrompt).not.toContain('OMITTED_SECOND_SEGMENT');
-    expect(result.providerTransfer).toMatchObject({ sentFiles: 1, sentSegments: 1 });
-    expect(result.providerTransfer.sentChars).toBe(9_000);
+    expect(prompt).toContain('vault:fixtures/parts.md:1-1');
+    expect(prompt).not.toContain('vault:fixtures/parts.md:1-400');
+    expect(prompt).toContain('vault:fixtures/parts.md:401-800');
+    expect(prompt).toContain('FOLLOWUP_SEGMENT');
+    expect(prompt).not.toContain('UNSENT_SEGMENT');
+    expect(prompt).not.toContain('vault:fixtures/parts.md:801-1200');
+    expect(result.providerTransfer).toMatchObject({ sentFiles: 1, sentSegments: 2 });
+    expect(result.providerTransfer.sentChars).toBeLessThan(9_000);
     expect(result.citations.map((citation) => citation.id)).toEqual([
-      'vault:Notes/Research.md:1-400',
+      'vault:fixtures/parts.md:1-1',
+      'vault:fixtures/parts.md:401-800',
     ]);
   });
 

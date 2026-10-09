@@ -62,7 +62,7 @@ describe('Ternlight worker runtime', () => {
     expect(factory.terminated).toHaveBeenCalledTimes(0);
   });
 
-  it('terminates the worker when an embedding request is cancelled', async () => {
+  it('임베딩 취소는 요청만 거부하고 작업자는 보존한다', async () => {
     const factory = createFakeWorkerFactory(() => new Promise<number[][]>(() => undefined));
     const controller = new AbortController();
     const embedding = embedTernlightBatch(
@@ -74,19 +74,24 @@ describe('Ternlight worker runtime', () => {
     controller.abort();
 
     await expect(embedding).rejects.toMatchObject({ name: 'AbortError' });
-    expect(factory.terminated).toHaveBeenCalledTimes(1);
+    expect(factory.terminated).not.toHaveBeenCalled();
   });
 });
 
 function createRuntimeOptions(createWorker: TernlightWorkerFactory, version = 'worker-test') {
   const bytes = readFileSync(join(process.cwd(), TERNLIGHT_MODEL_FILE_NAME));
   const model = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const localStorage = new Map<string, unknown>();
   return {
     app: {
+      loadLocalStorage: (key: string) => localStorage.get(key),
+      saveLocalStorage: (key: string, value: unknown) => localStorage.set(key, value),
       vault: {
         configDir: '.obsidian',
         adapter: {
-          exists: vi.fn().mockResolvedValue(true),
+          exists: vi.fn((path: string) =>
+            Promise.resolve(path.endsWith(TERNLIGHT_MODEL_FILE_NAME)),
+          ),
           readBinary: vi.fn().mockResolvedValue(model),
           writeBinary: vi.fn(),
           remove: vi.fn(),

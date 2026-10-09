@@ -7,6 +7,25 @@ const EVENT_LOG_PATH = `${PLUGIN_DIRECTORY}/agent-diagnostics.ndjson`;
 const LEGACY_DIRECTORY = '.superpower-inside';
 
 describe('plugin-owned file maintenance', () => {
+  it('시작 시 구형 디렉터리를 제외하면 임시 파일도 사용자 선택까지 유지한다', async () => {
+    const legacyTemp = `${LEGACY_DIRECTORY}/vectors.json.tmp.1`;
+    const pluginTemp = `${PLUGIN_DIRECTORY}/agent-diagnostics.json.tmp.1`;
+    const adapter = new MaintenanceAdapter({
+      [legacyTemp]: file(1, 10),
+      [pluginTemp]: file(1, 10),
+    });
+    const result = await maintainPluginOwnedFiles({
+      adapter: adapter.asDataAdapter(),
+      pluginDirectory: PLUGIN_DIRECTORY,
+      eventLogPath: EVENT_LOG_PATH,
+      includeLegacyDirectory: false,
+      now: 10_000,
+      staleTempAgeMs: 1_000,
+    });
+    expect(result.deletedPaths).toEqual([pluginTemp]);
+    expect(adapter.has(legacyTemp)).toBe(true);
+  });
+
   it('removes stale plugin temps while preserving settings and user files', async () => {
     const adapter = new MaintenanceAdapter({
       [`${PLUGIN_DIRECTORY}/agent-diagnostics.json.tmp.1`]: file(1, 10),

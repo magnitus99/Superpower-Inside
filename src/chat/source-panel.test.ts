@@ -1,12 +1,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLanguage } from '../i18n';
+import { planModelContextRust } from '../rag/rust-core';
 import {
   SourcePanel,
   createCitationSectionView,
+  createCitationMarkerView,
   createContextAttachmentChipViews,
   createContextBudgetView,
   createDataBoundaryView,
   createSourceWarningViews,
+  shouldRenderContextBudget,
 } from './source-panel';
 import type {
   ContextAttachment,
@@ -155,8 +158,159 @@ afterAll(() => {
 });
 
 describe('SourcePanel view model contract', () => {
+  it('검색 범위를 첨부한 문서 수로 표시하지 않고 모델 기본값과 예약 공간을 구분한다', () => {
+    setLanguage('ko');
+    const scope = createContextAttachmentChipViews([
+      {
+        id: 'folder:docs',
+        type: 'folder',
+        name: 'docs',
+        label: 'docs',
+        status: 'attached',
+        scopeOnly: true,
+        fileCount: 19,
+        sourceIds: [],
+      },
+    ]);
+    expect(scope[0].label).toBe('docs 범위에서 검색');
+    expect(scope[0].label).not.toContain('19');
+    const snapshot = {
+      maxChars: 6000,
+      usedChars: 0,
+      attachmentCount: 1,
+      citationCount: 0,
+      truncated: false,
+      modelContext: planModelContextRust({})!,
+    };
+    expect(createContextBudgetView(snapshot).detailText).toContain('50,000토큰');
+    expect(createContextBudgetView(snapshot).detailText).toContain('정보 없음, 기본값');
+    expect(shouldRenderContextBudget(snapshot)).toBe(true);
+    setLanguage('en');
+  });
+  it('한영 모델 한도와 출력 한도 숫자를 천 단위로 구분하고 계산 방식은 표시하지 않는다', () => {
+    const snapshot = {
+      maxChars: 6000,
+      usedChars: 0,
+      attachmentCount: 1,
+      citationCount: 0,
+      truncated: false,
+      modelContext: planModelContextRust({ contextLength: 128_000 })!,
+    };
+    for (const language of ['ko', 'en'] as const) {
+      setLanguage(language);
+      const detail = createContextBudgetView(snapshot).detailText;
+      expect(detail).toContain('128,000');
+      expect(detail).toContain('4,096');
+      expect(detail).not.toMatch(/UTF|bytes|바이트/iu);
+      expect(detail).not.toMatch(/예약|reserved/iu);
+    }
+  });
+  it('공급자 출력 한도와 기본값을 구분하고 네이티브 출력에는 임의 한도를 표시하지 않는다', () => {
+    const snapshot = {
+      maxChars: 6000,
+      usedChars: 0,
+      attachmentCount: 1,
+      citationCount: 0,
+      truncated: false,
+      modelContext: planModelContextRust({ contextLength: 128_000, maxOutputTokens: 65_536 })!,
+    };
+    setLanguage('ko');
+    expect(createContextBudgetView(snapshot).detailText).toContain(
+      '출력 한도 65,536토큰 (공급자 정보)',
+    );
+    snapshot.modelContext = planModelContextRust({ maxInputTokens: 128_000 })!;
+    expect(createContextBudgetView(snapshot).detailText).toContain('입력 한도 128,000토큰');
+    expect(createContextBudgetView(snapshot).detailText).toContain(
+      '출력 한도 4,096토큰 (정보 없음, 기본값)',
+    );
+    snapshot.modelContext = planModelContextRust({ contextLength: 128_000, nativeOutput: true })!;
+    expect(createContextBudgetView(snapshot).detailText).toContain('출력은 모델 기본 동작');
+    expect(createContextBudgetView(snapshot).detailText).not.toContain('4,096');
+  });
   beforeEach(() => {
     setLanguage('en');
+  });
+
+  it('내부 출처 ID 대신 합성 파일 경로와 원문 범위를 표시한다', () => {
+    setLanguage('ko');
+    const view = createCitationMarkerView({
+      id: 'folder-7',
+      filePath: 'fixtures/parts.md',
+      line: 12,
+      endLine: 14,
+      status: 'verified',
+      preview: '합성 부품 설명',
+    });
+    expect(view.label).toBe('fixtures/parts.md · 12–14행');
+    expect(view.ariaLabel).toBe('fixtures/parts.md · 12–14행 출처로 이동');
+    expect(JSON.stringify(view)).not.toContain('folder-7');
+  });
+
+  it('출처 위치가 없거나 단일 행이면 내부 번호나 중복 범위를 표시하지 않는다', () => {
+    const citation: SourceCitation = {
+      id: 'rag-1',
+      filePath: 'Notes/A.md',
+      preview: '',
+    };
+    expect(createCitationMarkerView(citation).label).toBe('Notes/A.md');
+    expect(createCitationMarkerView({ ...citation, line: 3, endLine: 3 }).label).toBe(
+      'Notes/A.md · line 3',
+    );
+    expect(createCitationMarkerView({ ...citation, line: 3, endLine: 6 }).label).toBe(
+      'Notes/A.md · line 3–6',
+    );
+  });
+
+  it('실제 출처 패널의 첨부 표시 경로에서 포함·부분 포함·연결 실패 상태를 보존한다', () => {
+    expect(
+      createContextAttachmentChipViews([
+        {
+          id: 'file:Notes/A.md',
+          type: 'file',
+          name: 'Notes/A.md',
+          label: 'Notes/A.md',
+          status: 'attached',
+          pinned: true,
+          actualChars: 1180,
+        },
+        {
+          id: 'rag:auto',
+          type: 'rag',
+          name: 'auto',
+          label: 'Related notes',
+          status: 'partial',
+          sourceIds: ['rag-1'],
+          detail: 'Some candidates left out',
+        },
+        {
+          id: 'mcp:search',
+          type: 'mcp-server',
+          name: 'search',
+          label: 'search',
+          status: 'missing',
+          excluded: true,
+        },
+      ]),
+    ).toEqual([
+      {
+        id: 'file:Notes/A.md',
+        className: 'superpower-inside-chat-context-chip file attached',
+        label: 'Notes/A.md',
+        title: undefined,
+      },
+      {
+        id: 'rag:auto',
+        className: 'superpower-inside-chat-context-chip rag partial',
+        label: 'Checked 1 related note',
+        title: 'Found related notes automatically.',
+      },
+      {
+        id: 'mcp:search',
+        className: 'superpower-inside-chat-context-chip mcp-server missing',
+        label: 'Tool unavailable: search',
+        title: undefined,
+      },
+    ]);
   });
 
   it('presents sources as checked evidence instead of retrieval internals', () => {
@@ -173,15 +327,14 @@ describe('SourcePanel view model contract', () => {
         previewTruncated: true,
       },
       {
-        id: 'graph-1',
-        filePath: 'graph://community/product-philosophy',
+        id: 'rag-2',
+        filePath: 'Notes/Links.md',
         status: 'verified',
-        preview: 'Related themes are connected in the knowledge graph.',
-        graphType: 'community',
-        selectionReason: 'strong-graph-evidence',
+        selectionReason: 'strong-structural-evidence',
+        preview: '현재 연결된 노트 원문',
       },
       {
-        id: 'rag-2',
+        id: 'rag-3',
         filePath: 'Notes/Old.md',
         status: 'stale',
         detail: 'The note changed after this context was prepared.',
@@ -202,7 +355,6 @@ describe('SourcePanel view model contract', () => {
     );
     expect(view.cards[1]).toEqual(
       expect.objectContaining({
-        graphKindText: 'Knowledge theme',
         metaText: 'strong relationship match',
       }),
     );
@@ -214,7 +366,6 @@ describe('SourcePanel view model contract', () => {
     );
 
     const renderedText = JSON.stringify(view);
-    expect(renderedText).not.toContain('GraphRAG');
     expect(renderedText).not.toContain('vector');
     expect(renderedText).not.toContain('relevance 0.812');
   });
@@ -241,14 +392,6 @@ describe('SourcePanel view model contract', () => {
         detail: 'Only part of the folder was attached to fit the context budget.',
       },
       {
-        id: 'graph-rag:auto',
-        type: 'graph-rag',
-        name: 'auto',
-        label: 'GraphRAG 1 entity',
-        status: 'attached',
-        sourceIds: ['graph-1'],
-      },
-      {
         id: 'rag:skipped',
         type: 'rag',
         name: 'auto',
@@ -273,18 +416,52 @@ describe('SourcePanel view model contract', () => {
         title: 'Only the part that fit was included.',
       },
       {
-        id: 'graph-rag:auto',
-        className: 'superpower-inside-chat-context-chip graph-rag attached',
-        label: 'Checked knowledge graph',
-        title: undefined,
-      },
-      {
         id: 'rag:skipped',
         className: 'superpower-inside-chat-context-chip rag skipped',
         label: 'Vault search skipped',
         title: 'Vault search was skipped for this question.',
       },
     ]);
+  });
+
+  it('이미 첨부된 검색 근거와 검색 오류를 빈 결과와 구분한다', () => {
+    const views = createContextAttachmentChipViews([
+      {
+        id: 'covered',
+        type: 'rag',
+        name: 'auto',
+        label: 'RAG',
+        status: 'low-relevance',
+        alreadyAttached: true,
+        detail: 'Existing evidence covers these ranges.',
+      },
+      {
+        id: 'failed',
+        type: 'rag',
+        name: 'auto',
+        label: 'RAG',
+        status: 'error',
+        detail: 'Search timed out.',
+      },
+      {
+        id: 'full',
+        type: 'rag',
+        name: 'auto',
+        label: 'RAG',
+        status: 'partial',
+        sourceIds: [],
+        detail: 'Context budget is full.',
+      },
+    ]);
+    expect(views[0]).toEqual({
+      id: 'covered',
+      className: 'superpower-inside-chat-context-chip rag attached',
+      label: 'Related evidence already attached',
+      title: 'Existing evidence covers these ranges.',
+    });
+    expect(views[1]?.label).toBe('Related note search failed');
+    expect(views[2]?.label).toBe('Context attachment limit reached');
+    expect(views[2]?.title).toBe('Context budget is full.');
   });
 
   it('keeps diagnostics available without turning the answer into an index dashboard', () => {
@@ -295,7 +472,7 @@ describe('SourcePanel view model contract', () => {
         attachmentCount: 4,
         citationCount: 2,
         truncated: true,
-        includedAttachmentIds: ['file:a', 'rag:auto', 'graph:auto'],
+        includedAttachmentIds: ['file:a', 'rag:auto', 'server:local'],
         excludedAttachmentIds: ['rag:old'],
       }),
     ).toEqual({
@@ -320,7 +497,7 @@ describe('SourcePanel view model contract', () => {
       localLabel: 'Kept on this device',
       mcpLabel: 'Tools contacted',
       providerItems: ['Answer instructions', '3 notes and references', '2 source previews'],
-      localItems: ['Draft and source-card state'],
+      localItems: ['Draft and source state'],
       mcpItems: ['search'],
       privacyNotes: ['1 item was left out and was not sent.'],
     });
@@ -345,6 +522,31 @@ describe('SourcePanel view model contract', () => {
         repairActionText: 'Check source',
       },
     ]);
+  });
+
+  it('정상적으로 모두 포함된 컨텍스트 예산은 숨기고 축약이나 제외가 있을 때만 표시한다', () => {
+    expect(
+      shouldRenderContextBudget({
+        maxChars: 10_000,
+        usedChars: 2_000,
+        attachmentCount: 2,
+        citationCount: 0,
+        includedAttachmentIds: ['a', 'b'],
+        excludedAttachmentIds: [],
+        truncated: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRenderContextBudget({
+        maxChars: 10_000,
+        usedChars: 9_500,
+        attachmentCount: 2,
+        citationCount: 0,
+        includedAttachmentIds: ['a'],
+        excludedAttachmentIds: ['b'],
+        truncated: true,
+      }),
+    ).toBe(true);
   });
 });
 
@@ -420,6 +622,35 @@ describe('SourcePanel disclosure DOM contract', () => {
     expect(
       container.querySelector<HTMLElement>('.superpower-inside-chat-citations-content')?.hidden,
     ).toBe(true);
+  });
+
+  it('sources tab 안에서는 중복 disclosure 없이 출처 목록을 바로 표시한다', () => {
+    const panel = new SourcePanel({
+      setIcon: vi.fn(),
+      openCitation: vi.fn(),
+      copyCitationLink: vi.fn(),
+      insertCitation: vi.fn(),
+    });
+    const container = new TestHTMLElement() as unknown as HTMLElement;
+
+    panel.renderCitationsSection(
+      container,
+      [
+        {
+          id: 'rag-1',
+          filePath: 'Notes/A.md',
+          status: 'verified',
+          preview: 'First source',
+        },
+      ],
+      { mode: 'embedded' },
+    );
+
+    expect(container.querySelector('.superpower-inside-chat-citations-label') === null).toBe(true);
+    expect(
+      container.querySelector<HTMLElement>('.superpower-inside-chat-citations-content')?.hidden,
+    ).toBe(false);
+    expect(container.querySelector('.superpower-inside-chat-citation-card') !== null).toBe(true);
   });
 
   it('renders the data boundary as an accessible state-preserving disclosure', () => {

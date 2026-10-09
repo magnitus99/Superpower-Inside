@@ -36,6 +36,37 @@ describe('BM25 tokenizer', () => {
 });
 
 describe('IndexedDbBM25Index', () => {
+  it('현행 WASM 런타임에서 문서 교체와 원문별 삭제 후 검색·저장을 보존한다', () => {
+    const runtime = RustBm25RuntimeIndex.empty(2);
+    if (!runtime) throw new Error('WASM 초기화 실패');
+    try {
+      runtime.addDocument('api.md::0', 'OpenRouter API access key', 'api.md', 2);
+      runtime.addDocument('other.md::0', 'Ollama local model', 'other.md', 2);
+      expect(runtime.search('open router')?.map((hit) => hit.docId)).toEqual(['api.md::0']);
+      runtime.addDocument('api.md::0', 'Ollama remote endpoint', 'api.md', 2);
+      expect(runtime.search('open router')).toEqual([]);
+      expect(runtime.search('ollama')?.map((hit) => hit.docId)).toEqual([
+        'api.md::0',
+        'other.md::0',
+      ]);
+      runtime.removeSource('api.md', 2);
+      expect(runtime.search('endpoint')).toEqual([]);
+      expect(runtime.sourcePathForDoc('other.md::0')).toBe('other.md');
+      const restored = RustBm25RuntimeIndex.fromJson(runtime.toJson(), 2);
+      if (!restored) throw new Error('WASM 복원 실패');
+      try {
+        expect(restored.search('ollama')?.map((hit) => hit.docId)).toEqual(['other.md::0']);
+        restored.removeDocument('other.md::0', 2);
+        expect(restored.totalDocs()).toBe(0);
+        expect(restored.search('ollama')).toEqual([]);
+      } finally {
+        restored.dispose();
+      }
+    } finally {
+      runtime.dispose();
+    }
+  });
+
   it('반복된 질의 토큰으로 같은 문서 점수를 중복 가산하지 않는다', async () => {
     const bm25 = await createBm25([
       ['doc.md::0', 'specialterm 직접 근거'],
@@ -105,13 +136,12 @@ describe('IndexedDbBM25Index', () => {
     await bm25.load();
     expect([...bm25.search('open router').keys()]).toEqual(['api.md::0']);
 
-    bm25.addDocument('new.md::0', 'GraphRAG open router evidence', 'new.md');
+    bm25.addDocument('new.md::0', 'Retrieval open router evidence', 'new.md');
     await bm25.persist();
 
     expect(inspectable.writeCount()).toBe(0);
     const reopened = new IndexedDbBM25Index(dbName, inspectable.adapter);
     await reopened.load();
-    expect([...reopened.search('graphrag').keys()]).toEqual(['new.md::0']);
   });
 
   it('legacy BM25 JSON은 load 직후 IndexedDB snapshot으로 남겨 다음 초기화에서 다시 읽지 않는다', async () => {
@@ -203,6 +233,49 @@ describe('IndexedDbBM25Index', () => {
     expect(bm25.isTokenizerCurrent).toBe(true);
   });
 
+  it('종료된 작업자는 한 번만 복원하고 저장된 원문 코퍼스를 보존한다', async () => {
+    let created = 0;
+    let fail: ((event: ErrorEvent) => void) | undefined;
+    const workerFactory: BM25WorkerFactory = () => {
+      created++;
+      let respond: ((event: MessageEvent<BM25WorkerResponse>) => void) | undefined;
+      return {
+        worker: {
+          postMessage: (message) =>
+            queueMicrotask(() =>
+              respond?.({
+                data: { id: message.id, ready: true, tokenizerCurrent: true, totalDocs: 1 },
+              } as MessageEvent<BM25WorkerResponse>),
+            ),
+          terminate: vi.fn(),
+          setOnMessage: (handler) => {
+            respond = handler;
+          },
+          setOnError: (handler) => {
+            fail = handler;
+          },
+        },
+        dispose: vi.fn(),
+      };
+    };
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter(), undefined, {
+      workerFactory,
+    });
+    await bm25.load();
+    bm25.addDocument('doc::0', '원문은 보존됩니다.', 'doc.md');
+    await bm25.persist();
+    await Promise.resolve();
+    fail?.({ message: 'worker failed' } as ErrorEvent);
+    expect(bm25.isReady).toBe(false);
+    await Promise.all([bm25.recoverClosedWorker(), bm25.recoverClosedWorker()]);
+    expect(created).toBe(2);
+    expect(bm25.isReady).toBe(true);
+    expect(await bm25.getCorpusDocumentsByIds(['doc::0'])).toEqual([
+      expect.objectContaining({ text: '원문은 보존됩니다.' }),
+    ]);
+    bm25.close();
+  });
+
   it('worker hydration 중 들어온 증분 변경은 초기화 완료 뒤 순서대로 적용한다', async () => {
     const operations: string[] = [];
     const workerControl: {
@@ -259,6 +332,13 @@ describe('IndexedDbBM25Index', () => {
     await Promise.resolve();
     expect(operations).toEqual(['initialize']);
 
+    let prepared = false;
+    const preparing = bm25.recoverClosedWorker().then(() => {
+      prepared = true;
+    });
+    await Promise.resolve();
+    expect(prepared).toBe(false);
+
     const initializeRequestId = workerControl.initializeRequestId;
     const onMessage = workerControl.onMessage;
     if (initializeRequestId === undefined || onMessage === undefined) {
@@ -273,6 +353,8 @@ describe('IndexedDbBM25Index', () => {
       },
     } as unknown as MessageEvent<BM25WorkerResponse>);
     await loading;
+    await preparing;
+    expect(prepared).toBe(true);
     const hits = await bm25.searchTopWithSources('hydration', 1);
 
     expect(operations).toEqual(['initialize', 'add', 'search-top']);

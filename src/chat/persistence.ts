@@ -213,21 +213,6 @@ export function listChats(vault: Vault, folderPath: string): TFile[] {
   return files;
 }
 
-export function listChatMetas(vault: Vault, folderPath: string): ChatSessionMeta[] {
-  const files = listChats(vault, folderPath);
-  const metas: ChatSessionMeta[] = [];
-  for (const file of files) {
-    metas.push({
-      filePath: file.path,
-      title: file.basename,
-      created: new Date(file.stat.mtime).toISOString(),
-      messageCount: 0,
-    });
-  }
-  metas.sort((a, b) => b.created.localeCompare(a.created));
-  return metas;
-}
-
 export async function listChatMetasAsync(
   vault: Vault,
   folderPath: string,
@@ -326,6 +311,10 @@ function compactToolCallRecord(toolCall: ToolCallRecord): ToolCallRecord {
     compacted.resumePayloadSource = 'resultSummary';
   }
   if (toolCall.serverName !== undefined) compacted.serverName = toolCall.serverName;
+  if (toolCall.actualToolName !== undefined) compacted.actualToolName = toolCall.actualToolName;
+  if (toolCall.mcpBindingSource !== undefined) {
+    compacted.mcpBindingSource = toolCall.mcpBindingSource;
+  }
   if (toolCall.approved !== undefined) compacted.approved = toolCall.approved;
   if (toolCall.executionKind !== undefined) compacted.executionKind = toolCall.executionKind;
   if (toolCall.citations !== undefined) compacted.citations = toolCall.citations;

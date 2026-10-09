@@ -98,6 +98,24 @@ describe('runActionWithFeedback', () => {
     expect(button.disabled).toBe(false);
     expect(button.textContent).toBe('실행');
   });
+  it('실패 결과도 연결된 화면에 error 상태를 전파한다', async () => {
+    const button = createButton();
+    const emitted: { domain: RefreshDomain; status: string; detail?: string }[] = [];
+
+    const result = await runActionWithFeedback({
+      button,
+      refreshBus: {
+        emit: (domain, payload) => emitted.push({ domain, status: payload.status, detail: payload.detail }),
+      },
+      refreshDomains: ['rag'],
+      action: () => {
+        throw new Error('동기화 실패');
+      },
+    });
+
+    expect(result).toEqual({ status: 'error', detail: '동기화 실패' });
+    expect(emitted).toEqual([{ domain: 'rag', status: 'error', detail: '동기화 실패' }]);
+  });
 
   it('원래 disabled였던 버튼은 완료 후 disabled 상태를 유지한다', async () => {
     const button = createButton();

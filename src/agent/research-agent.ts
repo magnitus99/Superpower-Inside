@@ -1,8 +1,10 @@
 import type { ChatMessage, ChatOptions, ToolDefinition } from '../llm/providers';
 import {
+  isScopedVaultResearchIntentRust,
   deriveResearchCoverageReceiptRust,
   isWholeVaultResearchIntentRust,
   planContextBudgetAppendRust,
+  planChatEvidenceRust,
   planFolderLexicalEvidenceIndicesRust,
   planResearchAnswerContractRust,
   planResearchCandidateSelectionRust,
@@ -33,6 +35,7 @@ const SEGMENT_PLAN_BUDGET = {
 } as const;
 
 export interface VaultResearchModel {
+  readonly contextBudget?: import('../rag/rust-core').ModelContextBudget;
   chat(
     messages: ChatMessage[],
     temperature?: number,
@@ -51,7 +54,11 @@ export interface VaultResearchProgress {
 }
 
 export interface VaultResearchRunOptions {
+  scopePath?: string;
+  searchQuestion?: string;
   question: string;
+  /** 내부 추출과 분리해 최종 답변 및 교정에만 적용하는 유효 사용자 지침입니다. */
+  systemPrompt?: string;
   previousUserQuestions?: readonly string[];
   signal?: AbortSignal;
   onProgress?: (progress: VaultResearchProgress) => void;
@@ -93,6 +100,8 @@ interface VaultListPayload {
 }
 
 interface VaultReadPayload {
+  nextStartLine?: number | null;
+  nextStartOffset?: number | null;
   action: 'read';
   path: string;
   startLine: number;
@@ -146,6 +155,10 @@ export function isWholeVaultResearchRequest(question: string): boolean {
   return isWholeVaultResearchIntentRust(question) === true;
 }
 
+export function isScopedVaultResearchRequest(question: string): boolean {
+  return isScopedVaultResearchIntentRust(question) === true;
+}
+
 export function getVaultResearchPhaseLabel(phase: VaultResearchPhase): string {
   switch (phase) {
     case 'inventory':
@@ -160,6 +173,8 @@ export function getVaultResearchPhaseLabel(phase: VaultResearchPhase): string {
 }
 
 export class VaultResearchAgent {
+  private readonly batchMaxChars: number;
+  private readonly fileMaxChars: number;
   private readonly wait: (delayMs: number, signal?: AbortSignal) => Promise<void>;
 
   constructor(
@@ -168,22 +183,25 @@ export class VaultResearchAgent {
     dependencies: VaultResearchAgentDependencies = {},
   ) {
     this.wait = dependencies.wait ?? waitForDelay;
+    this.batchMaxChars = model.contextBudget?.evidenceChars ?? PROVIDER_BATCH_MAX_CHARS;
+    this.fileMaxChars = model.contextBudget?.researchFileChars ?? PROVIDER_MAX_CHARS_PER_FILE;
   }
 
   async run(options: VaultResearchRunOptions): Promise<VaultResearchResult> {
     throwIfAborted(options.signal);
     const previousUserQuestions = [...(options.previousUserQuestions ?? [])];
     options.onProgress?.({ phase: 'inventory', completedFiles: 0, totalFiles: 0 });
-    const inventory = await this.listAllFiles(options.signal);
+    const inventory = await this.listAllFiles(options.signal, options.scopePath);
     const localScreen = await this.screenFilesLocally(
       inventory.files,
-      options.question,
+      options.searchQuestion ?? options.question,
       previousUserQuestions,
       options,
     );
     const selection = requireCandidateSelection({
-      currentQuestion: options.question,
+      currentQuestion: options.searchQuestion ?? options.question,
       previousUserQuestions,
+      providerBudget: this.model.contextBudget?.researchProviderBudget,
       paths: inventory.files.map((file) => file.path),
       samples: inventory.files.map(
         (_file, index) => localScreen.evidenceByIndex[index]?.content ?? '',
@@ -268,9 +286,18 @@ export class VaultResearchAgent {
             coverage,
             requestLedger,
             options.signal,
+            [
+              options.systemPrompt,
+              options.scopePath ? t('vaultResearchScope', { path: options.scopePath }) : '',
+            ]
+              .filter(Boolean)
+              .join('\n\n') || undefined,
           );
     const processedFiles = inventory.files.length - localScreen.failedFiles.length;
-    const content = `${formatCoverageStatement(coverage, processedFiles)}\n\n${generatedContent}`;
+    const scope = options.scopePath
+      ? `${t('vaultResearchScope', { path: options.scopePath })}\n`
+      : '';
+    const content = `${scope}${formatCoverageStatement(coverage, processedFiles)}\n\n${generatedContent}`;
     const citations = selectAnswerCitations(content, [...citationsById.values()], 0);
     options.onProgress?.({
       phase: 'complete',
@@ -290,7 +317,7 @@ export class VaultResearchAgent {
     };
   }
 
-  private async listAllFiles(signal?: AbortSignal): Promise<VaultInventory> {
+  private async listAllFiles(signal?: AbortSignal, scopePath?: string): Promise<VaultInventory> {
     const files: VaultFileInventoryItem[] = [];
     const pages: RustResearchInventoryPageInput[] = [];
     let cursor = 0;
@@ -298,7 +325,12 @@ export class VaultResearchAgent {
     while (true) {
       throwIfAborted(signal);
       const result = await this.vaultTool.execute(
-        JSON.stringify({ action: 'list', cursor, limit: LIST_PAGE_SIZE }),
+        JSON.stringify({
+          action: 'list',
+          ...(scopePath ? { path: scopePath } : {}),
+          cursor,
+          limit: LIST_PAGE_SIZE,
+        }),
         signal,
       );
       const payload = parseListPayload(result.modelText);
@@ -410,13 +442,19 @@ export class VaultResearchAgent {
     let retainedSegmentCount = 0;
     let providerOmitted = false;
     let startLine = 1;
+    let startOffset = 0;
     while (true) {
       throwIfAborted(signal);
       let result;
       let payload: VaultReadPayload;
       try {
         result = await this.vaultTool.execute(
-          JSON.stringify({ action: 'read', path: file.path, start_line: startLine }),
+          JSON.stringify({
+            action: 'read',
+            path: file.path,
+            start_line: startLine,
+            ...(startOffset ? { start_offset: startOffset } : {}),
+          }),
           signal,
         );
         payload = parseReadPayload(result.modelText);
@@ -434,22 +472,49 @@ export class VaultResearchAgent {
           .join('\n')}\n`;
         const separator = retainedParts.length > 0 ? '\n\n' : '';
         const part = `${separator}${prefix}${payload.content}`;
-        const transferPlan = planContextBudgetAppendRust(
-          PROVIDER_MAX_CHARS_PER_FILE - retainedChars,
-          part,
-        );
-        if (!transferPlan) throw new Error(t('vaultResearchBatchPlanFailed'));
-        const contentOffset = separator.length + prefix.length;
-        if (transferPlan.appended && transferPlan.text.length > contentOffset) {
-          retainedParts.push(transferPlan.text);
-          retainedChars += transferPlan.text.length;
+        const evidencePlan = planChatEvidenceRust({
+          question,
+          source: { filePath: file.path, text: payload.content, startLine: payload.startLine - 1 },
+          sourceId: 'research-1',
+          label: 'Source',
+          maxChars: this.fileMaxChars - retainedChars,
+          nativeSourceIds: true,
+        });
+        if (!evidencePlan) throw new Error(t('vaultResearchBatchPlanFailed'));
+        if (!evidencePlan.complete && evidencePlan.blocks.length > 0) {
+          for (const block of evidencePlan.blocks) retainedParts.push(`${separator}${block.text}`);
+          retainedChars += evidencePlan.actualChars;
           retainedSegmentCount++;
-          for (const citation of result.citations) citationsById.set(citation.id, citation);
+          for (const citation of evidencePlan.citations) citationsById.set(citation.id, citation);
+          providerOmitted = true;
+        } else {
+          const transferPlan = planContextBudgetAppendRust(this.fileMaxChars - retainedChars, part);
+          if (!transferPlan) throw new Error(t('vaultResearchBatchPlanFailed'));
+          const contentOffset = separator.length + prefix.length;
+          if (transferPlan.appended && transferPlan.text.length > contentOffset) {
+            retainedParts.push(transferPlan.text);
+            retainedChars += transferPlan.text.length;
+            retainedSegmentCount++;
+            for (const citation of result.citations) citationsById.set(citation.id, citation);
+          }
+          if (!transferPlan.complete) providerOmitted = true;
         }
-        if (!transferPlan.complete) providerOmitted = true;
       }
-      if (!payload.truncated || payload.endLine >= payload.totalLines) break;
-      startLine = payload.endLine + 1;
+      if (!payload.truncated) break;
+      if (payload.nextStartLine !== undefined && payload.nextStartLine !== null) {
+        const nextOffset = payload.nextStartOffset ?? 0;
+        if (
+          payload.nextStartLine < startLine ||
+          (payload.nextStartLine === startLine && nextOffset <= startOffset)
+        )
+          throw new Error(t('vaultResearchInvalidReadResult'));
+        startLine = payload.nextStartLine;
+        startOffset = nextOffset;
+      } else {
+        if (payload.endLine >= payload.totalLines) break;
+        startLine = payload.endLine + 1;
+        startOffset = 0;
+      }
     }
     if (retainedSegmentCount === 0) return undefined;
     return {
@@ -484,7 +549,7 @@ export class VaultResearchAgent {
     const batches = planResearchSummaryBatchesRust(
       selectedEvidence.map((evidence) => evidence.content.length),
       selection.providerBudget.batchSize,
-      PROVIDER_BATCH_MAX_CHARS,
+      this.batchMaxChars,
     );
     if (
       !batches ||
@@ -564,7 +629,7 @@ export class VaultResearchAgent {
     while (current.length > 0) {
       throwIfAborted(signal);
       const transferPlan = planContextBudgetAppendRust(
-        PROVIDER_BATCH_MAX_CHARS,
+        this.batchMaxChars,
         formatResearchSummaryBlocks(current),
       );
       if (!transferPlan) throw new Error(t('vaultResearchBatchPlanFailed'));
@@ -573,14 +638,14 @@ export class VaultResearchAgent {
       const batches = planResearchSummaryBatchesRust(
         current.map((summary) => formatResearchSummaryBlock(summary).length + 2),
         maxItems,
-        PROVIDER_BATCH_MAX_CHARS,
+        this.batchMaxChars,
       );
       if (!batches || batches.length === 0) {
         throw new Error(t('vaultResearchBatchPlanFailed'));
       }
       const remainingReductionRequests = getRemainingProviderRequests(requestLedger, 'reduce');
       if (remainingReductionRequests === 0) {
-        return selectFinalSummariesWithinBudget(current);
+        return selectFinalSummariesWithinBudget(current, this.batchMaxChars);
       }
       const processedBatches = batches.slice(0, remainingReductionRequests);
       const next: ResearchSummary[] = [];
@@ -605,7 +670,7 @@ export class VaultResearchAgent {
           );
         } catch (error) {
           if (!(error instanceof VaultResearchProviderBudgetExhaustedError)) throw error;
-          return selectFinalSummariesWithinBudget(current);
+          return selectFinalSummariesWithinBudget(current, this.batchMaxChars);
         }
         next.push({
           label: `reduce-${batchIndex + 1}`,
@@ -632,9 +697,10 @@ export class VaultResearchAgent {
     coverage: RustResearchCoverageReceipt,
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
+    systemPrompt?: string,
   ): Promise<string> {
     const summaryTransferPlan = planContextBudgetAppendRust(
-      PROVIDER_BATCH_MAX_CHARS,
+      this.batchMaxChars,
       formatResearchSummaryBlocks(summaries),
     );
     if (!summaryTransferPlan?.complete) throw new Error(t('vaultResearchBatchPlanFailed'));
@@ -666,12 +732,13 @@ export class VaultResearchAgent {
           .join('\n\n'),
         requestLedger,
         signal,
+        systemPrompt,
       );
     } catch (error) {
       if (!(error instanceof VaultResearchProviderBudgetExhaustedError)) throw error;
       return t('vaultResearchAnswerContractFallback');
     }
-    return this.enforceAnswerContract(generated, coverage, requestLedger, signal);
+    return this.enforceAnswerContract(generated, coverage, requestLedger, signal, systemPrompt);
   }
 
   private async enforceAnswerContract(
@@ -679,6 +746,7 @@ export class VaultResearchAgent {
     coverage: RustResearchCoverageReceipt,
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
+    systemPrompt?: string,
   ): Promise<string> {
     const language = getLanguage();
     const firstPlan = planResearchAnswerContractRust({ answer, language, receipt: coverage });
@@ -699,10 +767,13 @@ export class VaultResearchAgent {
         ].join('\n\n'),
         requestLedger,
         signal,
+        systemPrompt,
       );
     } catch (error) {
       if (!(error instanceof VaultResearchProviderBudgetExhaustedError)) throw error;
-      return t('vaultResearchAnswerContractFallback');
+      return firstPlan.safeAnswer
+        ? `${firstPlan.safeAnswer}\n\n${t('vaultResearchAnswerClaimsRemoved')}`
+        : t('vaultResearchAnswerContractFallback');
     }
     const secondPlan = planResearchAnswerContractRust({
       answer: repaired,
@@ -710,7 +781,13 @@ export class VaultResearchAgent {
       receipt: coverage,
     });
     if (!secondPlan) throw new Error(t('vaultResearchContractUnavailable'));
-    return secondPlan.allowed ? repaired : t('vaultResearchAnswerContractFallback');
+    return secondPlan.allowed
+      ? repaired
+      : secondPlan.safeAnswer
+        ? `${secondPlan.safeAnswer}\n\n${t('vaultResearchAnswerClaimsRemoved')}`
+        : firstPlan.safeAnswer
+          ? `${firstPlan.safeAnswer}\n\n${t('vaultResearchAnswerClaimsRemoved')}`
+          : t('vaultResearchAnswerContractFallback');
   }
 
   private createNoEvidenceContent(
@@ -727,6 +804,7 @@ export class VaultResearchAgent {
     prompt: string,
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
+    systemPrompt?: string,
   ): Promise<string> {
     for (let failedAttempt = 0; ; failedAttempt++) {
       throwIfAborted(signal);
@@ -739,8 +817,13 @@ export class VaultResearchAgent {
           [
             {
               role: 'system',
-              content:
+              content: [
+                systemPrompt,
                 'You are the internal research engine for an Obsidian vault. Use only supplied evidence, preserve source IDs, and never invent coverage.',
+                t('llmEvidenceDataBoundary'),
+              ]
+                .filter(Boolean)
+                .join('\n'),
             },
             { role: 'user', content: prompt },
           ],
@@ -923,9 +1006,10 @@ function formatResearchSummaryBlocks(summaries: readonly ResearchSummary[]): str
 
 function selectFinalSummariesWithinBudget(
   summaries: readonly ResearchSummary[],
+  maxChars: number,
 ): ResearchSummary[] {
   const selected: ResearchSummary[] = [];
-  let remainingChars = PROVIDER_BATCH_MAX_CHARS;
+  let remainingChars = maxChars;
   for (const summary of summaries) {
     const block = `${selected.length > 0 ? '\n\n' : ''}${formatResearchSummaryBlock(summary)}`;
     const transferPlan = planContextBudgetAppendRust(remainingChars, block);
@@ -997,6 +1081,12 @@ function parseReadPayload(modelText: string): VaultReadPayload {
     totalLines: parsed.totalLines,
     truncated: parsed.truncated,
     content: parsed.content,
+    ...(parsed.nextStartLine === null || isNonNegativeInteger(parsed.nextStartLine)
+      ? { nextStartLine: parsed.nextStartLine }
+      : {}),
+    ...(parsed.nextStartOffset === null || isNonNegativeInteger(parsed.nextStartOffset)
+      ? { nextStartOffset: parsed.nextStartOffset }
+      : {}),
   };
 }
 

@@ -17,15 +17,16 @@ describe('Ternlight renderer boundary', () => {
     expect(worker).toContain('texts.map((text) => ternlightGlue.embed(text))');
   });
 
-  it('keeps Ternlight cache memory-only and gates retired storage cleanup behind health checks', () => {
+  it('Ternlight 캐시는 메모리에만 두고 지원 종료 저장소의 자동 삭제는 실행하지 않는다', () => {
     const main = readSource('main.ts');
     const maintenance = readSource('src/rag/storage-maintenance.ts');
 
     expect(main).toContain("persistent: profile.strategy !== 'ternlight'");
     expect(main).toContain('runRagStorageMaintenance');
-    expect(maintenance.indexOf('inspectHealth(host, expectedFingerprint, true)')).toBeLessThan(
-      maintenance.indexOf('const cleanup = await host.cleanupStaleGenerationBatch()'),
-    );
+    expect(maintenance).toContain('inspectHealth(host, expectedFingerprint, true)');
+    expect(maintenance).not.toContain('cleanupStaleGenerationBatch');
+    expect(maintenance).not.toContain('cleanupInactiveVaultDatabaseBatch');
+    expect(maintenance).not.toContain('cleanupLegacyFileArtifacts');
     expect(main).toContain('deleteRagIndexedDbGenerations');
   });
 });

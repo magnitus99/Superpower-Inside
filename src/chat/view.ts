@@ -1,21 +1,14 @@
-import { ItemView, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
-import {
-  buildChatModelOptions,
-  CHAT_PROVIDER_KEYS,
-  getCustomOpenAIProviderDisplayName,
-  getProviderProfileDisplayName,
-  PROVIDER_LABELS,
-  resolveProviderModelRef,
-  type PluginLike,
-  type ProviderKey,
-} from '../settings';
+import { ItemView, Menu, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
+import type { PluginLike } from '../settings';
+import { resolveChatModelState } from './chat-model-state';
+import { buildStoredChatModelRef, prepareChatProviderForModel } from '../llm/provider-resolution';
 import type {
   ChatMessage,
   LLMProvider,
   StreamChunk,
-  ToolCallInfo,
   ToolCallDelta,
   ToolDefinition,
+  ToolChoice,
 } from '../llm/providers';
 import { normalizeReasoningChunk } from '../llm/reasoning';
 import type {
@@ -27,6 +20,11 @@ import type {
 } from './types';
 import type { ContextAttachment, SourceCitation } from './types';
 import { loadChat, saveChat } from './persistence';
+import { summarizeSessionTitle } from './session-title';
+import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
+import { collectTagMentionFiles } from './tag-mentions';
+import { planTagMentionsRust, planPluginAwareIndicesRust } from '../rag/rust-core';
+import { renderComposerReferencePreview } from './composer-reference-preview';
 import { openSessionHistoryModal } from './session-modal';
 import {
   buildChatContext,
@@ -37,11 +35,16 @@ import {
   type ParsedMention,
   type RagQueryLike,
 } from './context';
+import {
+  ExplicitMcpToolDiscoveryError,
+  collectExternalMcpToolDefinitions,
+} from './mcp-tool-catalog';
 import { classifyMcpToolError, normalizeToolResult } from './mcp-tools';
 import {
   appendAssistantToolRound,
   collectCompletedMcpServerNames,
   collectToolCitations,
+  createNativeToolAnswerRepairPrompt,
   enforceNativeToolAnswerContract,
   executeAssistantToolCalls as executeToolCalls,
   joinAssistantToolRoundText,
@@ -50,23 +53,31 @@ import {
   resolveAssistantToolLoopText,
   resolveToolLoopTerminalText,
   selectProviderReinjectableToolCalls,
+  type ToolTranscriptProtocol,
 } from './tool-execution';
 import {
   NativeVaultToolRuntime,
-  createNativeVaultToolDefinition,
+  createNativeVaultToolDefinitions,
   type NativeVaultToolRuntimeLike,
 } from '../agent/native-vault-tool';
 import { ObsidianNativeVaultToolPort } from '../agent/obsidian-native-vault-port';
 import { RagNativeVaultFileScope } from '../agent/rag-native-vault-file-scope';
-import { selectDisplayedAnswerCitations } from '../agent/citation-selection';
+import {
+  selectDisplayedAnswerCitations,
+  selectGroundedRepairCitations,
+} from '../agent/citation-selection';
 import {
   VaultResearchAgent,
   getVaultResearchPhaseLabel,
   isWholeVaultResearchRequest,
+  isScopedVaultResearchRequest,
 } from '../agent/research-agent';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
+import { buildPluginAwareDocumentation } from './plugin-aware-docs';
+import { getActivePluginInfo } from '../utils/obsidian-compat';
+import { confirmWithModal } from '../utils/modal-prompts';
 import { validateAnswerSources } from './source-validation';
 import {
   classifyAssistantResponse,
@@ -83,14 +94,28 @@ import {
   type ChatRecoveryAction,
 } from './chat-error-actions';
 import {
-  createContextPreviewChips,
+  createLiveContextPreviewChips,
   createComposerDraftSnapshot,
   createComposerLoadingState,
   resolveComposerKeyAction,
   type ComposerDraftSnapshot,
 } from './chat-composer';
-import { createChatReadinessSnapshot, type ChatReadinessItem } from './chat-readiness';
-import { createChatMessageMetaItems } from './chat-message-renderer';
+import { evaluateToolTrace } from './quality-evaluation';
+import {
+  createChatReadinessSnapshot,
+  resolveChatReadinessActionButtonState,
+  type ChatReadinessAction,
+  type ChatReadinessItem,
+} from './chat-readiness';
+import {
+  createChatMessageMetaItems,
+  createChatMessageTechnicalSummary,
+} from './chat-message-renderer';
+import {
+  createAssistantResponseLayout,
+  type AssistantResponseLayoutController,
+  type AssistantResponseLayoutState,
+} from './assistant-response-layout';
 import {
   CHAT_MESSAGE_ACTION_ATTRIBUTE,
   createChatMessageActionId,
@@ -98,7 +123,7 @@ import {
   createRecoveryMessageActionId,
 } from './chat-message-actions';
 import { createStreamingRenderPlan, STREAMING_CURSOR_CLASS } from './chat-streaming-renderer';
-import { expandVaultSearchQueryLocally } from './vault-query-expansion';
+import { expandVaultSearchPlan } from './vault-query-expansion';
 import {
   createDataBoundarySnapshot,
   createResearchDataBoundarySnapshot,
@@ -117,8 +142,9 @@ import { SourcePanel } from './source-panel';
 import { ToolCallPanel } from './tool-call-panel';
 import {
   createCompatibilityToolPrompt,
-  createNativeVaultEvidencePrompt,
-  parseCompatibilityToolResponse,
+  createToolEvidencePrompt,
+  parseCompatibilityToolTurn,
+  sanitizeNonExecutingToolTurn,
 } from './tool-protocol';
 import {
   createToolApprovalResumePlan,
@@ -134,11 +160,22 @@ import {
 } from './turn-state';
 import { t } from '../i18n';
 import { RefreshAction } from '../utils/refresh-action';
+import { runActionWithFeedback } from '../utils/action-feedback';
 import { isDomInstance } from '../utils/dom';
 import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
 import { MCP_STATUS_CHANGE_EVENT } from '../mcp/connection-state';
+import { planNativeToolCompatibilityFallbackRust } from '../rag/rust-core';
 import { prepareLoadedSessionMessages } from './session-recovery';
+import { buildProviderConversation } from './provider-conversation';
+import { prepareProviderRequest } from '../llm/request-budget';
+import {
+  appendAgenticCheckpoint,
+  planAgenticToolTurn,
+  selectAgenticToolDefinitions,
+} from './tool-orchestration';
+import { selectBoundedToolDefinitions } from './tool-catalog-budget';
+import { createMcpToolBindingAllowlist } from './mcp-tool-wire';
 import {
   isChatRunActive,
   isChatRunOwner,
@@ -148,6 +185,8 @@ import {
 
 export const CHAT_VIEW_TYPE = 'superpower-inside-chat';
 const HIDDEN_CLASS = 'superpower-inside-hidden';
+const MAX_TOOL_CALLS_PER_ROUND = 8;
+const MAX_TOOL_CALLS_PER_TURN = 64;
 const MENTION_TOP_VAR = '--superpower-inside-mention-top';
 const MENTION_BOTTOM_VAR = '--superpower-inside-mention-bottom';
 const CHAT_INPUT_HEIGHT_VAR = '--superpower-inside-chat-input-height';
@@ -222,13 +261,17 @@ export class ChatView extends ItemView {
   private mcpStatusBar: HTMLElement | null;
   private readinessEl: HTMLElement | null;
   private runControlEl: HTMLElement | null;
-  private stopAllBtn: HTMLButtonElement | null;
   private modelSelectEl: HTMLSelectElement | null;
+  private pendingReadinessAction: ChatReadinessAction | null;
   private contextPreviewEl: HTMLElement | null;
   private mentionDropdown: HTMLElement | null;
   private mentionQuery: string;
   private mentionSelectedIndex: number;
-  private mentionItems: { label: string; value: string; type: 'server' | 'file' | 'folder' }[];
+  private mentionItems: {
+    label: string;
+    value: string;
+    type: 'workspace' | 'server' | 'file' | 'folder' | 'tag';
+  }[];
   private mentionStartIndex: number;
   private readonly mentionDropdownId: string;
   private abortController: AbortController | null;
@@ -240,7 +283,12 @@ export class ChatView extends ItemView {
   private pendingRegeneration: RegenerationDraft | null;
   private readonly sourcePanel: SourcePanel;
   private readonly toolCallPanel: ToolCallPanel;
+  private readonly assistantResponseLayouts = new WeakMap<
+    HTMLElement,
+    AssistantResponseLayoutController
+  >();
   private readonly nativeVaultTool: NativeVaultToolRuntimeLike;
+  private readonly compatibilityToolModels: Set<string>;
   private lastStreamingMarkdownAt: number;
   private localToolCallSequence: number;
 
@@ -275,8 +323,8 @@ export class ChatView extends ItemView {
     this.mcpStatusBar = null;
     this.readinessEl = null;
     this.runControlEl = null;
-    this.stopAllBtn = null;
     this.modelSelectEl = null;
+    this.pendingReadinessAction = null;
     this.contextPreviewEl = null;
     this.mentionDropdown = null;
     this.mentionQuery = '';
@@ -294,6 +342,7 @@ export class ChatView extends ItemView {
     this.pendingRegeneration = null;
     this.lastStreamingMarkdownAt = 0;
     this.localToolCallSequence = 0;
+    this.compatibilityToolModels = new Set();
     this.nativeVaultTool = new NativeVaultToolRuntime(
       new ObsidianNativeVaultToolPort(
         this.app,
@@ -303,6 +352,9 @@ export class ChatView extends ItemView {
           () => this.plugin.settings.chat,
         ),
         () => this.plugin.ragEngine,
+        this.plugin.getSourceFileProcessingStatus
+          ? (files) => this.plugin.getSourceFileProcessingStatus?.(files) ?? Promise.resolve(null)
+          : undefined,
       ),
     );
     this.sourcePanel = new SourcePanel({
@@ -313,6 +365,7 @@ export class ChatView extends ItemView {
       repairSourceWarning: (warning) => this.repairSourceWarning(warning),
     });
     this.toolCallPanel = new ToolCallPanel({
+      setIcon: (element, icon) => setIcon(element, icon),
       approveToolCall: (messageId, toolCallId) => this.approveToolCall(messageId, toolCallId),
       renderMarkdown: (container, content) => this.renderMarkdownBubble(container, content),
     });
@@ -366,6 +419,13 @@ export class ChatView extends ItemView {
     });
 
     this.buildInputArea(root);
+    const refreshReferences = (): void => this.renderContextPreview(this.inputArea?.value ?? '');
+    this.registerEvent(this.app.workspace.on('file-open', refreshReferences));
+    this.registerEvent(this.app.workspace.on('layout-change', refreshReferences));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', refreshReferences));
+    this.registerEvent(this.app.vault.on('create', refreshReferences));
+    this.registerEvent(this.app.vault.on('delete', refreshReferences));
+    this.registerEvent(this.app.vault.on('rename', refreshReferences));
     this.registerMcpStatusEvents();
     this.registerSessionFileEvents();
     this.registerRefreshBusEvents();
@@ -419,6 +479,9 @@ export class ChatView extends ItemView {
   }
 
   private renderEmptyState(): void {
+    if (this.emptyStateEl && !this.emptyStateEl.isConnected) {
+      this.emptyStateEl = null;
+    }
     if (!this.messagesArea || this.messages.length > 0 || this.emptyStateEl) return;
     const emptyState = this.messagesArea.createDiv({
       cls: 'superpower-inside-chat-empty-state',
@@ -477,9 +540,10 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-header-title-section',
     });
 
-    this.sessionTitleEl = titleSection.createSpan({
+    this.sessionTitleEl = titleSection.createEl('button', {
       cls: 'superpower-inside-chat-session-title',
       text: this.session.title || t('chatTabTitle'),
+      attr: { type: 'button', 'aria-label': t('chatRenameSession') },
     });
     this.sessionTitleEl.addEventListener('click', () => this.promptRenameSession());
 
@@ -490,37 +554,59 @@ export class ChatView extends ItemView {
 
     const newChatBtn = actions.createEl('button', {
       cls: 'superpower-inside-chat-header-btn',
-      text: t('chatNewSession'),
+      attr: { type: 'button', 'aria-label': t('chatNewSession'), title: t('chatNewSession') },
     });
+    setIcon(newChatBtn, 'square-pen');
     newChatBtn.addEventListener('click', () => void this.startNewSession());
 
     const historyBtn = actions.createEl('button', {
       cls: 'superpower-inside-chat-header-btn',
-      text: t('chatHistory'),
+      attr: { type: 'button', 'aria-label': t('chatHistory'), title: t('chatHistory') },
     });
+    setIcon(historyBtn, 'history');
     historyBtn.addEventListener('click', () => void this.openSessionHistoryModal());
 
-    const sysToggle = actions.createEl('button', {
+    const moreBtn = actions.createEl('button', {
       cls: 'superpower-inside-chat-header-btn',
-      attr: { 'aria-label': t('systemPrompt') },
+      attr: {
+        type: 'button',
+        'aria-label': t('assistantResponseMoreActions'),
+        title: t('assistantResponseMoreActions'),
+        'aria-haspopup': 'menu',
+      },
     });
-    setIcon(sysToggle, 'settings-2');
-    sysToggle.addEventListener('click', () => {
-      openPromptLibraryModal({
-        containerEl: container,
-        plugin: this.plugin,
-        currentSessionPrompt: this.sessionSystemPrompt,
-        selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
-        onApplyToSession: (prompt) => {
-          this.sessionSystemPrompt = prompt.trim() || null;
-          this.updateSystemPromptBadge();
-          this.markDirtyAndAutoSave();
-        },
-      });
+    setIcon(moreBtn, 'ellipsis');
+    moreBtn.addEventListener('click', () => {
+      const menu = new Menu();
+      menu.setUseNativeMenu(false);
+      menu.addItem((item) =>
+        item
+          .setTitle(t('chatSearchButton'))
+          .setIcon('search')
+          .onClick(() => void this.focusMessageSearch()),
+      );
+      menu.addItem((item) =>
+        item
+          .setTitle(t('promptLibraryTitle'))
+          .setIcon('settings-2')
+          .onClick(() => {
+            moreBtn.focus();
+            openPromptLibraryModal({
+              containerEl: container,
+              plugin: this.plugin,
+              currentSessionPrompt: this.sessionSystemPrompt,
+              selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
+              onApplyToSession: (prompt) => {
+                this.sessionSystemPrompt = prompt.trim() || null;
+                this.markDirtyAndAutoSave();
+              },
+            });
+          }),
+      );
+      const rect = moreBtn.getBoundingClientRect();
+      menu.showAtPosition({ x: rect.right, y: rect.bottom }, container.ownerDocument);
     });
   }
-
-  private updateSystemPromptBadge(): void {}
 
   private buildMcpStatusBar(container: HTMLElement): void {
     this.mcpStatusBar = container.createDiv({ cls: 'superpower-inside-chat-mcp-status-bar' });
@@ -576,7 +662,6 @@ export class ChatView extends ItemView {
             detail: t('chatMcpReconnectFailedDetail', { count: errors.length }),
           };
         }
-        this.plugin.refreshBus.emit('mcp', { status: 'success' });
         new Notice(t('chatMcpReconnectCompleteNotice'), 3000);
         return { status: 'success' };
       },
@@ -584,6 +669,8 @@ export class ChatView extends ItemView {
       spinnerClass: 'spinning',
       errorNotice: false,
       successNotice: false,
+      refreshBus: this.plugin.refreshBus,
+      refreshDomains: ['mcp'],
     });
     this.mcpRefreshAction.attach(refreshBtn);
   }
@@ -607,42 +694,15 @@ export class ChatView extends ItemView {
     const runStatusIcon = runStatus.createSpan({
       cls: 'superpower-inside-chat-run-control-status-icon',
     });
-    setIcon(runStatusIcon, 'sparkles');
+    runStatusIcon.addClass('superpower-inside-composer-spinner');
+    runStatusIcon.setAttribute('aria-hidden', 'true');
     runStatus.createSpan({ text: t('chatRunActive') });
-    this.stopAllBtn = this.runControlEl.createEl('button', {
-      cls: 'superpower-inside-chat-stop-all',
-      attr: { type: 'button' },
-    });
-    setIcon(this.stopAllBtn, 'square');
-    this.stopAllBtn.createSpan({ text: t('stopAllButton') });
-    this.stopAllBtn.addEventListener('click', () => this.stopStreaming());
 
-    const toolbar = wrapper.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
-
-    this.modelSelectEl = toolbar.createEl('select', {
-      cls: 'superpower-inside-chat-model-select',
-      attr: { 'aria-label': t('modelSelector') },
+    this.contextPreviewEl = wrapper.createDiv({
+      cls: 'superpower-inside-chat-context-preview',
+      attr: { 'aria-live': 'polite', 'aria-label': t('chatWorkspaceMentions') },
     });
-    this.populateModelSelect();
-
-    this.mcpBtn = toolbar.createEl('button', {
-      cls: 'superpower-inside-chat-toolbar-btn',
-      attr: { 'aria-label': t('toolbarTools') },
-    });
-    setIcon(this.mcpBtn, 'wrench');
-    this.mcpBtn.createSpan({ text: t('toolbarTools') });
-    this.mcpBtn.addEventListener('click', () => void this.openMcpToolPicker());
-
-    const searchBtn = toolbar.createEl('button', {
-      cls: 'superpower-inside-chat-toolbar-btn',
-      text: t('chatSearchButton'),
-      attr: { 'aria-label': t('chatMessageSearchAria') },
-    });
-    searchBtn.addEventListener('click', () => {
-      void this.focusMessageSearch();
-    });
-
-    this.contextPreviewEl = wrapper.createDiv({ cls: 'superpower-inside-chat-context-preview' });
+    this.contextPreviewEl.addEventListener('focusin', () => this.hideMentionDropdown());
     this.renderContextPreview('');
 
     const inputRow = wrapper.createDiv({ cls: 'superpower-inside-chat-input-area' });
@@ -653,6 +713,8 @@ export class ChatView extends ItemView {
         rows: '2',
         'aria-label': t('chatInputPlaceholder'),
         'aria-controls': this.mentionDropdownId,
+        'aria-autocomplete': 'list',
+        'aria-expanded': 'false',
       },
     });
     this.inputArea.addEventListener('keydown', (e) => this.handleInputKeydown(e));
@@ -665,7 +727,23 @@ export class ChatView extends ItemView {
       window.setTimeout(() => this.hideMentionDropdown(), 200);
     });
 
-    this.sendBtn = inputRow.createEl('button', {
+    const toolbar = wrapper.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
+    this.modelSelectEl = toolbar.createEl('select', {
+      cls: 'superpower-inside-chat-model-select',
+      attr: { 'aria-label': t('modelSelector') },
+    });
+    this.modelSelectEl.addEventListener('change', () => this.renderChatReadiness());
+    this.populateModelSelect();
+
+    this.mcpBtn = toolbar.createEl('button', {
+      cls: 'superpower-inside-chat-toolbar-btn',
+      attr: { type: 'button', 'aria-label': t('toolbarTools') },
+    });
+    setIcon(this.mcpBtn, 'wrench');
+    this.mcpBtn.createSpan({ text: t('toolbarTools') });
+    this.mcpBtn.addEventListener('click', () => void this.openMcpToolPicker());
+
+    this.sendBtn = toolbar.createEl('button', {
       cls: 'superpower-inside-chat-send-btn',
       text: t('sendButton'),
       attr: { type: 'button' },
@@ -701,15 +779,11 @@ export class ChatView extends ItemView {
 
   private renderContextPreview(text: string): void {
     if (!this.contextPreviewEl) return;
-    this.contextPreviewEl.empty();
-    const mentions = text.trim() ? this.parseMentions(text) : [];
-    const chips = createContextPreviewChips(mentions);
-    for (const chip of chips.slice(0, 8)) {
-      this.contextPreviewEl.createSpan({
-        cls: `superpower-inside-chat-context-chip ${chip.cls}`,
-        text: chip.label,
-      });
-    }
+    const resolver = createAppMentionResolver(this.app, this.plugin.mcpRegistry);
+    renderComposerReferencePreview(
+      this.contextPreviewEl,
+      createLiveContextPreviewChips(text, resolver),
+    );
   }
 
   private invalidateActiveChatRun(restoreDraft: boolean): void {
@@ -760,15 +834,15 @@ export class ChatView extends ItemView {
         { status: 'complete', stopReason: 'cancelled' },
       );
     }
+    this.inputArea?.focus({ preventScroll: true });
   }
 
   private populateModelSelect(): void {
     if (!this.modelSelectEl) return;
     this.modelSelectEl.empty();
 
-    const allModels = buildChatModelOptions(this.plugin.settings, {
-      currentModel: this.plugin.settings.chat.defaultModel,
-    });
+    const modelState = resolveChatModelState(this.plugin.settings);
+    const allModels = modelState.options;
 
     if (allModels.length === 0) {
       const opt = this.modelSelectEl.createEl('option');
@@ -778,19 +852,18 @@ export class ChatView extends ItemView {
       return;
     }
 
-    allModels.sort((a, b) => a.label.localeCompare(b.label, 'en'));
-    const defaultModel = this.plugin.settings.chat.defaultModel;
-
+    if (!modelState.selectedModel) {
+      const opt = this.modelSelectEl.createEl('option');
+      opt.value = '';
+      opt.text = t('chatReadinessSelectModelAction');
+    }
     for (const m of allModels) {
       const opt = this.modelSelectEl.createEl('option');
       opt.value = m.value;
       opt.text = m.label;
     }
 
-    this.modelSelectEl.value =
-      defaultModel && allModels.some((m) => m.value === defaultModel)
-        ? defaultModel
-        : allModels[0].value;
+    this.modelSelectEl.value = modelState.selectedModel;
     this.modelSelectEl.disabled = false;
     this.renderChatReadiness();
   }
@@ -829,11 +902,19 @@ export class ChatView extends ItemView {
       row.createSpan({ cls: 'superpower-inside-chat-readiness-label', text: item.label });
       row.createSpan({ cls: 'superpower-inside-chat-readiness-detail', text: item.detail });
       if (item.action) {
+        const state = resolveChatReadinessActionButtonState({
+          action: item.action,
+          pendingAction: this.pendingReadinessAction,
+          label: this.getReadinessActionText(item),
+          loadingLabel: this.getReadinessActionLoadingText(item),
+        });
         const action = row.createEl('button', {
           cls: 'superpower-inside-chat-readiness-action',
-          text: this.getReadinessActionText(item),
+          text: state.text,
         });
-        action.addEventListener('click', () => this.handleReadinessAction(item));
+        action.disabled = state.disabled;
+        if (state.loading) action.addClass('spinning');
+        action.addEventListener('click', () => void this.handleReadinessAction(item, action));
       }
     }
   }
@@ -846,59 +927,64 @@ export class ChatView extends ItemView {
     return item.label;
   }
 
+  private getReadinessActionLoadingText(item: ChatReadinessItem): string {
+    if (item.action === 'index-rag') return t('indexingStarted');
+    if (item.action === 'reconnect-mcp') return t('mcpRefreshing');
+    return this.getReadinessActionText(item);
+  }
+
   private getEnabledProviderCount(): number {
-    if (this.plugin.settings.providerProfiles.length > 0) {
-      return this.plugin.settings.providerProfiles.filter((profile) => profile.enabled).length;
-    }
-    const builtIn = CHAT_PROVIDER_KEYS.filter((key) => this.plugin.settings[key].enabled).length;
-    const custom = this.plugin.settings.customOpenAIProviders.filter(
-      (provider) => provider.enabled,
-    ).length;
-    return builtIn + custom;
+    return resolveChatModelState(this.plugin.settings).enabledProviderCount;
   }
 
   private getAvailableModelCount(): number {
-    if (this.plugin.settings.providerProfiles.length > 0) {
-      return this.plugin.settings.providerProfiles.reduce(
-        (count, profile) =>
-          profile.enabled
-            ? count + profile.models.filter((model) => model.kind === 'general').length
-            : count,
-        0,
-      );
-    }
-    const builtIn = CHAT_PROVIDER_KEYS.reduce(
-      (count, key) =>
-        this.plugin.settings[key].enabled ? count + this.plugin.settings[key].models.length : count,
-      0,
-    );
-    const custom = this.plugin.settings.customOpenAIProviders.reduce(
-      (count, provider) => (provider.enabled ? count + provider.models.length : count),
-      0,
-    );
-    return builtIn + custom;
+    return resolveChatModelState(this.plugin.settings).availableModelCount;
   }
 
-  private handleReadinessAction(item: ChatReadinessItem): void {
+  private async handleReadinessAction(
+    item: ChatReadinessItem,
+    button: HTMLButtonElement,
+  ): Promise<void> {
     if (item.action === 'reconnect-mcp') {
-      void this.plugin.reconnectMCP().then(() => this.renderMcpStatusBar());
+      this.pendingReadinessAction = 'reconnect-mcp';
+      await runActionWithFeedback({
+        button,
+        loadingText: this.getReadinessActionLoadingText(item),
+        refreshBus: this.plugin.refreshBus,
+        refreshDomains: ['mcp'],
+        action: async () => {
+          const errors = await this.plugin.reconnectMCP();
+          if (errors.length > 0) {
+            return {
+              status: 'partial',
+              detail: t('chatMcpReconnectFailedDetail', { count: errors.length }),
+            };
+          }
+          return { status: 'success', notice: false };
+        },
+      });
+      this.pendingReadinessAction = null;
+      this.renderMcpStatusBar();
+      this.renderChatReadiness();
       return;
     }
     if (item.action === 'index-rag') {
-      void this.plugin
-        .prepareRagForChat()
-        .then((initialized) => {
+      this.pendingReadinessAction = 'index-rag';
+      await runActionWithFeedback({
+        button,
+        loadingText: this.getReadinessActionLoadingText(item),
+        refreshBus: this.plugin.refreshBus,
+        refreshDomains: ['rag'],
+        action: async () => {
+          const initialized = await this.plugin.prepareRagForChat();
           if (!initialized) {
-            new Notice(t('ragIndexerNotInitializedBase'), 5000);
+            return { status: 'error', detail: t('ragIndexerNotInitializedBase') };
           }
-        })
-        .catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          new Notice(t('indexingFailedWithMessage', { message: msg }), 10000);
-        })
-        .finally(() => {
-          this.renderChatReadiness();
-        });
+          return { status: 'success', notice: false };
+        },
+      });
+      this.pendingReadinessAction = null;
+      this.renderChatReadiness();
       return;
     }
     if (item.action === 'select-model') {
@@ -909,6 +995,7 @@ export class ChatView extends ItemView {
   }
 
   private handleInputKeydown(e: KeyboardEvent): void {
+    if (e.isComposing) return;
     const mentionOpen = Boolean(
       this.mentionDropdown && !this.mentionDropdown.hasClass(HIDDEN_CLASS),
     );
@@ -982,6 +1069,18 @@ export class ChatView extends ItemView {
   private buildMentionItems(): void {
     this.mentionItems = [];
     const query = this.mentionQuery;
+    for (const value of ['current', 'tabs']) {
+      if (value.includes(query)) {
+        this.mentionItems.push({
+          label:
+            value === 'current'
+              ? t('chatCurrentMention')
+              : t('chatTabsMention', { count: captureWorkspaceMentionFiles(this.app).tabs.length }),
+          value,
+          type: 'workspace',
+        });
+      }
+    }
 
     const registry = this.plugin.mcpRegistry;
     if (registry) {
@@ -1034,12 +1133,16 @@ export class ChatView extends ItemView {
       }
     }
 
+    const tagSnapshot = collectTagMentionFiles(this.app);
+    for (const tag of planTagMentionsRust(tagSnapshot.tags, query)?.tags ?? []) {
+      this.mentionItems.push({ label: `@${tag}`, value: tag, type: 'tag' });
+    }
     this.mentionSelectedIndex = this.mentionItems.length > 0 ? 0 : -1;
   }
 
   private showMentionDropdown(): void {
     if (!this.inputArea || !this.container || this.mentionItems.length === 0) {
-      setHidden(this.mentionDropdown, true);
+      this.hideMentionDropdown();
       return;
     }
 
@@ -1051,55 +1154,33 @@ export class ChatView extends ItemView {
     }
     this.mentionDropdown.empty();
     setHidden(this.mentionDropdown, false);
-
-    const serverItems = this.mentionItems.filter((i) => i.type === 'server');
-    const fileItems = this.mentionItems.filter((i) => i.type === 'file');
-    const folderItems = this.mentionItems.filter((i) => i.type === 'folder');
-
-    if (serverItems.length > 0) {
+    this.inputArea.setAttribute('aria-expanded', 'true');
+    for (const [type, label, icon] of [
+      ['workspace', t('chatWorkspaceMentions'), 'panels-top-left'],
+      ['server', t('mcpMentionServers'), 'plug'],
+      ['file', t('mcpMentionFiles'), 'file-text'],
+      ['folder', t('mcpMentionFolders'), 'folder'],
+      ['tag', t('chatMentionTags'), 'hash'],
+    ] as const) {
+      const items = this.mentionItems.filter((item) => item.type === type);
+      if (items.length === 0) continue;
       const group = this.mentionDropdown.createDiv({ cls: 'superpower-inside-mention-group' });
       group.createDiv({
         cls: 'superpower-inside-mention-group-label',
-        text: t('mcpMentionServers'),
+        text: label,
       });
-      for (const item of serverItems) {
+      for (const item of items) {
         const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
+        if (item.type === 'tag') {
+          el.addClass('superpower-inside-mention-item-tag');
+          el.setAttribute('title', item.label);
+        }
+        el.id = `${this.mentionDropdownId}-${this.mentionItems.indexOf(item)}`;
         el.setAttribute('role', 'option');
         el.setAttribute('aria-selected', 'false');
-        el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '🔌' });
+        setIcon(el.createSpan({ cls: 'superpower-inside-mention-item-icon' }), icon);
         el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
-        el.addEventListener('click', () => this.insertMention(item));
-      }
-    }
-
-    if (folderItems.length > 0) {
-      const group = this.mentionDropdown.createDiv({ cls: 'superpower-inside-mention-group' });
-      group.createDiv({
-        cls: 'superpower-inside-mention-group-label',
-        text: t('mcpMentionFolders'),
-      });
-      for (const item of folderItems) {
-        const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
-        el.setAttribute('role', 'option');
-        el.setAttribute('aria-selected', 'false');
-        el.createSpan({ cls: 'superpower-inside-mention-item-icon folder', text: '📁' });
-        el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
-        el.addEventListener('click', () => this.insertMention(item));
-      }
-    }
-
-    if (fileItems.length > 0) {
-      const group = this.mentionDropdown.createDiv({ cls: 'superpower-inside-mention-group' });
-      group.createDiv({
-        cls: 'superpower-inside-mention-group-label',
-        text: t('mcpMentionFiles'),
-      });
-      for (const item of fileItems) {
-        const el = group.createDiv({ cls: 'superpower-inside-mention-item' });
-        el.setAttribute('role', 'option');
-        el.setAttribute('aria-selected', 'false');
-        el.createSpan({ cls: 'superpower-inside-mention-item-icon', text: '📄' });
-        el.createSpan({ cls: 'superpower-inside-mention-item-name', text: item.label });
+        el.addEventListener('mousedown', (event) => event.preventDefault());
         el.addEventListener('click', () => this.insertMention(item));
       }
     }
@@ -1140,6 +1221,8 @@ export class ChatView extends ItemView {
     if (targetIndex >= items.length) targetIndex = 0;
 
     this.mentionSelectedIndex = targetIndex;
+    this.inputArea?.setAttribute('aria-activedescendant', items[targetIndex].id);
+    items[targetIndex].scrollIntoView({ block: 'nearest' });
     for (let i = 0; i < items.length; i++) {
       items[i].toggleClass('selected', i === targetIndex);
       if (isDomInstance(items[i], HTMLElement)) {
@@ -1159,7 +1242,7 @@ export class ChatView extends ItemView {
   private insertMention(item: {
     label: string;
     value: string;
-    type: 'server' | 'file' | 'folder';
+    type: 'workspace' | 'server' | 'file' | 'folder' | 'tag';
   }): void {
     if (!this.inputArea) return;
     const value = this.inputArea.value;
@@ -1173,9 +1256,13 @@ export class ChatView extends ItemView {
     this.inputArea.setSelectionRange(newCursorPos, newCursorPos);
     this.hideMentionDropdown();
     this.autoResizeInput();
+    this.renderContextPreview(this.inputArea.value);
+    this.inputArea.focus();
   }
 
   private hideMentionDropdown(): void {
+    this.inputArea?.setAttribute('aria-expanded', 'false');
+    this.inputArea?.removeAttribute('aria-activedescendant');
     if (this.mentionDropdown) {
       setHidden(this.mentionDropdown, true);
     }
@@ -1272,7 +1359,7 @@ export class ChatView extends ItemView {
     this.messageEls.set(id, wrapper);
 
     const avatar = wrapper.createDiv({ cls: 'superpower-inside-chat-avatar' });
-    avatar.setText(this.getAvatarText(role));
+    this.renderMessageAvatar(avatar, role);
 
     const bubbleContainer = wrapper.createDiv({ cls: 'superpower-inside-chat-bubble-container' });
     bubbleContainer.setAttribute('data-message-id', id);
@@ -1415,6 +1502,28 @@ export class ChatView extends ItemView {
     }
   }
 
+  private getAssistantResponseSourceCount(input: {
+    citations?: readonly SourceCitation[];
+    sourceWarnings?: readonly SourceValidationWarning[];
+    contextAttachments?: readonly ContextAttachment[];
+  }): number {
+    if ((input.citations?.length ?? 0) > 0) return input.citations?.length ?? 0;
+    if ((input.sourceWarnings?.length ?? 0) > 0) return input.sourceWarnings?.length ?? 0;
+    return input.contextAttachments?.length ?? 0;
+  }
+
+  private createAssistantResponseLayoutState(
+    msg: ChatMessageWithMeta,
+  ): AssistantResponseLayoutState {
+    return {
+      hasAnswer: Boolean(msg.content.trim() || msg.assistantQuestion),
+      hasWork: Boolean(msg.reasoning?.trim() || msg.toolCalls?.length),
+      sourceCount: this.getAssistantResponseSourceCount(msg),
+      isComplete:
+        msg.turnStage === 'complete' || (msg.turnStage === undefined && msg.status === 'complete'),
+    };
+  }
+
   private createAssistantLayers(
     bubbleContainer: HTMLElement,
     content: string,
@@ -1425,8 +1534,35 @@ export class ChatView extends ItemView {
     assistantQuestion?: AssistantQuestion,
   ): void {
     const shouldShowStreamingPlaceholders = this.isStreaming && !content;
+    const calls = toolCalls ?? [];
+    const sourceCount = this.getAssistantResponseSourceCount({
+      citations,
+      sourceWarnings,
+    });
+    bubbleContainer.querySelector('.superpower-inside-chat-assistant-response')?.remove();
+    const messageId = bubbleContainer.getAttribute('data-message-id') ?? 'message';
+    const layout = createAssistantResponseLayout(bubbleContainer, {
+      idPrefix: `superpower-inside-assistant-response-${encodeURIComponent(messageId)}`,
+      ariaLabel: t('assistantResponseTabsAria'),
+      labels: {
+        answer: t('answerLabel'),
+        work: t('assistantResponseWorkTab'),
+        sources: (count) =>
+          count > 0
+            ? t('assistantResponseSourcesTabCount', { count })
+            : t('assistantResponseSourcesTab'),
+      },
+      state: {
+        hasAnswer: Boolean(content.trim() || assistantQuestion),
+        hasWork: Boolean(reasoning?.trim() || calls.length || shouldShowStreamingPlaceholders),
+        sourceCount,
+        isComplete: !this.isStreaming && Boolean(content.trim() || assistantQuestion),
+      },
+    });
+    this.assistantResponseLayouts.set(bubbleContainer, layout);
+    this.renderAssistantResponseCollapseControl(bubbleContainer, layout.root);
 
-    const thinking = bubbleContainer.createEl('details', {
+    const thinking = layout.panels.work.createEl('details', {
       cls: 'superpower-inside-chat-thinking superpower-inside-chat-reasoning',
     });
     setHidden(thinking, !(reasoning || shouldShowStreamingPlaceholders));
@@ -1447,14 +1583,16 @@ export class ChatView extends ItemView {
     });
     thinkingContent.setText(reasoning ?? t('thinkingPlaceholder'));
 
-    const toolCallsSection = bubbleContainer.createDiv({
+    const toolCallsSection = layout.panels.work.createDiv({
       cls: 'superpower-inside-chat-tool-calls',
     });
-    const hasToolCalls = toolCalls && toolCalls.length > 0;
+    const hasToolCalls = calls.length > 0;
     setHidden(toolCallsSection, !hasToolCalls);
-    this.toolCallPanel.renderToolCallsSection(toolCallsSection, toolCalls ?? [], false);
+    this.toolCallPanel.renderToolCallsSection(toolCallsSection, calls, false);
 
-    const answerLayer = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-answer' });
+    const answerLayer = layout.panels.answer.createDiv({
+      cls: 'superpower-inside-chat-answer',
+    });
     const answerLabel = answerLayer.createDiv({
       cls: 'superpower-inside-chat-answer-label',
     });
@@ -1473,8 +1611,10 @@ export class ChatView extends ItemView {
     } else {
       bubble.setText(content);
     }
-    this.sourcePanel.renderCitationsSection(bubbleContainer, citations ?? []);
-    this.sourcePanel.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
+    this.sourcePanel.renderCitationsSection(layout.panels.sources, citations ?? [], {
+      mode: 'embedded',
+    });
+    this.sourcePanel.renderSourceWarningsSection(layout.panels.sources, sourceWarnings ?? []);
   }
 
   private updateAssistantLayers(
@@ -1490,6 +1630,21 @@ export class ChatView extends ItemView {
     const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
     if (!isDomInstance(bubbleContainer, HTMLElement)) return;
 
+    let layout = this.assistantResponseLayouts.get(bubbleContainer);
+    if (!layout) {
+      this.createAssistantLayers(
+        bubbleContainer,
+        content,
+        reasoning,
+        toolCalls,
+        citations,
+        sourceWarnings,
+        assistantQuestion,
+      );
+      layout = this.assistantResponseLayouts.get(bubbleContainer);
+      if (!layout) return;
+    }
+
     let thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     if (!isDomInstance(thinking, HTMLDetailsElement)) {
       this.createAssistantLayers(
@@ -1501,8 +1656,11 @@ export class ChatView extends ItemView {
         sourceWarnings,
         assistantQuestion,
       );
+      layout = this.assistantResponseLayouts.get(bubbleContainer);
+      if (!layout) return;
       thinking = bubbleContainer.querySelector('.superpower-inside-chat-thinking');
     }
+    this.renderAssistantResponseCollapseControl(bubbleContainer, layout.root);
 
     if (isDomInstance(thinking, HTMLDetailsElement)) {
       const hasReasoning = reasoning !== undefined && reasoning.length > 0;
@@ -1568,8 +1726,19 @@ export class ChatView extends ItemView {
         wrapper.classList.remove('generating');
       }
     }
-    this.sourcePanel.renderCitationsSection(bubbleContainer, citations ?? []);
-    this.sourcePanel.renderSourceWarningsSection(bubbleContainer, sourceWarnings ?? []);
+    this.sourcePanel.renderCitationsSection(layout.panels.sources, citations ?? [], {
+      mode: 'embedded',
+    });
+    this.sourcePanel.renderSourceWarningsSection(layout.panels.sources, sourceWarnings ?? []);
+    layout.update({
+      hasAnswer: Boolean(content.trim() || assistantQuestion),
+      hasWork: Boolean(reasoning?.trim() || toolCalls?.length),
+      sourceCount: this.getAssistantResponseSourceCount({
+        citations,
+        sourceWarnings,
+      }),
+      isComplete: isDone,
+    });
   }
 
   private renderAssistantQuestionCard(container: HTMLElement, question: AssistantQuestion): void {
@@ -1808,29 +1977,90 @@ export class ChatView extends ItemView {
     }
   }
 
-  private getAvatarText(role: string): string {
+  private renderMessageAvatar(avatar: HTMLElement, role: string): void {
+    avatar.empty();
+    avatar.setAttribute('aria-hidden', 'true');
     switch (role) {
       case 'user':
-        return '👤';
+        setIcon(avatar, 'user-round');
+        return;
       case 'assistant':
-        return '🤖';
+        setIcon(avatar, 'sparkles');
+        return;
       case 'system':
-        return '⚙️';
+        setIcon(avatar, 'settings-2');
+        return;
       case 'tool':
-        return '🔧';
+        setIcon(avatar, 'wrench');
+        return;
       default:
-        return '•';
+        setIcon(avatar, 'circle');
     }
   }
 
   private renderMessageMeta(meta: HTMLElement, msg: ChatMessageWithMeta): void {
     meta.empty();
+    const technicalSummary = createChatMessageTechnicalSummary(msg);
+    if (technicalSummary) {
+      meta.setAttribute('title', technicalSummary);
+    } else {
+      meta.removeAttribute('title');
+    }
     for (const item of createChatMessageMetaItems(msg)) {
-      const el = meta.createSpan({ cls: item.className, text: item.text });
+      const el = meta.createSpan({ cls: item.className });
+      if (item.kind === 'status') {
+        const icon = el.createSpan({
+          cls: 'superpower-inside-chat-message-status-icon',
+          attr: { 'aria-hidden': 'true' },
+        });
+        setIcon(
+          icon,
+          msg.status === 'complete'
+            ? 'check'
+            : msg.status === 'error'
+              ? 'circle-alert'
+              : 'loader-circle',
+        );
+        el.createSpan({ text: item.text });
+      } else {
+        el.setText(item.text);
+      }
       if (item.title) {
         el.setAttribute('title', item.title);
       }
     }
+  }
+
+  private renderAssistantResponseCollapseControl(
+    bubbleContainer: HTMLElement,
+    response: HTMLElement,
+  ): void {
+    const meta = bubbleContainer.querySelector('.superpower-inside-chat-meta');
+    if (!isDomInstance(meta, HTMLElement)) return;
+    meta.querySelector('.superpower-inside-chat-response-collapse')?.remove();
+    const button = meta.createEl('button', {
+      cls: 'superpower-inside-chat-response-collapse',
+      attr: {
+        type: 'button',
+        'aria-controls': response.id,
+      },
+    });
+    const setExpanded = (expanded: boolean): void => {
+      const label = expanded ? t('assistantResponseCollapse') : t('assistantResponseExpand');
+      button.setAttribute('aria-expanded', String(expanded));
+      button.setAttribute('aria-label', label);
+      button.setAttribute('title', label);
+      response.hidden = !expanded;
+      const actions = bubbleContainer.querySelector('.superpower-inside-chat-message-actions');
+      if (isDomInstance(actions, HTMLElement)) {
+        actions.hidden = !expanded;
+      }
+      setIcon(button, expanded ? 'chevron-down' : 'chevron-right');
+    };
+    setExpanded(!response.hidden);
+    button.addEventListener('click', () => {
+      setExpanded(button.getAttribute('aria-expanded') !== 'true');
+    });
   }
 
   private updateMessageMeta(wrapper: HTMLElement, msg: ChatMessageWithMeta): void {
@@ -1844,13 +2074,15 @@ export class ChatView extends ItemView {
     bubbleContainer: HTMLElement,
     msg: ChatMessageWithMeta,
   ): void {
-    this.sourcePanel.renderContextAttachmentsSection(bubbleContainer, msg.contextAttachments ?? []);
-    this.sourcePanel.renderContextBudgetSection(bubbleContainer, msg.contextBudgetSnapshot);
-    this.sourcePanel.renderDataBoundarySection(bubbleContainer, msg.dataBoundarySnapshot);
-    this.renderVariantComparisonSection(bubbleContainer, msg);
-    if (msg.role === 'assistant') {
-      this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, msg.citations ?? []);
-    }
+    if (msg.role !== 'assistant') return;
+    const layout = this.assistantResponseLayouts.get(bubbleContainer);
+    const sourcesPanel = layout?.panels.sources ?? bubbleContainer;
+    this.sourcePanel.renderContextAttachmentsSection(sourcesPanel, msg.contextAttachments ?? []);
+    this.sourcePanel.renderContextBudgetSection(sourcesPanel, msg.contextBudgetSnapshot);
+    this.sourcePanel.renderDataBoundarySection(sourcesPanel, msg.dataBoundarySnapshot);
+    this.renderVariantComparisonSection(sourcesPanel, msg);
+    this.sourcePanel.linkAnswerCitationMarkers(bubbleContainer, msg.citations ?? []);
+    layout?.update(this.createAssistantResponseLayoutState(msg));
   }
 
   private renderVariantComparisonSection(
@@ -1922,22 +2154,28 @@ export class ChatView extends ItemView {
       diagnosticsContentId: existingDiagnosticsToggle?.getAttribute('aria-controls'),
     });
     existing?.remove();
+    const isComplete =
+      msg.turnStage === 'complete' || (msg.turnStage === undefined && msg.status === 'complete');
+    if (msg.role === 'assistant' && !msg.errorKind && !isComplete) return;
     const actions = container.createDiv({ cls: 'superpower-inside-chat-message-actions' });
-    const actionButtons = new Map<string, HTMLButtonElement>();
+    const response = this.assistantResponseLayouts.get(container)?.root;
+    actions.hidden = Boolean(response?.hidden);
+    const actionButtonRegistry = new Map<string, HTMLButtonElement>();
     const registerActionButton = (
       button: HTMLButtonElement,
       actionId: string,
     ): HTMLButtonElement => {
       button.setAttribute(CHAT_MESSAGE_ACTION_ATTRIBUTE, actionId);
-      actionButtons.set(actionId, button);
+      actionButtonRegistry.set(actionId, button);
       return button;
     };
     const restoreActionFocus = (): void => {
       if (!renderState.focusedActionId) return;
-      actionButtons.get(renderState.focusedActionId)?.focus({ preventScroll: true });
+      actionButtonRegistry.get(renderState.focusedActionId)?.focus({ preventScroll: true });
     };
 
     if (msg.role === 'assistant' && msg.errorKind) {
+      actions.addClass('has-error');
       for (const [index, recoveryAction] of createChatRecoveryActions(msg.errorKind).entries()) {
         const button = registerActionButton(
           actions.createEl('button', {
@@ -2000,36 +2238,101 @@ export class ChatView extends ItemView {
       return;
     }
 
-    const copyBtn = registerActionButton(
-      actions.createEl('button', { text: t('messageCopyAction') }),
+    const actionButtons = actions.createDiv({
+      cls: 'superpower-inside-chat-message-action-buttons',
+    });
+    const createVisibleAction = (
+      label: string,
+      icon: string,
+      actionId: string,
+    ): HTMLButtonElement => {
+      const button = registerActionButton(
+        actionButtons.createEl('button', {
+          attr: { type: 'button', 'aria-label': label, title: label },
+        }),
+        actionId,
+      );
+      const iconEl = button.createSpan({
+        cls: 'superpower-inside-chat-message-action-icon',
+        attr: { 'aria-hidden': 'true' },
+      });
+      setIcon(iconEl, icon);
+      button.createSpan({ text: label });
+      return button;
+    };
+    const copyBtn = createVisibleAction(
+      t('messageCopyAction'),
+      'copy',
       createChatMessageActionId('copy'),
     );
     copyBtn.addEventListener('click', () => void this.copyMessage(msg, copyBtn));
 
     if (msg.role === 'assistant') {
-      const retryBtn = registerActionButton(
-        actions.createEl('button', { text: t('messageRetryAction') }),
+      const sourceCount = msg.citations?.length ?? 0;
+      if (sourceCount > 0) {
+        const evidence = actions.createDiv({
+          cls: 'superpower-inside-chat-message-evidence',
+          attr: { role: 'status' },
+        });
+        const evidenceIcon = evidence.createSpan({
+          cls: 'superpower-inside-chat-message-evidence-icon',
+          attr: { 'aria-hidden': 'true' },
+        });
+        setIcon(evidenceIcon, 'shield-check');
+        evidence.createSpan({
+          text: t('assistantResponseEvidenceSummary', { count: sourceCount }),
+        });
+      }
+
+      const retryBtn = createVisibleAction(
+        t('messageRetryAction'),
+        'refresh-cw',
         createChatMessageActionId('regenerate'),
       );
       retryBtn.addEventListener('click', () => void this.regenerateFromAssistant(msg.id));
-      const insertBtn = registerActionButton(
-        actions.createEl('button', { text: t('sourceInsertIntoNoteAction') }),
-        createChatMessageActionId('insert-into-note'),
+
+      const moreLabel = t('assistantResponseMoreActions');
+      const moreBtn = registerActionButton(
+        actionButtons.createEl('button', {
+          cls: 'superpower-inside-chat-message-more-actions',
+          attr: {
+            type: 'button',
+            'aria-label': moreLabel,
+            title: moreLabel,
+            'aria-haspopup': 'menu',
+          },
+        }),
+        createChatMessageActionId('more'),
       );
-      insertBtn.addEventListener('click', () => void this.insertMessageIntoActiveNote(msg));
-      const saveBtn = registerActionButton(
-        actions.createEl('button', { text: t('messageNewNoteAction') }),
-        createChatMessageActionId('save-as-note'),
-      );
-      saveBtn.addEventListener('click', () => void this.saveMessageAsNote(msg));
-      const branchBtn = registerActionButton(
-        actions.createEl('button', { text: t('messageBranchAction') }),
-        createChatMessageActionId('branch'),
-      );
-      branchBtn.addEventListener('click', () => void this.branchFromMessage(msg.id));
+      setIcon(moreBtn, 'ellipsis');
+      moreBtn.addEventListener('click', () => {
+        const menu = new Menu();
+        menu.setUseNativeMenu(false);
+        menu.addItem((item) =>
+          item
+            .setTitle(t('sourceInsertIntoNoteAction'))
+            .setIcon('text-cursor-input')
+            .onClick(() => void this.insertMessageIntoActiveNote(msg)),
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle(t('messageNewNoteAction'))
+            .setIcon('file-plus-2')
+            .onClick(() => void this.saveMessageAsNote(msg)),
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle(t('messageBranchAction'))
+            .setIcon('git-branch')
+            .onClick(() => void this.branchFromMessage(msg.id)),
+        );
+        const rect = moreBtn.getBoundingClientRect();
+        menu.showAtPosition({ x: rect.right, y: rect.bottom });
+      });
     } else if (msg.role === 'user') {
-      const editBtn = registerActionButton(
-        actions.createEl('button', { text: t('messageEditAndSendAction') }),
+      const editBtn = createVisibleAction(
+        t('messageEditAndSendAction'),
+        'pencil',
         createChatMessageActionId('edit-and-send'),
       );
       editBtn.addEventListener('click', () => void this.editAndResendUserMessage(msg));
@@ -2075,9 +2378,7 @@ export class ChatView extends ItemView {
     if (!this.modelSelectEl) return;
     const currentModel = this.modelSelectEl.value || this.plugin.settings.chat.defaultModel;
     const currentProvider = getProviderReferenceIdentity(currentModel);
-    const options = buildChatModelOptions(this.plugin.settings, {
-      currentModel: '',
-    }).sort((left, right) => left.label.localeCompare(right.label, 'en'));
+    const options = resolveChatModelState(this.plugin.settings).options;
     const alternative =
       options.find(
         (option) =>
@@ -2318,6 +2619,31 @@ export class ChatView extends ItemView {
     }, this.plugin.settings.chat.autoSaveDebounceMs);
   }
 
+  private async summarizeCurrentSessionTitle(
+    provider: LLMProvider,
+    run: ChatRunHandle<AbortController>,
+  ): Promise<void> {
+    const session = this.session;
+    try {
+      const changed = await summarizeSessionTitle(
+        session,
+        this.messages,
+        provider,
+        run.controller.signal,
+        () => this.session === session && isChatRunActive(this.activeRun, run),
+      );
+      if (!changed) return;
+      this.updateHeaderTitle();
+      await this.saveCurrentSession();
+    } catch (error) {
+      if (!isChatRunActive(this.activeRun, run)) return;
+      this.plugin.logger.warn(t('chatSessionTitleFailedLog'), {
+        source: 'chat.session-title',
+        error,
+      });
+    }
+  }
+
   private clearAutoSaveTimer(): void {
     if (!this.autoSaveTimer) return;
     window.clearTimeout(this.autoSaveTimer);
@@ -2406,7 +2732,7 @@ export class ChatView extends ItemView {
     this.messageEls.set(msg.id, wrapper);
 
     const avatar = wrapper.createDiv({ cls: 'superpower-inside-chat-avatar' });
-    avatar.setText(this.getAvatarText(msg.role));
+    this.renderMessageAvatar(avatar, msg.role);
 
     const bubbleContainer = wrapper.createDiv({ cls: 'superpower-inside-chat-bubble-container' });
     bubbleContainer.setAttribute('data-message-id', msg.id);
@@ -2513,6 +2839,7 @@ export class ChatView extends ItemView {
   private async handleSend(): Promise<void> {
     const text = this.inputArea?.value.trim();
     if (!text || this.isStreaming) return;
+    const workspaceFiles = captureWorkspaceMentionFiles(this.app);
     const regeneration = this.pendingRegeneration;
     const previousUserQuestions = selectPreviousUserQuestions(
       this.messages,
@@ -2540,23 +2867,9 @@ export class ChatView extends ItemView {
       this.setLoading(false);
     };
 
-    const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
-      await import('../llm/providers').catch((error: unknown) => {
-        releaseSetupRun();
-        throw error;
-      });
-    if (!isChatRunActive(this.activeRun, run)) return;
-
     const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
     if (!selectedModel) {
       new Notice(t('defaultModelMissingNotice'));
-      releaseSetupRun();
-      return;
-    }
-
-    const parts = selectedModel.split(':');
-    if (parts.length < 2) {
-      new Notice(t('modelSettingInvalid'));
       releaseSetupRun();
       return;
     }
@@ -2566,64 +2879,26 @@ export class ChatView extends ItemView {
     let providerLabel: string;
     let provider: LLMProvider;
 
-    const resolvedProfileModel = resolveProviderModelRef(
-      this.plugin.settings,
-      selectedModel,
-      'general',
-    );
-    if (resolvedProfileModel) {
-      const { profile, modelId } = resolvedProfileModel;
-      if (!profile.enabled) {
+    try {
+      const resolved = await prepareChatProviderForModel(this.plugin.settings, selectedModel);
+      if (!resolved) {
         new Notice(t('noActiveProviderNotice'));
         releaseSetupRun();
         return;
       }
-      key = `profile:${profile.id}`;
-      modelName = modelId;
-      providerLabel = getProviderProfileDisplayName(profile);
-      provider = createProviderForStrategy(
-        profile.strategy,
-        { ...profile, models: profile.models.map((model) => model.id) },
-        modelName,
-        profile.id,
-      );
-    } else if (parts[0] === 'customOpenAI') {
-      if (parts.length < 3) {
-        new Notice(t('customModelSettingInvalid'));
-        releaseSetupRun();
-        return;
-      }
-      const providerId = parts[1];
-      modelName = parts.slice(2).join(':');
-      const customProvider = this.plugin.settings.customOpenAIProviders.find(
-        (item) => item.id === providerId,
-      );
-      if (!customProvider?.enabled) {
-        new Notice(t('customProviderDisabled'));
-        releaseSetupRun();
-        return;
-      }
-      key = `customOpenAI:${providerId}`;
-      providerLabel = getCustomOpenAIProviderDisplayName(customProvider);
-      provider = createCustomOpenAIProvider(customProvider, modelName);
-    } else {
-      const fixedKey = parts[0] as ProviderKey;
-      key = fixedKey;
-      modelName = parts.slice(1).join(':');
-      const config = this.plugin.settings[fixedKey];
-      providerLabel = PROVIDER_LABELS[fixedKey];
-
-      if (!config?.enabled) {
-        new Notice(t('noActiveProviderNotice'));
-        releaseSetupRun();
-        return;
-      }
-
-      provider = createProvider(fixedKey, config, modelName);
+      key = resolved.providerKey;
+      modelName = resolved.model;
+      providerLabel = resolved.providerLabel;
+      provider = resolved.provider;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(t('chatProviderInitializationFailed', { message }), 7000);
+      releaseSetupRun();
+      return;
     }
     setHidden(this.typingIndicator, false);
 
-    const providerCapability = provider.capability;
+    let providerCapability = provider.capability;
     let turnState: ChatTurnState = transitionChatTurn(createChatTurnState(), { type: 'submit' });
     const toTurnMeta = (): Pick<
       MessageMetaInput,
@@ -2643,13 +2918,52 @@ export class ChatView extends ItemView {
     this.inputArea!.value = '';
     this.autoResizeInput();
     this.renderContextPreview('');
-    const wholeVaultResearch = isWholeVaultResearchRequest(text);
-    const mentionedServers = wholeVaultResearch ? [] : this.getEffectiveMcpServerNames(text);
+    const contextMentions = this.parseMentions(text);
+    const mentionedFolders = contextMentions.filter((mention) => mention.type === 'folder');
+    const researchScopePath = mentionedFolders.length === 1 ? mentionedFolders[0].name : undefined;
+    const wholeVaultResearch =
+      !(
+        this.plugin.settings.pluginAwareEnabled &&
+        planPluginAwareIndicesRust(text, previousUserQuestions, getActivePluginInfo(this.app))
+          ?.length
+      ) &&
+      !contextMentions.some((mention) => mention.type === 'tag') &&
+      (isWholeVaultResearchRequest(text) ||
+        Boolean(researchScopePath && isScopedVaultResearchRequest(text)));
+    const explicitlyMentionedServers = wholeVaultResearch ? [] : this.getMentionedServerNames(text);
+    const mentionedServers = wholeVaultResearch
+      ? []
+      : this.getEffectiveMcpServerNames(text, explicitlyMentionedServers);
     let promptContext: ContextBuildResult;
     try {
       promptContext = wholeVaultResearch
-        ? { systemPrompt: null, attachments: [], citations: [], warnings: [] }
-        : await this.buildPromptContext(text, previousUserQuestions);
+        ? {
+            systemPrompt: null,
+            attachments: researchScopePath
+              ? [
+                  {
+                    id: 'research-scope',
+                    type: 'folder',
+                    name: researchScopePath,
+                    label: researchScopePath,
+                    status: 'attached',
+                    scopeOnly: true,
+                    sourceIds: [],
+                    actualChars: 0,
+                  },
+                ]
+              : [],
+            citations: [],
+            warnings: [],
+          }
+        : await this.buildPromptContext(
+            text,
+            previousUserQuestions,
+            providerCapability.maxToolRounds > 0,
+            workspaceFiles,
+            provider,
+            abortController.signal,
+          );
     } catch (error) {
       if (isChatRunOwner(this.activeRun, run)) {
         this.activeRun = null;
@@ -2662,7 +2976,18 @@ export class ChatView extends ItemView {
       return;
     }
     if (!isChatRunActive(this.activeRun, run)) return;
-    const contextBudgetSnapshot = promptContext.contextBudgetSnapshot;
+    const contextBudgetSnapshot = promptContext.contextBudgetSnapshot
+      ? { ...promptContext.contextBudgetSnapshot, modelContext: provider.contextBudget }
+      : provider.contextBudget
+        ? {
+            maxChars: provider.contextBudget.evidenceChars,
+            usedChars: 0,
+            attachmentCount: 0,
+            citationCount: 0,
+            truncated: false,
+            modelContext: provider.contextBudget,
+          }
+        : undefined;
     const dataBoundarySnapshot = wholeVaultResearch
       ? createResearchDataBoundarySnapshot({
           providerLabel,
@@ -2673,11 +2998,11 @@ export class ChatView extends ItemView {
           providerLabel,
           model: modelName,
           hasUserQuestion: true,
-          recentConversationMessageCount: Math.min(9, this.messages.length),
+          recentConversationMessageCount: this.messages.length,
           hasSystemPrompt: true,
           attachments: promptContext.attachments,
           citations: promptContext.citations,
-          mcpServerNames: [],
+          mcpServerNames: promptContext.preparedMcpServerNames ?? [],
         });
     const branchOf = regeneration ? (this.session.filePath ?? undefined) : undefined;
     const userVariantMeta: Pick<MessageMetaInput, 'branchOf' | 'branchRoot' | 'variantOf'> =
@@ -2705,7 +3030,7 @@ export class ChatView extends ItemView {
       dataBoundarySnapshot,
     };
     applyTurnEvent({ type: 'context-built' });
-    this.addMessage('user', text, undefined, undefined, {
+    const userMessageId = this.addMessage('user', text, undefined, undefined, {
       providerKey: key,
       providerLabel,
       model: modelName,
@@ -2716,9 +3041,19 @@ export class ChatView extends ItemView {
       dataBoundarySnapshot,
       ...userVariantMeta,
     });
-    const providerConversationMessages = this.messages
-      .slice(-10)
-      .map((message) => this.toProviderMessage(message));
+    const toolModelKey = `${key}\u0000${modelName}`;
+    let toolProtocol: ToolTranscriptProtocol =
+      providerCapability.toolCalling && !this.compatibilityToolModels.has(toolModelKey)
+        ? 'native'
+        : 'compatibility';
+    if (toolProtocol === 'compatibility' && providerCapability.toolCalling) {
+      providerCapability = { ...providerCapability, toolCalling: false };
+    }
+    const providerConversationSource = [...this.messages];
+    const providerConversationMessages = buildProviderConversation(
+      providerConversationSource,
+      toolProtocol,
+    );
     const waitStatus = createProviderWaitStatus({
       providerLabel,
       model: modelName,
@@ -2749,26 +3084,80 @@ export class ChatView extends ItemView {
     let restoreDraft = false;
 
     try {
-      const toolDefinitions = await this.collectToolDefinitions(mentionedServers, run);
+      const maxToolRounds = Math.max(0, Math.trunc(providerCapability.maxToolRounds));
+      if (promptContext.pluginDocumentationFailure) {
+        this.updateMessage(
+          assistantId,
+          promptContext.pluginDocumentationFailure,
+          true,
+          undefined,
+          undefined,
+          {
+            ...contextMeta,
+            status: 'complete',
+            turnStage: 'complete',
+            stopReason: 'complete',
+          },
+        );
+        return;
+      }
+      const toolsEnabled = maxToolRounds > 0;
+      const toolDefinitions = toolsEnabled
+        ? await this.collectToolDefinitions(mentionedServers, explicitlyMentionedServers, run)
+        : [];
       if (!isChatRunActive(this.activeRun, run)) return;
-      const providerToolDefinitions = providerCapability.toolCalling ? toolDefinitions : undefined;
-      const toolPrompt = providerCapability.toolCalling
-        ? createNativeVaultEvidencePrompt(toolDefinitions)
-        : createCompatibilityToolPrompt(toolDefinitions);
-      const systemPrompt = [promptContext.systemPrompt, toolPrompt]
+      const initialAgentPlan = toolsEnabled
+        ? planAgenticToolTurn({
+            question: text,
+            contextAttachments: promptContext.attachments,
+            explicitToolServerCount: explicitlyMentionedServers.length,
+            explicitToolServerNames: explicitlyMentionedServers,
+            toolDefinitions,
+            toolCalls: [],
+            phase: 'initial',
+            round: 0,
+            maxRounds: maxToolRounds,
+          })
+        : null;
+      const initialToolDefinitions = toolsEnabled
+        ? selectAgenticToolDefinitions(
+            toolDefinitions,
+            initialAgentPlan?.requiredToolNames,
+            initialAgentPlan?.requiredExternalServerNames,
+          )
+        : [];
+      let providerToolDefinitions =
+        toolsEnabled && toolProtocol === 'native' ? initialToolDefinitions : undefined;
+      const toolPrompt = toolsEnabled
+        ? toolProtocol === 'native'
+          ? createToolEvidencePrompt(initialToolDefinitions)
+          : createCompatibilityToolPrompt(initialToolDefinitions)
+        : '';
+      let systemPrompt = [promptContext.systemPrompt, toolPrompt, initialAgentPlan?.checkpoint]
         .filter((part): part is string => Boolean(part))
         .join('\n\n');
-      if (!providerCapability.toolCalling && mentionedServers.length > 0) {
+      if (toolsEnabled && !providerCapability.toolCalling && mentionedServers.length > 0) {
         new Notice(t('providerToolCallingUnsupportedNotice', { provider: providerLabel }), 5000);
       }
-      const messages: ChatMessage[] = [
+      let messages: ChatMessage[] = [
         ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
         ...providerConversationMessages,
       ];
 
       if (wholeVaultResearch) {
+        const researchQueries = await expandVaultSearchPlan(
+          text,
+          provider,
+          previousUserQuestions,
+          abortController.signal,
+        );
         const researchResult = await new VaultResearchAgent(provider, this.nativeVaultTool).run({
           question: text,
+          scopePath: researchScopePath,
+          searchQuestion: researchQueries.variants.length
+            ? JSON.stringify([researchQueries.query, ...researchQueries.variants])
+            : researchQueries.query,
+          systemPrompt: getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt),
           previousUserQuestions,
           signal: abortController.signal,
           onProgress: (progress) => {
@@ -2821,57 +3210,114 @@ export class ChatView extends ItemView {
       let fullReasoning = '';
       let hasReceivedContent = false;
       const toolCallMap = new Map<number, ToolCallRecord>();
-      await provider.streamChat(
-        messages,
-        (chunk: StreamChunk) => {
-          if (!isChatRunActive(this.activeRun, run)) return;
-          if (chunk.content) {
-            fullText += chunk.content;
-          }
-          if (chunk.reasoning) {
-            fullReasoning += chunk.reasoning;
-          }
-          if (chunk.toolCalls) {
-            this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
-          }
-          const turnMeta =
-            chunk.toolCalls && chunk.toolCalls.length > 0
-              ? applyTurnEvent({
-                  type: 'tool-call-delta',
-                  activeToolCalls: toolCallMap.size,
-                })
-              : chunk.reasoning && !chunk.content
-                ? applyTurnEvent({ type: 'reasoning-delta' })
-                : chunk.content
-                  ? applyTurnEvent({ type: 'answer-delta' })
-                  : toTurnMeta();
+      const consumeInitialChunk = (chunk: StreamChunk): void => {
+        if (!isChatRunActive(this.activeRun, run)) return;
+        if (chunk.content) {
+          fullText += chunk.content;
+        }
+        if (chunk.reasoning) {
+          fullReasoning += chunk.reasoning;
+        }
+        if (chunk.toolCalls) {
+          this.mergeToolCallDeltas(toolCallMap, chunk.toolCalls);
+        }
+        const turnMeta =
+          chunk.toolCalls && chunk.toolCalls.length > 0
+            ? applyTurnEvent({
+                type: 'tool-call-delta',
+                activeToolCalls: toolCallMap.size,
+              })
+            : chunk.reasoning && !chunk.content
+              ? applyTurnEvent({ type: 'reasoning-delta' })
+              : chunk.content
+                ? applyTurnEvent({ type: 'answer-delta' })
+                : toTurnMeta();
 
-          if (!hasReceivedContent && (fullText || fullReasoning)) {
-            hasReceivedContent = true;
-            setHidden(this.typingIndicator, true);
-          }
+        if (!hasReceivedContent && (fullText || fullReasoning)) {
+          hasReceivedContent = true;
+          setHidden(this.typingIndicator, true);
+        }
 
-          this.updateMessage(
-            assistantId,
-            fullText,
-            chunk.done,
-            fullReasoning || undefined,
-            Array.from(toolCallMap.values()),
-            {
-              providerKey: key,
-              providerLabel,
-              model: modelName,
-              providerCapability,
-              ...turnMeta,
-              ...contextMeta,
-              ...assistantVariantMeta,
-            },
-          );
-        },
-        0.7,
-        providerToolDefinitions,
-        { signal: abortController.signal },
-      );
+        this.updateMessage(
+          assistantId,
+          fullText,
+          chunk.done,
+          fullReasoning || undefined,
+          Array.from(toolCallMap.values()),
+          {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            providerCapability,
+            ...turnMeta,
+            ...contextMeta,
+            ...assistantVariantMeta,
+          },
+        );
+      };
+      const streamInitialPass = (): Promise<void> => {
+        messages = prepareProviderRequest(
+          messages,
+          providerToolDefinitions,
+          provider.contextBudget?.inputBytes,
+        ).messages;
+        contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(dataBoundarySnapshot, {
+          recentConversationMessages: Math.max(
+            0,
+            messages.filter((message) => message.role !== 'system').length - 1,
+          ),
+        });
+        const userMessage = this.messages.find((message) => message.id === userMessageId);
+        if (userMessage) userMessage.dataBoundarySnapshot = contextMeta.dataBoundarySnapshot;
+        return provider.streamChat(messages, consumeInitialChunk, 0.7, providerToolDefinitions, {
+          signal: abortController.signal,
+          toolChoice: providerToolDefinitions ? initialAgentPlan?.toolChoice : undefined,
+        });
+      };
+
+      try {
+        await streamInitialPass();
+      } catch (error) {
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const fallbackPlan = planNativeToolCompatibilityFallbackRust({
+          status: getChatHttpStatus(error) ?? null,
+          message: error instanceof Error ? error.message : String(error),
+          nativeAttempted: providerToolDefinitions !== undefined,
+          compatibilityFallbackAttempted: false,
+        });
+        if (fallbackPlan?.retryWithCompatibility !== true) throw error;
+
+        toolProtocol = 'compatibility';
+        providerCapability = { ...providerCapability, toolCalling: false };
+        this.compatibilityToolModels.add(toolModelKey);
+        providerToolDefinitions = undefined;
+        const compatibilityPrompt = createCompatibilityToolPrompt(initialToolDefinitions);
+        systemPrompt = [
+          promptContext.systemPrompt,
+          compatibilityPrompt,
+          initialAgentPlan?.checkpoint,
+        ]
+          .filter((part): part is string => Boolean(part))
+          .join('\n\n');
+        messages = [
+          ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+          ...buildProviderConversation(providerConversationSource, toolProtocol),
+        ];
+        fullText = '';
+        fullReasoning = '';
+        hasReceivedContent = false;
+        toolCallMap.clear();
+        this.updateMessage(assistantId, '', false, undefined, [], {
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          providerCapability,
+          ...applyTurnEvent({ type: 'context-built' }),
+          ...contextMeta,
+          ...assistantVariantMeta,
+        });
+        await streamInitialPass();
+      }
       if (!isChatRunActive(this.activeRun, run)) return;
       setHidden(this.typingIndicator, true);
       let normalized = normalizeReasoningChunk({
@@ -2881,11 +3327,39 @@ export class ChatView extends ItemView {
       fullText = normalized.content;
       fullReasoning = normalized.reasoning ?? '';
 
+      if (toolsEnabled) {
+        const compatibility = parseCompatibilityToolTurn(
+          fullText,
+          fullReasoning,
+          (channel, index) => `compat-tool-${++this.localToolCallSequence}-${channel}-${index}`,
+        );
+        fullText = compatibility.visibleContent;
+        fullReasoning = compatibility.visibleReasoning;
+        const parsedToolCalls = [
+          ...this.parseInlineToolRequests(fullText),
+          ...this.parseInlineToolRequests(fullReasoning),
+          ...compatibility.toolCalls,
+        ];
+        if (parsedToolCalls.length > 0) {
+          fullText = this.stripInlineToolRequests(fullText);
+          fullReasoning = this.stripInlineToolRequests(fullReasoning);
+          const baseToolCallIndex = toolCallMap.size;
+          parsedToolCalls
+            .slice(0, Math.max(0, MAX_TOOL_CALLS_PER_ROUND - toolCallMap.size))
+            .forEach((toolCall, index) => toolCallMap.set(baseToolCallIndex + index, toolCall));
+        }
+      } else {
+        toolCallMap.clear();
+      }
+
       const firstClassification = classifyAssistantResponse({
         content: fullText,
         reasoning: fullReasoning,
       });
-      if (shouldRenderAssistantQuestion(firstClassification, toolCallMap.size)) {
+      if (
+        initialAgentPlan?.shouldRetryWithoutTools !== true &&
+        shouldRenderAssistantQuestion(firstClassification, toolCallMap.size)
+      ) {
         const questionContract = enforceNativeToolAnswerContract(
           firstClassification.content,
           Array.from(toolCallMap.values()),
@@ -2921,43 +3395,25 @@ export class ChatView extends ItemView {
         return;
       }
 
-      const compatibility = parseCompatibilityToolResponse(
-        fullText,
-        (index) => `compat-tool-${++this.localToolCallSequence}-${index}`,
-      );
-      fullText = compatibility.visibleContent;
-      const parsedToolCalls = [
-        ...this.parseInlineToolRequests(fullText),
-        ...compatibility.toolCalls,
-      ];
-      if (parsedToolCalls.length > 0) {
-        fullText = this.stripInlineToolRequests(fullText);
-        const baseToolCallIndex = toolCallMap.size;
-        parsedToolCalls.forEach((toolCall, index) =>
-          toolCallMap.set(baseToolCallIndex + index, toolCall),
-        );
-      }
-
       let toolCalls = Array.from(toolCallMap.values());
 
-      const hasMentionedServers = mentionedServers.length > 0;
       const hasToolCalls = toolCalls.length > 0;
-      const hasSubstantiveAnswer = fullText.trim().length > 50;
-      if (
-        hasMentionedServers &&
-        providerCapability.toolCalling &&
-        !hasToolCalls &&
-        hasSubstantiveAnswer &&
-        this.plugin.settings.chat.enforceMcpTools
-      ) {
+      if (initialAgentPlan?.shouldRetryWithoutTools === true && !hasToolCalls) {
         const serverNames = mentionedServers.join(', ');
-        new Notice(t('mcpRetryToolUseNotice', { servers: serverNames }), 3000);
-
-        const retrySystemPrompt = `${systemPrompt}\n\n[IMPORTANT] You have access to the following MCP server(s): ${serverNames}. You MUST use the available tools to answer the question. Do NOT generate an answer without calling tools. If you need to read files or directories, use the appropriate tools first.`;
-
+        if (serverNames) {
+          new Notice(t('mcpRetryToolUseNotice', { servers: serverNames }), 3000);
+        }
+        const previousAttempt = fullText.trim();
         const retryMessages: ChatMessage[] = [
-          { role: 'system', content: retrySystemPrompt },
-          ...this.messages.slice(-10).map((m) => this.toProviderMessage(m)),
+          ...messages,
+          ...(previousAttempt ? [{ role: 'assistant' as const, content: previousAttempt }] : []),
+          {
+            role: 'user',
+            content: [
+              initialAgentPlan.checkpoint,
+              'Your previous response did not use the required connected tool. Do not answer yet. Make the required tool call now.',
+            ].join('\n'),
+          },
         ];
 
         fullText = '';
@@ -3011,7 +3467,10 @@ export class ChatView extends ItemView {
           },
           0.7,
           providerToolDefinitions,
-          { signal: abortController.signal },
+          {
+            signal: abortController.signal,
+            toolChoice: providerToolDefinitions ? 'required' : undefined,
+          },
         );
         if (!isChatRunActive(this.activeRun, run)) return;
 
@@ -3022,11 +3481,35 @@ export class ChatView extends ItemView {
         fullText = normalized.content;
         fullReasoning = normalized.reasoning ?? '';
 
+        const retryCompatibility = parseCompatibilityToolTurn(
+          fullText,
+          fullReasoning,
+          (channel, index) => `compat-retry-${++this.localToolCallSequence}-${channel}-${index}`,
+        );
+        fullText = retryCompatibility.visibleContent;
+        fullReasoning = retryCompatibility.visibleReasoning;
+        const retryParsedToolCalls = [
+          ...this.parseInlineToolRequests(fullText),
+          ...this.parseInlineToolRequests(fullReasoning),
+          ...retryCompatibility.toolCalls,
+        ];
+        if (retryParsedToolCalls.length > 0) {
+          fullText = this.stripInlineToolRequests(fullText);
+          fullReasoning = this.stripInlineToolRequests(fullReasoning);
+          const baseToolCallIndex = toolCallMap.size;
+          retryParsedToolCalls
+            .slice(0, Math.max(0, MAX_TOOL_CALLS_PER_ROUND - toolCallMap.size))
+            .forEach((toolCall, index) => toolCallMap.set(baseToolCallIndex + index, toolCall));
+        }
+
         const retryClassification = classifyAssistantResponse({
           content: fullText,
           reasoning: fullReasoning,
         });
-        if (shouldRenderAssistantQuestion(retryClassification, toolCallMap.size)) {
+        if (
+          initialAgentPlan?.shouldRetryWithoutTools !== true &&
+          shouldRenderAssistantQuestion(retryClassification, toolCallMap.size)
+        ) {
           const questionContract = enforceNativeToolAnswerContract(
             retryClassification.content,
             Array.from(toolCallMap.values()),
@@ -3064,9 +3547,27 @@ export class ChatView extends ItemView {
 
         toolCalls = Array.from(toolCallMap.values());
 
-        if (toolCalls.length === 0 && fullText.trim().length > 50) {
+        if (toolCalls.length === 0 && serverNames) {
           new Notice(t('mcpRetryNoToolUseNotice', { servers: serverNames }), 5000);
         }
+      }
+
+      if (initialAgentPlan?.shouldRetryWithoutTools === true && toolCalls.length === 0) {
+        const missingToolMessage = t('agentRequiredToolMissing');
+        this.updateMessage(assistantId, missingToolMessage, true, fullReasoning || undefined, [], {
+          providerKey: key,
+          providerLabel,
+          model: modelName,
+          providerCapability,
+          ...contextMeta,
+          ...assistantVariantMeta,
+          citations: [],
+          status: 'error',
+          turnStage: 'error',
+          errorMessage: missingToolMessage,
+          stopReason: 'tool-failed',
+        });
+        return;
       }
 
       fullText = enforceNativeToolAnswerContract(fullText, toolCalls).content;
@@ -3096,6 +3597,7 @@ export class ChatView extends ItemView {
           registry: this.plugin.mcpRegistry,
           preferredServerNames: mentionedServers,
           mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+          mcpToolBindings: createMcpToolBindingAllowlist(initialToolDefinitions),
         });
         if (!isChatRunActive(this.activeRun, run)) return;
         toolCalls = markRepeatedToolCalls([], preparedToolCalls);
@@ -3157,8 +3659,11 @@ export class ChatView extends ItemView {
             provider,
             messageId: assistantId,
             baseMessages: messages,
-            toolDefinitions: providerToolDefinitions ?? [],
-            maxToolRounds: providerCapability.maxToolRounds,
+            toolDefinitions,
+            toolProtocol,
+            question: text,
+            contextAttachments: promptContext.attachments,
+            maxToolRounds,
             toolCalls,
             run,
             meta: {
@@ -3172,6 +3677,8 @@ export class ChatView extends ItemView {
               citations: promptContext.citations,
             },
             mentionedServers,
+            explicitToolServerCount: explicitlyMentionedServers.length,
+            explicitToolServerNames: explicitlyMentionedServers,
             initialText: fullText,
             initialReasoning: fullReasoning,
           });
@@ -3219,9 +3726,16 @@ export class ChatView extends ItemView {
         return;
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
-      const errorKind = classifyChatFailure(err);
+      const errorKind =
+        err instanceof ExplicitMcpToolDiscoveryError ? 'tool-failed' : classifyChatFailure(err);
       const retryAfterMs = getChatRetryAfterMs(err);
-      const presentation = createChatErrorPresentation(errorKind, retryAfterMs);
+      const presentation =
+        err instanceof ExplicitMcpToolDiscoveryError
+          ? {
+              content: t('mcpMentionedServerUnavailable', { server: err.serverName }),
+              retryAvailableAt: undefined,
+            }
+          : createChatErrorPresentation(errorKind, retryAfterMs);
       const errDetail = this.formatErrorDetail(
         key,
         modelName,
@@ -3277,6 +3791,7 @@ export class ChatView extends ItemView {
       }
       if (finalization.saveSession) {
         await this.saveCurrentSession(true);
+        await this.summarizeCurrentSessionTitle(provider, run);
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
         this.activeRun = null;
@@ -3289,19 +3804,23 @@ export class ChatView extends ItemView {
   }
 
   private setLoading(loading: boolean): void {
+    if (loading) this.hideMentionDropdown();
     const state = createComposerLoadingState(loading);
     this.isStreaming = state.isStreaming;
     if (this.sendBtn) {
       this.sendBtn.disabled = state.sendButton.disabled;
       this.sendBtn.setText(state.sendButton.text);
+      this.sendBtn.toggleClass('superpower-inside-chat-stop-all', loading);
+      this.sendBtn.setAttribute(
+        'aria-label',
+        loading ? state.runControl.stopText : state.sendButton.text,
+      );
     }
     if (this.inputArea) this.inputArea.disabled = state.inputDisabled;
+    this.inputArea?.setAttribute('aria-busy', String(loading));
     if (this.mcpBtn) this.mcpBtn.disabled = state.toolsDisabled;
     if (this.modelSelectEl) this.modelSelectEl.disabled = state.modelSelectDisabled;
     setHidden(this.runControlEl, state.runControl.hidden);
-    if (this.stopAllBtn) {
-      this.stopAllBtn.setAttribute('aria-label', state.runControl.stopText);
-    }
     if (!loading) this.renderChatReadiness();
   }
 
@@ -3325,42 +3844,6 @@ export class ChatView extends ItemView {
     new Notice(t('composerDraftRestoredNotice'), 3000);
   }
 
-  private toProviderMessage(message: ChatMessageWithMeta): ChatMessage {
-    const providerMessage: ChatMessage = {
-      role: message.role,
-      content:
-        message.content ||
-        (message.assistantQuestion
-          ? t('assistantQuestionProviderContent', {
-              prompt: message.assistantQuestion.prompt,
-              choices: message.assistantQuestion.choices
-                .map((choice) => `- ${choice.label}`)
-                .join('\n'),
-            })
-          : ''),
-      ...(message.reasoning ? { reasoning: message.reasoning } : {}),
-    };
-    if (message.toolCalls && message.toolCalls.length > 0) {
-      providerMessage.toolCalls = message.toolCalls.map((toolCall): ToolCallInfo => {
-        return {
-          id: toolCall.id,
-          type: 'function',
-          function: {
-            name: toolCall.name,
-            arguments: toolCall.arguments,
-          },
-        };
-      });
-    }
-    if (message.role === 'tool' && message.toolCalls && message.toolCalls.length > 0) {
-      providerMessage.tool_call_id = message.toolCalls[0].id;
-    }
-    if (message.role === 'tool') {
-      providerMessage.name = message.toolCalls?.[0]?.name;
-    }
-    return providerMessage;
-  }
-
   private mergeToolCallDeltas(
     toolCallMap: Map<number, ToolCallRecord>,
     deltas: ToolCallDelta[],
@@ -3372,7 +3855,7 @@ export class ChatView extends ItemView {
         if (toolCallDelta.function?.name) existing.name = toolCallDelta.function.name;
         if (toolCallDelta.function?.arguments)
           existing.arguments += toolCallDelta.function.arguments;
-      } else {
+      } else if (toolCallMap.size < MAX_TOOL_CALLS_PER_ROUND) {
         toolCallMap.set(toolCallDelta.index, {
           id: toolCallDelta.id || `local-tool-${++this.localToolCallSequence}`,
           name: toolCallDelta.function?.name ?? '',
@@ -3400,22 +3883,24 @@ export class ChatView extends ItemView {
         const parameters = request.querySelector('parameters');
         const args = parameters ? this.readXmlParameters(parameters) : {};
         toolCalls.push({
-          id: `xml-tool-${Date.now()}-${toolCalls.length}`,
+          id: `xml-tool-${++this.localToolCallSequence}`,
           name,
           arguments: JSON.stringify(args),
           status: 'running',
         });
+        if (toolCalls.length >= MAX_TOOL_CALLS_PER_ROUND) return toolCalls;
       }
 
       for (const invoke of Array.from(doc.querySelectorAll('invoke'))) {
         const name = invoke.getAttribute('name')?.trim();
         if (!name) continue;
         toolCalls.push({
-          id: `xml-tool-${Date.now()}-${toolCalls.length}`,
+          id: `xml-tool-${++this.localToolCallSequence}`,
           name,
           arguments: JSON.stringify(this.readXmlParameters(invoke)),
           status: 'running',
         });
+        if (toolCalls.length >= MAX_TOOL_CALLS_PER_ROUND) return toolCalls;
       }
     }
 
@@ -3456,40 +3941,21 @@ export class ChatView extends ItemView {
   }
 
   private async collectToolDefinitions(
-    serverNames: string[],
+    serverNames: readonly string[],
+    explicitlyMentionedServerNames: readonly string[],
     run: ChatRunHandle<AbortController>,
   ): Promise<ToolDefinition[]> {
     if (!isChatRunActive(this.activeRun, run)) return [];
-    const nativeDefinition = createNativeVaultToolDefinition();
-    const toolDefinitions: ToolDefinition[] = [nativeDefinition];
-    const registeredNames = new Set([nativeDefinition.function.name]);
-    for (const serverName of serverNames) {
-      if (!isChatRunActive(this.activeRun, run)) return [];
-      const client = this.plugin.mcpRegistry?.getClient(serverName);
-      if (!client) continue;
-      try {
-        const tools = await client.listTools();
-        if (!isChatRunActive(this.activeRun, run)) return [];
-        for (const tool of tools) {
-          if (registeredNames.has(tool.name)) continue;
-          registeredNames.add(tool.name);
-          toolDefinitions.push({
-            type: 'function',
-            function: {
-              name: tool.name,
-              description: tool.description ?? '',
-              parameters: (tool.inputSchema as Record<string, unknown>) ?? {
-                type: 'object',
-                properties: {},
-              },
-            },
-          });
-        }
-      } catch {
-        // 연결이 불안정한 서버는 이번 요청에서 제외합니다.
-      }
-    }
-    return toolDefinitions;
+    const nativeDefinitions = createNativeVaultToolDefinitions();
+    const externalDefinitions = await collectExternalMcpToolDefinitions({
+      serverNames,
+      explicitlyMentionedServerNames,
+      reservedToolNames: new Set(nativeDefinitions.map((definition) => definition.function.name)),
+      signal: run.controller.signal,
+      getClient: (serverName) => this.plugin.mcpRegistry?.getClient(serverName),
+      isActive: () => isChatRunActive(this.activeRun, run),
+    });
+    return selectBoundedToolDefinitions(nativeDefinitions, externalDefinitions);
   }
 
   private async streamFinalAnswerAfterTools(args: {
@@ -3497,7 +3963,11 @@ export class ChatView extends ItemView {
     messageId: string;
     conversationMessages: ChatMessage[];
     assistantContent: string;
+    assistantReasoning?: string;
     toolDefinitions: ToolDefinition[];
+    toolProtocol: ToolTranscriptProtocol;
+    checkpoint: string;
+    toolChoice: ToolChoice;
     toolCalls: ToolCallRecord[];
     run: ChatRunHandle<AbortController>;
     meta: MessageMetaInput;
@@ -3532,35 +4002,84 @@ export class ChatView extends ItemView {
       args.conversationMessages,
       args.assistantContent,
       completedToolCalls,
+      args.toolProtocol,
+      args.assistantReasoning,
+      args.provider.contextBudget?.inputBytes,
     );
+    const roundCheckpoint =
+      args.toolProtocol === 'compatibility' && args.toolDefinitions.length > 0
+        ? [createCompatibilityToolPrompt(args.toolDefinitions), args.checkpoint]
+            .filter(Boolean)
+            .join('\n\n')
+        : args.checkpoint;
+    const checkpointMessages = appendAgenticCheckpoint(secondMessages, roundCheckpoint);
 
     const visibleToolCalls = [...args.toolCalls];
-    await args.provider.streamChat(
-      secondMessages,
-      (chunk: StreamChunk) => {
-        if (!isChatRunActive(this.activeRun, args.run)) return;
-        if (chunk.content) finalText += chunk.content;
-        if (chunk.reasoning) finalReasoning += chunk.reasoning;
-        if (chunk.toolCalls) {
-          this.mergeToolCallDeltas(newToolCallMap, chunk.toolCalls);
-        }
-        this.updateMessage(
-          args.messageId,
-          finalText,
-          false,
-          finalReasoning || undefined,
-          [...visibleToolCalls, ...Array.from(newToolCallMap.values())],
-          {
-            ...args.meta,
-            citations: selectDisplayedAnswerCitations(finalText, args.meta.citations ?? []),
-            status: 'streaming',
-          },
-        );
-      },
-      0.7,
-      args.toolDefinitions,
-      { signal: args.run.controller.signal },
-    );
+    const streamProviderPass = async (
+      providerMessages: ChatMessage[],
+      toolChoice: ToolChoice,
+    ): Promise<void> => {
+      providerMessages = prepareProviderRequest(
+        providerMessages,
+        args.toolProtocol === 'native' ? args.toolDefinitions : undefined,
+        args.provider.contextBudget?.inputBytes,
+      ).messages;
+      await args.provider.streamChat(
+        providerMessages,
+        (chunk: StreamChunk) => {
+          if (!isChatRunActive(this.activeRun, args.run)) return;
+          if (chunk.content) finalText += chunk.content;
+          if (chunk.reasoning) finalReasoning += chunk.reasoning;
+          if (chunk.toolCalls) {
+            this.mergeToolCallDeltas(newToolCallMap, chunk.toolCalls);
+          }
+          this.updateMessage(
+            args.messageId,
+            finalText,
+            false,
+            finalReasoning || undefined,
+            [...visibleToolCalls, ...Array.from(newToolCallMap.values())],
+            {
+              ...args.meta,
+              citations: selectDisplayedAnswerCitations(finalText, args.meta.citations ?? []),
+              status: 'streaming',
+            },
+          );
+        },
+        0.7,
+        args.toolProtocol === 'native' ? args.toolDefinitions : undefined,
+        {
+          signal: args.run.controller.signal,
+          toolChoice: args.toolProtocol === 'native' ? toolChoice : undefined,
+        },
+      );
+    };
+    const parseStreamedToolRequests = (): void => {
+      const compatibility = parseCompatibilityToolTurn(
+        finalText,
+        finalReasoning,
+        (channel, index) => `compat-tool-${++this.localToolCallSequence}-${channel}-${index}`,
+      );
+      finalText = compatibility.visibleContent;
+      finalReasoning = compatibility.visibleReasoning;
+      const legacyToolCalls = [
+        ...this.parseInlineToolRequests(finalText),
+        ...this.parseInlineToolRequests(finalReasoning),
+      ];
+      if (legacyToolCalls.length > 0) {
+        finalText = this.stripInlineToolRequests(finalText);
+        finalReasoning = this.stripInlineToolRequests(finalReasoning);
+      }
+      const compatibilityBaseIndex = newToolCallMap.size;
+      [...legacyToolCalls, ...compatibility.toolCalls]
+        .slice(0, Math.max(0, MAX_TOOL_CALLS_PER_ROUND - newToolCallMap.size))
+        .forEach((toolCall, index) => {
+          newToolCallMap.set(compatibilityBaseIndex + index, toolCall);
+        });
+    };
+
+    let providerMessages = checkpointMessages;
+    await streamProviderPass(providerMessages, args.toolChoice);
     if (!isChatRunActive(this.activeRun, args.run)) {
       return {
         finalText: '',
@@ -3569,21 +4088,100 @@ export class ChatView extends ItemView {
         conversationMessages: args.conversationMessages,
       };
     }
+    parseStreamedToolRequests();
 
-    const compatibility = parseCompatibilityToolResponse(
-      finalText,
-      (index) => `compat-tool-${++this.localToolCallSequence}-${index}`,
-    );
-    const compatibilityBaseIndex = newToolCallMap.size;
-    compatibility.toolCalls.forEach((toolCall, index) => {
-      newToolCallMap.set(compatibilityBaseIndex + index, toolCall);
-    });
+    if (args.toolChoice === 'required' && newToolCallMap.size === 0) {
+      const ignoredAnswer = finalText.trim();
+      providerMessages = [
+        ...checkpointMessages,
+        ...(ignoredAnswer
+          ? [
+              {
+                role: 'assistant' as const,
+                content: ignoredAnswer,
+                ...(finalReasoning ? { reasoning: finalReasoning } : {}),
+              },
+            ]
+          : []),
+        {
+          role: 'user',
+          content: [
+            roundCheckpoint,
+            'The required next tool call was missing. Do not answer yet. Perform that tool action now. This is the only automatic correction for this step.',
+          ].join('\n'),
+        },
+      ];
+      finalText = '';
+      finalReasoning = '';
+      newToolCallMap.clear();
+      await streamProviderPass(providerMessages, 'required');
+      if (!isChatRunActive(this.activeRun, args.run)) {
+        return {
+          finalText: '',
+          finalReasoning: '',
+          newToolCalls: [],
+          conversationMessages: args.conversationMessages,
+        };
+      }
+      parseStreamedToolRequests();
+    }
 
     return {
-      finalText: compatibility.visibleContent,
+      finalText,
       finalReasoning,
       newToolCalls: Array.from(newToolCallMap.values()),
-      conversationMessages: secondMessages,
+      conversationMessages: providerMessages,
+    };
+  }
+
+  private async streamGroundedAnswerRepair(args: {
+    provider: LLMProvider;
+    messageId: string;
+    conversationMessages: ChatMessage[];
+    originalText: string;
+    originalReasoning: string;
+    violationCodes: Parameters<typeof createNativeToolAnswerRepairPrompt>[0];
+    safeCoverageText?: string;
+    toolCalls: ToolCallRecord[];
+    run: ChatRunHandle<AbortController>;
+    meta: MessageMetaInput;
+  }): Promise<{ text: string; reasoning: string }> {
+    let text = '';
+    let reasoning = '';
+    const repairMessages: ChatMessage[] = [
+      ...args.conversationMessages,
+      {
+        role: 'assistant',
+        content: args.originalText,
+        ...(args.originalReasoning ? { reasoning: args.originalReasoning } : {}),
+      },
+      {
+        role: 'user',
+        content: createNativeToolAnswerRepairPrompt(args.violationCodes, args.safeCoverageText),
+      },
+    ];
+    await args.provider.streamChat(
+      repairMessages,
+      (chunk: StreamChunk) => {
+        if (!isChatRunActive(this.activeRun, args.run)) return;
+        if (chunk.content) text += chunk.content;
+        if (chunk.reasoning) reasoning += chunk.reasoning;
+      },
+      0.2,
+      undefined,
+      {
+        signal: args.run.controller.signal,
+        toolChoice: 'none',
+      },
+    );
+    const normalized = normalizeReasoningChunk({
+      content: text,
+      reasoning: reasoning || undefined,
+    });
+    const sanitized = sanitizeNonExecutingToolTurn(normalized.content, normalized.reasoning ?? '');
+    return {
+      text: sanitized.visibleContent,
+      reasoning: sanitized.visibleReasoning,
     };
   }
 
@@ -3592,28 +4190,41 @@ export class ChatView extends ItemView {
     messageId: string;
     baseMessages: ChatMessage[];
     toolDefinitions: ToolDefinition[];
+    toolProtocol: ToolTranscriptProtocol;
+    question: string;
+    contextAttachments: ContextAttachment[];
     maxToolRounds?: number;
     toolCalls: ToolCallRecord[];
     run: ChatRunHandle<AbortController>;
     meta: MessageMetaInput;
     mentionedServers: string[];
+    explicitToolServerCount: number;
+    explicitToolServerNames: readonly string[];
     initialText?: string;
     initialReasoning?: string;
   }): Promise<void> {
     const maxRounds = Math.max(0, Math.trunc(args.maxToolRounds ?? 10));
     let round = 0;
+    let toolProtocol = args.toolProtocol;
     let currentToolCalls = args.toolCalls;
     let conversationMessages = [...args.baseMessages];
     let currentAssistantContent = args.initialText ?? '';
+    let currentAssistantReasoning = args.initialReasoning ?? '';
     let accumulatedText = args.initialText ?? '';
     let accumulatedReasoning = args.initialReasoning ?? '';
     const allToolCalls: ToolCallRecord[] = [...args.toolCalls];
     let turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
     const withCurrentProviderUsage = (): MessageMetaInput => {
       const toolResultCount = selectProviderReinjectableToolCalls(allToolCalls).length;
-      const mcpServerNames = collectCompletedMcpServerNames(allToolCalls);
+      const mcpServerNames = [
+        ...new Set([
+          ...(args.meta.dataBoundarySnapshot?.sentToMcp ?? []),
+          ...collectCompletedMcpServerNames(allToolCalls),
+        ]),
+      ];
       return {
         ...args.meta,
+        toolRound: round,
         dataBoundarySnapshot: args.meta.dataBoundarySnapshot
           ? withDataBoundaryProviderUsage(args.meta.dataBoundarySnapshot, {
               toolResultCount,
@@ -3623,26 +4234,132 @@ export class ChatView extends ItemView {
       };
     };
 
-    while (round < maxRounds) {
+    while (round <= maxRounds) {
       if (!isChatRunActive(this.activeRun, args.run)) return;
+      const synthesisOnly = round === maxRounds;
+      const policyRound = synthesisOnly ? maxRounds : round + 1;
       round++;
-
-      const result = await this.streamFinalAnswerAfterTools({
-        provider: args.provider,
-        messageId: args.messageId,
-        conversationMessages,
-        assistantContent: currentAssistantContent,
+      const agentPlan = planAgenticToolTurn({
+        question: args.question,
+        contextAttachments: args.contextAttachments,
+        explicitToolServerCount: args.explicitToolServerCount,
+        explicitToolServerNames: args.explicitToolServerNames,
         toolDefinitions: args.toolDefinitions,
-        toolCalls: currentToolCalls,
-        run: args.run,
-        meta: { ...withCurrentProviderUsage(), citations: turnCitations },
+        toolCalls: allToolCalls,
+        phase: 'after-tools',
+        round: policyRound,
+        maxRounds,
       });
+      const checkpoint = synthesisOnly
+        ? [
+            agentPlan?.checkpoint,
+            '[Superpower Inside final synthesis checkpoint]',
+            `Current user objective (highest priority): <user_objective>${args.question}</user_objective>`,
+            'The bounded tool budget is now closed. Do not call another tool. Answer the current objective directly and completely from the verified results already provided.',
+          ]
+            .filter((part): part is string => Boolean(part))
+            .join('\n')
+        : (agentPlan?.checkpoint ?? '');
+      const roundToolDefinitions = synthesisOnly
+        ? []
+        : selectAgenticToolDefinitions(
+            args.toolDefinitions,
+            agentPlan?.requiredToolNames,
+            agentPlan?.requiredExternalServerNames,
+          );
+      const roundToolChoice: ToolChoice = synthesisOnly
+        ? 'none'
+        : (agentPlan?.toolChoice ?? 'auto');
+
+      const streamRound = (): ReturnType<ChatView['streamFinalAnswerAfterTools']> =>
+        this.streamFinalAnswerAfterTools({
+          provider: args.provider,
+          messageId: args.messageId,
+          conversationMessages,
+          assistantContent: currentAssistantContent,
+          assistantReasoning: currentAssistantReasoning,
+          toolDefinitions: roundToolDefinitions,
+          toolProtocol,
+          checkpoint,
+          toolChoice: roundToolChoice,
+          toolCalls: currentToolCalls,
+          run: args.run,
+          meta: { ...withCurrentProviderUsage(), citations: turnCitations },
+        });
+      let result: Awaited<ReturnType<ChatView['streamFinalAnswerAfterTools']>>;
+      try {
+        result = await streamRound();
+      } catch (error) {
+        if (!isChatRunActive(this.activeRun, args.run)) return;
+        const fallbackPlan = planNativeToolCompatibilityFallbackRust({
+          status: getChatHttpStatus(error) ?? null,
+          message: error instanceof Error ? error.message : String(error),
+          nativeAttempted: toolProtocol === 'native',
+          compatibilityFallbackAttempted: toolProtocol === 'compatibility',
+        });
+        if (fallbackPlan?.retryWithCompatibility !== true) throw error;
+
+        toolProtocol = 'compatibility';
+        if (args.meta.providerCapability) {
+          args.meta.providerCapability = {
+            ...args.meta.providerCapability,
+            toolCalling: false,
+          };
+        }
+        const providerKey = args.meta.providerKey?.trim();
+        const model = args.meta.model?.trim();
+        if (providerKey && model) {
+          this.compatibilityToolModels.add(`${providerKey}\u0000${model}`);
+        }
+        if (!isChatRunActive(this.activeRun, args.run)) return;
+        result = await streamRound();
+      }
       if (!isChatRunActive(this.activeRun, args.run)) return;
+      if (synthesisOnly && result.newToolCalls.length > 0) {
+        const limitMessage = t('tooManyToolCalls');
+        this.updateMessage(
+          args.messageId,
+          limitMessage,
+          true,
+          accumulatedReasoning || undefined,
+          allToolCalls,
+          {
+            ...withCurrentProviderUsage(),
+            citations: [],
+            status: 'error',
+            turnStage: 'error',
+            errorMessage: limitMessage,
+            stopReason: 'tool-failed',
+          },
+        );
+        return;
+      }
+      const remainingToolCalls = Math.max(0, MAX_TOOL_CALLS_PER_TURN - allToolCalls.length);
+      const newToolCalls = result.newToolCalls.slice(0, remainingToolCalls);
+      if (result.newToolCalls.length > 0 && newToolCalls.length === 0) {
+        const limitMessage = t('tooManyToolCalls');
+        this.updateMessage(
+          args.messageId,
+          limitMessage,
+          true,
+          accumulatedReasoning || undefined,
+          allToolCalls,
+          {
+            ...withCurrentProviderUsage(),
+            citations: [],
+            status: 'error',
+            turnStage: 'error',
+            errorMessage: limitMessage,
+            stopReason: 'tool-failed',
+          },
+        );
+        return;
+      }
 
       const roundText = resolveAssistantToolLoopText(
         accumulatedText,
         result.finalText,
-        result.newToolCalls.length > 0,
+        newToolCalls.length > 0,
       );
       accumulatedText = roundText.finalAnswer ?? roundText.displayText;
       if (result.finalReasoning) {
@@ -3653,13 +4370,34 @@ export class ChatView extends ItemView {
       }
       conversationMessages = result.conversationMessages;
 
-      if (result.newToolCalls.length > 0) {
+      if (newToolCalls.length === 0 && agentPlan?.shouldRetryWithoutTools === true) {
+        const missingToolMessage = t('agentRequiredToolMissing');
+        this.updateMessage(
+          args.messageId,
+          missingToolMessage,
+          true,
+          accumulatedReasoning || undefined,
+          allToolCalls,
+          {
+            ...withCurrentProviderUsage(),
+            citations: [],
+            status: 'error',
+            turnStage: 'error',
+            errorMessage: missingToolMessage,
+            stopReason: 'tool-failed',
+          },
+        );
+        return;
+      }
+
+      if (newToolCalls.length > 0) {
         const preparedCandidates = await prepareAssistantToolCalls({
-          toolCalls: result.newToolCalls,
+          toolCalls: newToolCalls,
           nativeTool: this.nativeVaultTool,
           registry: this.plugin.mcpRegistry,
           preferredServerNames: args.mentionedServers,
           mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+          mcpToolBindings: createMcpToolBindingAllowlist(roundToolDefinitions),
         });
         if (!isChatRunActive(this.activeRun, args.run)) return;
         const preparedToolCalls = markRepeatedToolCalls(allToolCalls, preparedCandidates);
@@ -3696,6 +4434,7 @@ export class ChatView extends ItemView {
         if (!isChatRunActive(this.activeRun, args.run)) return;
         allToolCalls.push(...currentToolCalls);
         currentAssistantContent = result.finalText;
+        currentAssistantReasoning = result.finalReasoning;
         turnCitations = collectToolCitations(args.meta.citations ?? [], allToolCalls);
         const displayedCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
         this.updateMessage(
@@ -3732,16 +4471,66 @@ export class ChatView extends ItemView {
         });
         accumulatedText = normalized.content;
         accumulatedReasoning = normalized.reasoning ?? '';
-        accumulatedText = enforceNativeToolAnswerContract(accumulatedText, allToolCalls).content;
+        let groundedRepairCitations: SourceCitation[] = [];
+        let answerContract = enforceNativeToolAnswerContract(accumulatedText, allToolCalls);
+        if (answerContract.violationCodes.length > 0) {
+          const originalContract = answerContract;
+          try {
+            const originalAnswer = accumulatedText;
+            const repaired = await this.streamGroundedAnswerRepair({
+              provider: args.provider,
+              messageId: args.messageId,
+              conversationMessages,
+              originalText: accumulatedText,
+              originalReasoning: accumulatedReasoning,
+              violationCodes: answerContract.violationCodes,
+              safeCoverageText: answerContract.safeCoverageText,
+              toolCalls: allToolCalls,
+              run: args.run,
+              meta: {
+                ...withCurrentProviderUsage(),
+                citations: turnCitations,
+              },
+            });
+            if (!isChatRunActive(this.activeRun, args.run)) return;
+            if (repaired.text.trim()) {
+              accumulatedText = repaired.text;
+              accumulatedReasoning = repaired.reasoning || accumulatedReasoning;
+              answerContract = enforceNativeToolAnswerContract(accumulatedText, allToolCalls);
+              if (answerContract.violationCodes.length === 0) {
+                groundedRepairCitations = selectGroundedRepairCitations(
+                  originalAnswer,
+                  accumulatedText,
+                  turnCitations,
+                );
+              } else {
+                answerContract = originalContract;
+              }
+            }
+          } catch (error) {
+            if (!isChatRunActive(this.activeRun, args.run)) return;
+            this.plugin.logger.warn(
+              'Grounded answer repair failed; preserving claims allowed by the coverage contract.',
+              { source: 'chat.answer-contract', error },
+            );
+          }
+        }
+        accumulatedText = answerContract.content;
+        if (answerContract.violationCodes.length > 0) {
+          this.plugin.logger.warn('Unsupported answer claims removed.', {
+            source: 'chat.answer-contract',
+            data: { violationCodes: answerContract.violationCodes },
+          });
+        }
         const classification = classifyAssistantResponse({
           content: accumulatedText,
           reasoning: accumulatedReasoning,
         });
         if (classification.type === 'question') {
-          const answerCitations = selectDisplayedAnswerCitations(
-            classification.content,
-            turnCitations,
-          );
+          const answerCitations =
+            groundedRepairCitations.length > 0
+              ? groundedRepairCitations
+              : selectDisplayedAnswerCitations(classification.content, turnCitations);
           this.updateMessage(
             args.messageId,
             classification.content,
@@ -3759,8 +4548,23 @@ export class ChatView extends ItemView {
           );
           return;
         }
-        const answerCitations = selectDisplayedAnswerCitations(accumulatedText, turnCitations);
+        const answerCitations =
+          groundedRepairCitations.length > 0
+            ? groundedRepairCitations
+            : selectDisplayedAnswerCitations(accumulatedText, turnCitations);
         const sourceWarnings = this.validateAssistantSources(accumulatedText, answerCitations);
+        this.plugin.logger.debug('Chat tool trace quality measured.', {
+          source: 'chat.quality',
+          data: evaluateToolTrace({
+            question: args.question,
+            answer: accumulatedText,
+            toolCalls: allToolCalls,
+            citations: answerCitations,
+            contextAttachments: args.contextAttachments,
+            toolDefinitions: args.toolDefinitions,
+            maxToolRounds: maxRounds,
+          }),
+        });
         this.updateMessage(
           args.messageId,
           accumulatedText,
@@ -3807,11 +4611,15 @@ export class ChatView extends ItemView {
       .map((mention) => mention.name);
   }
 
-  private getEffectiveMcpServerNames(text: string): string[] {
+  private getEffectiveMcpServerNames(
+    text: string,
+    mentionedServerNames = this.getMentionedServerNames(text),
+  ): string[] {
     return getPluginAwareServerNames({
-      mentionedServerNames: this.getMentionedServerNames(text),
+      mentionedServerNames,
       pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
       userText: text,
+      plugins: this.plugin.settings.pluginAwareEnabled ? getActivePluginInfo(this.app) : [],
       registry: this.plugin.mcpRegistry,
     });
   }
@@ -3882,6 +4690,7 @@ export class ChatView extends ItemView {
     this.abortController = abortController;
     this.setLoading(true);
     setHidden(this.typingIndicator, false);
+    let titleProvider: LLMProvider | undefined;
 
     try {
       const messageIndex = this.messages.findIndex((item) => item.id === messageId);
@@ -3890,10 +4699,13 @@ export class ChatView extends ItemView {
         messageId,
         this.lastUserPrompt ?? '',
       );
+      const explicitlyMentionedServers = this.getMentionedServerNames(currentQuestion);
+      const mentionedServers = this.getEffectiveMcpServerNames(
+        currentQuestion,
+        explicitlyMentionedServers,
+      );
       const toolCalls = message.toolCalls.map((toolCall) =>
-        toolCall.id === toolCallId || toolCall.name === toolCallId
-          ? { ...toolCall, approved: true }
-          : { ...toolCall },
+        toolCall.id === toolCallId ? { ...toolCall, approved: true } : { ...toolCall },
       );
       this.updateMessage(messageId, message.content, false, message.reasoning, toolCalls, {
         status: 'streaming',
@@ -3904,7 +4716,7 @@ export class ChatView extends ItemView {
       const updated = await this.executeAssistantToolCalls(
         messageId,
         toolCalls,
-        this.getEffectiveMcpServerNames(currentQuestion),
+        mentionedServers,
         message.reasoning,
         run,
       );
@@ -3931,66 +4743,73 @@ export class ChatView extends ItemView {
       const latestMessage = this.messages.find((m) => m.id === messageId);
       const providerReinjectableToolCalls = selectProviderReinjectableToolCalls(updated);
       if (providerReinjectableToolCalls.length > 0 && message.providerKey && message.model) {
-        const { createCustomOpenAIProvider, createProvider, createProviderForStrategy } =
-          await import('../llm/providers');
         if (!isChatRunActive(this.activeRun, run)) return;
-        const profileRef = message.providerKey.startsWith('profile:')
-          ? `${message.providerKey}:${message.model}`
-          : '';
-        const resolvedProfileModel = profileRef
-          ? resolveProviderModelRef(this.plugin.settings, profileRef, 'general')
-          : null;
-        const provider = resolvedProfileModel
-          ? createProviderForStrategy(
-              resolvedProfileModel.profile.strategy,
-              {
-                ...resolvedProfileModel.profile,
-                models: resolvedProfileModel.profile.models.map((model) => model.id),
-              },
-              resolvedProfileModel.modelId,
-              resolvedProfileModel.profile.id,
-            )
-          : message.providerKey.startsWith('customOpenAI:')
-            ? (() => {
-                const providerId = message.providerKey?.split(':')[1] ?? '';
-                const customProvider = this.plugin.settings.customOpenAIProviders.find(
-                  (item) => item.id === providerId,
-                );
-                if (!customProvider) {
-                  throw new Error(t('customProviderNotFound'));
-                }
-                return createCustomOpenAIProvider(customProvider, message.model);
-              })()
-            : createProvider(
-                message.providerKey as ProviderKey,
-                this.plugin.settings[message.providerKey as ProviderKey],
-                message.model,
-              );
-        const mentionedServers = this.getEffectiveMcpServerNames(currentQuestion);
-        const promptContext = await this.buildPromptContext(currentQuestion, previousUserQuestions);
+        const resumedProvider = await prepareChatProviderForModel(
+          this.plugin.settings,
+          buildStoredChatModelRef(message.providerKey, message.model),
+        );
+        if (!resumedProvider) throw new Error(t('noActiveProviderNotice'));
+        const provider = resumedProvider.provider;
+        titleProvider = provider;
+        const promptContext = await this.buildPromptContext(
+          currentQuestion,
+          previousUserQuestions,
+          provider.capability.maxToolRounds > 0,
+          captureWorkspaceMentionFiles(this.app),
+          provider,
+          abortController.signal,
+        );
         if (!isChatRunActive(this.activeRun, run)) return;
-        const toolDefinitions = await this.collectToolDefinitions(mentionedServers, run);
+        if (promptContext.pluginDocumentationFailure) {
+          this.updateMessage(
+            messageId,
+            promptContext.pluginDocumentationFailure,
+            true,
+            undefined,
+            updated,
+            {
+              contextAttachments: promptContext.attachments,
+              status: 'complete',
+              turnStage: 'complete',
+              stopReason: 'complete',
+            },
+          );
+          return;
+        }
+        const toolDefinitions = await this.collectToolDefinitions(
+          mentionedServers,
+          explicitlyMentionedServers,
+          run,
+        );
         if (!isChatRunActive(this.activeRun, run)) return;
         const resumeDataBoundarySnapshot = createDataBoundarySnapshot({
           providerLabel: message.providerLabel ?? message.providerKey,
           model: message.model,
           hasUserQuestion: true,
-          recentConversationMessageCount: Math.min(10, Math.max(0, messageIndex)),
+          recentConversationMessageCount: Math.max(0, messageIndex),
           hasSystemPrompt: true,
           attachments: promptContext.attachments,
           citations: promptContext.citations,
-          mcpServerNames: [],
+          mcpServerNames: promptContext.preparedMcpServerNames ?? [],
         });
+        const resumeToolModelKey = `${message.providerKey}\u0000${message.model}`;
+        const resumeToolProtocol: ToolTranscriptProtocol =
+          provider.capability.toolCalling &&
+          message.providerCapability?.toolCalling !== false &&
+          !this.compatibilityToolModels.has(resumeToolModelKey)
+            ? 'native'
+            : 'compatibility';
         const resumePlan = createToolApprovalResumePlan({
           promptSystemPrompt: promptContext.systemPrompt,
           toolDefinitions,
-          providerSupportsToolCalling: provider.capability.toolCalling,
+          providerSupportsToolCalling: resumeToolProtocol === 'native',
           toolCalls: updated,
           dataBoundarySnapshot: resumeDataBoundarySnapshot,
         });
-        const previousMessages = this.messages
-          .slice(Math.max(0, messageIndex - 10), Math.max(0, messageIndex))
-          .map((item) => this.toProviderMessage(item));
+        const previousMessages = buildProviderConversation(
+          this.messages.slice(0, Math.max(0, messageIndex)),
+          resumeToolProtocol,
+        );
         const baseMessages: ChatMessage[] = [
           ...(resumePlan.systemPrompt
             ? [{ role: 'system' as const, content: resumePlan.systemPrompt }]
@@ -4001,7 +4820,10 @@ export class ChatView extends ItemView {
           provider,
           messageId,
           baseMessages,
-          toolDefinitions: resumePlan.providerToolDefinitions,
+          toolDefinitions,
+          toolProtocol: resumeToolProtocol,
+          question: currentQuestion,
+          contextAttachments: promptContext.attachments,
           maxToolRounds: provider.capability.maxToolRounds,
           toolCalls: updated,
           run,
@@ -4015,6 +4837,8 @@ export class ChatView extends ItemView {
             dataBoundarySnapshot: resumePlan.dataBoundarySnapshot,
           },
           mentionedServers,
+          explicitToolServerCount: explicitlyMentionedServers.length,
+          explicitToolServerNames: explicitlyMentionedServers,
         });
         if (!isChatRunActive(this.activeRun, run)) return;
       } else {
@@ -4043,8 +4867,15 @@ export class ChatView extends ItemView {
         return;
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
-      const errorKind = classifyChatFailure(err);
-      const presentation = createChatErrorPresentation(errorKind, getChatRetryAfterMs(err));
+      const errorKind =
+        err instanceof ExplicitMcpToolDiscoveryError ? 'tool-failed' : classifyChatFailure(err);
+      const presentation =
+        err instanceof ExplicitMcpToolDiscoveryError
+          ? {
+              content: t('mcpMentionedServerUnavailable', { server: err.serverName }),
+              retryAvailableAt: undefined,
+            }
+          : createChatErrorPresentation(errorKind, getChatRetryAfterMs(err));
       const errorDetail = this.formatErrorDetail(
         message.providerKey ?? 'unknown',
         message.model ?? 'unknown',
@@ -4073,6 +4904,7 @@ export class ChatView extends ItemView {
       }
       if (finalization.saveSession) {
         await this.saveCurrentSession(true);
+        if (titleProvider) await this.summarizeCurrentSessionTitle(titleProvider, run);
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
         setHidden(this.typingIndicator, true);
@@ -4088,37 +4920,72 @@ export class ChatView extends ItemView {
   private async buildPromptContext(
     lastUserText: string,
     previousUserQuestions: readonly string[] = [],
+    deferImplicitFolderEvidenceToTools = false,
+    workspaceFiles: WorkspaceMentionFiles = captureWorkspaceMentionFiles(this.app),
+    provider?: LLMProvider,
+    signal?: AbortSignal,
   ): Promise<ContextBuildResult> {
     const parts: string[] = [];
     const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
     if (systemPrompt) parts.push(systemPrompt);
 
-    if (this.plugin.settings.pluginAwareEnabled) {
-      const { formatActivePluginsForPrompt } = await import('../utils/obsidian-compat');
-      const pluginInfo = formatActivePluginsForPrompt(this.app);
-      if (pluginInfo) parts.push(pluginInfo);
+    const pluginDocumentation = await buildPluginAwareDocumentation({
+      enabled: this.plugin.settings.pluginAwareEnabled,
+      question: lastUserText,
+      previousQuestions: previousUserQuestions,
+      plugins: this.plugin.settings.pluginAwareEnabled ? getActivePluginInfo(this.app) : [],
+      registry: this.plugin.mcpRegistry,
+      executionMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
+      approve: () => confirmWithModal(this.app, t('pluginAwareDocumentationApproval')),
+      signal,
+    });
+    if (pluginDocumentation) parts.push(pluginDocumentation.prompt);
+    if (pluginDocumentation?.failureMessage) {
+      return {
+        systemPrompt: parts.join('\n'),
+        attachments: pluginDocumentation.attachments,
+        citations: [],
+        warnings: [],
+        preparedMcpServerNames: pluginDocumentation.serverNames,
+        pluginDocumentationFailure: pluginDocumentation.failureMessage,
+      };
     }
 
     const skipAutoRag = this.skipAutoRagOnce;
     this.skipAutoRagOnce = false;
     const ragEngine: RagQueryLike | null = await resolveChatRagEngine(
-      skipAutoRag,
+      skipAutoRag ||
+        pluginDocumentation !== null ||
+        this.parseMentions(lastUserText).some((mention) => mention.type === 'tag'),
       () => this.plugin.prepareRagForChat(),
       () => this.plugin.ragEngine,
     );
+    const { getRagCandidateFiles } = await import('../utils/vault');
+    const candidateFiles = await getRagCandidateFiles(
+      this.app.vault,
+      this.plugin.settings.rag,
+      this.plugin.settings.chat,
+    );
     const context = await buildChatContext(lastUserText, {
       app: this.app,
+      workspaceFiles,
+      candidatePaths: new Set(candidateFiles.map((file) => file.path)),
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,
-      knowledgeGraphStore: this.plugin.knowledgeGraphStore,
       ragMinScore: this.plugin.settings.rag.minScore,
+      maxContextChars: provider?.contextBudget?.evidenceChars,
+      deferImplicitFolderEvidenceToTools,
+      explicitContextOnly: pluginDocumentation !== null,
       queryExpander: (question) =>
-        Promise.resolve(expandVaultSearchQueryLocally(question, previousUserQuestions)),
+        expandVaultSearchPlan(question, provider, previousUserQuestions, signal),
     });
     if (context.systemPrompt) parts.push(context.systemPrompt);
 
     return {
       ...context,
+      preparedMcpServerNames: pluginDocumentation?.serverNames,
+      pluginDocumentationFailure: pluginDocumentation?.failureMessage,
+      attachments: [...(pluginDocumentation?.attachments ?? []), ...context.attachments],
       systemPrompt: parts.length > 0 ? parts.join('\n') : null,
     };
   }
@@ -4554,7 +5421,11 @@ export class ChatView extends ItemView {
     }
 
     const callRow = bubble.createDiv({ cls: 'superpower-inside-tool-call' });
-    callRow.createSpan({ cls: 'superpower-inside-tool-call-icon', text: '🔧' });
+    const toolIcon = callRow.createSpan({
+      cls: 'superpower-inside-tool-call-icon',
+      attr: { 'aria-hidden': 'true' },
+    });
+    setIcon(toolIcon, 'wrench');
     callRow.createSpan({
       cls: 'superpower-inside-tool-call-name',
       text: toolName || t('messageTool'),
@@ -4562,17 +5433,22 @@ export class ChatView extends ItemView {
     const statusBadge = callRow.createSpan({
       cls: `superpower-inside-tool-call-status ${status}`,
     });
-    if (status === 'running') {
-      statusBadge.setText('');
-      const dots = statusBadge.createSpan({ cls: 'superpower-inside-tool-running-dots' });
-      dots.createSpan({});
-      dots.createSpan({});
-      dots.createSpan({});
-    } else if (status === 'success') {
-      statusBadge.setText('✓');
-    } else if (status === 'error') {
-      statusBadge.setText('✗');
-    }
+    const statusIcon = statusBadge.createSpan({
+      cls: 'superpower-inside-tool-call-status-icon',
+      attr: { 'aria-hidden': 'true' },
+    });
+    setIcon(
+      statusIcon,
+      status === 'running' ? 'loader-circle' : status === 'success' ? 'check' : 'circle-alert',
+    );
+    statusBadge.createSpan({
+      text:
+        status === 'running'
+          ? t('chatStatusRunning')
+          : status === 'success'
+            ? t('chatStatusDone')
+            : t('chatStatusError'),
+    });
 
     const resultArea = bubble.createDiv({ cls: 'superpower-inside-tool-result' });
     if (resultText && status !== 'running') {
@@ -4580,17 +5456,34 @@ export class ChatView extends ItemView {
     }
 
     if (resultText && status !== 'running') {
-      const toggle = bubble.createDiv({ cls: 'superpower-inside-tool-result-toggle collapsed' });
-      toggle.createSpan({ cls: 'superpower-inside-tool-result-toggle-chevron', text: '▾' });
+      const resultId = `superpower-inside-tool-result-${this.localToolCallSequence++}`;
+      resultArea.id = resultId;
+      const toggle = bubble.createEl('button', {
+        cls: 'superpower-inside-tool-result-toggle collapsed',
+        attr: {
+          type: 'button',
+          'aria-expanded': 'false',
+          'aria-controls': resultId,
+        },
+      });
+      const toggleIcon = toggle.createSpan({
+        cls: 'superpower-inside-tool-result-toggle-chevron',
+        attr: { 'aria-hidden': 'true' },
+      });
+      setIcon(toggleIcon, 'chevron-right');
       toggle.createSpan({ text: t('toolResult') });
       toggle.addEventListener('click', () => {
         const isCollapsed = resultArea.classList.contains('collapsed');
         if (isCollapsed) {
           resultArea.classList.remove('collapsed');
           toggle.classList.remove('collapsed');
+          toggle.setAttribute('aria-expanded', 'true');
+          setIcon(toggleIcon, 'chevron-down');
         } else {
           resultArea.classList.add('collapsed');
           toggle.classList.add('collapsed');
+          toggle.setAttribute('aria-expanded', 'false');
+          setIcon(toggleIcon, 'chevron-right');
         }
       });
       resultArea.classList.add('collapsed');

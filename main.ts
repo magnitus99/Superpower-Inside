@@ -13,33 +13,35 @@ import {
   writeJsonToVault,
 } from './src/utils/vault';
 import {
+  TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID,
+  toggleDocumentExclusion,
+} from './src/utils/document-exclusion';
+import {
   type SuperpowerInsideSettings,
   DEFAULT_SETTINGS,
   isCustomOpenAIEmbeddingProviderKey,
   migrateLegacyProviderProfiles,
   normalizeAgentDiagnosticsSettings,
   normalizeChatSaveFolder,
+  resolveChatModelPlan,
   resolveProviderModelRef,
+  resolveUsableProviderModelRef,
   SuperpowerInsideSettingTab,
 } from './src/settings';
 import {
   normalizeRagPerformanceTuningMode,
   resolveRagPerformanceSettings,
   shouldShowProviderApiKey,
-  getGraphRagStatusPresentation,
 } from './src/rag/settings-display';
-import {
-  createCustomOpenAIProvider,
-  createProviderForStrategy,
-  createProvider,
-  type ProviderKey,
-  type LLMProvider,
-} from './src/llm/providers';
+import type { LLMProvider } from './src/llm/providers';
+import { createChatProviderForModel } from './src/llm/provider-resolution';
 import { normalizeProviderCapabilityOverrides } from './src/llm/provider-capabilities';
+import { chatGPTOAuth, initializeChatGPTOAuth } from './src/llm/chatgpt-oauth';
 import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
   TernlightEmbeddingProvider,
+  EmbeddingGemmaProvider,
   CachedEmbeddingProvider,
   createEmbeddingCacheNamespace,
   type EmbeddingProvider,
@@ -49,12 +51,20 @@ import {
   importLegacyJsonVectorStore,
   type VectorStore,
 } from './src/rag/store';
+import {
+  getLocalEmbeddingModels,
+  type LocalEmbeddingModelId,
+} from './src/llm/local-embedding-models';
 import { IndexedDbBM25Index, type BM25CorpusDocument } from './src/rag/bm25';
+import { buildBM25CorpusDocuments } from './src/rag/bm25-corpus';
+import { IndexedDbDocumentCorpusStore } from './src/rag/document-corpus-store';
+import { VaultDocumentCorpus } from './src/rag/vault-document-corpus';
+import {
+  planSourceProcessingRust,
+  type SourceProcessingSummary,
+} from './src/rag/source-processing';
 import {
   VaultIndexer,
-  buildSearchText,
-  chunkMarkdown,
-  chunkPlainText,
   registerModifyEvent,
   registerCreateEvent,
   registerDeleteEvent,
@@ -64,26 +74,14 @@ import {
 } from './src/rag/indexer';
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
 import { RAGQueryEngine } from './src/rag/query';
-import {
-  GraphRagIndexingRunner,
-  type GraphRagCommunityBuildResult,
-  type GraphRagIndexingResult,
-} from './src/graph/indexing-runner';
-import { GraphRagQueryEngine } from './src/graph/query-engine';
-import { calculateGraphRagStatus, type GraphRagStatusSummary } from './src/graph/status';
-import { IndexedDbKnowledgeGraphStore, type KnowledgeGraphStore } from './src/graph/store';
-import { buildKnowledgeGraphContract } from './src/graph/knowledge-contract';
-import { createGraphProviderEpochId } from './src/graph/extraction';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import {
   RAGIndexingScheduler,
   type RagIndexingSchedulerStatus,
 } from './src/rag/indexing-scheduler';
-import { shouldRebuildRagRuntimeForGraphStatus } from './src/rag/runtime';
 import { shouldRunRagStatusBackgroundRefresh } from './src/rag/background-status';
-import type { RetrievalProviderReadiness } from './src/rag/retrieval-pipeline';
+import type { StructuralMetadataContext } from './src/rag/retrieval-pipeline';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
-import { GRAPH_RAG_VIEW_TYPE, GraphRagView } from './src/graph/view';
 import { AGENT_DIAGNOSTICS_VIEW_TYPE, AgentDiagnosticsView } from './src/diagnostics/view';
 import {
   AgentDiagnosticsService,
@@ -116,7 +114,7 @@ import {
 import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
 import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
 import {
-  cleanupStaleIndexedDbGenerations,
+  createRagIndexNamespace,
   createRagStorageLayout,
   deleteRagIndexedDbGenerations,
 } from './src/rag/storage-lifecycle';
@@ -131,14 +129,18 @@ import {
   RAG_STORAGE_MAINTENANCE_COMPLETION_KEY,
   runRagStorageMaintenance,
 } from './src/rag/storage-maintenance';
-import { cleanupInactiveRagIndexedDb } from './src/rag/storage-registry';
+import { RetiredArtifactService, createRetiredArtifactHost } from './src/storage/retired-artifacts';
+import {
+  GENERATED_ARTIFACT_FEATURES,
+  GeneratedArtifactRegistry,
+  createGeneratedFileAdapter,
+} from './src/storage/generated-artifacts';
 import { buildPluginIndexedDbNames, resetPluginOwnedData } from './src/utils/plugin-data-reset';
 import { maintainPluginOwnedFiles } from './src/utils/plugin-file-maintenance';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 const AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH = 320;
 const RAG_RUNTIME_INIT_STEP_TIMEOUT_MS = 30_000;
-const GRAPH_AUTO_SYNC_MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
 const AUTO_UPDATE_TIMER_WINDOW_KEY = '__superpowerInsideAutoUpdateTimerV1' as const;
 
 type AutoUpdateTimerWindow = Window & {
@@ -150,57 +152,6 @@ class RagRuntimeInitializationCancelledError extends Error {
     super('RAG runtime initialization was cancelled.');
     this.name = 'RagRuntimeInitializationCancelledError';
   }
-}
-
-function isGraphRagUsableForQuery(status: GraphRagStatusSummary | null): boolean {
-  if (!status) return false;
-  return (
-    status.state === 'ready' ||
-    status.state === 'partial' ||
-    status.state === 'stale' ||
-    (status.state === 'building' && status.graphEvidenceCount > 0)
-  );
-}
-
-function graphRagReadinessFromStatus(
-  status: GraphRagStatusSummary | null,
-): RetrievalProviderReadiness {
-  if (!status) {
-    return {
-      readiness: 'cold',
-      estimatedCost: 'free',
-      reason: 'GraphRAG status has not been calculated yet.',
-    };
-  }
-  if (status.state === 'ready') {
-    return { readiness: 'ready', estimatedCost: 'free' };
-  }
-  if (status.state === 'partial') {
-    return {
-      readiness: 'partial',
-      estimatedCost: 'free',
-      reason: 'GraphRAG index is partially available.',
-    };
-  }
-  if (status.state === 'stale') {
-    return {
-      readiness: 'stale',
-      estimatedCost: 'free',
-      reason: 'GraphRAG index is stale but still available as supporting evidence.',
-    };
-  }
-  if (status.state === 'building' && status.graphEvidenceCount > 0) {
-    return {
-      readiness: 'partial',
-      estimatedCost: 'free',
-      reason: 'GraphRAG index is building; existing evidence is available.',
-    };
-  }
-  return {
-    readiness: 'cold',
-    estimatedCost: 'free',
-    reason: 'GraphRAG index has not been built yet.',
-  };
 }
 
 interface ClearableEmbeddingProvider extends EmbeddingProvider {
@@ -234,14 +185,12 @@ function isSafeModeFlagEnabled(value: unknown): boolean {
 }
 
 interface RagRuntimeSnapshot {
+  documentCorpus: IndexedDbDocumentCorpusStore | null;
+  vaultDocumentCorpus: VaultDocumentCorpus | null;
   vectorStore: VectorStore | null;
-  knowledgeGraphStore: KnowledgeGraphStore | null;
   embeddingProvider: EmbeddingProvider | null;
   bm25Index: IndexedDbBM25Index | null;
   ragEngine: RAGQueryEngine | null;
-  graphRagStatus: GraphRagStatusSummary | null;
-  graphRagIndexingRunner: GraphRagIndexingRunner | null;
-  graphRagProviderAttached: boolean;
   vaultIndexer: VaultIndexer | null;
   ragIndexingScheduler: RAGIndexingScheduler | null;
   automaticRagRecovery: AutomaticRagRecoveryCoordinator | null;
@@ -259,17 +208,70 @@ interface BM25BackgroundLoadOutcome {
 }
 
 export default class SuperpowerInsidePlugin extends Plugin {
-  settings!: SuperpowerInsideSettings;
+  documentCorpus: IndexedDbDocumentCorpusStore | null = null;
+  private vaultDocumentCorpus: VaultDocumentCorpus | null = null;
+  async getSourceFileProcessingStatus(
+    files: readonly TFile[],
+    limit = 32,
+  ): Promise<SourceProcessingSummary | null> {
+    const corpus = this.documentCorpus;
+    if (!corpus) return null;
+    const paths = files.map((file) => file.path);
+    const [documents, bm25, vectors] = await Promise.all([
+      corpus.getDocuments(),
+      this.bm25Index?.getCorpusDocumentsBySourcePaths(paths) ?? Promise.resolve([]),
+      this.vectorStore?.getFileIndexRecords() ?? Promise.resolve([]),
+    ]);
+    if (this.documentCorpus !== corpus) return null;
+    const rag = this.settings.rag;
+    const embedding = resolveUsableProviderModelRef(
+      this.settings,
+      rag.embeddingModelRef ?? '',
+      'embedding',
+    );
+    return planSourceProcessingRust({
+      files: files.map((file) => ({
+        filePath: file.path,
+        sourceMtime: file.stat.mtime,
+        sourceSize: file.stat.size,
+        readFailed: this.vaultDocumentCorpus?.hasFailedPath(file.path) ?? false,
+        readPending: this.vaultDocumentCorpus?.isReadingPath(file.path) ?? false,
+      })),
+      documents: documents.map(
+        ({ id, sourcePath, sourceMtime, sourceSize, contentHash, chunkHash }) => ({
+          id,
+          sourcePath,
+          sourceMtime,
+          sourceSize,
+          contentHash,
+          chunkHash,
+        }),
+      ),
+      bm25: bm25.map(({ id, sourcePath, sourceMtime, sourceSize, contentHash }) => ({
+        id,
+        sourcePath,
+        sourceMtime,
+        sourceSize,
+        contentHash,
+      })),
+      vectors,
+      failedEmbeddingPaths: this.vaultIndexer?.getFailedFilePaths() ?? [],
+      config: {
+        bm25Enabled: rag.enableBM25,
+        embeddingEnabled: embedding !== null,
+        embeddingProvider: rag.embeddingProvider,
+        embeddingModel: rag.embeddingModel,
+      },
+      limit,
+    });
+  }
+  declare settings: SuperpowerInsideSettings;
   logger: AppLogger = appLogger;
   private provider: LLMProvider | null = null;
   vectorStore: VectorStore | null = null;
-  knowledgeGraphStore: KnowledgeGraphStore | null = null;
   private embeddingProvider: EmbeddingProvider | null = null;
   private bm25Index: IndexedDbBM25Index | null = null;
   ragEngine: RAGQueryEngine | null = null;
-  graphRagStatus: GraphRagStatusSummary | null = null;
-  private graphRagIndexingRunner: GraphRagIndexingRunner | null = null;
-  private graphRagAbortController: AbortController | null = null;
   private vaultIndexer: VaultIndexer | null = null;
   private ragIndexingScheduler: RAGIndexingScheduler | null = null;
   private automaticRagRecovery: AutomaticRagRecoveryCoordinator | null = null;
@@ -294,12 +296,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private renameCleanup: (() => void) | null = null;
   private autoUpdateTimer: number | null = null;
   private ragStatusTimer: number | null = null;
-  private graphAutoSyncTimer: number | null = null;
-  private graphAutoSyncFailureCount = 0;
-  private graphAutoSyncNextAllowedAt = 0;
   private ragIndexAbortController: AbortController | null = null;
-  private graphRagProviderAttached = false;
-  private ragRuntimeRebuildInProgress = false;
   private ragRuntimeInitRunner: CoalescedAsyncRunner | null = null;
   private ragRuntimeInitRunId = 0;
   private unloaded = false;
@@ -314,6 +311,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const startedAt = Date.now();
     this.unloaded = false;
     this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
+    const chatGPTAuth = initializeChatGPTOAuth(this.app, this.getLogger(), this.manifest.version);
+    this.register(() => chatGPTAuth.dispose());
     await this.loadSettings();
     await this.runStartupPluginFileMaintenance();
     await this.configureAgentDiagnosticsService();
@@ -329,18 +328,49 @@ export default class SuperpowerInsidePlugin extends Plugin {
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
     this.registerView(AGENT_DIAGNOSTICS_VIEW_TYPE, (leaf) => new AgentDiagnosticsView(leaf, this));
-
-    // 리본 아이콘
-    this.registerView(GRAPH_RAG_VIEW_TYPE, (leaf) => new GraphRagView(leaf, this));
     this.addRibbonIcon('message-circle', t('cmdOpenAiChat'), () => {
       void this.openChatView();
     });
 
-    this.addRibbonIcon('git-branch', t('cmdOpenGraphRagView'), () => {
-      void this.openGraphRagView();
-    });
-
     // 명령어
+    this.addCommand({
+      id: TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID,
+      name: t('cmdToggleDocumentExclusion'),
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== 'md') return false;
+        if (!checking) {
+          void toggleDocumentExclusion(this.app, file)
+            .then(async (excluded) => {
+              new Notice(
+                t(excluded ? 'documentExclusionEnabled' : 'documentExclusionDisabled', {
+                  path: file.path,
+                }),
+              );
+              if (excluded) {
+                try {
+                  await this.vaultIndexer?.removeFile(file.path);
+                } catch (error) {
+                  this.getLogger().warn('Excluded document index cleanup failed.', {
+                    source: 'vault.exclusion',
+                    error,
+                  });
+                }
+              }
+              this.refreshBus.emit('rag', { status: 'success' });
+              this.refreshBus.emit('exclude-counts', { status: 'success' });
+            })
+            .catch((error: unknown) => {
+              this.getLogger().error('Document exclusion toggle failed.', {
+                source: 'vault.exclusion',
+                error,
+              });
+              new Notice(t('documentExclusionFailed'));
+            });
+        }
+        return true;
+      },
+    });
     this.addCommand({
       id: 'open-ai-chat',
       name: t('cmdOpenAiChat'),
@@ -394,12 +424,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     });
 
     this.addCommand({
-      id: 'open-graph-rag-view',
-      name: t('cmdOpenGraphRagView'),
-      callback: () => this.openGraphRagView(),
-    });
-
-    this.addCommand({
       id: 'open-agent-diagnostics-view',
       name: t('cmdOpenAgentDiagnosticsView'),
       callback: () => this.openAgentDiagnosticsView(),
@@ -426,7 +450,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.getLogger().info('Plugin unloading.', { source: 'lifecycle' });
     void this.agentDiagnosticsService?.stop('plugin-unload');
     this.cancelRagIndexing();
-    this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
     if (this.statsDebounceTimer) {
       window.clearTimeout(this.statsDebounceTimer);
@@ -436,10 +459,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (this.ragStatusTimer) {
       window.clearInterval(this.ragStatusTimer);
       this.ragStatusTimer = null;
-    }
-    if (this.graphAutoSyncTimer) {
-      window.clearInterval(this.graphAutoSyncTimer);
-      this.graphAutoSyncTimer = null;
     }
     if (this.mcpRegistry) {
       const disconnectPromise = this.mcpRegistry.disconnectAll();
@@ -497,30 +516,25 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.ragIndexingScheduler?.cancel();
   }
 
-  isGraphRagIndexing(): boolean {
-    return (
-      this.graphRagAbortController !== null || (this.graphRagIndexingRunner?.isRunning() ?? false)
+  async deleteLocalEmbeddingModel(modelId: LocalEmbeddingModelId): Promise<void> {
+    const selected = resolveProviderModelRef(
+      this.settings,
+      this.settings.rag.embeddingModelRef ?? '',
+      'embedding',
     );
-  }
-
-  cancelGraphRagIndexing(): void {
-    this.graphRagAbortController?.abort();
-  }
-
-  async runGraphRagIndexing(): Promise<GraphRagIndexingResult | null> {
-    return this.runGraphRagOperation({ resumeFailed: false });
-  }
-
-  async resumeGraphRagIndexing(): Promise<GraphRagIndexingResult | null> {
-    return this.runGraphRagOperation({ resumeFailed: true });
-  }
-
-  async retryGraphRagFile(filePath: string): Promise<GraphRagIndexingResult | null> {
-    return this.runGraphRagOperation({ resumeFailed: true, failedFilePaths: [filePath] });
-  }
-
-  hasGraphRagRunner(): boolean {
-    return this.graphRagIndexingRunner !== null;
+    if (selected?.profile.strategy === 'ternlight' && selected.modelId === modelId) {
+      this.cancelRagIndexing();
+      this.embeddingProvider?.close?.();
+    }
+    await getLocalEmbeddingModels({
+      app: this.app,
+      pluginId: this.manifest.id,
+      pluginVersion: this.manifest.version,
+    }).remove(modelId);
+    this.refreshBus?.emit('rag', {
+      status: 'success',
+      detail: t('localModelDeleteDone', { model: modelId }),
+    });
   }
 
   resumeRagIndexing(): boolean {
@@ -565,10 +579,59 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return `${this.app.vault.configDir}/plugins/${this.manifest?.id ?? 'superpower-inside'}`;
   }
 
+  private retiredArtifactService: RetiredArtifactService | null = null;
+  private generatedArtifactRegistry: GeneratedArtifactRegistry | null = null;
+  private activeArtifactDatabaseNames: Set<string> | null = null;
+
+  private get generatedArtifacts(): GeneratedArtifactRegistry {
+    return (this.generatedArtifactRegistry ??= new GeneratedArtifactRegistry(
+      this.app,
+      this.manifest?.id ?? 'superpower-inside',
+      ['.superpower-inside', this.getPluginDirectoryPath()],
+    ));
+  }
+
+  get retiredArtifacts(): RetiredArtifactService {
+    return (this.retiredArtifactService ??= new RetiredArtifactService(
+      createRetiredArtifactHost(this.app.vault.adapter, async () => {
+        const revision = this.ragRuntimeInitRunId;
+        const layout = createRagStorageLayout({
+          pluginId: this.manifest.id,
+          vaultIdentity: this.getVaultStorageIdentity(),
+          legacyVaultName: this.getVaultName(),
+          embeddingNamespace: 'artifact-inspection',
+          indexNamespace: 'artifact-inspection',
+        });
+        const [recovery, maintenance] = await Promise.all([
+          this.vectorStore?.getMetaValue?.<string>(AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY),
+          this.vectorStore?.getMetaValue?.<string>(RAG_STORAGE_MAINTENANCE_COMPLETION_KEY),
+        ]);
+        if (revision !== this.ragRuntimeInitRunId || this.unloaded) {
+          throw new Error('Storage changed during inspection');
+        }
+        return {
+          pluginId: this.manifest.id,
+          vaultPrefixes: layout.ownedVaultPrefixes,
+          legacyNames: [...layout.cleanupLegacyNames, this.createIndexedDbName('KnowledgeGraph')],
+          activeNames: [...(this.activeArtifactDatabaseNames ?? [])],
+          legacyFilesSafe: Boolean(recovery && recovery === maintenance && this.bm25Index?.isReady),
+          revision,
+          tracked: this.generatedArtifacts.read(),
+          activeArtifacts: this.generatedArtifacts.active,
+          features: GENERATED_ARTIFACT_FEATURES,
+          artifactFileRoots: ['.superpower-inside', this.getPluginDirectoryPath()],
+        };
+      }),
+      this.getLogger(),
+    ));
+  }
+
   private async runStartupPluginFileMaintenance(): Promise<void> {
     try {
       const result = await maintainPluginOwnedFiles({
         adapter: this.app.vault.adapter,
+        includeLegacyDirectory: false,
+        eventLogOwnership: this.generatedArtifacts.forFeature('agent-diagnostics'),
         pluginDirectory: this.getPluginDirectoryPath(),
         eventLogPath: this.getAgentDiagnosticsEventLogPath(),
       });
@@ -650,7 +713,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     if (!this.agentDiagnosticsService) {
       this.agentDiagnosticsService = new AgentDiagnosticsService({
-        adapter: this.app.vault.adapter,
+        adapter: createGeneratedFileAdapter(
+          this.app.vault.adapter,
+          this.generatedArtifacts.forFeature('agent-diagnostics'),
+        ),
         filePath: this.getAgentDiagnosticsFilePath(),
         eventLogPath: this.getAgentDiagnosticsEventLogPath(),
         refreshBus: this.refreshBus,
@@ -675,7 +741,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
         enableBM25: false,
         structuralGraphEnabled: false,
         annEnabled: false,
-        graphRagAutoSyncEnabled: false,
       },
     };
     saveLocalSettings(this.app, this.settings);
@@ -763,7 +828,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const registry = this.mcpRegistry;
     return {
       ragStatus: this.eventDrivenRagStats,
-      graphRagStatus: this.graphRagStatus,
       mcpConnectionState: this.mcpConnectionState,
       mcpServers: this.settings.mcpServers.map((server) => ({
         name: server.name,
@@ -774,8 +838,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
         error: registry?.getLastError(server.name),
       })),
       isRagIndexing: this.isRagIndexing(),
-      isGraphRagIndexing: this.isGraphRagIndexing(),
-      hasGraphRagRunner: this.hasGraphRagRunner(),
       ragIndexingStatus: this.ragIndexingStatus,
       performanceGuardState: this.getRagPerformanceGuardState(),
       nextAutoUpdateAt: this.nextAutoUpdateAt,
@@ -791,7 +853,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       },
       runtimeFlags: {
         vectorStoreReady: this.vectorStore !== null,
-        knowledgeGraphStoreReady: this.knowledgeGraphStore !== null,
         ragEngineReady: this.ragEngine !== null,
         providerReady: this.provider !== null,
       },
@@ -867,256 +928,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.refreshRagStatusInBackground();
   }
 
-  private async runGraphRagOperation(options: {
-    resumeFailed: boolean;
-    failedFilePaths?: readonly string[];
-  }): Promise<GraphRagIndexingResult | null> {
-    if (this.graphRagAbortController || !this.graphRagIndexingRunner) {
-      return null;
-    }
-    const controller = new AbortController();
-    this.graphRagAbortController = controller;
-    await this.computeAndEmitGraphRagStatus();
-    const startedAt = Date.now();
-    await this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'graph.indexing',
-      action: 'enter',
-      detail: options.resumeFailed ? 'resume-failed' : 'run',
-      data: {
-        failedFilePaths: options.failedFilePaths ?? [],
-      },
-    });
-    try {
-      this.getLogger().info('GraphRAG indexing operation started.', {
-        source: 'graph.indexing',
-        data: {
-          resumeFailed: options.resumeFailed,
-          failedFilePaths: options.failedFilePaths ?? [],
-        },
-      });
-      const result = options.resumeFailed
-        ? await this.graphRagIndexingRunner.resumeFailed({
-            signal: controller.signal,
-            failedFilePaths: options.failedFilePaths,
-          })
-        : await this.graphRagIndexingRunner.run({ signal: controller.signal });
-      await this.computeAndEmitGraphRagStatus();
-      this.getLogger().notice('GraphRAG indexing operation completed.', {
-        source: 'graph.indexing',
-        data: {
-          processedFiles: result.processedFiles,
-          failedFiles: result.failedFiles,
-          processedChunks: result.processedChunks,
-          failedChunks: result.failedChunks,
-          cancelled: result.cancelled,
-        },
-      });
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'graph.indexing',
-        action: 'leave',
-        detail: options.resumeFailed ? 'resume-failed' : 'run',
-        data: {
-          durationMs: Date.now() - startedAt,
-          processedFiles: result.processedFiles,
-          failedFiles: result.failedFiles,
-          processedChunks: result.processedChunks,
-          failedChunks: result.failedChunks,
-          cancelled: result.cancelled,
-        },
-      });
-      this.emitGraphDataRefresh('graph-run', result.runId);
-      return result;
-    } catch (err) {
-      this.getLogger().error('GraphRAG indexing operation failed.', {
-        source: 'graph.indexing',
-        error: err,
-      });
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'graph.indexing',
-        action: 'error',
-        detail: options.resumeFailed ? 'resume-failed' : 'run',
-        data: {
-          durationMs: Date.now() - startedAt,
-          message: err instanceof Error ? err.message : String(err),
-        },
-      });
-      throw err;
-    } finally {
-      if (this.graphRagAbortController === controller) {
-        this.graphRagAbortController = null;
-      }
-      await this.computeAndEmitGraphRagStatus();
-    }
-  }
-
-  async syncStaleGraphRag(
-    options: { silent?: boolean } = {},
-  ): Promise<GraphRagIndexingResult | null> {
-    if (!this.graphRagIndexingRunner || this.graphRagAbortController) {
-      return null;
-    }
-    if (!this.graphRagStatus?.staleFileCount && !this.graphRagStatus?.failedFileCount) {
-      return null;
-    }
-    const staleFilePaths = [...this.graphRagStatus.staleFilePaths];
-    const failedFilePaths = this.knowledgeGraphStore
-      ? [
-          ...new Set(
-            (await this.knowledgeGraphStore.getRejectedFacts()).map((fact) => fact.filePath),
-          ),
-        ]
-      : [];
-    const selectedFilePaths = [...new Set([...failedFilePaths, ...staleFilePaths])];
-    if (selectedFilePaths.length === 0) {
-      return null;
-    }
-    const controller = new AbortController();
-    this.graphRagAbortController = controller;
-    await this.computeAndEmitGraphRagStatus();
-    const startedAt = Date.now();
-    await this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'graph.indexing',
-      action: 'enter',
-      detail: 'sync-stale',
-      data: {
-        staleFileCount: staleFilePaths.length,
-        failedFileCount: failedFilePaths.length,
-      },
-    });
-    try {
-      this.getLogger().info('GraphRAG stale sync started.', {
-        source: 'graph.indexing',
-        data: {
-          staleFileCount: staleFilePaths.length,
-          failedFileCount: failedFilePaths.length,
-        },
-      });
-      const result = await this.graphRagIndexingRunner.run(
-        failedFilePaths.length > 0
-          ? {
-              signal: controller.signal,
-              onlyFailedFiles: true,
-              failedFilePaths: selectedFilePaths,
-            }
-          : { signal: controller.signal, onlyStaleFiles: true, staleFilePaths },
-      );
-      if (this.graphRagAbortController === controller) {
-        this.graphRagAbortController = null;
-      }
-      await this.computeAndEmitGraphRagStatus();
-      const presentation = getGraphRagStatusPresentation(this.graphRagStatus.state);
-      this.getLogger().notice('GraphRAG stale sync completed.', {
-        source: 'graph.indexing',
-        data: { processedFiles: result.processedFiles, failedFiles: result.failedFiles },
-      });
-      this.emitGraphDataRefresh('graph-run', result.runId);
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'graph.indexing',
-        action: 'leave',
-        detail: 'sync-stale',
-        data: {
-          durationMs: Date.now() - startedAt,
-          processedFiles: result.processedFiles,
-          failedFiles: result.failedFiles,
-          cancelled: result.cancelled,
-        },
-      });
-      if (options.silent !== true) {
-        new Notice(
-          t('graphRagStaleSyncStatusNotice', {
-            label: presentation.label,
-            description: presentation.description,
-          }),
-        );
-      }
-      return result;
-    } catch (err) {
-      this.getLogger().error('GraphRAG stale sync failed.', {
-        source: 'graph.indexing',
-        error: err,
-      });
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'graph.indexing',
-        action: 'error',
-        detail: 'sync-stale',
-        data: {
-          durationMs: Date.now() - startedAt,
-          message: err instanceof Error ? err.message : String(err),
-        },
-      });
-      throw err;
-    } finally {
-      if (this.graphRagAbortController === controller) {
-        this.graphRagAbortController = null;
-        await this.computeAndEmitGraphRagStatus();
-      }
-    }
-  }
-
-  async buildGraphRagCommunities(): Promise<GraphRagCommunityBuildResult | null> {
-    if (!this.graphRagIndexingRunner) return null;
-    this.getLogger().info('GraphRAG community build started.', { source: 'graph.community' });
-    const result = await this.graphRagIndexingRunner.buildCommunities();
-    await this.computeAndEmitGraphRagStatus();
-    this.getLogger().notice('GraphRAG community build completed.', {
-      source: 'graph.community',
-      data: result,
-    });
-    this.emitGraphDataRefresh('graph-run');
-    return result;
-  }
-
-  async resetGraphRagData(): Promise<void> {
-    if (!this.knowledgeGraphStore) {
-      this.getLogger().warn('GraphRAG data reset skipped because graph store is not initialized.', {
-        source: 'graph.indexing',
-      });
-      return;
-    }
-    try {
-      this.getLogger().info('GraphRAG data reset started.', { source: 'graph.indexing' });
-      this.cancelGraphRagIndexing();
-      if (this.graphRagAbortController) {
-        const cancelled = await this.awaitGraphRagCancellation();
-        if (!cancelled) {
-          this.getLogger().warn('GraphRAG indexing did not stop within timeout during reset.', {
-            source: 'graph.indexing',
-          });
-        }
-      }
-      await this.knowledgeGraphStore.clear();
-      if (this.graphRagIndexingRunner) {
-        this.graphRagIndexingRunner.resetState();
-      }
-      await this.computeAndEmitGraphRagStatus();
-      this.emitGraphDataRefresh('graph-cleanup');
-      this.getLogger().notice('GraphRAG data reset completed.', { source: 'graph.indexing' });
-    } catch (err) {
-      this.getLogger().error('GraphRAG data reset failed.', {
-        source: 'graph.indexing',
-        error: err,
-      });
-      throw err;
-    }
-  }
-
   async resetPluginData(): Promise<void> {
     this.getLogger().info('Plugin data reset started.', { source: 'settings.reset' });
     this.automaticRagRecovery?.dispose();
     this.automaticRagRecovery = null;
+    this.vaultDocumentCorpus?.suspend();
     this.cancelRagIndexing();
-    this.cancelGraphRagIndexing();
-    if (this.graphRagAbortController) {
-      const cancelled = await this.awaitGraphRagCancellation();
-      if (!cancelled) {
-        this.getLogger().warn(
-          'GraphRAG indexing did not stop within timeout during plugin reset.',
-          {
-            source: 'settings.reset',
-          },
-        );
-      }
-    }
 
     const indexedDbNames = buildPluginIndexedDbNames((kind) => this.createIndexedDbName(kind));
     const resetStorageLayout = createRagStorageLayout({
@@ -1124,16 +941,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
       vaultIdentity: this.getVaultStorageIdentity(),
       legacyVaultName: this.getVaultName(),
       embeddingNamespace: 'plugin-reset',
+      indexNamespace: 'plugin-reset',
     });
     const vectorStoreClear = this.vectorStore
       ? hasDeletableIndexedDbStore(this.vectorStore)
         ? this.vectorStore.deleteDatabase()
         : this.vectorStore.clear()
-      : Promise.resolve();
-    const knowledgeGraphClear = this.knowledgeGraphStore
-      ? hasDeletableIndexedDbStore(this.knowledgeGraphStore)
-        ? this.knowledgeGraphStore.deleteDatabase()
-        : this.knowledgeGraphStore.clear()
       : Promise.resolve();
     const bm25Clear = this.bm25Index ? this.bm25Index.deleteDatabase() : Promise.resolve();
     const embeddingCacheClear = hasClearableEmbeddingCache(this.embeddingProvider)
@@ -1141,7 +954,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
         ? this.embeddingProvider.deleteDatabase()
         : this.embeddingProvider.clearCache()
       : Promise.resolve();
-    await Promise.all([vectorStoreClear, knowledgeGraphClear, bm25Clear, embeddingCacheClear]);
+    await Promise.all([vectorStoreClear, bm25Clear, embeddingCacheClear]);
+    this.documentCorpus?.close();
     this.clearRAG({ dispose: false });
     await deleteRagIndexedDbGenerations(resetStorageLayout);
 
@@ -1151,6 +965,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     });
 
     const resetLanguage = resolveUiLanguage(undefined, getObsidianLanguage());
+    for (const profile of this.settings.providerProfiles) chatGPTOAuth.disconnect(profile.id);
     setLanguage(resetLanguage);
     this.settings = structuredClone(DEFAULT_SETTINGS);
     this.settings.language = resetLanguage;
@@ -1168,11 +983,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     this.refreshBus.emit('models', { status: 'success', detail: 'Plugin data reset' });
     this.refreshBus.emit('rag', { status: 'success', detail: 'Plugin data reset' });
-    this.refreshBus.emit('graph-data', {
-      status: 'success',
-      detail: 'Plugin data reset',
-      source: 'graph-cleanup',
-    });
     this.refreshBus.emit('mcp', {
       status: mcpErrors.length === 0 ? 'success' : 'partial',
       detail: 'Plugin data reset',
@@ -1185,30 +995,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
         deletedIndexedDbNames: resetResult.deletedIndexedDbNames,
         mcpErrors,
       },
-    });
-  }
-
-  private async awaitGraphRagCancellation(timeoutMs = 2000): Promise<boolean> {
-    const startedAt = Date.now();
-    while (this.graphRagAbortController !== null && Date.now() - startedAt < timeoutMs) {
-      await new Promise((resolve) => window.setTimeout(resolve, 50));
-    }
-    return this.graphRagAbortController === null;
-  }
-
-  private async cleanupGraphRagForDeletedFiles(filePaths: string[]): Promise<void> {
-    if (!this.knowledgeGraphStore) return;
-    await this.knowledgeGraphStore.pruneByFilePaths(filePaths);
-    if (filePaths.length > 0) {
-      this.emitGraphDataRefresh('graph-cleanup');
-    }
-  }
-
-  private emitGraphDataRefresh(source: 'graph-run' | 'graph-cleanup', runId?: number): void {
-    this.refreshBus?.emit('graph-data', {
-      status: 'success',
-      runId,
-      source,
     });
   }
 
@@ -1278,9 +1064,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           const id =
             typeof provider.id === 'string' && provider.id ? provider.id : `custom-${index + 1}`;
           const storedName =
-            typeof provider.name === 'string' && provider.name.trim()
-              ? provider.name.trim()
-              : '';
+            typeof provider.name === 'string' && provider.name.trim() ? provider.name.trim() : '';
           const name =
             storedName === 'Custom OpenAI-Compatible' ||
             isLocalizedValue('providerCustomDockTitle', storedName)
@@ -1329,16 +1113,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
         ? { ...(data.chat as Record<string, unknown>) }
         : {};
     data.chat = chat;
-    if (
-      'defaultProvider' in chat &&
-      !('defaultModel' in chat)
-    ) {
+    if ('defaultProvider' in chat && !('defaultModel' in chat)) {
       const rawProvider = chat.defaultProvider;
       const oldProvider = typeof rawProvider === 'string' ? rawProvider : '';
       const oldModel =
         (
           (data[oldProvider] as Record<string, unknown> | undefined)?.models as string[] | undefined
-      )?.[0] ?? '';
+        )?.[0] ?? '';
       if (oldProvider && oldModel) {
         chat.defaultModel = `${oldProvider}:${oldModel}`;
       }
@@ -1365,7 +1146,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     // Migrate old RAG settings (pre-overhaul)
     const migratedRag = data.rag as Record<string, unknown> | undefined;
     if (migratedRag && typeof migratedRag === 'object') {
-      delete migratedRag.ontologyEnabled;
       if (!('embeddingProvider' in migratedRag)) {
         migratedRag.embeddingProvider = 'openai';
       }
@@ -1405,7 +1185,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         delete migratedRag.autoUpdateIntervalMs;
       }
       if (typeof migratedRag.minScore !== 'number') {
-        migratedRag.minScore = 0.5;
+        migratedRag.minScore = DEFAULT_SETTINGS.rag.minScore;
       }
       if (typeof migratedRag.annEnabled !== 'boolean') {
         migratedRag.annEnabled = true;
@@ -1419,49 +1199,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (typeof migratedRag.structuralGraphEnabled !== 'boolean') {
         migratedRag.structuralGraphEnabled = true;
       }
-      if (typeof migratedRag.entityAutoMergeThreshold !== 'number') {
-        migratedRag.entityAutoMergeThreshold =
-          typeof migratedRag.ontologyAutoMergeThreshold === 'number'
-            ? migratedRag.ontologyAutoMergeThreshold
-            : 0.88;
-      }
-      if (typeof migratedRag.entityPendingMergeThreshold !== 'number') {
-        migratedRag.entityPendingMergeThreshold =
-          typeof migratedRag.ontologyPendingMergeThreshold === 'number'
-            ? migratedRag.ontologyPendingMergeThreshold
-            : 0.72;
-      }
-      delete migratedRag.ontologyAutoMergeThreshold;
-      delete migratedRag.ontologyPendingMergeThreshold;
-      if (typeof migratedRag.graphRagEnabled !== 'boolean') {
-        migratedRag.graphRagEnabled = false;
-      }
-      if (typeof migratedRag.graphRagModel !== 'string') {
-        migratedRag.graphRagModel = '';
-      }
-      if (typeof migratedRag.graphRagMaxFilesPerRun !== 'number') {
-        migratedRag.graphRagMaxFilesPerRun = 50;
-      }
-      const graphRagMaxConcurrentRequests = Number(migratedRag.graphRagMaxConcurrentRequests);
-      migratedRag.graphRagMaxConcurrentRequests = Number.isFinite(graphRagMaxConcurrentRequests)
-        ? Math.max(1, Math.min(10, Math.floor(graphRagMaxConcurrentRequests)))
-        : 1;
-      if (!['auto', 'local', 'global', 'hybrid'].includes(String(migratedRag.graphRagQueryMode))) {
-        migratedRag.graphRagQueryMode = 'auto';
-      }
-      if (typeof migratedRag.graphRagAutoSyncEnabled !== 'boolean') {
-        migratedRag.graphRagAutoSyncEnabled = false;
-      }
-      if (typeof migratedRag.graphRagAutoSyncIntervalMin !== 'number') {
-        migratedRag.graphRagAutoSyncIntervalMin = 30;
-      }
       if (typeof migratedRag.enableBM25 !== 'boolean') {
         migratedRag.enableBM25 = true;
       }
       if (typeof migratedRag.bm25Weight !== 'number') {
-        migratedRag.bm25Weight = 0.15;
-      } else if (migratedRag.bm25Weight === 0.3) {
-        migratedRag.bm25Weight = 0.15;
+        migratedRag.bm25Weight = DEFAULT_SETTINGS.rag.bm25Weight;
       }
       migratedRag.performanceTuningMode = normalizeRagPerformanceTuningMode(
         migratedRag.performanceTuningMode,
@@ -1621,7 +1363,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       : null;
     return {
       ragStatus: this.eventDrivenRagStats,
-      graphRagStatus: this.graphRagStatus,
       vectorStore: this.vectorStore,
       embeddingProvider: clearableEmbeddingProvider,
       ragIndexingScheduler: this.ragIndexingScheduler,
@@ -1640,178 +1381,41 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private initProvider(): void {
-    const defaultModel = this.settings.chat.defaultModel;
-    if (!defaultModel) {
+    const modelPlan = resolveChatModelPlan(this.settings);
+    const effectiveModel = modelPlan.selectedModel;
+    if (!effectiveModel) {
       this.provider = null;
-      this.getLogger().warn('Default chat model is empty.', { source: 'provider' });
-      return;
-    }
-    const resolvedProfileModel = resolveProviderModelRef(this.settings, defaultModel, 'general');
-    if (resolvedProfileModel) {
-      const { profile, modelId } = resolvedProfileModel;
-      if (!profile.enabled) {
-        this.provider = null;
-        this.getLogger().warn('Configured provider profile is disabled.', {
-          source: 'provider',
-          data: { profileId: profile.id, model: modelId },
-        });
-        return;
-      }
-      try {
-        this.provider = createProviderForStrategy(
-          profile.strategy,
-          { ...profile, models: profile.models.map((model) => model.id) },
-          modelId,
-          profile.id,
-        );
-        this.getLogger().info('Chat provider initialized.', {
-          source: 'provider',
-          data: { provider: `profile:${profile.id}`, strategy: profile.strategy, model: modelId },
-        });
-      } catch (err) {
-        this.provider = null;
-        this.getLogger().error('Profile chat provider initialization failed.', {
-          source: 'provider',
-          data: { profileId: profile.id, model: modelId },
-          error: err,
-        });
-      }
-      return;
-    }
-    const parts = defaultModel.split(':');
-    if (parts.length < 2) {
-      this.provider = null;
-      this.getLogger().warn('Default chat model key is invalid.', {
+      this.getLogger().warn('No usable chat model is configured.', {
         source: 'provider',
-        data: { defaultModel },
-      });
-      return;
-    }
-    const providerKey = parts[0] as ProviderKey;
-    const modelName = parts.slice(1).join(':');
-
-    if (parts[0] === 'customOpenAI') {
-      if (parts.length < 3) {
-        this.provider = null;
-        this.getLogger().warn('Custom provider model key is invalid.', {
-          source: 'provider',
-          data: { defaultModel },
-        });
-        return;
-      }
-      const providerId = parts[1];
-      const customModelName = parts.slice(2).join(':');
-      const customProvider = this.settings.customOpenAIProviders.find(
-        (provider) => provider.id === providerId,
-      );
-      if (
-        !customProvider?.enabled ||
-        !customProvider.models.includes(customModelName) ||
-        !customProvider.baseUrl?.trim()
-      ) {
-        this.provider = null;
-        this.getLogger().warn('Custom provider is unavailable for selected model.', {
-          source: 'provider',
-          data: { providerId, model: customModelName },
-        });
-        return;
-      }
-      try {
-        this.provider = createCustomOpenAIProvider(customProvider, customModelName);
-        this.getLogger().info('Chat provider initialized.', {
-          source: 'provider',
-          data: { provider: 'customOpenAI', providerId, model: customModelName },
-        });
-      } catch {
-        this.provider = null;
-        this.getLogger().error('Custom chat provider initialization failed.', {
-          source: 'provider',
-          data: { providerId, model: customModelName },
-        });
-      }
-      return;
-    }
-
-    const config = this.settings[providerKey];
-    if (!config?.enabled || !config.models.includes(modelName)) {
-      this.provider = null;
-      this.getLogger().warn('Configured chat provider is disabled or model is unavailable.', {
-        source: 'provider',
-        data: { provider: providerKey, model: modelName },
+        data: {
+          configuredModel: this.settings.chat.defaultModel,
+          enabledProviderCount: modelPlan.enabledProviderCount,
+        },
       });
       return;
     }
     try {
-      this.provider = createProvider(providerKey, config, modelName);
+      const resolved = createChatProviderForModel(this.settings, effectiveModel);
+      if (!resolved) {
+        this.provider = null;
+        this.getLogger().warn('Rust model plan rejected the selected chat provider.', {
+          source: 'provider',
+          data: { configuredModel: this.settings.chat.defaultModel, effectiveModel },
+        });
+        return;
+      }
+      this.provider = resolved.provider;
       this.getLogger().info('Chat provider initialized.', {
         source: 'provider',
-        data: { provider: providerKey, model: modelName },
+        data: { provider: resolved.providerKey, model: resolved.model },
       });
     } catch (err) {
       this.provider = null;
       this.getLogger().error('Chat provider initialization failed.', {
         source: 'provider',
-        data: { provider: providerKey, model: modelName },
+        data: { effectiveModel },
         error: err,
       });
-    }
-  }
-
-  private createProviderForModel(modelKey: string): LLMProvider | null {
-    const normalizedModelKey = modelKey.trim();
-    if (!normalizedModelKey) return null;
-    const resolvedProfileModel = resolveProviderModelRef(
-      this.settings,
-      normalizedModelKey,
-      'general',
-    );
-    if (resolvedProfileModel) {
-      const { profile, modelId } = resolvedProfileModel;
-      if (!profile.enabled) return null;
-      try {
-        return createProviderForStrategy(
-          profile.strategy,
-          { ...profile, models: profile.models.map((model) => model.id) },
-          modelId,
-          profile.id,
-        );
-      } catch {
-        return null;
-      }
-    }
-    const parts = normalizedModelKey.split(':');
-    if (parts.length < 2) return null;
-    if (parts[0] === 'customOpenAI') {
-      if (parts.length < 3) return null;
-      const providerId = parts[1];
-      const modelName = parts.slice(2).join(':');
-      const customProvider = this.settings.customOpenAIProviders.find(
-        (provider) => provider.id === providerId,
-      );
-      if (
-        !customProvider?.enabled ||
-        !customProvider.models.includes(modelName) ||
-        !customProvider.baseUrl?.trim()
-      ) {
-        return null;
-      }
-      try {
-        return createCustomOpenAIProvider(customProvider, modelName);
-      } catch {
-        return null;
-      }
-    }
-    const providerKey = parts[0] as ProviderKey;
-    const modelName = parts.slice(1).join(':');
-    if (!['openai', 'claude', 'ollama', 'ollamaCloud', 'openRouter'].includes(providerKey)) {
-      return null;
-    }
-    const config = this.settings[providerKey];
-    if (!config?.enabled || !config.models.includes(modelName)) return null;
-    try {
-      return createProvider(providerKey, config, modelName);
-    } catch {
-      return null;
     }
   }
 
@@ -1847,89 +1451,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  private async maybeAutoSyncGraphRag(): Promise<void> {
-    const rag = this.settings.rag;
-    if (!rag.graphRagEnabled || !rag.graphRagAutoSyncEnabled) return;
-    if (!this.graphRagIndexingRunner) return;
-    if (this.isGraphRagIndexing()) return;
-    if (Date.now() < this.graphAutoSyncNextAllowedAt) return;
-    if (!(await this.canRunRagBackgroundWork())) return;
-    await this.computeAndEmitGraphRagStatus();
-    if (this.graphRagStatus?.state !== 'stale' && this.graphRagStatus?.state !== 'partial') {
-      this.resetGraphAutoSyncBackoff();
-      return;
-    }
-    try {
-      const result = await this.syncStaleGraphRag({ silent: true });
-      if (!result || result.cancelled) return;
-      if (result.failedFiles > 0) {
-        this.scheduleGraphAutoSyncBackoff();
-      } else {
-        this.resetGraphAutoSyncBackoff();
-      }
-    } catch (error) {
-      this.scheduleGraphAutoSyncBackoff();
-      this.getLogger().warn('GraphRAG automatic sync failed; retry has been deferred.', {
-        source: 'graph.auto-sync',
-        error,
-        data: {
-          failureCount: this.graphAutoSyncFailureCount,
-          nextAllowedAt: this.graphAutoSyncNextAllowedAt,
-        },
-      });
-    }
-  }
-
-  private setupGraphRagAutoSync(): void {
-    if (this.graphAutoSyncTimer) {
-      window.clearInterval(this.graphAutoSyncTimer);
-      this.graphAutoSyncTimer = null;
-    }
-    this.resetGraphAutoSyncBackoff();
-    const rag = this.settings.rag;
-    if (!rag.graphRagEnabled || !rag.graphRagAutoSyncEnabled) return;
-    const intervalMs = Math.max(1, Math.min(1440, rag.graphRagAutoSyncIntervalMin)) * 60_000;
-    this.graphAutoSyncTimer = window.setInterval(() => {
-      void this.maybeAutoSyncGraphRag();
-    }, intervalMs);
-    this.registerInterval?.(this.graphAutoSyncTimer);
-  }
-
-  private scheduleGraphAutoSyncBackoff(): void {
-    this.graphAutoSyncFailureCount = Math.min(this.graphAutoSyncFailureCount + 1, 8);
-    const baseIntervalMs =
-      Math.max(1, Math.min(1440, this.settings.rag.graphRagAutoSyncIntervalMin)) * 60_000;
-    const backoffMs = Math.min(
-      GRAPH_AUTO_SYNC_MAX_BACKOFF_MS,
-      baseIntervalMs * 2 ** this.graphAutoSyncFailureCount,
-    );
-    this.graphAutoSyncNextAllowedAt = Date.now() + backoffMs;
-  }
-
-  private resetGraphAutoSyncBackoff(): void {
-    this.graphAutoSyncFailureCount = 0;
-    this.graphAutoSyncNextAllowedAt = 0;
-  }
-
   private async rebuildBM25Index(bm25Index: IndexedDbBM25Index): Promise<void> {
-    await bm25Index.rebuildFrom(async () => {
-      const entries = await this.vectorStore?.getEntries();
-      if (entries && entries.length > 0) {
-        return entries.map((entry) => ({
-          id: entry.id,
-          text: entry.metadata.text,
-          sourcePath: entry.metadata.filePath,
-          heading: entry.metadata.heading,
-          startLine: entry.metadata.startLine,
-          endLine: entry.metadata.endLine,
-          sourceMtime: entry.metadata.sourceMtime,
-          sourceSize: entry.metadata.sourceSize,
-          contentHash: entry.metadata.contentHash,
-          indexedAt: entry.metadata.indexedAt,
-        }));
-      }
-      return this.buildBM25IndexDocumentsFromVault();
-    });
+    await bm25Index.rebuildFrom(() => this.buildBM25IndexDocumentsFromVault());
   }
 
   private startBM25BackgroundLoad(
@@ -1976,7 +1499,23 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     try {
       if (outcome.error) throw outcome.error;
-      if (!bm25Index.isTokenizerCurrent || bm25Index.totalDocs === 0) {
+      const files = await getRagCandidateFiles(
+        this.app.vault,
+        this.settings.rag,
+        this.settings.chat,
+      );
+      const sourcePaths = new Set(await bm25Index.getSourcePaths());
+      const readiness = await new RAGQueryEngine(null, null, bm25Index).getIndexReadiness(
+        files.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size })),
+      );
+      const corpusMatches =
+        sourcePaths.size === files.length && files.every((file) => sourcePaths.has(file.path));
+      if (
+        !bm25Index.isTokenizerCurrent ||
+        bm25Index.totalDocs === 0 ||
+        !corpusMatches ||
+        readiness?.readiness !== 'ready'
+      ) {
         this.getLogger().notice('BM25 corpus is missing or outdated; rebuilding it.', {
           source: 'rag.bm25',
         });
@@ -2035,8 +1574,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.bm25Index = null;
       this.vaultIndexer?.setBM25Index(undefined);
       if (!this.vectorStore) {
-        this.unregisterRAGEvents();
-        this.ragEngine = null;
+        this.registerLexicalRAGEvents(undefined);
       }
       this.getLogger().warn('BM25 index initialization failed; continuing without BM25.', {
         source: 'rag.bm25',
@@ -2061,6 +1599,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async buildBM25IndexDocumentsFromVault(): Promise<BM25CorpusDocument[]> {
+    if (this.vaultDocumentCorpus && this.documentCorpus) {
+      await this.vaultDocumentCorpus.refresh();
+      return this.documentCorpus.getDocuments();
+    }
     const files = await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat);
     const documents: BM25CorpusDocument[] = [];
     for (const file of files) {
@@ -2071,37 +1613,45 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private buildBM25CorpusDocuments(file: TFile, content: string): BM25CorpusDocument[] {
-    const chunks =
-      file.extension.toLowerCase() === 'md'
-        ? chunkMarkdown(content, this.settings.rag.chunkSize, this.settings.rag.overlap)
-        : chunkPlainText(content, this.settings.rag.chunkSize, this.settings.rag.overlap);
-    const indexedAt = Date.now();
-    return chunks.map((chunk, index) => ({
-      id: `${file.path}::${chunk.metadata.startLine}::${index}`,
-      text: buildSearchText(file, chunk),
-      sourcePath: file.path,
-      heading: chunk.metadata.heading,
-      startLine: chunk.metadata.startLine,
-      endLine: chunk.metadata.endLine,
-      sourceMtime: file.stat.mtime,
-      sourceSize: file.stat.size,
-      indexedAt,
-    }));
+    return buildBM25CorpusDocuments(file, content, this.settings.rag);
   }
 
-  private async indexBM25File(bm25Index: IndexedDbBM25Index, file: TFile): Promise<void> {
-    const content = await this.app.vault.cachedRead(file);
-    const documents = this.buildBM25CorpusDocuments(file, content);
-    await bm25Index.withBatch(async () => {
+  private async indexBM25File(
+    bm25Index: IndexedDbBM25Index | undefined,
+    file: TFile,
+  ): Promise<void> {
+    await this.vaultDocumentCorpus?.refreshFile(file);
+    const documents = (await this.documentCorpus?.getDocumentsByFilePath(file.path)) ?? [];
+    await bm25Index?.withBatch(async () => {
       bm25Index.removeDocumentsBySource(file.path);
       for (const document of documents) bm25Index.addCorpusDocument(document);
       await bm25Index.persist();
     });
+    this.debouncedRefreshStats();
   }
 
-  private async removeBM25File(bm25Index: IndexedDbBM25Index, filePath: string): Promise<number> {
-    bm25Index.removeDocumentsBySource(filePath);
-    await bm25Index.persist();
+  private getStructuralMetadataContext(): StructuralMetadataContext | undefined {
+    const metadata = this.app.metadataCache;
+    if (!metadata) return undefined;
+    return {
+      resolvedLinks: metadata.resolvedLinks,
+      getFileByPath: (path) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        return file instanceof TFile ? file : null;
+      },
+      getFileCache: (file) => metadata.getFileCache(file),
+      getFirstLinkpathDest: (linkpath, sourcePath) =>
+        metadata.getFirstLinkpathDest(linkpath, sourcePath),
+    };
+  }
+
+  private async removeBM25File(
+    bm25Index: IndexedDbBM25Index | undefined,
+    filePath: string,
+  ): Promise<number> {
+    await this.vaultDocumentCorpus?.removeFile(filePath);
+    bm25Index?.removeDocumentsBySource(filePath);
+    await bm25Index?.persist();
     return 0;
   }
 
@@ -2118,7 +1668,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async prepareRagForChat(): Promise<boolean> {
-    return this.ragEngine ? true : this.ensureRagRuntimeInitialized();
+    const initialized = this.ragEngine ? true : await this.ensureRagRuntimeInitialized();
+    if (this.bm25Index) await this.bm25Index.recoverClosedWorker();
+    return initialized;
   }
 
   private getRagIndexerNotInitializedReason(): string {
@@ -2255,14 +1807,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private captureRagRuntimeSnapshot(): RagRuntimeSnapshot {
     return {
+      documentCorpus: this.documentCorpus,
+      vaultDocumentCorpus: this.vaultDocumentCorpus,
       vectorStore: this.vectorStore,
-      knowledgeGraphStore: this.knowledgeGraphStore,
       embeddingProvider: this.embeddingProvider,
       bm25Index: this.bm25Index,
       ragEngine: this.ragEngine,
-      graphRagStatus: this.graphRagStatus,
-      graphRagIndexingRunner: this.graphRagIndexingRunner,
-      graphRagProviderAttached: this.graphRagProviderAttached,
       vaultIndexer: this.vaultIndexer,
       ragIndexingScheduler: this.ragIndexingScheduler,
       automaticRagRecovery: this.automaticRagRecovery,
@@ -2275,17 +1825,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private restoreRagRuntimeSnapshot(snapshot: RagRuntimeSnapshot): boolean {
-    if (!snapshot.vectorStore || !snapshot.vaultIndexer || !snapshot.ragIndexingScheduler) {
+    if (
+      !(snapshot.documentCorpus && snapshot.ragEngine) &&
+      !(snapshot.vectorStore && snapshot.vaultIndexer && snapshot.ragIndexingScheduler)
+    ) {
       return false;
     }
+    this.documentCorpus = snapshot.documentCorpus;
+    this.vaultDocumentCorpus = snapshot.vaultDocumentCorpus;
+    this.vaultDocumentCorpus?.resume();
     this.vectorStore = snapshot.vectorStore;
-    this.knowledgeGraphStore = snapshot.knowledgeGraphStore;
     this.embeddingProvider = snapshot.embeddingProvider;
     this.bm25Index = snapshot.bm25Index;
     this.ragEngine = snapshot.ragEngine;
-    this.graphRagStatus = snapshot.graphRagStatus;
-    this.graphRagIndexingRunner = snapshot.graphRagIndexingRunner;
-    this.graphRagProviderAttached = snapshot.graphRagProviderAttached;
     this.vaultIndexer = snapshot.vaultIndexer;
     this.ragIndexingScheduler = snapshot.ragIndexingScheduler;
     this.automaticRagRecovery = snapshot.automaticRagRecovery;
@@ -2295,9 +1847,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.lastAutoUpdateSkippedReason = snapshot.lastAutoUpdateSkippedReason;
     this.lastAutoUpdateResult = snapshot.lastAutoUpdateResult;
     this.setupAutoUpdate();
-    this.setupGraphRagAutoSync();
     this.setupRagStatusTimer();
-    this.registerRAGEvents();
+    if (this.ragIndexingScheduler) this.registerRAGEvents();
+    else this.registerLexicalRAGEvents(this.bm25Index ?? undefined);
     this.automaticRagRecovery?.resume();
     this.refreshBus?.emit('rag', {
       status: 'success',
@@ -2309,9 +1861,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private disposeRagRuntimeSnapshot(snapshot: RagRuntimeSnapshot): void {
+    snapshot.vaultDocumentCorpus?.dispose();
+    snapshot.documentCorpus?.close();
     snapshot.automaticRagRecovery?.dispose();
     snapshot.vectorStore?.close?.();
-    snapshot.knowledgeGraphStore?.close?.();
     snapshot.bm25Index?.close?.();
     snapshot.embeddingProvider?.close?.();
   }
@@ -2331,6 +1884,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     };
     const previousRuntime = this.captureRagRuntimeSnapshot();
     previousRuntime.automaticRagRecovery?.suspend();
+    previousRuntime.vaultDocumentCorpus?.suspend();
     // Detach the current runtime while the replacement is assembled. Keep its
     // stores open so a failed rebuild can restore a genuinely usable snapshot.
     this.clearRAG({ dispose: false });
@@ -2342,13 +1896,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     try {
       const rag = this.settings.rag;
-      const resolvedEmbeddingModel = resolveProviderModelRef(
+      const configuredEmbeddingModel = resolveProviderModelRef(
         this.settings,
         rag.embeddingModelRef ?? '',
         'embedding',
       );
-      const providerKey = resolvedEmbeddingModel
-        ? `profile:${resolvedEmbeddingModel.profile.id}`
+      const resolvedEmbeddingModel = resolveUsableProviderModelRef(
+        this.settings,
+        rag.embeddingModelRef ?? '',
+        'embedding',
+      );
+      const providerKey = configuredEmbeddingModel
+        ? `profile:${configuredEmbeddingModel.profile.id}`
         : '';
       this.getLogger().info('RAG runtime initialization started.', {
         source: 'rag',
@@ -2357,7 +1916,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
           embeddingModel: resolvedEmbeddingModel?.modelId ?? '',
           vectorStore: 'indexeddb',
           bm25Enabled: rag.enableBM25,
-          graphRagEnabled: rag.graphRagEnabled,
         },
       });
 
@@ -2369,7 +1927,36 @@ export default class SuperpowerInsidePlugin extends Plugin {
         vaultIdentity: this.getVaultStorageIdentity(),
         legacyVaultName: this.getVaultName(),
         embeddingNamespace,
+        indexNamespace: createRagIndexNamespace(rag),
       });
+      this.documentCorpus = new IndexedDbDocumentCorpusStore(
+        storageLayout.active.corpus,
+        this.generatedArtifacts.forFeature('rag-corpus'),
+      );
+      for (const name of Object.values(storageLayout.active))
+        (this.activeArtifactDatabaseNames ??= new Set<string>()).add(name);
+      this.vaultDocumentCorpus = new VaultDocumentCorpus(
+        this.app.vault,
+        this.documentCorpus,
+        () => this.settings.rag,
+        () => this.settings.chat,
+        this.getLogger(),
+      );
+      const sourceCorpus = this.vaultDocumentCorpus;
+      void sourceCorpus
+        .refresh()
+        .then(() => {
+          if (this.vaultDocumentCorpus === sourceCorpus) this.debouncedRefreshStats();
+        })
+        .catch((error: unknown) => {
+          this.getLogger().warn(
+            'Source corpus refresh failed; native source reads remain available.',
+            {
+              source: 'rag.corpus',
+              error,
+            },
+          );
+        });
       let bm25Index: IndexedDbBM25Index | undefined;
       let bm25LoadOutcome: Promise<BM25BackgroundLoadOutcome> | null = null;
       let bm25BackgroundCompletionStarted = false;
@@ -2389,21 +1976,52 @@ export default class SuperpowerInsidePlugin extends Plugin {
         const nextBm25Index = new IndexedDbBM25Index(
           storageLayout.active.bm25,
           this.app.vault.adapter,
+          undefined,
+          { artifactOwnership: this.generatedArtifacts.forFeature('rag-bm25') },
         );
         bm25Index = nextBm25Index;
         this.bm25Index = nextBm25Index;
-        this.ragEngine = new RAGQueryEngine(null, null, nextBm25Index, 1, rag.minScore);
-        // 큰 로컬 색인은 채팅과 vector/Graph 런타임을 막지 않고 worker에서 준비한다.
+        this.ragEngine = new RAGQueryEngine(null, null, nextBm25Index, 1, rag.minScore, {
+          corpusStore: this.documentCorpus,
+          structuralGraphEnabled: rag.structuralGraphEnabled,
+          structuralMetadataContext: this.getStructuralMetadataContext(),
+          getCandidatePaths: async () =>
+            new Set(
+              (
+                await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)
+              ).map((file) => file.path),
+            ),
+        });
+        // 큰 로컬 색인은 채팅과 벡터 검색 런타임을 막지 않고 worker에서 준비한다.
         bm25LoadOutcome = this.startBM25BackgroundLoad(nextBm25Index);
       }
-
+      this.ragEngine ??= new RAGQueryEngine(null, null, undefined, rag.bm25Weight, rag.minScore, {
+        corpusStore: this.documentCorpus,
+        getCandidatePaths: async () =>
+          new Set(
+            (await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)).map(
+              (file) => file.path,
+            ),
+          ),
+      });
+      requireCurrentRun();
       if (!resolvedEmbeddingModel) {
-        this.lastRagRuntimeInitSkippedReason = t('ragIndexerSelectEmbeddingModel');
+        this.lastRagRuntimeInitSkippedReason = configuredEmbeddingModel
+          ? t('ragIndexerConnectionFailed', {
+              provider:
+                configuredEmbeddingModel.profile.name.trim() ||
+                configuredEmbeddingModel.profile.strategy,
+              model: configuredEmbeddingModel.modelId,
+            })
+          : t('ragIndexerSelectEmbeddingModel');
         this.lastRagRuntimeInitStage = null;
         this.lastRagRuntimeInitFinishedAt = Date.now();
-        this.getLogger().warn('RAG embedding model is not selected.', {
+        this.getLogger().warn('RAG embedding model is unavailable.', {
           source: 'rag',
-          data: { embeddingModelRef: rag.embeddingModelRef },
+          data: {
+            embeddingModelRef: rag.embeddingModelRef,
+            configured: Boolean(configuredEmbeddingModel),
+          },
         });
         this.registerLexicalRAGEvents(bm25Index);
         this.disposeRagRuntimeSnapshot(previousRuntime);
@@ -2471,15 +2089,22 @@ export default class SuperpowerInsidePlugin extends Plugin {
       // Create embedding provider
       let rawProvider: EmbeddingProvider;
       if (profile.strategy === 'ternlight') {
-        rawProvider = new TernlightEmbeddingProvider(
-          embeddingModel,
-          {
-            app: this.app,
-            pluginId: this.manifest.id,
-            pluginVersion: this.manifest.version,
-          },
-          { logger: this.getLogger() },
-        );
+        rawProvider =
+          embeddingModel === 'embeddinggemma-300m'
+            ? new EmbeddingGemmaProvider({
+                app: this.app,
+                pluginId: this.manifest.id,
+                pluginVersion: this.manifest.version,
+              })
+            : new TernlightEmbeddingProvider(
+                embeddingModel,
+                {
+                  app: this.app,
+                  pluginId: this.manifest.id,
+                  pluginVersion: this.manifest.version,
+                },
+                { logger: this.getLogger() },
+              );
       } else if (profile.strategy === 'ollama') {
         rawProvider = new OllamaEmbeddingProvider(
           baseUrl ?? 'http://localhost:11434',
@@ -2496,51 +2121,58 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
 
       const embeddingProvider = new CachedEmbeddingProvider(rawProvider, embeddingNamespace, {
+        artifactOwnership: this.generatedArtifacts.forFeature('embedding-cache'),
         dbName: storageLayout.active.embeddingCache,
         persistent: profile.strategy !== 'ternlight',
       });
       this.embeddingProvider = embeddingProvider;
 
-      const performanceSettings = resolveRagPerformanceSettings(rag);
-      this.ragPerformanceGuard = new PerformanceGuard({
-        enabled: true,
-        initialBatchSize: performanceSettings.maxEmbeddingBatchSize,
-        initialYieldMs: performanceSettings.indexingYieldMs,
-        slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
-        slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
-        onPolicyError: (message) => {
-          this.getLogger().error('RAG performance guard policy failed; preserving last state.', {
-            source: 'rag.performance-guard',
-            data: { message },
-          });
-          void this.recordAgentDiagnosticsBreadcrumb({
-            phase: 'rag.performance-guard',
-            action: 'error',
-            detail: message,
-          });
-        },
-      });
+      const performanceSettings = resolveRagPerformanceSettings(profile.strategy, embeddingModel);
+      this.ragPerformanceGuard = performanceSettings.enabled
+        ? new PerformanceGuard({
+            enabled: true,
+            initialBatchSize: performanceSettings.maxEmbeddingBatchSize,
+            initialYieldMs: performanceSettings.indexingYieldMs,
+            slowEventLoopThresholdMs: performanceSettings.slowEventLoopThresholdMs,
+            slowBatchThresholdMs: performanceSettings.slowBatchThresholdMs,
+            onPolicyError: (message) => {
+              this.getLogger().error(
+                'RAG performance guard policy failed; preserving last state.',
+                {
+                  source: 'rag.performance-guard',
+                  data: { message },
+                },
+              );
+              void this.recordAgentDiagnosticsBreadcrumb({
+                phase: 'rag.performance-guard',
+                action: 'error',
+                detail: message,
+              });
+            },
+          })
+        : null;
+      const adaptiveBatchSize = performanceSettings.enabled
+        ? performanceSettings.maxEmbeddingBatchSize
+        : undefined;
+      const indexingYieldMs = performanceSettings.enabled ? performanceSettings.indexingYieldMs : 0;
 
       // Vector store
-      const vectorStore = new IndexedDbVectorStore(storageLayout.active.vector);
+      const vectorStore = new IndexedDbVectorStore(storageLayout.active.vector, {
+        artifactOwnership: this.generatedArtifacts.forFeature('rag-vectors'),
+      });
       await this.runRagRuntimeInitStep('legacy-vector-import', () =>
         importLegacyJsonVectorStore(
           this.app.vault.adapter,
           vectorStore,
           '.superpower-inside/vectors.json',
+          { requireSourceChunkIds: true },
         ),
       );
       requireCurrentRun();
       this.vectorStore = vectorStore;
-      this.knowledgeGraphStore = rag.graphRagEnabled
-        ? new IndexedDbKnowledgeGraphStore(storageLayout.active.graph)
-        : null;
-      await this.runRagRuntimeInitStep('graph-status-initial', () =>
-        this.computeAndEmitGraphRagStatus(),
-      );
       requireCurrentRun();
 
-      // BM25 is attached after the vector/Graph runtime is already usable.
+      // 벡터 검색 런타임이 준비된 뒤 BM25를 연결합니다.
       const structuralMetadataContext = this.app.metadataCache
         ? {
             resolvedLinks: this.app.metadataCache.resolvedLinks,
@@ -2554,21 +2186,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
           }
         : undefined;
 
-      const knowledgeContract = buildKnowledgeGraphContract();
-      const graphProvider =
-        rag.graphRagEnabled && rag.graphRagModel.trim()
-          ? this.createProviderForModel(rag.graphRagModel)
-          : null;
-      const graphRagEnabledForQuery = isGraphRagUsableForQuery(this.graphRagStatus);
-      const graphRagQueryEngine =
-        graphRagEnabledForQuery && this.knowledgeGraphStore
-          ? new GraphRagQueryEngine(this.knowledgeGraphStore, this.vectorStore, knowledgeContract, {
-              queryMode: rag.graphRagQueryMode,
-              provider: graphProvider ?? undefined,
-            })
-          : undefined;
-      this.graphRagProviderAttached = graphRagQueryEngine !== undefined;
-
       const createQueryEngine = (index?: IndexedDbBM25Index): RAGQueryEngine =>
         new RAGQueryEngine(
           this.vectorStore,
@@ -2577,75 +2194,25 @@ export default class SuperpowerInsidePlugin extends Plugin {
           rag.bm25Weight,
           rag.minScore,
           {
+            corpusStore: this.documentCorpus ?? undefined,
+            getCandidatePaths: async () =>
+              new Set(
+                (
+                  await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)
+                ).map((file) => file.path),
+              ),
             annEnabled: rag.annEnabled,
             annClusterCount: rag.annClusterCount,
             annProbeCount: rag.annProbeCount,
             structuralGraphEnabled: rag.structuralGraphEnabled,
             structuralMetadataContext,
-            graphRagEnabled: graphRagEnabledForQuery,
-            graphRagQueryEngine,
-            graphRagReadiness: () => graphRagReadinessFromStatus(this.graphRagStatus),
+            embeddingProvider: rag.embeddingProvider,
             embeddingModel: rag.embeddingModel,
           },
         );
 
-      // Vector/Graph retrieval is usable before optional BM25 loading starts.
+      // 선택적 BM25 로딩을 시작하기 전에 벡터 검색을 사용할 수 있습니다.
       this.ragEngine = createQueryEngine(bm25Index);
-
-      this.graphRagIndexingRunner =
-        graphProvider && this.knowledgeGraphStore && this.embeddingProvider
-          ? new GraphRagIndexingRunner({
-              vectorStore: this.vectorStore,
-              graphStore: this.knowledgeGraphStore,
-              provider: graphProvider,
-              embeddingProvider: this.embeddingProvider,
-              knowledgeContract: knowledgeContract,
-              extractionModelKey: rag.graphRagModel,
-              maxFilesPerRun: rag.graphRagMaxFilesPerRun,
-              maxConcurrentRequests: rag.graphRagMaxConcurrentRequests,
-              entityResolverOptions: {
-                autoMergeThreshold: rag.entityAutoMergeThreshold,
-                pendingMergeThreshold: rag.entityPendingMergeThreshold,
-              },
-              isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
-              onProgress: (progress) => {
-                void this.recordAgentDiagnosticsBreadcrumb({
-                  phase: 'graph.indexing',
-                  action: 'mark',
-                  detail: 'run',
-                  data: {
-                    phase: progress.phase,
-                    currentFile: progress.currentFile,
-                    processedFiles: progress.processedFiles,
-                    failedFiles: progress.failedFiles,
-                    selectedFiles: progress.selectedFiles,
-                    runId: progress.runId,
-                    processedChunks: progress.processedChunks,
-                    failedChunks: progress.failedChunks,
-                  },
-                });
-                this.getLogger().debug('GraphRAG indexing progress updated.', {
-                  source: 'graph.progress',
-                  data: {
-                    currentFile: progress.currentFile,
-                    processedFiles: progress.processedFiles,
-                    failedFiles: progress.failedFiles,
-                    selectedFiles: progress.selectedFiles,
-                    runId: progress.runId,
-                  },
-                });
-                this.refreshBus.emit('graph-progress', {
-                  status: 'partial',
-                  detail: `${progress.processedFiles + progress.failedFiles}/${progress.selectedFiles}`,
-                  runId: progress.runId,
-                  progress,
-                });
-              },
-            })
-          : null;
-      await this.runRagRuntimeInitStep('graph-status-runner', () =>
-        this.computeAndEmitGraphRagStatus(),
-      );
       requireCurrentRun();
 
       this.bm25Index = bm25Index ?? null;
@@ -2658,6 +2225,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.settings.chat,
         bm25Index,
         this.getLogger(),
+        this.vaultDocumentCorpus ?? undefined,
       );
 
       this.ragIndexingScheduler = new RAGIndexingScheduler({
@@ -2668,25 +2236,26 @@ export default class SuperpowerInsidePlugin extends Plugin {
         reindexAll: (options) => this.vaultIndexer!.reindexAll(options),
         createIndexingOptions: (signal) => ({
           signal,
-          maxEmbeddingBatchSize:
-            this.ragPerformanceGuard?.getBatchSize() ?? performanceSettings.maxEmbeddingBatchSize,
-          indexingYieldMs:
-            this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
+          maxEmbeddingBatchSize: this.ragPerformanceGuard?.getBatchSize() ?? adaptiveBatchSize,
+          indexingYieldMs: this.ragPerformanceGuard?.getYieldMs() ?? indexingYieldMs,
           getMaxEmbeddingBatchSize: () =>
-            this.ragPerformanceGuard?.getBatchSize() ?? performanceSettings.maxEmbeddingBatchSize,
-          getIndexingYieldMs: () =>
-            this.ragPerformanceGuard?.getYieldMs() ?? performanceSettings.indexingYieldMs,
+            this.ragPerformanceGuard?.getBatchSize() ?? adaptiveBatchSize,
+          getIndexingYieldMs: () => this.ragPerformanceGuard?.getYieldMs() ?? indexingYieldMs,
           onBatchComplete: async (durationMs, batchSize) => {
+            this.ragPerformanceGuard?.recordBatchDuration(durationMs, batchSize);
+            const eventLoopLagMs = await this.ragPerformanceGuard?.measureEventLoopLag();
+            const guardState = this.ragPerformanceGuard?.getState();
             this.getLogger().debug('RAG embedding batch completed.', {
               source: 'rag.indexing',
               data: {
                 durationMs: Math.round(durationMs),
                 batchSize,
-                guardState: this.ragPerformanceGuard?.getState().mode ?? 'normal',
+                guardState: guardState?.mode ?? 'normal',
+                eventLoopLagMs,
+                nextBatchSize: guardState?.currentBatchSize ?? adaptiveBatchSize,
+                yieldMs: guardState?.currentYieldMs ?? 0,
               },
             });
-            this.ragPerformanceGuard?.recordBatchDuration(durationMs, batchSize);
-            await this.ragPerformanceGuard?.measureEventLoopLag();
           },
           onProgress: (progress) => {
             void this.recordAgentDiagnosticsBreadcrumb({
@@ -2785,25 +2354,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
               reconcileBm25SourceBatch: (validFilePaths) =>
                 bm25Index?.reconcileSourcePaths(validFilePaths) ??
                 Promise.resolve({ remainingWork: false }),
-              maintainGraphStorageBatch: (validFilePaths) =>
-                this.knowledgeGraphStore?.maintainDerivedData({ validFilePaths }) ??
-                Promise.resolve({ remainingWork: false }),
-              cleanupStaleGenerationBatch: () =>
-                cleanupStaleIndexedDbGenerations(storageLayout, {
-                  preserveEmbeddingCache: embeddingProvider.persistentCacheEnabled,
-                  preserveBm25: bm25Index !== undefined,
-                  preserveGraph: this.knowledgeGraphStore !== null,
-                }),
-              cleanupInactiveVaultDatabaseBatch: () =>
-                cleanupInactiveRagIndexedDb(storageLayout, this.manifest.id),
-              cleanupLegacyFileArtifacts: () =>
-                maintainPluginOwnedFiles({
-                  adapter: this.app.vault.adapter,
-                  pluginDirectory: this.getPluginDirectoryPath(),
-                  eventLogPath: this.getAgentDiagnosticsEventLogPath(),
-                  allowLegacyCleanup: true,
-                  includePluginDirectory: false,
-                }),
               yieldToHost: () => this.waitForRagBackgroundCapacity(),
             },
             fingerprint,
@@ -2817,7 +2367,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
       // Auto-update timer
       this.setupAutoUpdate();
-      this.setupGraphRagAutoSync();
       // 초기 상태 계산 이후에는 vault 이벤트가 상태 갱신을 유도한다.
       this.setupRagStatusTimer();
       this.registerRAGEvents();
@@ -2827,7 +2376,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
         source: 'rag',
         data: {
           hasVectorStore: this.vectorStore !== null,
-          hasGraphRagRunner: this.graphRagIndexingRunner !== null,
           bm25Enabled: this.bm25Index !== null,
           bm25Ready: this.bm25Index?.isReady ?? false,
         },
@@ -2872,14 +2420,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (guardState?.mode === 'paused') {
       return t('ragPerformancePaused');
     }
-    if (guardState?.mode === 'throttled') {
-      return t('ragPerformanceThrottled');
-    }
     if (status.running) {
       const progress = status.progress;
       if (progress && progress.totalFiles > 0) {
         const completed = Math.min(progress.completedFiles, progress.totalFiles);
-        const phase = this.formatRagIndexingPhase(status.phase);
+        const phase = this.formatRagIndexingPhase(status.phase, progress);
         const etaReason = this.formatRagEtaConfidenceReason(
           progress.eta?.etaConfidenceReason ?? progress.eta?.confidenceReason,
         );
@@ -2905,6 +2450,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
       }
       return t('ragIndexingRunning', { phase: this.formatRagIndexingPhase(status.phase) });
+    }
+    if (guardState?.mode === 'throttled') {
+      return t('ragPerformanceThrottled');
     }
     if (status.lastResult) {
       return t('ragIndexingResult', {
@@ -2951,12 +2499,27 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  private formatRagIndexingPhase(phase: RagIndexingSchedulerStatus['phase']): string {
+  private formatRagIndexingPhase(
+    phase: RagIndexingSchedulerStatus['phase'],
+    progress?: RagIndexingSchedulerStatus['progress'],
+  ): string {
     if (phase === 'paused') return t('ragPerformancePaused');
-    if (phase === 'file') return t('ragPhaseFile');
-    if (phase === 'pending') return t('ragPhasePending');
-    if (phase === 'all') return t('ragPhaseAll');
-    return t('ragPhaseIdle');
+    const phaseLabel =
+      phase === 'file'
+        ? t('ragPhaseFile')
+        : phase === 'pending'
+          ? t('ragPhasePending')
+          : phase === 'all'
+            ? t('ragPhaseAll')
+            : t('ragPhaseIdle');
+    if (!progress || progress.currentFileTotalChunks <= 0) return phaseLabel;
+    return t('ragIndexingPhaseWithChunks', {
+      phase: phaseLabel,
+      completed: String(
+        Math.min(progress.currentFileEmbeddedChunks, progress.currentFileTotalChunks),
+      ),
+      total: String(progress.currentFileTotalChunks),
+    });
   }
 
   private formatRagEtaDuration(durationMs: number): string {
@@ -3015,7 +2578,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private clearRAG(options: { dispose?: boolean } = {}): void {
     const runtime = options.dispose === false ? null : this.captureRagRuntimeSnapshot();
     this.cancelRagIndexing();
-    this.cancelGraphRagIndexing();
     this.unregisterRAGEvents();
     if (this.statsDebounceTimer) {
       window.clearTimeout(this.statsDebounceTimer);
@@ -3026,18 +2588,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
       window.clearInterval(this.ragStatusTimer);
       this.ragStatusTimer = null;
     }
-    if (this.graphAutoSyncTimer) {
-      window.clearInterval(this.graphAutoSyncTimer);
-      this.graphAutoSyncTimer = null;
-    }
+    this.documentCorpus = null;
+    this.vaultDocumentCorpus = null;
     this.vectorStore = null;
-    this.knowledgeGraphStore = null;
     this.embeddingProvider = null;
     this.bm25Index = null;
     this.ragEngine = null;
-    this.graphRagIndexingRunner = null;
-    this.graphRagStatus = null;
-    this.graphRagProviderAttached = false;
     this.vaultIndexer = null;
     this.ragIndexingScheduler = null;
     this.automaticRagRecovery = null;
@@ -3071,144 +2627,55 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private registerRAGEvents(): void {
-    this.unregisterRAGEvents();
-    if (!this.vaultIndexer || !this.ragIndexingScheduler) return;
-
-    const effectiveExcludePaths = getEffectiveExcludePaths(
-      this.settings.rag,
-      this.settings.chat,
-      this.app.vault.configDir,
-    );
-    this.getLogger().debug('Registering RAG vault events.', {
-      source: 'rag.events',
-      data: {
-        excludePaths: effectiveExcludePaths,
-        excludeExts: this.settings.rag.excludeExts,
-      },
-    });
-    this.modifyCleanup = registerModifyEvent(
-      this.app.vault,
-      {
-        indexFile: (file: TFile) => {
-          this.getLogger().debug('Scheduling RAG reindex for modified file.', {
-            source: 'rag.events',
-            data: { path: file.path },
-          });
-          this.ragIndexingScheduler?.scheduleFile(file, 'modify');
-          return Promise.resolve();
-        },
-        removeByFilePath: (filePath: string) =>
-          this.ragIndexingScheduler?.deleteFile(filePath) ?? Promise.resolve(0),
-      },
-      effectiveExcludePaths,
-      this.settings.rag.excludeExts,
-      () => {
-        this.debouncedRefreshStats();
-      },
-    );
-    this.createCleanup = registerCreateEvent(
-      this.app.vault,
-      {
-        indexFile: (file: TFile) => {
-          this.getLogger().debug('Scheduling RAG indexing for created file.', {
-            source: 'rag.events',
-            data: { path: file.path },
-          });
-          this.ragIndexingScheduler?.scheduleFile(file, 'modify');
-          return Promise.resolve();
-        },
-      },
-      effectiveExcludePaths,
-      this.settings.rag.excludeExts,
-      () => this.debouncedRefreshStats(),
-    );
-
-    if (!this.vectorStore || !this.ragIndexingScheduler) return;
-    this.deleteCleanup = registerDeleteEvent(
-      this.app.vault,
-      {
-        removeByFilePath: (filePath: string) =>
-          this.ragIndexingScheduler?.deleteFile(filePath) ?? Promise.resolve(0),
-      },
-      effectiveExcludePaths,
-      this.settings.rag.excludeExts,
-      (filePath) => {
-        this.getLogger().debug('RAG entries removed for deleted file.', {
-          source: 'rag.events',
-          data: { path: filePath },
-        });
-        this.debouncedRefreshStats();
-        if (this.knowledgeGraphStore) {
-          void this.cleanupGraphRagForDeletedFiles([filePath]);
-        }
-      },
-    );
-    this.renameCleanup = registerRenameEvent(
-      this.app.vault,
-      {
-        indexFile: (file: TFile) => {
-          this.getLogger().debug('Scheduling RAG reindex for renamed file.', {
-            source: 'rag.events',
-            data: { path: file.path },
-          });
-          this.ragIndexingScheduler?.scheduleFile(file, 'rename');
-          return Promise.resolve();
-        },
-      },
-      {
-        removeByFilePath: (filePath: string) =>
-          this.ragIndexingScheduler?.deleteFile(filePath) ?? Promise.resolve(0),
-      },
-      effectiveExcludePaths,
-      this.settings.rag.excludeExts,
-      (oldPath) => {
-        this.getLogger().debug('RAG entries removed for old renamed path.', {
-          source: 'rag.events',
-          data: { oldPath },
-        });
-        this.debouncedRefreshStats();
-        if (this.knowledgeGraphStore) {
-          void this.cleanupGraphRagForDeletedFiles([oldPath]);
-        }
-      },
-    );
+    this.registerSourceFileEvents(this.ragIndexingScheduler);
   }
 
-  private registerLexicalRAGEvents(bm25Index: IndexedDbBM25Index | undefined): void {
+  private registerLexicalRAGEvents(_bm25Index: IndexedDbBM25Index | undefined): void {
+    this.registerSourceFileEvents(null);
+  }
+
+  private registerSourceFileEvents(scheduler: RAGIndexingScheduler | null): void {
     this.unregisterRAGEvents();
-    if (!bm25Index) return;
-    const effectiveExcludePaths = getEffectiveExcludePaths(
+    if (!this.vaultDocumentCorpus) return;
+    const excludePaths = getEffectiveExcludePaths(
       this.settings.rag,
       this.settings.chat,
       this.app.vault.configDir,
     );
     const indexer = {
-      indexFile: (file: TFile) => this.indexBM25File(bm25Index, file),
-      removeByFilePath: (filePath: string) => this.removeBM25File(bm25Index, filePath),
+      indexFile: async (file: TFile): Promise<void> => {
+        await this.indexBM25File(this.bm25Index ?? undefined, file);
+        scheduler?.scheduleFile(file, 'modify');
+      },
+      removeByFilePath: async (path: string): Promise<number> => {
+        await this.removeBM25File(this.bm25Index ?? undefined, path);
+        this.debouncedRefreshStats();
+        return scheduler?.deleteFile(path) ?? 0;
+      },
     };
     this.modifyCleanup = registerModifyEvent(
       this.app.vault,
       indexer,
-      effectiveExcludePaths,
+      excludePaths,
       this.settings.rag.excludeExts,
     );
     this.createCleanup = registerCreateEvent(
       this.app.vault,
       indexer,
-      effectiveExcludePaths,
+      excludePaths,
       this.settings.rag.excludeExts,
     );
     this.deleteCleanup = registerDeleteEvent(
       this.app.vault,
       indexer,
-      effectiveExcludePaths,
+      excludePaths,
       this.settings.rag.excludeExts,
     );
     this.renameCleanup = registerRenameEvent(
       this.app.vault,
       indexer,
       indexer,
-      effectiveExcludePaths,
+      excludePaths,
       this.settings.rag.excludeExts,
     );
   }
@@ -3231,10 +2698,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private async runRagStatusBackgroundRefresh(): Promise<void> {
     if (!(await this.canRunRagBackgroundWork())) return;
-    const results = await Promise.allSettled([
-      this.computeAndEmitRagStats(),
-      this.computeAndEmitGraphRagStatus(),
-    ]);
+    const results = await Promise.allSettled([this.computeAndEmitRagStats()]);
     for (const result of results) {
       if (result.status === 'rejected') {
         this.getLogger().warn('Background RAG status refresh failed.', {
@@ -3245,75 +2709,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  private async computeAndEmitGraphRagStatus(): Promise<void> {
-    if (!this.vectorStore || !this.knowledgeGraphStore) {
-      this.graphRagStatus = null;
-      return;
-    }
-    const previousStatus = this.graphRagStatus;
-    const graphProvider = this.settings.rag.graphRagModel.trim()
-      ? this.createProviderForModel(this.settings.rag.graphRagModel)
-      : null;
-    const knowledgeContract = buildKnowledgeGraphContract();
-    const nextStatus = await calculateGraphRagStatus({
-      ragConfig: this.settings.rag,
-      graphStore: this.knowledgeGraphStore,
-      vectorStore: this.vectorStore,
-      isRunning: this.isGraphRagIndexing(),
-      activeProviderEpochId: graphProvider
-        ? createGraphProviderEpochId(
-            graphProvider,
-            this.settings.rag.graphRagModel,
-            knowledgeContract.version,
-          )
-        : undefined,
-      isProcessableFilePath: (filePath) => this.isCurrentVaultFilePath(filePath),
-    });
-    this.graphRagStatus = nextStatus;
-    const presentation = getGraphRagStatusPresentation(this.graphRagStatus.state);
-    this.getLogger().debug('GraphRAG status calculated.', {
-      source: 'graph.status',
-      data: {
-        state: this.graphRagStatus.state,
-        totalCandidateFiles: this.graphRagStatus.totalCandidateFiles,
-        staleFileCount: this.graphRagStatus.staleFileCount,
-        failedFileCount: this.graphRagStatus.failedFileCount,
-      },
-    });
-    this.refreshBus?.emit('rag', {
-      status: this.graphRagStatus.state === 'ready' ? 'success' : 'partial',
-      detail: `GraphRAG ${presentation.label}: ${presentation.description}`,
-    });
-    if (
-      this.ragEngine &&
-      !this.ragRuntimeRebuildInProgress &&
-      !this.getRagRuntimeInitRunner().isRunning() &&
-      shouldRebuildRagRuntimeForGraphStatus({
-        graphRagEnabled: this.settings.rag.graphRagEnabled,
-        graphRagModel: this.settings.rag.graphRagModel,
-        previousStatus,
-        nextStatus,
-        graphProviderAttached: this.graphRagProviderAttached,
-      })
-    ) {
-      this.ragRuntimeRebuildInProgress = true;
-      try {
-        await this.initRAG();
-      } finally {
-        this.ragRuntimeRebuildInProgress = false;
-      }
-    }
-  }
-
   createIndexedDbName(kind: string): string {
     const vault = this.app.vault as { getName?: () => string };
     const vaultName = vault.getName ? vault.getName() : 'default-vault';
     const pluginId = this.manifest?.id ?? 'superpower-inside';
     return `${pluginId}:${vaultName}:${kind}`.replace(/[^a-zA-Z0-9:_-]/g, '_');
-  }
-
-  private isCurrentVaultFilePath(filePath: string): boolean {
-    return this.app.vault.getAbstractFileByPath(filePath) instanceof TFile;
   }
 
   setupAutoUpdate(): void {
@@ -3723,13 +3123,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
     void this.app.workspace.revealLeaf(leaf);
     return Promise.resolve();
-  }
-
-  openGraphRagView(): void {
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (!leaf) return;
-    void leaf.setViewState({ type: GRAPH_RAG_VIEW_TYPE, active: true });
-    void this.app.workspace.revealLeaf(leaf);
   }
 
   private isRootWorkspaceLeaf(leaf: WorkspaceLeaf): boolean {

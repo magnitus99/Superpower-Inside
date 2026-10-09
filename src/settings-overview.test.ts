@@ -13,8 +13,6 @@ vi.mock('obsidian', () => ({
   PluginSettingTab: class {},
   Setting: class {},
 }));
-
-import type { GraphRagStatusSummary } from './graph/status';
 import { setLanguage } from './i18n';
 import type { RagStatusSummary } from './rag/status';
 import {
@@ -23,9 +21,7 @@ import {
 } from './settings-overview';
 import { DEFAULT_SETTINGS, type SuperpowerInsideSettings } from './settings';
 
-function buildSettings(
-  override: Partial<SuperpowerInsideSettings> = {},
-): SuperpowerInsideSettings {
+function buildSettings(override: Partial<SuperpowerInsideSettings> = {}): SuperpowerInsideSettings {
   return {
     ...DEFAULT_SETTINGS,
     ...override,
@@ -36,8 +32,7 @@ function buildSettings(
     openRouter: { ...DEFAULT_SETTINGS.openRouter, ...override.openRouter },
     rag: { ...DEFAULT_SETTINGS.rag, ...override.rag },
     chat: { ...DEFAULT_SETTINGS.chat, ...override.chat },
-    customOpenAIProviders:
-      override.customOpenAIProviders ?? DEFAULT_SETTINGS.customOpenAIProviders,
+    customOpenAIProviders: override.customOpenAIProviders ?? DEFAULT_SETTINGS.customOpenAIProviders,
     mcpServers: override.mcpServers ?? DEFAULT_SETTINGS.mcpServers,
   };
 }
@@ -47,19 +42,14 @@ function buildRuntime(
 ): SettingsOverviewRuntimeState {
   return {
     ragStatus: null,
-    graphRagStatus: null,
     mcpConnectionState: 'idle',
     mcpServers: [],
     isRagIndexing: false,
-    isGraphRagIndexing: false,
-    hasGraphRagRunner: false,
     ...override,
   };
 }
 
-function buildRagStatus(
-  override: Partial<RagStatusSummary> = {},
-): RagStatusSummary {
+function buildRagStatus(override: Partial<RagStatusSummary> = {}): RagStatusSummary {
   return {
     totalDocuments: 12,
     healthyDocuments: 12,
@@ -70,23 +60,6 @@ function buildRagStatus(
     totalVectors: 48,
     lastCalculatedAt: 1_780_371_000_000,
     updateRequiredDocuments: [],
-    ...override,
-  };
-}
-
-function buildGraphStatus(
-  override: Partial<GraphRagStatusSummary> = {},
-): GraphRagStatusSummary {
-  return {
-    state: 'ready',
-    totalCandidateFiles: 12,
-    graphEvidenceCount: 24,
-    rejectedFactCount: 0,
-    failedFileCount: 0,
-    pendingMergeCount: 0,
-    staleFileCount: 0,
-    staleFilePaths: [],
-    maxFilesPerRun: 50,
     ...override,
   };
 }
@@ -115,11 +88,13 @@ describe('설정 Overview snapshot', () => {
     setLanguage('en');
     const english = buildSettingsOverviewSnapshot({ settings, runtime: buildRuntime() });
 
-    expect(korean.metrics.find((metric) => metric.id === 'providers')?.label).toBe('프로바이더');
+    expect(korean.metrics.find((metric) => metric.id === 'providers')?.label).toBe('AI 연결');
     expect(korean.providerRows.find((row) => row.id === 'provider-custom-local')?.label).toBe(
       '사용자 지정 OpenAI 호환',
     );
-    expect(english.metrics.find((metric) => metric.id === 'providers')?.label).toBe('Providers');
+    expect(english.metrics.find((metric) => metric.id === 'providers')?.label).toBe(
+      'AI connections',
+    );
     expect(english.providerRows.find((row) => row.id === 'provider-custom-local')?.label).toBe(
       'Custom OpenAI-compatible',
     );
@@ -161,6 +136,98 @@ describe('설정 Overview snapshot', () => {
     );
   });
 
+  it('임베딩 전용 Ternlight는 일반 프로바이더 집계에서 제외한다', () => {
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: buildSettings({
+        providerProfiles: [
+          {
+            id: 'ternlight',
+            name: 'Ternlight',
+            strategy: 'ternlight',
+            apiKey: '',
+            enabled: true,
+            models: [
+              {
+                id: 'ternlight-base',
+                kind: 'embedding',
+                verification: { chatStatus: 'unknown', embeddingStatus: 'success' },
+              },
+            ],
+          },
+          {
+            id: 'chat',
+            name: 'Chat provider',
+            strategy: 'openAICompatible',
+            apiKey: '',
+            baseUrl: 'https://example.com/v1',
+            enabled: true,
+            models: [
+              {
+                id: 'auto',
+                kind: 'general',
+                verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+              },
+            ],
+          },
+        ],
+      }),
+      runtime: buildRuntime(),
+    });
+
+    expect(snapshot.providerRows.map((row) => row.id)).toEqual(['provider-profile-chat']);
+    expect(snapshot.metrics.find((metric) => metric.id === 'providers')?.value).toBe('1/1');
+  });
+
+  it('OpenAI 호환 프로필의 빈 URL과 마지막 검증 실패를 준비됨으로 표시하지 않는다', () => {
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: buildSettings({
+        providerProfiles: [
+          {
+            id: 'missing-url',
+            name: 'Missing URL',
+            strategy: 'openAICompatible',
+            apiKey: '',
+            baseUrl: '',
+            enabled: true,
+            models: [
+              {
+                id: 'auto',
+                kind: 'general',
+                verification: { chatStatus: 'unknown', embeddingStatus: 'unknown' },
+              },
+            ],
+          },
+          {
+            id: 'failed',
+            name: 'Failed provider',
+            strategy: 'openRouter',
+            apiKey: 'test-key',
+            enabled: true,
+            models: [
+              {
+                id: 'model',
+                kind: 'general',
+                verification: { chatStatus: 'failed', embeddingStatus: 'unknown' },
+              },
+            ],
+          },
+        ],
+      }),
+      runtime: buildRuntime(),
+    });
+
+    expect(snapshot.providerRows).toEqual([
+      expect.objectContaining({ id: 'provider-profile-missing-url', tone: 'danger' }),
+      expect.objectContaining({ id: 'provider-profile-failed', tone: 'danger' }),
+    ]);
+    expect(snapshot.providerRows.map((row) => row.statusLabel)).not.toContain('준비됨');
+    expect(snapshot.attentionItems.map((item) => item.id)).toEqual([
+      'provider-profile-missing-url-base-url',
+      'provider-profile-failed-validation',
+      'chat-default-model-unavailable',
+    ]);
+  });
+
   it('Custom OpenAI-compatible provider는 빈 API 키만으로 주의 항목이 되지 않는다', () => {
     const snapshot = buildSettingsOverviewSnapshot({
       settings: buildSettings({
@@ -190,59 +257,6 @@ describe('설정 Overview snapshot', () => {
     expect(snapshot.attentionItems.map((item) => item.id)).not.toContain(
       'provider-custom-local-api-key',
     );
-  });
-
-  it('RAG stale/empty/ready 상태와 GraphRAG 상태를 요약한다', () => {
-    const snapshot = buildSettingsOverviewSnapshot({
-      settings: buildSettings({
-        rag: {
-          ...DEFAULT_SETTINGS.rag,
-          embeddingProvider: 'openai',
-          embeddingModel: 'text-embedding-3-small',
-          graphRagEnabled: true,
-          graphRagModel: 'claude:claude-3-5-sonnet-latest',
-        },
-      }),
-      runtime: buildRuntime({
-        ragStatus: buildRagStatus({
-          healthyDocuments: 8,
-          staleDocuments: 3,
-          missingDocuments: 1,
-          updateRequiredDocuments: [
-            { path: 'a.md', status: 'stale', reason: '수정됨', mtime: 1, size: 1 },
-            { path: 'b.md', status: 'missing', reason: '누락', mtime: 1, size: 1 },
-          ],
-        }),
-        graphRagStatus: buildGraphStatus({ state: 'stale', staleFileCount: 2 }),
-        hasGraphRagRunner: true,
-      }),
-    });
-
-    expect(snapshot.rag.statusLabel).toBe('동기화 필요');
-    expect(snapshot.rag.tone).toBe('warning');
-    expect(snapshot.rag.detail).toContain('2개 문서');
-    expect(snapshot.graphRag.statusLabel).toBe('동기화 필요');
-    expect(snapshot.graphRag.tone).toBe('warning');
-  });
-
-  it('GraphRAG 빌드 허용이 꺼져 있어도 준비된 인덱스는 일반 채팅 보강 상태로 표시한다', () => {
-    const snapshot = buildSettingsOverviewSnapshot({
-      settings: buildSettings({
-        rag: {
-          ...DEFAULT_SETTINGS.rag,
-          graphRagEnabled: false,
-          graphRagModel: '',
-        },
-      }),
-      runtime: buildRuntime({
-        graphRagStatus: buildGraphStatus({ state: 'ready', graphEvidenceCount: 7 }),
-        hasGraphRagRunner: false,
-      }),
-    });
-
-    expect(snapshot.graphRag.statusLabel).toBe('최신');
-    expect(snapshot.graphRag.detail).toContain('7');
-    expect(snapshot.graphRag.tone).toBe('success');
   });
 
   it('MCP connected/error/disconnected 상태를 서버 행과 요약 metric으로 표시한다', () => {
@@ -275,9 +289,7 @@ describe('설정 Overview snapshot', () => {
       settings: buildSettings({
         openai: { enabled: true, apiKey: '', models: ['gpt-4.1'] },
         chat: { ...DEFAULT_SETTINGS.chat, defaultModel: 'openai:missing-model' },
-        mcpServers: [
-          { name: 'context7', command: 'npx', args: [], env: {} },
-        ],
+        mcpServers: [{ name: 'context7', command: 'npx', args: [], env: {} }],
       }),
       runtime: buildRuntime({
         ragStatus: buildRagStatus({
@@ -299,10 +311,22 @@ describe('설정 Overview snapshot', () => {
     ]);
     expect(snapshot.attentionItems.map((item) => item.actionLabel)).toEqual([
       '프로바이더 설정',
-      '기본 모델 선택',
+      '프로바이더 설정',
       '검색 설정',
       'MCP 설정',
     ]);
+  });
+
+  it('선택할 채팅 모델이 없는 첫 사용은 연결 설정으로 안내한다', () => {
+    const snapshot = buildSettingsOverviewSnapshot({
+      settings: buildSettings(),
+      runtime: buildRuntime(),
+    });
+    const attention = snapshot.attentionItems.find(
+      (item) => item.id === 'chat-default-model-unavailable',
+    );
+    expect(attention?.target).toBe('providers');
+    expect(attention?.actionLabel).toBe('프로바이더 설정');
   });
 
   it('provider profile의 활성 일반 모델을 기본 채팅 모델로 인식한다', () => {

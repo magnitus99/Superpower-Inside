@@ -3,18 +3,8 @@
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use wasm_bindgen::prelude::wasm_bindgen;
 
-/// Provider requests are resized toward this wall-clock duration.
-const TARGET_BATCH_DURATION_MS: f64 = 1_500.0;
-/// Event-loop samples below this value progressively remove cooperative delay.
-const HEALTHY_EVENT_LOOP_MS: f64 = 24.0;
-/// Sustained severe renderer pressure parks indexing briefly.
-const SEVERE_EVENT_LOOP_MS: f64 = 250.0;
 /// Maximum delay the controller may insert between provider requests.
-const MAX_ADAPTIVE_YIELD_MS: u32 = 1_000;
-/// Severe samples required before parking the current indexing job.
-const PAUSE_SAMPLE_LIMIT: u32 = 3;
-/// Cooldown after sustained renderer pressure.
-const DEFAULT_PAUSE_MS: f64 = 15_000.0;
+const MAX_ADAPTIVE_YIELD_MS: u32 = 250;
 
 /// Current protection level applied to RAG indexing.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,6 +76,10 @@ struct Config {
     enabled: bool,
     /// User-configured embedding batch size.
     initial_batch_size: u32,
+    /// Event-loop delay that starts cooperative yielding.
+    slow_event_loop_threshold_ms: f64,
+    /// Provider request duration used to resize future batches.
+    slow_batch_threshold_ms: f64,
 }
 
 /// Complete deterministic state carried between policy events.
@@ -152,26 +146,6 @@ impl PolicyState {
             last_slow_kind: previous.last_slow_kind,
             last_slow_ms: previous.last_slow_ms,
         }
-    }
-
-    /// Reduces request pressure without pausing the current job.
-    fn throttle(&mut self, reason_kind: ReasonKind, duration_ms: f64) {
-        self.mode = Mode::Throttled;
-        self.current_batch_size = (self.current_batch_size >> 1).max(1);
-        self.reason_kind = Some(reason_kind);
-        self.reason_ms = Some(duration_ms);
-    }
-
-    /// Parks indexing for the standard cooldown.
-    fn pause(&mut self, _config: &Config, now_ms: f64, duration_ms: f64) {
-        self.mode = Mode::Paused;
-        self.current_batch_size = 1;
-        self.current_yield_ms = 250;
-        self.pause_until_ms = Some(now_ms + DEFAULT_PAUSE_MS);
-        self.reason_kind = Some(ReasonKind::EventLoop);
-        self.reason_ms = Some(duration_ms);
-        self.last_slow_kind = Some(ReasonKind::EventLoop);
-        self.last_slow_ms = Some(duration_ms);
     }
 
     /// Reports whether the controller has returned to its zero-delay ceiling.
@@ -256,7 +230,7 @@ pub fn plan_rag_performance_guard_json(input_json: &str) -> String {
                 return String::new();
             };
             if resume_expired_pause(&mut state, &config, now_ms) {
-                record_event_loop_sample(&mut state, &config, now_ms, duration_ms);
+                record_event_loop_sample(&mut state, &config, duration_ms);
             }
         }
         _ => return String::new(),
@@ -291,7 +265,7 @@ fn record_batch_sample(
         return;
     }
     let desired = bounded_rounded_u32(
-        f64::from(batch_size) * TARGET_BATCH_DURATION_MS / duration_ms,
+        f64::from(batch_size) * config.slow_batch_threshold_ms / duration_ms,
         1,
         config.initial_batch_size,
     );
@@ -303,7 +277,7 @@ fn record_batch_sample(
         state.reason_ms = Some(duration_ms);
         state.last_slow_kind = Some(ReasonKind::Batch);
         state.last_slow_ms = Some(duration_ms);
-    } else if duration_ms <= TARGET_BATCH_DURATION_MS * 0.8 {
+    } else if duration_ms <= config.slow_batch_threshold_ms * 0.8 {
         state.slow_batch_samples = 0;
         state.healthy_batch_samples = state.healthy_batch_samples.saturating_add(1).min(2);
         if state.healthy_batch_samples >= 2 {
@@ -319,44 +293,34 @@ fn record_batch_sample(
 }
 
 /// Applies one renderer event-loop duration sample.
-fn record_event_loop_sample(
-    state: &mut PolicyState,
-    config: &Config,
-    now_ms: f64,
-    duration_ms: f64,
-) {
-    if duration_ms > HEALTHY_EVENT_LOOP_MS {
+fn record_event_loop_sample(state: &mut PolicyState, config: &Config, duration_ms: f64) {
+    if duration_ms > config.slow_event_loop_threshold_ms {
         state.slow_event_loop_samples = state.slow_event_loop_samples.saturating_add(1);
         state.healthy_event_loop_samples = 0;
         state.last_slow_kind = Some(ReasonKind::EventLoop);
         state.last_slow_ms = Some(duration_ms);
         let pressure_ms = bounded_rounded_u32(
-            (duration_ms - HEALTHY_EVENT_LOOP_MS).ceil(),
+            (duration_ms - config.slow_event_loop_threshold_ms).ceil(),
             1,
             MAX_ADAPTIVE_YIELD_MS,
         );
-        state.current_yield_ms = state
-            .current_yield_ms
-            .saturating_add(pressure_ms)
-            .min(MAX_ADAPTIVE_YIELD_MS);
+        state.current_yield_ms = state.current_yield_ms.max(pressure_ms);
         state.reason_kind = Some(ReasonKind::EventLoop);
         state.reason_ms = Some(duration_ms);
-        if duration_ms >= SEVERE_EVENT_LOOP_MS
-            && state.slow_event_loop_samples >= PAUSE_SAMPLE_LIMIT
-        {
-            state.pause(config, now_ms, duration_ms);
-        } else if state.slow_event_loop_samples >= 2 {
-            state.throttle(ReasonKind::EventLoop, duration_ms);
-        }
+        state.refresh_mode(config);
         return;
     }
 
     state.slow_event_loop_samples = 0;
     state.healthy_event_loop_samples = state.healthy_event_loop_samples.saturating_add(1).min(2);
     if state.healthy_event_loop_samples >= 2 {
-        state.current_yield_ms = state
-            .current_yield_ms
-            .saturating_sub(state.current_yield_ms.div_ceil(2).max(1));
+        state.current_yield_ms = if state.current_yield_ms <= 32 {
+            0
+        } else {
+            state
+                .current_yield_ms
+                .saturating_sub(state.current_yield_ms.div_ceil(2))
+        };
         state.healthy_event_loop_samples = 0;
     }
     state.refresh_mode(config);
@@ -366,11 +330,11 @@ fn record_event_loop_sample(
 fn parse_config(input: &JsonMap<String, JsonValue>) -> Option<Config> {
     let config = input.get("config")?.as_object()?;
     non_negative_u32(config.get("initialYieldMs"))?;
-    positive_finite(config.get("slowEventLoopThresholdMs"))?;
-    positive_finite(config.get("slowBatchThresholdMs"))?;
     Some(Config {
         enabled: config.get("enabled")?.as_bool()?,
         initial_batch_size: positive_u32(config.get("initialBatchSize"))?,
+        slow_event_loop_threshold_ms: positive_finite(config.get("slowEventLoopThresholdMs"))?,
+        slow_batch_threshold_ms: positive_finite(config.get("slowBatchThresholdMs"))?,
     })
 }
 
@@ -507,24 +471,21 @@ mod tests {
         let mut state = plan(&JsonValue::Null, "initialize", None, 1_000.0);
         state = plan(&state, "batch_sample", Some(6_000.0), 1_000.0);
         assert_eq!(state.get("mode"), Some(&json!("throttled")));
-        assert_eq!(state.get("currentBatchSize"), Some(&json!(20)));
+        assert_eq!(state.get("currentBatchSize"), Some(&json!(24)));
         assert_eq!(state.get("currentYieldMs"), Some(&json!(0)));
         assert!(state.get("pauseUntilMs").is_some_and(JsonValue::is_null));
     }
 
     #[test]
-    fn event_loop_pressure_pauses_and_timer_tick_resumes_safely() {
+    fn event_loop_pressure_yields_without_pausing_or_resizing_batches() {
         let mut state = plan(&JsonValue::Null, "initialize", None, 1_000.0);
         for _ in 0..3 {
             state = plan(&state, "event_loop_sample", Some(300.0), 1_000.0);
         }
-        assert_eq!(state.get("mode"), Some(&json!("paused")));
-        assert_eq!(state.get("pauseUntilMs"), Some(&json!(16_000.0)));
-
-        state = plan(&state, "timer_tick", None, 16_000.0);
         assert_eq!(state.get("mode"), Some(&json!("throttled")));
-        assert_eq!(state.get("currentBatchSize"), Some(&json!(1)));
-        assert_eq!(state.get("currentYieldMs"), Some(&json!(250)));
+        assert_eq!(state.get("currentBatchSize"), Some(&json!(32)));
+        assert_eq!(state.get("currentYieldMs"), Some(&json!(150)));
+        assert!(state.get("pauseUntilMs").is_some_and(JsonValue::is_null));
     }
 
     #[test]

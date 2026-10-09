@@ -1,9 +1,11 @@
 import type { Vault, TFile, DataAdapter } from 'obsidian';
+import { getFrontMatterInfo, parseYaml } from 'obsidian';
 import { t } from '../i18n';
 import {
   isExcludedPathRust,
   countFilesByExtensionsRust,
   isExcludedExtRust,
+  isRagFrontmatterExcludedRust,
   planRagFileContentProbeIndicesRust,
   planRagFileIndexabilityRust,
   planRagFileTypeSummaryRust,
@@ -44,13 +46,6 @@ const DEFAULT_EXCLUDE_PATHS = [
   '.playwright-mcp',
   '.playwright-cli',
 ];
-/**
- * 볼트에서 마크다운 파일 목록을 가져오되, 제외 패턴을 적용합니다.
- */
-export function getMarkdownFilesFiltered(vault: Vault, excludePatterns: string[]): TFile[] {
-  const allFiles = vault.getMarkdownFiles();
-  return allFiles.filter((file) => !isExcludedPath(file.path, excludePatterns));
-}
 
 export async function getRagCandidateFiles(
   vault: Vault,
@@ -89,6 +84,25 @@ export async function isRagIndexableFile(vault: Vault, file: TFile): Promise<boo
   return selectByRustIndices([file], plan.candidateIndices, { dedupe: true }).length === 1;
 }
 
+/** 개별 작업에서도 경로·확장자·현재 YAML 제외를 다시 확인합니다. */
+export async function isRagFileExcluded(
+  vault: Vault,
+  file: TFile,
+  ragConfig: RAGConfig,
+  chatConfig: ChatConfig,
+): Promise<boolean> {
+  if (
+    isExcludedPath(file.path, getEffectiveExcludePaths(ragConfig, chatConfig, vault.configDir)) ||
+    isExcludedExt(file.path, ragConfig.excludeExts)
+  )
+    return true;
+  const metadata = await readRagFrontmatter(vault, file);
+  return (
+    metadata.frontmatterUnreadable === true ||
+    isRagFrontmatterExcludedRust(metadata.frontmatter) !== false
+  );
+}
+
 export async function getRagFileTypeSummary(
   vault: Vault,
   ragConfig: RAGConfig,
@@ -101,24 +115,15 @@ export async function getRagFileTypeSummary(
     effectiveExcludePaths,
     ragConfig.excludeExts,
   );
-  const summary =
-    planRagFileTypeSummaryRust(plan.summaryInputs, t('noExtensionLabel')) ?? {
-      targetTypes: [],
-      excludeRecommendations: [],
-      totalTargetFiles: 0,
-    };
+  const summary = planRagFileTypeSummaryRust(plan.summaryInputs, t('noExtensionLabel')) ?? {
+    targetTypes: [],
+    excludeRecommendations: [],
+    totalTargetFiles: 0,
+  };
   return {
     ...summary,
     excludeRecommendations: summary.excludeRecommendations.map(localizeRagExcludeRecommendation),
   };
-}
-
-/**
- * 주어진 경로가 제외 패턴에 매칭되는지 확인합니다.
- * 패턴은 폴더 이름(정확 매칭) 또는 glob-like 패턴을 지원합니다.
- */
-export function isExcluded(filePath: string, patterns: string[]): boolean {
-  return isExcludedPath(filePath, patterns);
 }
 
 export function isExcludedPath(filePath: string, patterns: readonly string[]): boolean {
@@ -146,11 +151,15 @@ export function isExcludedExt(filePath: string, excludeExts: string[]): boolean 
 export function countFilesByExtensions(
   vault: Vault,
   extensions: readonly string[],
+  excludePaths: readonly string[] = [],
 ): Record<string, number> {
   const normalizedKeys = extensions
     .map((extension) => extension.trim().toLowerCase().replace(/^\./, ''))
     .filter((extension): extension is string => extension.length > 0);
-  const fileExtensions = vault.getFiles().map((file) => file.extension);
+  const fileExtensions = vault
+    .getFiles()
+    .filter((file) => isExcludedPathRust(file.path, excludePaths) === false)
+    .map((file) => file.extension);
 
   const rustResult = countFilesByExtensionsRust(fileExtensions, normalizedKeys);
   if (rustResult !== null) return rustResult;
@@ -189,12 +198,56 @@ async function planRagFileIndexability(
   const inputs = files.map(toRagFileEligibilityInput);
   const probeIndices = planRagFileContentProbeIndicesRust(inputs, excludePaths, excludeExts) ?? [];
   const textProbes = await readRagFileTextProbes(vault, files, probeIndices);
+  const initialPlan = planRagFileIndexabilityRust(inputs, excludePaths, excludeExts, textProbes);
+  for (const index of initialPlan?.candidateIndices ?? []) {
+    const file = files[index];
+    const input = inputs[index];
+    if (file && input) Object.assign(input, await readRagFrontmatter(vault, file));
+  }
   return (
     planRagFileIndexabilityRust(inputs, excludePaths, excludeExts, textProbes) ?? {
       candidateIndices: [],
       summaryInputs: [],
     }
   );
+}
+
+/** 메타데이터 캐시 갱신 전에도 현재 YAML을 그대로 Rust 경계에 전달합니다. */
+async function readRagFrontmatter(
+  vault: Vault,
+  file: TFile,
+): Promise<Pick<RustRagFileEligibilityInput, 'frontmatter' | 'frontmatterUnreadable'>> {
+  if (file.extension.toLowerCase() !== 'md' && file.extension.toLowerCase() !== 'markdown')
+    return {};
+  let content: string;
+  try {
+    content = await vault.cachedRead(file);
+  } catch {
+    // 제외 속성을 확인할 수 없으면 오래된 인덱스도 검색에 사용하지 않습니다.
+    return { frontmatterUnreadable: true };
+  }
+  try {
+    if (!content.startsWith('---') && !content.startsWith('\uFEFF---'))
+      return { frontmatter: null };
+    const info = getFrontMatterInfo(content);
+    const frontmatter: unknown = info.exists ? parseYaml(info.frontmatter) : null;
+    return { frontmatter };
+  } catch {
+    return { frontmatterUnreadable: true };
+  }
+}
+
+/** YAML에서 제외한 문서는 경로·확장자 설정과 독립적으로 읽기 전용 목록에 표시합니다. */
+export async function getFrontmatterExcludedFiles(vault: Vault): Promise<TFile[]> {
+  const excluded: TFile[] = [];
+  for (const file of vault.getFiles()) {
+    const frontmatter = await readRagFrontmatter(vault, file);
+    if (frontmatter.frontmatter === undefined || frontmatter.frontmatterUnreadable) continue;
+    const result = isRagFrontmatterExcludedRust(frontmatter.frontmatter);
+    if (result === null) throw new Error('Frontmatter exclusion policy is unavailable.');
+    if (result) excluded.push(file);
+  }
+  return excluded;
 }
 
 async function readRagFileTextProbes(

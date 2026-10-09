@@ -1,3 +1,4 @@
+import { connectTestChatGPT, completedChatGPTResponse } from '../test/chatgpt';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLanguage } from '../i18n';
 import type { ProviderConfig } from '../settings';
@@ -5,16 +6,20 @@ import type { TernlightRuntimeOptions } from './ternlight-runtime';
 import {
   fetchProviderModels,
   fetchProviderModelsForStrategy,
+  fetchOllamaModelInfo,
+  fetchAnthropicModelInfo,
   normalizeOpenAICompatibleBaseUrl,
   testEmbeddingGeneration,
   testEmbeddingGenerationForStrategy,
   testProviderGeneration,
+  testProviderGenerationForStrategy,
   validateEmbeddingConnection,
   validateProviderConnection,
 } from './validation';
 
 const requestUrlMock = vi.hoisted(() => vi.fn());
 const ternlightEmbedMock = vi.hoisted(() => vi.fn());
+const gemmaMocks = vi.hoisted(() => ({ embed: vi.fn(), close: vi.fn() }));
 
 vi.mock('obsidian', () => ({
   requestUrl: requestUrlMock,
@@ -23,6 +28,10 @@ vi.mock('obsidian', () => ({
 vi.mock('./embedding', () => ({
   TernlightEmbeddingProvider: class {
     embed = ternlightEmbedMock;
+  },
+  EmbeddingGemmaProvider: class {
+    embed = gemmaMocks.embed;
+    close = gemmaMocks.close;
   },
 }));
 
@@ -38,6 +47,142 @@ const ternlightRuntime = {
 } satisfies TernlightRuntimeOptions;
 
 describe('provider validation', () => {
+  it('Claude 상세 조회는 선택 ID와 인증 헤더를 보내고 다른 ID의 한도를 거부한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { id: 'claude-selected', max_input_tokens: 200000, max_tokens: 8192 },
+    });
+    expect(await fetchAnthropicModelInfo(baseConfig, 'claude-selected')).toEqual({
+      id: 'claude-selected',
+      maxInputTokens: 200000,
+      maxOutputTokens: 8192,
+    });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      url: 'https://api.anthropic.com/v1/models/claude-selected',
+      method: 'GET',
+      headers: { 'x-api-key': baseConfig.apiKey, 'anthropic-version': '2023-06-01' },
+    });
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { id: 'different', max_input_tokens: 200000 },
+    });
+    expect(await fetchAnthropicModelInfo(baseConfig, 'claude-selected')).toBeUndefined();
+    requestUrlMock.mockResolvedValueOnce({ status: 404 });
+    expect(await fetchAnthropicModelInfo(baseConfig, 'missing')).toBeUndefined();
+  });
+  it('Ollama 선택 모델의 show API에서 모델 아키텍처 한도를 확인하고 누락은 추측하지 않는다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { model_info: { 'general.architecture': 'llama', 'llama.context_length': 8192 } },
+    });
+    expect(await fetchOllamaModelInfo('ollama', baseConfig, 'selected')).toEqual({
+      id: 'selected',
+      contextLength: 8192,
+    });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      url: 'http://localhost:11434/api/show',
+      method: 'POST',
+      body: JSON.stringify({ model: 'selected' }),
+    });
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { model_info: { 'llama.context_length': 999999 } },
+    });
+    expect(await fetchOllamaModelInfo('ollama', baseConfig, 'selected')).toEqual({
+      id: 'selected',
+    });
+  });
+  it('공급자가 보장한 경로 한도와 출력 한도를 사용하고 문자열·음수는 배제한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: {
+        data: [
+          {
+            id: 'selected',
+            context_length: 128000,
+            top_provider: { context_length: 64000, max_completion_tokens: 2048 },
+          },
+          { id: 'invalid', context_length: '128000' },
+        ],
+      },
+    });
+    expect((await fetchProviderModels('openRouter', baseConfig)).modelDetails).toEqual([
+      { id: 'invalid' },
+      { id: 'selected', contextLength: 64000, maxOutputTokens: 2048 },
+    ]);
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { data: [{ id: 'claude', max_input_tokens: 200000, max_tokens: 8192 }] },
+    });
+    expect((await fetchProviderModels('claude', baseConfig)).modelDetails?.[0]).toMatchObject({
+      maxInputTokens: 200000,
+      maxOutputTokens: 8192,
+    });
+  });
+  it('최종 output이 비어 있어도 완료된 항목의 답변으로 OAuth 모델 검사를 통과한다', async () => {
+    connectTestChatGPT();
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text:
+        `data: ${JSON.stringify({
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: { type: 'message', content: [{ type: 'output_text', text: 'pong' }] },
+        })}\n\n` + completedChatGPTResponse([]),
+      json: {},
+      headers: {},
+    });
+    expect(
+      await testProviderGenerationForStrategy('openAIChatGPT', baseConfig, 'selected-model'),
+    ).toMatchObject({ valid: true, models: ['selected-model'] });
+  });
+  it('OAuth로 모델 목록과 실제 생성 응답을 검증하고 임베딩을 제외한다', async () => {
+    connectTestChatGPT();
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: {
+        models: [
+          {
+            slug: 'selected-model',
+            context_window: 128000,
+            max_context_window: 256000,
+            effective_context_window_percent: 90,
+          },
+        ],
+      },
+      headers: {},
+    });
+    expect(await fetchProviderModelsForStrategy('openAIChatGPT', baseConfig)).toMatchObject({
+      valid: true,
+      models: ['selected-model'],
+      modelDetails: [{ id: 'selected-model', contextLength: 115200 }],
+    });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      headers: { Authorization: 'Bearer oauth-access' },
+    });
+    const modelRequest = requestUrlMock.mock.calls[0]?.[0] as { url: string };
+    expect(modelRequest.url).toContain('/codex/models?client_version=');
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: completedChatGPTResponse([
+        { type: 'message', content: [{ type: 'output_text', text: 'OK' }] },
+      ]),
+      json: {},
+      headers: {},
+    });
+    expect(
+      await testProviderGenerationForStrategy('openAIChatGPT', baseConfig, 'selected-model'),
+    ).toMatchObject({ valid: true });
+    expect(
+      await testEmbeddingGenerationForStrategy('openAIChatGPT', 'selected-model', baseConfig),
+    ).toMatchObject({ valid: false });
+    expect(requestUrlMock).toHaveBeenCalledTimes(2);
+  });
   beforeEach(() => {
     requestUrlMock.mockReset();
     ternlightEmbedMock.mockReset();
@@ -316,6 +461,18 @@ describe('provider validation', () => {
     expect(result.error).toBe('Ternlight가 올바르지 않은 임베딩 벡터를 반환했습니다: 3차원');
   });
 
+  it('EmbeddingGemma의 768차원 검증 뒤 검사용 작업자를 정리한다', async () => {
+    gemmaMocks.embed.mockResolvedValueOnce(Array.from({ length: 768 }, () => 0.1));
+    const result = await testEmbeddingGenerationForStrategy(
+      'ternlight',
+      'embeddinggemma-300m',
+      baseConfig,
+      ternlightRuntime,
+    );
+    expect(result).toMatchObject({ valid: true, models: ['embeddinggemma-300m'] });
+    expect(gemmaMocks.close).toHaveBeenCalled();
+  });
+
   it('Custom OpenAI 호환 모델 검색 URL을 /v1/models로 정규화한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
@@ -430,16 +587,12 @@ describe('provider validation', () => {
       text: '',
     });
 
-    const result = await testEmbeddingGeneration(
-      'customOpenAI:local',
-      'custom-embedding',
-      {
-        ...baseConfig,
-        id: 'local',
-        name: 'Local',
-        baseUrl: 'http://localhost:1234/v1',
-      },
-    );
+    const result = await testEmbeddingGeneration('customOpenAI:local', 'custom-embedding', {
+      ...baseConfig,
+      id: 'local',
+      name: 'Local',
+      baseUrl: 'http://localhost:1234/v1',
+    });
 
     expect(result.valid).toBe(true);
     expect(requestUrlMock).toHaveBeenCalledWith(
@@ -459,17 +612,13 @@ describe('provider validation', () => {
       text: '',
     });
 
-    await testEmbeddingGeneration(
-      'customOpenAI:local',
-      'custom-embedding',
-      {
-        ...baseConfig,
-        id: 'local',
-        name: 'Local',
-        apiKey: '',
-        baseUrl: 'http://localhost:1234/v1',
-      },
-    );
+    await testEmbeddingGeneration('customOpenAI:local', 'custom-embedding', {
+      ...baseConfig,
+      id: 'local',
+      name: 'Local',
+      apiKey: '',
+      baseUrl: 'http://localhost:1234/v1',
+    });
 
     expect(requestUrlMock).toHaveBeenCalledWith(
       expect.objectContaining({

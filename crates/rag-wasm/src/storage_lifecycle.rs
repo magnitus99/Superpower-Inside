@@ -1,17 +1,17 @@
-//! Deterministic IndexedDB storage lifecycle policy.
+//! 결정적인 볼트별 저장소 생명주기 정책입니다.
 //!
-//! Host code supplies vault identity and database snapshots. This module decides names and
-//! deletions without opening IndexedDB or depending on Obsidian APIs.
+//! 호스트가 제공한 식별자와 스냅샷으로 이름·유지보수 대상을 계산합니다.
+//! 데이터베이스를 열거나 호스트 API를 호출하지 않습니다.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value as JsonValue, json};
 use wasm_bindgen::prelude::wasm_bindgen;
 
-/// Current `IndexedDB` storage contract. A version change starts a fresh database generation.
-// Contract v3 was shipped briefly in 1.5.2, but it hid otherwise valid v2 indexes and forced
-// users to rebuild them. Version 1.5.3 deliberately resumes the stable v2 generation. A v3
-// database is never opened as active data and is deleted only after v2 coverage and health pass.
+/// 현재 저장소 계약입니다. 버전이 바뀌면 새로운 데이터베이스 세대를 사용합니다.
+// 1.5.2에서 잠시 배포한 v3는 유효한 v2 인덱스를 가려 재색인을 유발했습니다.
+// 1.5.3부터 안정적인 v2를 다시 사용합니다. v3는 활성 저장소로 열지 않으며,
+// 지원 종료 생성물 정책에 따라 사용자가 정리를 선택할 때 제거합니다.
 const STORAGE_CONTRACT_VERSION: u32 = 2;
 /// Legacy global embedding cache database created before per-vault generations.
 const LEGACY_EMBEDDING_CACHE_NAME: &str = "SuperpowerInsideEmbeddingCache";
@@ -23,6 +23,9 @@ const STORAGE_HASH_RIGHT_OFFSET: u64 = 0x8422_2325_cbf2_9ce4;
 const STORAGE_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Builds database names isolated by vault, storage contract, and embedding generation.
+///
+/// `index_namespace`가 비어 있으면 기존 세대를 유지한다. 값이 있으면 청킹 계약이 바뀐 것이므로
+/// 공통 원문·vector·BM25를 새 세대로 옮기고 임베딩 캐시는 재사용합니다.
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_indexed_db_storage_layout_json(
@@ -30,6 +33,7 @@ pub fn plan_indexed_db_storage_layout_json(
     vault_identity: &str,
     legacy_vault_name: &str,
     embedding_namespace: &str,
+    index_namespace: &str,
 ) -> String {
     let plugin = sanitize_database_component(plugin_id);
     let legacy_vault = sanitize_database_component(legacy_vault_name);
@@ -48,19 +52,31 @@ pub fn plan_indexed_db_storage_layout_json(
         current_vault_prefix.clone(),
         format!("{plugin}:rag-v3:{vault_hash}:"),
     ];
+    let index_generation = index_namespace.trim();
+    let (vector_hash, bm25_name) = if index_generation.is_empty() {
+        (
+            embedding_hash.clone(),
+            format!("{current_vault_prefix}bm25"),
+        )
+    } else {
+        let index_hash = storage_key(&["index", index_generation]);
+        (
+            index_hash.clone(),
+            format!("{current_vault_prefix}{index_hash}:bm25"),
+        )
+    };
     let active = json!({
-        "vector": format!("{current_vault_prefix}{embedding_hash}:vectors"),
+        "vector": format!("{current_vault_prefix}{vector_hash}:vectors"),
         "embeddingCache": format!("{current_vault_prefix}{embedding_hash}:embedding-cache"),
-        "bm25": format!("{current_vault_prefix}bm25"),
-        "graph": format!("{current_vault_prefix}graph"),
+        "bm25": bm25_name,
+        "corpus": format!("{current_vault_prefix}{}:corpus", storage_key(&["corpus", index_generation])),
     });
     let legacy_names = [
         format!("{plugin}:{legacy_vault}:VectorStore"),
-        format!("{plugin}:{legacy_vault}:KnowledgeGraph"),
         format!("{plugin}:{legacy_vault}:BM25Index"),
         LEGACY_EMBEDDING_CACHE_NAME.to_owned(),
     ];
-    let cleanup_legacy_names = legacy_names.iter().take(3).cloned().collect::<Vec<_>>();
+    let cleanup_legacy_names = legacy_names.iter().take(2).cloned().collect::<Vec<_>>();
 
     json!({
         "contractVersion": STORAGE_CONTRACT_VERSION,
@@ -277,104 +293,6 @@ fn build_inactive_database_plan(mut input: InactiveDatabaseInput) -> String {
         "records": record_values,
         "deleteNames": delete_names,
         "remainingDeleteCount": stale_names.len().saturating_sub(delete_names.len()),
-    })
-    .to_string()
-}
-
-/// Plans bounded retention of rebuildable `GraphRAG` jobs, responses, and circuit state.
-#[must_use]
-#[wasm_bindgen]
-pub fn plan_graph_storage_maintenance_json(input_json: &str) -> String {
-    let Some(input) = parse_graph_storage_input(input_json) else {
-        return String::new();
-    };
-    build_graph_storage_plan(&input)
-}
-
-/// Builds a deterministic bounded `GraphRAG` derived-record deletion plan.
-fn build_graph_storage_plan(input: &GraphStorageInput) -> String {
-    let cutoff = input.now - input.max_age_ms;
-    let stale_paths = input
-        .graph_file_paths
-        .iter()
-        .chain(
-            input
-                .extraction_jobs
-                .iter()
-                .filter_map(|record| record.file_path.as_ref()),
-        )
-        .filter(|path| !input.valid_paths.contains(*path))
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let delete_file_paths = stale_paths
-        .iter()
-        .take(input.max_deletions)
-        .cloned()
-        .collect::<Vec<_>>();
-    let selected_stale_paths = delete_file_paths.iter().cloned().collect::<BTreeSet<_>>();
-
-    let mut candidates = Vec::new();
-    collect_graph_job_candidates(
-        &mut candidates,
-        "extraction",
-        &input.extraction_jobs,
-        cutoff,
-        input.max_extraction_jobs,
-        input.now,
-        &selected_stale_paths,
-    );
-    collect_graph_job_candidates(
-        &mut candidates,
-        "summary",
-        &input.summary_jobs,
-        cutoff,
-        input.max_summary_jobs,
-        input.now,
-        &BTreeSet::new(),
-    );
-    collect_graph_job_candidates(
-        &mut candidates,
-        "search",
-        &input.search_jobs,
-        cutoff,
-        input.max_search_jobs,
-        input.now,
-        &BTreeSet::new(),
-    );
-    collect_graph_circuit_candidates(
-        &mut candidates,
-        &input.circuits,
-        cutoff,
-        input.max_circuits,
-        input.now,
-    );
-    candidates.sort();
-
-    let mut selected = candidates
-        .iter()
-        .take(input.max_deletions)
-        .cloned()
-        .collect::<Vec<_>>();
-    let selected_job_ids = selected
-        .iter()
-        .filter(|candidate| candidate.table != "circuit")
-        .map(|candidate| candidate.id.as_str())
-        .collect::<BTreeSet<_>>();
-    let remaining_slots = input.max_deletions.saturating_sub(selected.len());
-    let raw_candidates = collect_raw_response_candidates(input, cutoff, &selected_job_ids);
-    selected.extend(raw_candidates.iter().take(remaining_slots).cloned());
-
-    let delete_ids = group_graph_delete_ids(&selected);
-    let remaining_work = stale_paths.len() > delete_file_paths.len()
-        || candidates.len() + raw_candidates.len() > selected.len();
-    json!({
-        "deleteFilePaths": delete_file_paths,
-        "deleteExtractionJobIds": delete_ids.get("extraction").cloned().unwrap_or_default(),
-        "deleteRawResponseIds": delete_ids.get("raw").cloned().unwrap_or_default(),
-        "deleteCommunitySummaryJobIds": delete_ids.get("summary").cloned().unwrap_or_default(),
-        "deleteGlobalSearchJobIds": delete_ids.get("search").cloned().unwrap_or_default(),
-        "deleteProviderCircuitIds": delete_ids.get("circuit").cloned().unwrap_or_default(),
-        "remainingWork": remaining_work,
     })
     .to_string()
 }
@@ -699,204 +617,6 @@ fn parse_inactive_database_input(payload: &str) -> Option<InactiveDatabaseInput>
     })
 }
 
-/// Validated host snapshot and limits for `GraphRAG` derived-record retention.
-struct GraphStorageInput {
-    /// Current vault files eligible for graph indexing.
-    valid_paths: BTreeSet<String>,
-    /// File paths represented by graph evidence or failures.
-    graph_file_paths: Vec<String>,
-    /// Durable extraction state-machine records.
-    extraction_jobs: Vec<GraphLifecycleRecord>,
-    /// Raw provider response bodies.
-    raw_responses: Vec<GraphLifecycleRecord>,
-    /// Community summary cache jobs.
-    summary_jobs: Vec<GraphLifecycleRecord>,
-    /// Global-search cache jobs.
-    search_jobs: Vec<GraphLifecycleRecord>,
-    /// Provider circuit-breaker records.
-    circuits: Vec<GraphLifecycleRecord>,
-    /// Current host timestamp in milliseconds.
-    now: f64,
-    /// Maximum age for rebuildable derived records.
-    max_age_ms: f64,
-    /// Extraction job count cap.
-    max_extraction_jobs: usize,
-    /// Raw response count cap.
-    max_raw_responses: usize,
-    /// Community summary job count cap.
-    max_summary_jobs: usize,
-    /// Global search job count cap.
-    max_search_jobs: usize,
-    /// Provider circuit count cap.
-    max_circuits: usize,
-    /// Maximum record deletions selected in one batch.
-    max_deletions: usize,
-}
-
-/// Parses and validates the complete `GraphRAG` storage maintenance envelope.
-fn parse_graph_storage_input(payload: &str) -> Option<GraphStorageInput> {
-    let value = serde_json::from_str::<JsonValue>(payload).ok()?;
-    let input = value.as_object()?;
-    let now = input.get("now")?.as_f64()?;
-    let max_age_ms = input.get("maxAgeMs")?.as_f64()?;
-    if !now.is_finite() || !max_age_ms.is_finite() || max_age_ms < 0.0 {
-        return None;
-    }
-    Some(GraphStorageInput {
-        valid_paths: parse_string_field(input, "validFilePaths")?
-            .into_iter()
-            .collect(),
-        graph_file_paths: parse_string_field(input, "graphFilePaths")?,
-        extraction_jobs: parse_graph_records(input, "extractionJobs", "updatedAt")?,
-        raw_responses: parse_graph_records(input, "rawResponses", "receivedAt")?,
-        summary_jobs: parse_graph_records(input, "communitySummaryJobs", "updatedAt")?,
-        search_jobs: parse_graph_records(input, "globalSearchJobs", "updatedAt")?,
-        circuits: parse_graph_records(input, "providerCircuits", "updatedAt")?,
-        now,
-        max_age_ms,
-        max_extraction_jobs: parse_limit(input, "maxExtractionJobs")?,
-        max_raw_responses: parse_limit(input, "maxRawResponses")?,
-        max_summary_jobs: parse_limit(input, "maxCommunitySummaryJobs")?,
-        max_search_jobs: parse_limit(input, "maxGlobalSearchJobs")?,
-        max_circuits: parse_limit(input, "maxProviderCircuits")?,
-        max_deletions: parse_limit(input, "maxDeletions")?,
-    })
-}
-
-/// Validated metadata needed to decide `GraphRAG` derived-record retention.
-struct GraphLifecycleRecord {
-    /// Stable primary key.
-    id: String,
-    /// State name when the table has a state machine.
-    state: String,
-    /// File path for extraction jobs.
-    file_path: Option<String>,
-    /// Optional referenced raw-response primary key.
-    raw_response_id: Option<String>,
-    /// Lease expiration or circuit-open deadline.
-    protection_until: Option<f64>,
-    /// Last mutation or receive timestamp.
-    updated: f64,
-}
-
-/// Globally ordered deletion candidate, with table name as a deterministic tie breaker.
-#[derive(Clone, Eq, PartialEq)]
-struct GraphDeleteCandidate {
-    /// Timestamp ordered through `f64::total_cmp` in the manual ordering implementation.
-    updated_bits: u64,
-    /// Table discriminator used in the output map.
-    table: &'static str,
-    /// Stable record primary key.
-    id: String,
-}
-
-impl GraphDeleteCandidate {
-    /// Creates a candidate from a validated record.
-    fn new(table: &'static str, record: &GraphLifecycleRecord) -> Self {
-        Self {
-            updated_bits: record.updated.to_bits(),
-            table,
-            id: record.id.clone(),
-        }
-    }
-}
-
-impl Ord for GraphDeleteCandidate {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        f64::from_bits(self.updated_bits)
-            .total_cmp(&f64::from_bits(other.updated_bits))
-            .then_with(|| self.table.cmp(other.table))
-            .then_with(|| self.id.cmp(&other.id))
-    }
-}
-
-impl PartialOrd for GraphDeleteCandidate {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// Parses one graph maintenance table with shared record validation.
-fn parse_graph_records(
-    input: &serde_json::Map<String, JsonValue>,
-    field: &str,
-    timestamp_field: &str,
-) -> Option<Vec<GraphLifecycleRecord>> {
-    let values = input.get(field)?.as_array()?;
-    let mut records = Vec::with_capacity(values.len());
-    for value in values {
-        let object = value.as_object()?;
-        let id = object.get("id")?.as_str()?.trim();
-        let updated = object.get(timestamp_field)?.as_f64()?;
-        let state = object
-            .get("state")
-            .and_then(JsonValue::as_str)
-            .unwrap_or_default();
-        let file_path = parse_optional_string(object, "filePath")?.into_option();
-        let raw_response_id = parse_optional_string(object, "rawResponseId")?.into_option();
-        let protection_until = match object
-            .get("leaseExpiresAt")
-            .or_else(|| object.get("openUntil"))
-        {
-            Some(value) => Some(value.as_f64()?),
-            None => None,
-        };
-        if id.is_empty()
-            || !updated.is_finite()
-            || protection_until.is_some_and(|value| !value.is_finite())
-        {
-            return None;
-        }
-        records.push(GraphLifecycleRecord {
-            id: id.to_owned(),
-            state: state.to_owned(),
-            file_path,
-            raw_response_id,
-            protection_until,
-            updated,
-        });
-    }
-    records.sort_by(|left, right| {
-        left.updated
-            .total_cmp(&right.updated)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    Some(records)
-}
-
-/// Validated optional string field.
-enum OptionalString {
-    /// Field is absent or explicitly null.
-    Missing,
-    /// Field contains a validated non-empty string.
-    Value(String),
-}
-
-impl OptionalString {
-    /// Converts the validated field into its storage representation.
-    fn into_option(self) -> Option<String> {
-        match self {
-            Self::Missing => None,
-            Self::Value(value) => Some(value),
-        }
-    }
-}
-
-/// Parses an optional string field while rejecting explicit empty or non-string values.
-fn parse_optional_string(
-    object: &serde_json::Map<String, JsonValue>,
-    field: &str,
-) -> Option<OptionalString> {
-    let Some(value) = object.get(field) else {
-        return Some(OptionalString::Missing);
-    };
-    if value.is_null() {
-        return Some(OptionalString::Missing);
-    }
-    let value = value.as_str()?.trim();
-    (!value.is_empty()).then(|| OptionalString::Value(value.to_owned()))
-}
-
 /// Parses a non-negative integer limit.
 fn parse_limit(input: &serde_json::Map<String, JsonValue>, field: &str) -> Option<usize> {
     input
@@ -950,7 +670,7 @@ fn inactive_database_group(name: &str, plugin_id: &str) -> Option<String> {
             return None;
         }
     }
-    [":VectorStore", ":KnowledgeGraph", ":BM25Index"]
+    [":VectorStore", ":BM25Index"]
         .iter()
         .any(|ending| suffix.ends_with(ending))
         .then(|| format!("legacy:{name}"))
@@ -978,117 +698,6 @@ fn parse_string_field(
         .get(field)
         .and_then(JsonValue::as_array)
         .and_then(|values| parse_string_values(values))
-}
-
-/// Adds expired and overflow job candidates while preserving live leases.
-fn collect_graph_job_candidates(
-    candidates: &mut Vec<GraphDeleteCandidate>,
-    table: &'static str,
-    records: &[GraphLifecycleRecord],
-    cutoff: f64,
-    max_records: usize,
-    now: f64,
-    stale_paths: &BTreeSet<String>,
-) {
-    let overflow = records.len().saturating_sub(max_records);
-    let overflow_ids = records
-        .iter()
-        .filter(|record| matches!(record.state.as_str(), "committed" | "quarantined"))
-        .take(overflow)
-        .map(|record| record.id.as_str())
-        .collect::<BTreeSet<_>>();
-    for record in records {
-        let live_lease = record.state == "leased"
-            && record
-                .protection_until
-                .is_some_and(|lease_expires_at| lease_expires_at > now);
-        let stale_file = record
-            .file_path
-            .as_ref()
-            .is_some_and(|path| stale_paths.contains(path));
-        if !live_lease
-            && (stale_file || record.updated < cutoff || overflow_ids.contains(record.id.as_str()))
-        {
-            candidates.push(GraphDeleteCandidate::new(table, record));
-        }
-    }
-}
-
-/// Adds expired and overflow circuit candidates while preserving an actively open circuit.
-fn collect_graph_circuit_candidates(
-    candidates: &mut Vec<GraphDeleteCandidate>,
-    records: &[GraphLifecycleRecord],
-    cutoff: f64,
-    max_records: usize,
-    now: f64,
-) {
-    let overflow = records.len().saturating_sub(max_records);
-    let overflow_ids = records
-        .iter()
-        .filter(|record| record.state == "closed")
-        .take(overflow)
-        .map(|record| record.id.as_str())
-        .collect::<BTreeSet<_>>();
-    for record in records {
-        let actively_open = record.state != "closed"
-            && record
-                .protection_until
-                .is_some_and(|open_until| open_until > now);
-        if !actively_open && (record.updated < cutoff || overflow_ids.contains(record.id.as_str()))
-        {
-            candidates.push(GraphDeleteCandidate::new("circuit", record));
-        }
-    }
-}
-
-/// Collects expired or overflow raw responses that no retained job references.
-fn collect_raw_response_candidates(
-    input: &GraphStorageInput,
-    cutoff: f64,
-    selected_job_ids: &BTreeSet<&str>,
-) -> BTreeSet<GraphDeleteCandidate> {
-    let referenced_raw_ids = input
-        .extraction_jobs
-        .iter()
-        .chain(input.summary_jobs.iter())
-        .chain(input.search_jobs.iter())
-        .filter(|record| !selected_job_ids.contains(record.id.as_str()))
-        .filter_map(|record| record.raw_response_id.clone())
-        .collect::<BTreeSet<_>>();
-    let mut candidates = input
-        .raw_responses
-        .iter()
-        .filter(|record| !referenced_raw_ids.contains(&record.id))
-        .filter(|record| record.updated < cutoff)
-        .map(|record| GraphDeleteCandidate::new("raw", record))
-        .collect::<BTreeSet<_>>();
-    let overflow = input
-        .raw_responses
-        .len()
-        .saturating_sub(input.max_raw_responses);
-    for record in input
-        .raw_responses
-        .iter()
-        .filter(|record| !referenced_raw_ids.contains(&record.id))
-        .take(overflow)
-    {
-        candidates.insert(GraphDeleteCandidate::new("raw", record));
-    }
-    candidates
-}
-
-/// Groups selected graph deletion candidates by their store discriminator.
-fn group_graph_delete_ids(
-    candidates: &[GraphDeleteCandidate],
-) -> BTreeMap<&'static str, Vec<String>> {
-    let mut grouped = BTreeMap::<&'static str, Vec<String>>::new();
-    for candidate in candidates {
-        grouped
-            .entry(candidate.table)
-            .or_default()
-            .push(candidate.id.clone());
-    }
-    grouped
 }
 
 /// Parses a JSON array of strings without accepting mixed or empty entries.
@@ -1205,13 +814,54 @@ pub fn storage_key(parts: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        plan_graph_storage_maintenance_json, plan_inactive_indexed_db_cleanup_json,
-        plan_indexed_db_bounded_cleanup_json, plan_indexed_db_bounded_retention_json,
-        plan_plugin_owned_file_maintenance_json, plan_stale_index_source_paths_json,
-        plan_vector_file_index_batch_json, plan_vector_record_batch_json,
-    };
+    use super::*;
     use serde_json::Value as JsonValue;
+
+    /// 청킹 계약이 바뀌면 vector와 BM25만 새 세대로 옮기고 임베딩 캐시는 재사용해야 한다.
+    #[test]
+    fn generation_scoped_layout_isolates_chunking_contract() {
+        let legacy_layout = plan_indexed_db_storage_layout_json(
+            "plugin",
+            "vault",
+            "Vault",
+            "profile:local::embedding-v2",
+            "",
+        );
+        let generation_layout = plan_indexed_db_storage_layout_json(
+            "plugin",
+            "vault",
+            "Vault",
+            "profile:local::embedding-v2",
+            "idx-v1:500:100",
+        );
+        assert_ne!(
+            &legacy_layout, &generation_layout,
+            "청킹 계약이 다르면 저장 레이아웃도 달라야 합니다"
+        );
+        let legacy_document = serde_json::from_str::<JsonValue>(&legacy_layout).unwrap_or_default();
+        let generation_document =
+            serde_json::from_str::<JsonValue>(&generation_layout).unwrap_or_default();
+        let legacy_active = legacy_document.get("active").cloned().unwrap_or_default();
+        let generation_active = generation_document
+            .get("active")
+            .cloned()
+            .unwrap_or_default();
+        assert_ne!(
+            legacy_active.get("vector"),
+            generation_active.get("vector"),
+            "청킹 계약이 바뀌면 vector 저장소는 새 세대여야 합니다: {generation_layout}"
+        );
+        assert_ne!(
+            legacy_active.get("bm25"),
+            generation_active.get("bm25"),
+            "청킹 계약이 바뀌면 BM25 posting도 새 세대여야 합니다: {generation_layout}"
+        );
+        assert_eq!(
+            legacy_active.get("embeddingCache"),
+            generation_active.get("embeddingCache"),
+            "임베딩 캐시는 청킹 계약과 무관하게 재사용해야 합니다: {generation_layout}"
+        );
+    }
 
     #[test]
     fn bounded_cleanup_deletes_v3_and_foreign_model_only_for_current_vault() {
@@ -1267,66 +917,15 @@ mod tests {
     }
 
     #[test]
-    fn graph_maintenance_prunes_stale_paths_and_protects_live_leases_and_references() {
-        let input = r#"{
-          "validFilePaths":["keep.md"],
-          "graphFilePaths":["keep.md","gone.md"],
-          "extractionJobs":[
-            {"id":"stale-job","filePath":"gone.md","state":"committed","updatedAt":1,"rawResponseId":"stale-raw"},
-            {"id":"live-job","filePath":"keep.md","state":"leased","updatedAt":1,"leaseExpiresAt":200,"rawResponseId":"live-raw"}
-          ],
-          "rawResponses":[
-            {"id":"stale-raw","receivedAt":1},
-            {"id":"live-raw","receivedAt":1},
-            {"id":"orphan-raw","receivedAt":1}
-          ],
-          "communitySummaryJobs":[],
-          "globalSearchJobs":[],
-          "providerCircuits":[
-            {"id":"closed-old","state":"closed","updatedAt":1},
-            {"id":"open-live","state":"open","openUntil":200,"updatedAt":1}
-          ],
-          "now":100,
-          "maxAgeMs":50,
-          "maxExtractionJobs":10,
-          "maxRawResponses":10,
-          "maxCommunitySummaryJobs":10,
-          "maxGlobalSearchJobs":10,
-          "maxProviderCircuits":10,
-          "maxDeletions":16
-        }"#;
-        let plan: JsonValue =
-            serde_json::from_str(&plan_graph_storage_maintenance_json(input)).unwrap_or_default();
-        assert_eq!(
-            plan.get("deleteFilePaths"),
-            Some(&serde_json::json!(["gone.md"]))
-        );
-        assert!(
-            plan.get("deleteExtractionJobIds")
-                .and_then(JsonValue::as_array)
-                .is_some_and(|ids| ids.contains(&serde_json::json!("stale-job")))
-        );
-        assert!(
-            plan.get("deleteRawResponseIds")
-                .and_then(JsonValue::as_array)
-                .is_some_and(|ids| ids.contains(&serde_json::json!("orphan-raw")))
-        );
-        assert!(!plan.to_string().contains("live-job"));
-        assert!(!plan.to_string().contains("live-raw"));
-        assert!(!plan.to_string().contains("open-live"));
-        assert!(plan.to_string().contains("closed-old"));
-    }
-
-    #[test]
     fn inactive_database_cleanup_observes_before_deleting_and_heartbeats_current_vault() {
         let first = r#"{
           "databaseNames":[
-            "plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:graph",
-            "plugin:rag-v2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:graph",
+            "plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:vectors",
+            "plugin:rag-v2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:vectors",
             "SuperpowerInsideEmbeddingCache",
             "unrelated"
           ],
-          "activeNames":["plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:graph"],
+          "activeNames":["plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:vectors"],
           "currentVaultPrefixes":["plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"],
           "currentLegacyNames":[],
           "pluginId":"plugin",
@@ -1344,11 +943,11 @@ mod tests {
 
         let second = serde_json::json!({
           "databaseNames":[
-            "plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:graph",
-            "plugin:rag-v2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:graph",
+            "plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:vectors",
+            "plugin:rag-v2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:vectors",
             "SuperpowerInsideEmbeddingCache"
           ],
-          "activeNames":["plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:graph"],
+          "activeNames":["plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:vectors"],
           "currentVaultPrefixes":["plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:"],
           "currentLegacyNames":[],
           "pluginId":"plugin",

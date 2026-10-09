@@ -25,14 +25,6 @@ const MAX_PROVIDER_RETRY_WAIT_MS: usize = 30_000;
 const FINGERPRINT_OFFSET_BASIS: u32 = 0x811c_9dc5;
 /// Stable fingerprint multiplier.
 const FINGERPRINT_PRIME: u32 = 0x0100_0193;
-/// Known aliases for the Neville entity facet.
-const NEVILLE_TERMS: [&str; 4] = ["네빌", "Neville", "Goddard", "고다드"];
-/// Lowercase markers used to detect the Neville entity facet.
-const NEVILLE_MARKERS: [&str; 4] = ["네빌", "neville", "goddard", "고다드"];
-/// Known aliases for the Genesis topic facet.
-const GENESIS_TERMS: [&str; 2] = ["Genesis", "창세기"];
-/// Lowercase markers used to detect the Genesis topic facet.
-const GENESIS_MARKERS: [&str; 2] = ["genesis", "창세기"];
 /// Scope and conversational words that are not useful lexical evidence facets.
 const RESEARCH_STOP_TERMS: [&str; 41] = [
     "all",
@@ -111,9 +103,9 @@ struct CandidateMatch {
     index: usize,
     /// Whether this item matched each serialized facet.
     facet_matches: Vec<bool>,
-    /// Number of matched entity/topic facets.
+    /// Number of matched current-question or conversation-context facets.
     primary_facet_match_count: usize,
-    /// Number of matched facets including conversational context.
+    /// Number of matched facets.
     facet_match_count: usize,
     /// Number of distinct lexical terms present in the path or sample.
     term_match_count: usize,
@@ -636,7 +628,9 @@ fn accumulate_native_tool_result(result: &JsonValue, coverage: &mut NativeToolCo
         coverage.mark_unparseable();
         return;
     };
-    let complete = unreadable_files == 0 && !truncated && total_hits <= hit_count;
+    let restricted = object.get("scopeRestricted").and_then(JsonValue::as_bool) == Some(true)
+        || object.contains_key("filters");
+    let complete = unreadable_files == 0 && !truncated && total_hits <= hit_count && !restricted;
     coverage.search_scopes.push(NativeSearchScope {
         query: query.trim().to_owned(),
         path: path.trim().to_owned(),
@@ -649,6 +643,10 @@ fn accumulate_native_tool_result(result: &JsonValue, coverage: &mut NativeToolCo
     coverage.provider_omitted_count = coverage
         .provider_omitted_count
         .saturating_add(total_hits.saturating_sub(hit_count));
+    if restricted {
+        coverage.all_searches_complete = false;
+        push_reason(&mut coverage.reason_codes, "local-screen-filtered");
+    }
     if unreadable_files > 0 {
         coverage.all_searches_complete = false;
         push_reason(&mut coverage.reason_codes, "local-screen-unreadable");
@@ -699,20 +697,55 @@ pub fn plan_research_answer_contract_json(input_json: &str) -> String {
     };
 
     let normalized = answer.to_lowercase();
-    let whole_read_claim = contains_whole_read_claim(&normalized);
-    let broad_negative_claim = contains_broad_negative_claim(&normalized);
-    let detected_negative_claim =
-        broad_negative_claim || contains_exact_negative_claim(&normalized);
+    let violation_codes = answer_violation_codes(&normalized, flags, native_search_scopes);
+    let negative_claim =
+        contains_broad_negative_claim(&normalized) || contains_exact_negative_claim(&normalized);
+    let allowed = violation_codes.is_empty();
+    let mut plan = json!({
+        "allowed": allowed,
+        "action": if allowed { "allow" } else { "repair" },
+        "violationCodes": violation_codes,
+        "safeCoverageText": safe_coverage_text(korean, flags, negative_claim),
+    });
+    if !allowed {
+        // 교정이 실패해도 범위를 넘는 문장만 제거하고 나머지 인용·발견은 보존한다.
+        let safe_answer = answer
+            .split_inclusive(['.', '!', '?', '\n', '。'])
+            .filter(|fragment| {
+                answer_violation_codes(&fragment.to_lowercase(), flags, native_search_scopes)
+                    .is_empty()
+            })
+            .collect::<String>();
+        if !safe_answer.trim().is_empty()
+            && answer_violation_codes(&safe_answer.to_lowercase(), flags, native_search_scopes)
+                .is_empty()
+            && let Some(object) = plan.as_object_mut()
+        {
+            object.insert("safeAnswer".to_owned(), json!(safe_answer.trim()));
+        }
+    }
+    plan.to_string()
+}
+
+/// 같은 범위 계약으로 전체 답변과 보존할 문장을 판정한다.
+fn answer_violation_codes(
+    normalized: &str,
+    flags: CoverageFlags,
+    native_search_scopes: Option<&[NativeSearchScope]>,
+) -> Vec<&'static str> {
+    let whole_read_claim = contains_whole_read_claim(normalized);
+    let broad_negative_claim = contains_broad_negative_claim(normalized);
+    let detected_negative_claim = broad_negative_claim || contains_exact_negative_claim(normalized);
     let native_negative_claim_relevant = native_search_scopes
         .as_ref()
-        .is_none_or(|scopes| !scopes.is_empty() || contains_vault_search_scope(&normalized));
+        .is_none_or(|scopes| !scopes.is_empty() || contains_vault_search_scope(normalized));
     let negative_claim = detected_negative_claim && native_negative_claim_relevant;
-    let scoped_negative_claim = negative_claim && contains_scoped_negative_claim(&normalized);
+    let scoped_negative_claim = negative_claim && contains_scoped_negative_claim(normalized);
     let unscoped_broad_negative_claim =
-        negative_claim && contains_unscoped_broad_negative_claim(&normalized);
+        negative_claim && contains_unscoped_broad_negative_claim(normalized);
     let native_scope_matches = native_search_scopes
         .as_ref()
-        .is_none_or(|scopes| native_scoped_negative_claims_match(&normalized, scopes));
+        .is_none_or(|scopes| native_scoped_negative_claims_match(normalized, scopes));
     let mut violation_codes = Vec::<&str>::new();
 
     if whole_read_claim && !flags.all_inventory_evidence_analyzed() {
@@ -724,14 +757,7 @@ pub fn plan_research_answer_contract_json(input_json: &str) -> String {
         violation_codes.push("exact-negative-coverage-incomplete");
     }
 
-    let allowed = violation_codes.is_empty();
-    json!({
-        "allowed": allowed,
-        "action": if allowed { "allow" } else { "repair" },
-        "violationCodes": violation_codes,
-        "safeCoverageText": safe_coverage_text(korean, flags, negative_claim),
-    })
-    .to_string()
+    violation_codes
 }
 
 /// Parses candidate-selection input and applies a safe default provider budget.
@@ -782,44 +808,20 @@ fn parse_provider_budget(value: Option<&JsonValue>) -> Option<ProviderBudget> {
     })
 }
 
-/// Collects recognized aliases and residual meaningful terms into stable facets.
+/// Collects meaningful current and previous question terms into stable facets.
 fn collect_research_terms_and_facets(
     input: &CandidateSelectionInput,
 ) -> (Vec<String>, Vec<JsonValue>) {
-    let all_questions = input
-        .previous_user_questions
-        .iter()
-        .chain(std::iter::once(&input.current_question))
-        .map(|question| question.to_lowercase())
-        .collect::<Vec<_>>();
-    let mut entity_terms = Vec::<String>::new();
     let mut topic_terms = Vec::<String>::new();
     let mut context_terms = Vec::<String>::new();
-
-    if all_questions
-        .iter()
-        .any(|question| contains_any_marker(question, &NEVILLE_MARKERS))
-    {
-        append_unique_terms(&mut entity_terms, &NEVILLE_TERMS);
-    }
-    if all_questions
-        .iter()
-        .any(|question| contains_any_marker(question, &GENESIS_MARKERS))
-    {
-        append_unique_terms(&mut topic_terms, &GENESIS_TERMS);
-    }
 
     append_meaningful_tokens(&mut topic_terms, &input.current_question);
     for previous_question in &input.previous_user_questions {
         append_meaningful_tokens(&mut context_terms, previous_question);
     }
-    remove_terms_present_in(&mut context_terms, &entity_terms);
     remove_terms_present_in(&mut context_terms, &topic_terms);
 
     let mut facets = Vec::<JsonValue>::new();
-    if !entity_terms.is_empty() {
-        facets.push(json!({ "kind": "entity", "terms": entity_terms }));
-    }
     if !topic_terms.is_empty() {
         facets.push(json!({ "kind": "topic", "terms": topic_terms }));
     }
@@ -835,13 +837,6 @@ fn collect_research_terms_and_facets(
         .map(str::to_owned)
         .collect::<Vec<_>>();
     (terms, facets)
-}
-
-/// Appends one known alias family without case-insensitive duplicates.
-fn append_unique_terms<const N: usize>(target: &mut Vec<String>, terms: &[&str; N]) {
-    for term in terms {
-        push_unique_term(target, term);
-    }
 }
 
 /// Appends lexical terms that remain after removing conversational research boilerplate.
@@ -878,8 +873,6 @@ fn is_meaningful_token(token: &str) -> bool {
     token.chars().count() >= 2
         && !token.chars().all(char::is_numeric)
         && !RESEARCH_STOP_TERMS.contains(&token)
-        && !contains_any_marker(token, &NEVILLE_MARKERS)
-        && !contains_any_marker(token, &GENESIS_MARKERS)
 }
 
 /// Pushes a case-insensitively unique term while preserving first-seen order.
@@ -901,11 +894,6 @@ fn remove_terms_present_in(target: &mut Vec<String>, earlier_terms: &[String]) {
             .iter()
             .all(|earlier| earlier.to_lowercase() != normalized)
     });
-}
-
-/// Returns whether text contains any marker from a known alias family.
-fn contains_any_marker<const N: usize>(text: &str, markers: &[&str; N]) -> bool {
-    markers.iter().any(|marker| text.contains(marker))
 }
 
 /// Collects and ranks inventory items whose path or local sample contains any term.
@@ -988,12 +976,12 @@ fn collect_matching_candidates(
     candidates
 }
 
-/// Returns whether one serialized research facet is an entity or topic facet.
+/// Returns whether one serialized facet represents current or prior user intent.
 fn is_primary_research_facet(facet: &JsonValue) -> bool {
     facet
         .get("kind")
         .and_then(JsonValue::as_str)
-        .is_some_and(|kind| matches!(kind, "entity" | "topic"))
+        .is_some_and(|kind| matches!(kind, "entity" | "topic" | "context"))
 }
 
 /// Selects combined-facet evidence first, then fills each facet fairly within the transfer limit.
@@ -1513,108 +1501,174 @@ fn parse_native_search_scopes(
 
 /// Detects claims that every file or the entire corpus was read or fully analyzed.
 fn contains_whole_read_claim(normalized: &str) -> bool {
-    let korean_scope = ["전체", "모든", "전부", "전수"]
+    answer_fragments(normalized).any(|fragment| {
+        // 전수 확인을 부정하는 표현만 제거한다. 같은 문장의 별도 긍정 주장은 계속 검사한다.
+        let fragment = [
+            "전수 확인은 아닙",
+            "전수 조사는 아닙",
+            "전체를 읽은 것은 아닙",
+            "모든 문서를 읽지는 않았",
+            "모든 파일을 읽지는 않았",
+            "have not read every note",
+            "have not read all files",
+            "did not read the whole vault",
+        ]
         .iter()
-        .any(|marker| normalized.contains(marker));
-    let korean_file_scope = ["파일", "노트", "문서"]
+        .fold(fragment.replace(['*', '`'], ""), |text, marker| {
+            text.replace(marker, "")
+        });
+        let explicit_vault_files = ["볼트 파일 전체", "볼트의 파일 전체"]
+            .iter()
+            .any(|marker| fragment.contains(marker));
+        // 단일 문서를 가리키는 전체 읽기는 볼트 전수 읽기 주장이 아니다.
+        // 같은 구간에 남은 모든 파일·볼트 전체 주장은 계속 검사한다.
+        let fragment = [
+            "해당 파일 전체",
+            "해당 파일의 전체",
+            "이 파일 전체",
+            "이 파일의 전체",
+            "해당 문서 전체",
+            "해당 문서의 전체",
+            "이 문서 전체",
+            "이 문서의 전체",
+            "파일 전체",
+            "파일 한 편의 전체",
+        ]
         .iter()
-        .any(|marker| normalized.contains(marker));
-    let korean_action = ["읽", "검토", "분석", "조사", "살펴", "확인", "훑"]
+        .fold(fragment, |text, marker| {
+            text.replace(marker, &marker.replace("전체", ""))
+        });
+        let korean_scope = ["전체", "모든", "전부", "전수"]
+            .iter()
+            .any(|marker| fragment.contains(marker));
+        let korean_file_scope = ["파일", "노트", "문서"]
+            .iter()
+            .any(|marker| fragment.contains(marker));
+        let korean_action = ["읽", "검토", "분석", "조사", "살펴", "확인", "훑"]
+            .iter()
+            .any(|marker| fragment.contains(marker));
+        let korean_direct_claim = [
+            "전수 조사",
+            "전수 분석",
+            "전수 검토",
+            "전수 읽",
+            "볼트 전체를 읽",
+            "볼트 전체를 분석",
+            "볼트 전체를 검토",
+            "볼트 전체를 조사",
+            "볼트 전체를 살펴",
+            "볼트 전체를 확인",
+            "볼트 전체를 훑",
+        ]
         .iter()
-        .any(|marker| normalized.contains(marker));
-    let korean_direct_claim = [
-        "전수 조사",
-        "전수 분석",
-        "전수 검토",
-        "전수 읽",
-        "볼트 전체를 읽",
-        "볼트 전체를 분석",
-        "볼트 전체를 검토",
-        "볼트 전체를 조사",
-        "볼트 전체를 살펴",
-        "볼트 전체를 확인",
-        "볼트 전체를 훑",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker));
-    let english_scope = [
-        "all files",
-        "all notes",
-        "every file",
-        "every note",
-        "entire vault",
-        "whole vault",
-        "across the vault",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker));
-    let english_action = [
-        "read",
-        "reviewed",
-        "analyzed",
-        "inspected",
-        "examined",
-        "examining",
-        "scanned",
-        "scanning",
-        "checked",
-        "checking",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker));
-    korean_direct_claim
-        || (korean_scope && korean_file_scope && korean_action)
-        || (english_scope && english_action)
+        .any(|marker| fragment.contains(marker));
+        let english_scope = [
+            "all files",
+            "all notes",
+            "every file",
+            "every note",
+            "entire vault",
+            "whole vault",
+            "across the vault",
+        ]
+        .iter()
+        .any(|marker| fragment.contains(marker));
+        let english_action = [
+            "read",
+            "reviewed",
+            "analyzed",
+            "inspected",
+            "examined",
+            "examining",
+            "scanned",
+            "scanning",
+            "checked",
+            "checking",
+        ]
+        .iter()
+        .any(|marker| fragment.contains(marker));
+        korean_direct_claim
+            || (explicit_vault_files && korean_action)
+            || (korean_scope && korean_file_scope && korean_action)
+            || (english_scope && english_action)
+    })
 }
 
 /// Detects an unqualified broad absence assertion.
 fn contains_broad_negative_claim(normalized: &str) -> bool {
-    [
-        "전혀 없",
-        "관련 자료가 없",
-        "관련 자료는 없",
-        "자료는 없",
-        "근거는 없",
-        "내용은 없",
-        "내용이 없",
-        "아무 자료도 없",
-        "아무것도 없",
-        "하나도 없",
-        "하나도 찾을 수 없",
-        "자료가 존재하지 않",
-        "근거가 존재하지 않",
-        "nothing in the vault",
-        "no related material",
-        "no relevant material",
-        "no evidence exists",
-        "none exists",
-        "could not find any",
-        "couldn't find any",
-        "does not contain any",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
+    answer_fragments(normalized).any(|fragment| {
+        !is_denied_absence_claim(fragment)
+            && [
+                "자료가 전혀 없",
+                "자료는 전혀 없",
+                "근거가 전혀 없",
+                "근거는 전혀 없",
+                "내용이 전혀 없",
+                "내용은 전혀 없",
+                "관련 자료가 없",
+                "관련 자료는 없",
+                "자료는 없",
+                "근거는 없",
+                "내용은 없",
+                "내용이 없",
+                "아무 자료도 없",
+                "자료가 하나도 없",
+                "근거가 하나도 없",
+                "볼트에 아무것도 없",
+                "볼트에는 아무것도 없",
+                "하나도 찾을 수 없",
+                "자료가 존재하지 않",
+                "근거가 존재하지 않",
+                "nothing in the vault",
+                "no related material",
+                "no relevant material",
+                "no evidence exists",
+                "no material exists",
+                "could not find any",
+                "couldn't find any",
+                "does not contain any",
+            ]
+            .iter()
+            .any(|marker| fragment.contains(marker))
+    })
 }
 
 /// Detects a qualified or direct-mention negative assertion.
 fn contains_exact_negative_claim(normalized: &str) -> bool {
+    answer_fragments(normalized).any(|fragment| {
+        !is_denied_absence_claim(fragment)
+            && [
+                "찾지 못",
+                "찾을 수 없",
+                "발견하지 못",
+                "확인되지 않",
+                "존재하지 않",
+                "직접 언급이 없",
+                "did not find",
+                "could not find",
+                "couldn't find",
+                "does not exist",
+                "do not exist",
+                "no direct mention",
+                "not found in",
+            ]
+            .iter()
+            .any(|marker| fragment.contains(marker))
+    })
+}
+
+/// 자료 부재를 부정하는 표현을 부재 단정으로 오인하지 않는다.
+fn is_denied_absence_claim(fragment: &str) -> bool {
     [
-        "찾지 못",
-        "찾을 수 없",
-        "발견하지 못",
-        "확인되지 않",
-        "존재하지 않",
-        "직접 언급이 없",
-        "did not find",
-        "could not find",
-        "couldn't find",
-        "does not exist",
-        "do not exist",
-        "no direct mention",
-        "not found in",
+        "없다는 것이 아닙",
+        "없다는 뜻은 아닙",
+        "없다고 단정할 수 없",
+        "찾지 못했다는 뜻은 아닙",
+        "does not mean there is no",
+        "doesn't mean there is no",
     ]
     .iter()
-    .any(|marker| normalized.contains(marker))
+    .any(|marker| fragment.contains(marker))
 }
 
 /// Detects language that limits a negative conclusion to the verified evidence scope.
@@ -2005,19 +2059,19 @@ mod tests {
     }
 
     #[test]
-    fn candidate_selection_combines_previous_entity_with_current_topic() {
+    fn candidate_selection_uses_only_question_terms_without_builtin_aliases() {
         let raw = plan_research_candidate_selection_json(
             &json!({
-                "currentQuestion": "볼트 내에서 genesis와 관련된 모든 것들을 조사하면 되지 않아?",
-                "previousUserQuestions": ["네빌은 창세기에 대해서 뭐라고 말했어?"],
+                "currentQuestion": "Genesis 관련 자료를 조사해줘",
+                "previousUserQuestions": ["Neville은 어떻게 말했어?"],
                 "paths": [
                     "Bible/Genesis/Introduction.md",
                     "People/Neville.md",
                     "Archive/Unrelated.md"
                 ],
                 "samples": [
-                    "창세기의 핵심 구조",
-                    "Neville Goddard lecture notes",
+                    "Genesis structure",
+                    "Neville lecture notes",
                     "회의 기록"
                 ],
             })
@@ -2040,15 +2094,15 @@ mod tests {
                     "maxBatches": 8,
                     "maxTransferItems": 64,
                 },
-                "terms": ["네빌", "Neville", "Goddard", "고다드", "Genesis", "창세기"],
+                "terms": ["genesis", "neville"],
                 "facets": [
                     {
-                        "kind": "entity",
-                        "terms": ["네빌", "Neville", "Goddard", "고다드"],
+                        "kind": "topic",
+                        "terms": ["genesis"],
                     },
                     {
-                        "kind": "topic",
-                        "terms": ["Genesis", "창세기"],
+                        "kind": "context",
+                        "terms": ["neville"],
                     }
                 ],
                 "planFingerprint": output.get("planFingerprint"),
@@ -2093,16 +2147,16 @@ mod tests {
     }
 
     #[test]
-    fn candidate_selection_scans_1406_paths_and_keeps_51_stable_matches() {
+    fn candidate_selection_scans_1406_paths_and_keeps_51_domain_neutral_matches() {
         let mut paths = numbered_paths(1_406);
         let samples = vec![String::new(); paths.len()];
         for (index, path) in paths.iter_mut().take(51).enumerate() {
-            *path = format!("Bible/Genesis/{index:02}.md");
+            *path = format!("Projects/Migration/{index:02}.md");
         }
         let raw = plan_research_candidate_selection_json(
             &json!({
-                "currentQuestion": "Genesis와 관련된 모든 자료를 조사해줘",
-                "previousUserQuestions": ["네빌은 창세기를 어떻게 해석했어?"],
+                "currentQuestion": "Migration 관련 모든 자료를 조사해줘",
+                "previousUserQuestions": [],
                 "paths": paths,
                 "samples": samples,
             })
@@ -2119,15 +2173,15 @@ mod tests {
     #[test]
     fn candidate_selection_prioritizes_combined_facets_and_preserves_facet_diversity() {
         let mut paths = (0..100)
-            .map(|index| format!("Bible/Genesis/{index:03}.md"))
+            .map(|index| format!("Projects/Migration/{index:03}.md"))
             .collect::<Vec<_>>();
-        paths.push("People/Neville-Genesis.md".to_owned());
-        paths.push("People/Neville.md".to_owned());
+        paths.push("Projects/Aurora-Migration.md".to_owned());
+        paths.push("Projects/Aurora.md".to_owned());
         let samples = vec![String::new(); paths.len()];
         let raw = plan_research_candidate_selection_json(
             &json!({
-                "currentQuestion": "Genesis 자료를 조사해줘",
-                "previousUserQuestions": ["네빌은 어떻게 해석했어?"],
+                "currentQuestion": "Migration 자료를 조사해줘",
+                "previousUserQuestions": ["Aurora는 어떻게 말했어?"],
                 "paths": paths,
                 "samples": samples,
             })
@@ -2170,6 +2224,35 @@ mod tests {
                 "reasonCodes": [],
             })
         );
+    }
+
+    #[test]
+    fn native_tool_filtered_search_cannot_prove_whole_vault_absence() {
+        for extra in [
+            json!({"scopeRestricted":true}),
+            json!({"filters":{"tags":["project"]}}),
+        ] {
+            let mut search = json!({"action":"search","query":"Neville","path":"","match":"all",
+                "hits":[],"scannedFiles":10,"unreadableFiles":0,"totalHits":0,"truncated":false});
+            if let (Some(search), Some(extra)) = (search.as_object_mut(), extra.as_object()) {
+                search.extend(extra.clone());
+            }
+            let receipt = parse_output(&derive_native_tool_coverage_receipt_json(
+                &json!([search.to_string()]).to_string(),
+            ));
+            assert_eq!(
+                receipt.get("exactNegativeAllowed"),
+                Some(&JsonValue::Bool(false))
+            );
+            assert_eq!(
+                receipt.get("wholeVaultLocallyScreened"),
+                Some(&JsonValue::Bool(false))
+            );
+            assert_eq!(
+                receipt.get("reasonCodes"),
+                Some(&json!(["local-screen-filtered"]))
+            );
+        }
     }
 
     #[test]
@@ -2511,6 +2594,71 @@ mod tests {
     }
 
     #[test]
+    fn answer_contract_does_not_combine_unrelated_scope_and_action_across_sentences() {
+        let paths = numbered_paths(20);
+        let selected = (0..4).collect::<Vec<_>>();
+        let receipt = parse_output(&derive_research_coverage_receipt_json(
+            &coverage_input(&paths, &selected, &[], &[], &[]).to_string(),
+        ));
+        let raw = plan_research_answer_contract_json(
+            &json!({
+                "answer": "이 파일은 구약 성경 전체 소개입니다. 볼트에 저장된 성경 소개 파일에서 해당 책을 확인했습니다.",
+                "language": "ko",
+                "receipt": receipt,
+            })
+            .to_string(),
+        );
+        let output = parse_output(&raw);
+
+        assert_eq!(output.get("allowed"), Some(&json!(true)));
+        assert_eq!(output.get("violationCodes"), Some(&json!([])));
+    }
+
+    #[test]
+    fn answer_contract_allows_reading_limits_but_keeps_separate_positive_claims() {
+        let receipt = parse_output(&derive_native_tool_coverage_receipt_json("[]"));
+        for (answer, allowed) in [
+            ("읽기 실패 문서가 있어 전수 확인은 아닙니다.", true),
+            ("모든 문서를 읽지는 않았습니다.", true),
+            ("I have not read every note.", true),
+            ("전체 파일을 읽었지만 전수 확인은 아닙니다.", false),
+            (
+                "I have not read every note, but I checked all files.",
+                false,
+            ),
+        ] {
+            let plan = parse_output(&plan_research_answer_contract_json(
+                &json!({"answer":answer,"receipt":receipt}).to_string(),
+            ));
+            assert_eq!(plan.get("allowed"), Some(&json!(allowed)), "{answer}");
+        }
+    }
+
+    #[test]
+    fn answer_contract_distinguishes_one_file_from_whole_vault_claims() {
+        let receipt = parse_output(&derive_native_tool_coverage_receipt_json("[]"));
+        for (answer, allowed) in [
+            (
+                "해당 파일 **전체 267행을 읽어** 두 설명을 확인했습니다.",
+                true,
+            ),
+            ("강연을 찾았고 파일 전체 267행을 읽었습니다.", true),
+            ("확인 범위는 이 강연 파일 한 편의 전체 원문입니다.", true),
+            ("이 문서의 전체 내용을 읽었습니다.", true),
+            ("해당 파일 전체를 읽었고 모든 파일을 읽었습니다.", false),
+            ("볼트 전체를 읽고 해당 파일 전체를 확인했습니다.", false),
+            ("전체 파일을 읽었습니다.", false),
+            ("모든 파일 전체를 읽었습니다.", false),
+            ("볼트의 파일 전체를 읽었습니다.", false),
+        ] {
+            let plan = parse_output(&plan_research_answer_contract_json(
+                &json!({"answer":answer,"receipt":receipt}).to_string(),
+            ));
+            assert_eq!(plan.get("allowed"), Some(&json!(allowed)), "{answer}");
+        }
+    }
+
+    #[test]
     fn answer_contract_prefers_explicit_english_locale_over_korean_proper_nouns() {
         let paths = numbered_paths(2);
         let receipt = parse_output(&derive_research_coverage_receipt_json(
@@ -2616,6 +2764,30 @@ mod tests {
                 violations.contains(&json!(expected_code)),
                 "{answer} should produce {expected_code}: {output}"
             );
+        }
+    }
+
+    #[test]
+    fn answer_contract_preserves_topic_absence_quotes_but_rejects_missing_evidence() {
+        let paths = numbered_paths(2);
+        let receipt = parse_output(&derive_research_coverage_receipt_json(
+            &coverage_input(&paths, &[], &[0], &[], &[]).to_string(),
+        ));
+        for answer in [
+            "직접적인 일치: “이 세상에 우연은 전혀 없다.”\n> 이 세상에는 우연이 없습니다. 전혀 없습니다.",
+            "> 우연에 의한 것은 아무것도 없습니다. 강연은 우연에 의한 것은 하나도 없다고 주장합니다.",
+            "강연은 ‘운은 없다’고 설명합니다. 자료가 전혀 없다는 뜻은 아닙니다.",
+        ] {
+            let output = parse_output(&plan_research_answer_contract_json(
+                &json!({ "answer": answer, "receipt": receipt }).to_string(),
+            ));
+            assert_eq!(output.get("allowed"), Some(&json!(true)), "{output}");
+        }
+        for answer in ["관련 자료가 전혀 없습니다.", "근거는 전혀 없습니다."] {
+            let output = parse_output(&plan_research_answer_contract_json(
+                &json!({ "answer": answer, "receipt": receipt }).to_string(),
+            ));
+            assert_eq!(output.get("allowed"), Some(&json!(false)), "{output}");
         }
     }
 

@@ -10,10 +10,8 @@ import {
 describe('plugin data reset', () => {
   it('현재 볼트용 IndexedDB 이름과 전역 임베딩 캐시 DB 이름을 초기화 대상으로 만든다', () => {
     const names = buildPluginIndexedDbNames((kind) => `superpower-inside:TestVault:${kind}`);
-
     expect(names).toEqual([
       'superpower-inside:TestVault:VectorStore',
-      'superpower-inside:TestVault:KnowledgeGraph',
       'superpower-inside:TestVault:BM25Index',
       EMBEDDING_CACHE_DB_NAME,
     ]);
@@ -47,10 +45,7 @@ describe('plugin data reset', () => {
     ]);
     expect(result).toEqual({
       deletedLegacyDataDir: true,
-      deletedIndexedDbNames: [
-        'superpower-inside:TestVault:VectorStore',
-        EMBEDDING_CACHE_DB_NAME,
-      ],
+      deletedIndexedDbNames: ['superpower-inside:TestVault:VectorStore', EMBEDDING_CACHE_DB_NAME],
     });
   });
 });

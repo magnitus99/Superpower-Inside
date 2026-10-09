@@ -1,4 +1,6 @@
 import { requestUrl } from 'obsidian';
+import { ChatGPTProvider } from './chatgpt-provider';
+import { prepareProviderRequest } from './request-budget';
 import type { CustomOpenAIProviderConfig, ProviderConfig, ProviderStrategyKey } from '../settings';
 import {
   REASONING_EXTRACTORS,
@@ -63,8 +65,14 @@ export interface ToolDefinition {
   };
 }
 
+export type ToolChoice = 'auto' | 'required' | 'none';
+
 export interface ChatOptions {
+  inputBudgetBytes?: number;
+  maxOutputTokens?: number;
+  contextTokens?: number;
   signal?: AbortSignal;
+  toolChoice?: ToolChoice;
 }
 
 export type StreamChatOptions = ChatOptions;
@@ -191,6 +199,7 @@ export function normalizeForOllama(messages: ChatMessage[]): Record<string, unkn
       return { role: 'tool', content: m.content, tool_name: m.name ?? 'unknown_tool' };
     }
     const normalized: Record<string, unknown> = { role: m.role, content: m.content };
+    if (m.role === 'assistant' && m.reasoning) normalized.thinking = m.reasoning;
     if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
       normalized.tool_calls = m.toolCalls.map((tc) => ({
         function: {
@@ -204,6 +213,7 @@ export function normalizeForOllama(messages: ChatMessage[]): Record<string, unkn
 }
 
 export interface LLMProvider {
+  readonly contextBudget?: import('../rag/rust-core').ModelContextBudget;
   readonly capability: ProviderCapabilitySnapshot;
   getObservedModel?(): string | undefined;
   chat(
@@ -267,7 +277,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     options?: ChatOptions,
   ): Promise<string> {
     throwIfChatAborted(options?.signal);
-    const body = this.buildChatBody(messages, temperature, false, tools);
+    const body = this.buildChatBody(messages, temperature, false, tools, options);
     const res = await requestUrl({
       url: this.endpoint,
       method: 'POST',
@@ -292,15 +302,27 @@ class OpenAICompatibleProvider implements LLMProvider {
     temperature: number,
     stream: boolean,
     tools?: ToolDefinition[],
+    options?: ChatOptions,
   ): Record<string, unknown> {
+    messages = prepareProviderRequest(
+      messages,
+      this.capability.toolCalling ? tools : undefined,
+      options?.inputBudgetBytes,
+    ).messages;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
       temperature,
       stream,
+      ...(options?.maxOutputTokens
+        ? this.capability.providerKey === 'openai'
+          ? { max_completion_tokens: options.maxOutputTokens }
+          : { max_tokens: options.maxOutputTokens }
+        : {}),
     };
     if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
+      if (options?.toolChoice) body.tool_choice = options.toolChoice;
     }
     return body;
   }
@@ -312,7 +334,8 @@ class OpenAICompatibleProvider implements LLMProvider {
     tools?: ToolDefinition[],
     options?: StreamChatOptions,
   ): Promise<void> {
-    const body = this.buildChatBody(messages, temperature, true, tools);
+    throwIfChatAborted(options?.signal);
+    const body = this.buildChatBody(messages, temperature, true, tools, options);
     const res = await requestUrl({
       url: this.endpoint,
       method: 'POST',
@@ -347,10 +370,14 @@ class OpenAICompatibleProvider implements LLMProvider {
   private processSSELine(line: string, onChunk: (chunk: StreamChunk) => void): boolean {
     if (!line.startsWith('data: ')) return false;
     const data = line.slice(6).trim();
-    if (data === '[DONE]') return true;
+    if (data === '[DONE]') {
+      onChunk({ content: '', done: true });
+      return true;
+    }
     if (!data) return false;
     try {
       const chunk = JSON.parse(data) as {
+        error?: { message?: string; code?: number; status?: number };
         choices?: Array<{
           delta?: {
             content?: string;
@@ -364,6 +391,12 @@ class OpenAICompatibleProvider implements LLMProvider {
           };
         }>;
       };
+      if (chunk.error) {
+        throw new LLMProviderHttpError(
+          chunk.error.message ?? 'LLM stream failed',
+          chunk.error.status ?? chunk.error.code ?? 502,
+        );
+      }
       const delta = chunk.choices?.[0]?.delta;
       const normalized = normalizeReasoningChunk({
         content: delta?.content ?? '',
@@ -389,8 +422,9 @@ class OpenAICompatibleProvider implements LLMProvider {
           ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
         });
       }
-    } catch {
-      // malformed SSE line — skip
+    } catch (error) {
+      // JSON 구문 오류만 건너뛰며 provider 오류와 소비자 오류는 호출부에 전달합니다.
+      if (!(error instanceof SyntaxError)) throw error;
     }
     return false;
   }
@@ -436,10 +470,19 @@ class ClaudeProvider implements LLMProvider {
     throwIfChatAborted(options?.signal);
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
-      max_tokens: 4096,
+      max_tokens: options?.maxOutputTokens ?? 4096,
       temperature,
-      messages: this.normalizeMessages(messages),
-      system: messages.find((m) => m.role === 'system')?.content,
+      messages: this.normalizeMessages(
+        prepareProviderRequest(
+          messages,
+          this.capability.toolCalling ? tools : undefined,
+          options?.inputBudgetBytes,
+        ).messages,
+      ),
+      system: messages
+        .filter((m) => m.role === 'system')
+        .map((message) => message.content)
+        .join('\n'),
     };
     if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools.map((t) => ({
@@ -447,6 +490,9 @@ class ClaudeProvider implements LLMProvider {
         description: t.function.description,
         input_schema: t.function.parameters,
       }));
+      if (options?.toolChoice) {
+        body.tool_choice = mapClaudeToolChoice(options.toolChoice);
+      }
     }
     const res = await requestUrl({
       url: ANTHROPIC_MESSAGES_URL,
@@ -478,13 +524,23 @@ class ClaudeProvider implements LLMProvider {
     tools?: ToolDefinition[],
     options?: StreamChatOptions,
   ): Promise<void> {
+    throwIfChatAborted(options?.signal);
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
-      max_tokens: 4096,
+      max_tokens: options?.maxOutputTokens ?? 4096,
       temperature,
       stream: true,
-      messages: this.normalizeMessages(messages),
-      system: messages.find((m) => m.role === 'system')?.content,
+      messages: this.normalizeMessages(
+        prepareProviderRequest(
+          messages,
+          this.capability.toolCalling ? tools : undefined,
+          options?.inputBudgetBytes,
+        ).messages,
+      ),
+      system: messages
+        .filter((m) => m.role === 'system')
+        .map((message) => message.content)
+        .join('\n'),
     };
     if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools.map((t) => ({
@@ -492,6 +548,9 @@ class ClaudeProvider implements LLMProvider {
         description: t.function.description,
         input_schema: t.function.parameters,
       }));
+      if (options?.toolChoice) {
+        body.tool_choice = mapClaudeToolChoice(options.toolChoice);
+      }
     }
     const res = await requestUrl({
       url: ANTHROPIC_MESSAGES_URL,
@@ -520,6 +579,7 @@ class ClaudeProvider implements LLMProvider {
       try {
         const event = JSON.parse(data) as {
           type: string;
+          error?: { type?: string; message?: string };
           content_block?: { type: string; id?: string; name?: string };
           index?: number;
           delta?: {
@@ -529,6 +589,12 @@ class ClaudeProvider implements LLMProvider {
             partial_json?: string;
           };
         };
+        if (event.type === 'error') {
+          throw new LLMProviderHttpError(
+            event.error?.message ?? 'Claude stream failed',
+            event.error?.type === 'overloaded_error' ? 529 : 502,
+          );
+        }
         if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
           const toolCall: ToolCallDelta = {
             index: event.index ?? 0,
@@ -556,12 +622,19 @@ class ClaudeProvider implements LLMProvider {
           onChunk({ content: '', done: true });
           return;
         }
-      } catch {
-        // malformed SSE line — skip
+      } catch (error) {
+        // JSON 구문 오류만 건너뛰며 오류 이벤트를 성공 종료로 바꾸지 않습니다.
+        if (!(error instanceof SyntaxError)) throw error;
       }
     }
     onChunk({ content: '', done: true });
   }
+}
+
+function mapClaudeToolChoice(toolChoice: ToolChoice): { type: 'auto' | 'any' | 'none' } {
+  return {
+    type: toolChoice === 'required' ? 'any' : toolChoice,
+  };
 }
 
 /* ---------- Ollama (Local) ---------- */
@@ -619,10 +692,19 @@ class OllamaProvider implements LLMProvider {
     throwIfChatAborted(options?.signal);
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
+    messages = prepareProviderRequest(
+      messages,
+      this.capability.toolCalling ? tools : undefined,
+      options?.inputBudgetBytes,
+    ).messages;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
-      options: { temperature },
+      options: {
+        temperature,
+        ...(options?.contextTokens ? { num_ctx: options.contextTokens } : {}),
+        ...(options?.maxOutputTokens ? { num_predict: options.maxOutputTokens } : {}),
+      },
       stream: false,
     };
     if (this.capability.toolCalling && tools && tools.length > 0) {
@@ -633,6 +715,7 @@ class OllamaProvider implements LLMProvider {
       method: 'POST',
       headers: this.buildHeaders(),
       body: JSON.stringify(body),
+      throw: false,
     });
     if (res.status >= 400) {
       throw createProviderHttpError('Ollama chat failed', res);
@@ -650,16 +733,22 @@ class OllamaProvider implements LLMProvider {
     tools?: ToolDefinition[],
     options?: StreamChatOptions,
   ): Promise<void> {
-    if (options?.signal?.aborted) {
-      onChunk({ content: '', done: true });
-      return;
-    }
+    throwIfChatAborted(options?.signal);
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
     const targetUrl = `${baseUrl}/api/chat`;
+    messages = prepareProviderRequest(
+      messages,
+      this.capability.toolCalling ? tools : undefined,
+      options?.inputBudgetBytes,
+    ).messages;
     const body: Record<string, unknown> = {
       model: this.modelOverride ?? this.config.models[0] ?? '',
       messages: this.normalizeMessages(messages),
-      options: { temperature },
+      options: {
+        temperature,
+        ...(options?.contextTokens ? { num_ctx: options.contextTokens } : {}),
+        ...(options?.maxOutputTokens ? { num_predict: options.maxOutputTokens } : {}),
+      },
       stream: !this.useRequestUrlForStreaming,
       think: true,
     };
@@ -672,6 +761,7 @@ class OllamaProvider implements LLMProvider {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify(body),
+        throw: false,
       });
       if (res.status >= 400) {
         throw createProviderHttpError('Ollama stream failed', res);
@@ -895,6 +985,13 @@ export function createProviderForStrategy(
   if (key === 'ternlight') {
     throw new Error('Ternlight is an embedding-only provider.');
   }
+  if (key === 'openAIChatGPT') {
+    return new ChatGPTProvider(
+      config.id ?? profileId,
+      modelOverride ?? config.models[0] ?? '',
+      config.capabilityOverrides,
+    );
+  }
   if (key === 'openAICompatible') {
     return createCustomOpenAIProvider(
       {
@@ -902,7 +999,6 @@ export function createProviderForStrategy(
         id: config.id ?? profileId,
         name: config.name ?? 'OpenAI-Compatible',
         useRequestUrl: config.useRequestUrl ?? true,
-        capabilityOverrides: config.capabilityOverrides,
       },
       modelOverride,
     );

@@ -23,6 +23,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ['main.js', 'node_modules/', '.sisyphus/'],
+    ignores: ['main.js', 'node_modules/'],
   }
 );

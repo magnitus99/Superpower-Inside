@@ -1,11 +1,7 @@
 import type { RAGConfig } from '../settings';
 
 export function shouldRunRagStatusBackgroundRefresh(
-  ragConfig: Pick<RAGConfig, 'autoUpdateEnabled' | 'graphRagEnabled' | 'graphRagAutoSyncEnabled'>,
+  ragConfig: Pick<RAGConfig, 'autoUpdateEnabled'>,
 ): boolean {
-  return (
-    ragConfig.autoUpdateEnabled ||
-    ragConfig.graphRagEnabled ||
-    ragConfig.graphRagAutoSyncEnabled
-  );
+  return ragConfig.autoUpdateEnabled;
 }

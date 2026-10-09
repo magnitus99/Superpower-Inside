@@ -1,9 +1,15 @@
-import { VectorRuntimeIndex, initSync } from '../../generated/rag-wasm/rag_wasm';
+import { readWorkerStorePages } from './worker-indexed-db';
+import {
+  VectorRuntimeIndex,
+  initSync,
+  plan_vector_scope_indices_json,
+} from '../../generated/rag-wasm/rag_wasm';
 
 interface VectorSearchFilter {
   embeddingProvider?: string;
   embeddingModel?: string;
   dimension?: number;
+  filePathPrefixes?: readonly string[];
 }
 
 interface VectorSearchWorkerRequest {
@@ -31,12 +37,14 @@ interface VectorSearchWorkerResponse {
 
 interface PersistedVectorRecord {
   id: string;
+  filePath?: string;
   vectorBuffer?: ArrayBuffer;
   vector?: number[];
   dimension: number;
   embeddingProvider?: string;
   embeddingModel?: string;
   metadata?: {
+    filePath?: string;
     embeddingProvider?: string;
     embeddingModel?: string;
   };
@@ -91,7 +99,11 @@ async function handleMessage(request: VectorSearchWorkerRequest): Promise<void> 
       const id = index.ids[rowIndex];
       if (id) hits.push({ id, score });
     }
-    self.postMessage({ id: request.id, hits, indexedCount: index.ids.length } satisfies VectorSearchWorkerResponse);
+    self.postMessage({
+      id: request.id,
+      hits,
+      indexedCount: index.ids.length,
+    } satisfies VectorSearchWorkerResponse);
   } catch (error) {
     self.postMessage({
       id: request.id,
@@ -112,8 +124,28 @@ async function getOrBuildIndex(
     indexCache.set(key, cached);
     return cached;
   }
-  const records = providedRecords?.filter((record) => matchesFilter(record, filter)) ??
+  const matchingRecords =
+    providedRecords?.filter((record) => matchesFilter(record, filter)) ??
     (await readMatchingVectors(dbName, filter));
+  const scopePlan = plan_vector_scope_indices_json(
+    JSON.stringify(
+      matchingRecords.map((record) => record.filePath ?? record.metadata?.filePath ?? ''),
+    ),
+    JSON.stringify(filter.filePathPrefixes ?? []),
+  );
+  if (!scopePlan) throw new Error('Vector search scope planning failed.');
+  const indices: unknown = JSON.parse(scopePlan);
+  if (!Array.isArray(indices)) throw new Error('Vector search scope result is invalid.');
+  const records = indices.flatMap((index: unknown) => {
+    if (
+      typeof index !== 'number' ||
+      !Number.isSafeInteger(index) ||
+      index < 0 ||
+      !matchingRecords[index]
+    )
+      throw new Error('Vector search scope index is invalid.');
+    return [matchingRecords[index]];
+  });
   const dimension = filter.dimension ?? records[0]?.dimension ?? 0;
   if (dimension <= 0) throw new Error('Vector search index dimension is invalid.');
   const ids: string[] = [];
@@ -126,7 +158,8 @@ async function getOrBuildIndex(
     matrix.set(vector, rowCount * dimension);
     rowCount++;
   }
-  const compactMatrix = rowCount === records.length ? matrix : matrix.slice(0, rowCount * dimension);
+  const compactMatrix =
+    rowCount === records.length ? matrix : matrix.slice(0, rowCount * dimension);
   const next = { ids, dimension, runtime: new VectorRuntimeIndex(compactMatrix, dimension) };
   indexCache.set(key, next);
   while (indexCache.size > MAX_INDEX_CACHE_SIZE) {
@@ -138,41 +171,18 @@ async function getOrBuildIndex(
   return next;
 }
 
-function readMatchingVectors(
+async function readMatchingVectors(
   dbName: string,
   filter: VectorSearchFilter,
 ): Promise<PersistedVectorRecord[]> {
-  return new Promise((resolve, reject) => {
-    const openRequest = indexedDB.open(dbName);
-    openRequest.onerror = () =>
-      reject(openRequest.error ?? new Error('Vector database open failed.'));
-    openRequest.onsuccess = () => {
-      const database = openRequest.result;
-      if (!database.objectStoreNames.contains('vectors')) {
-        database.close();
-        resolve([]);
-        return;
-      }
-      const transaction = database.transaction('vectors', 'readonly');
-      const records: PersistedVectorRecord[] = [];
-      const cursorRequest = transaction.objectStore('vectors').openCursor();
-      cursorRequest.onerror = () =>
-        reject(cursorRequest.error ?? new Error('Vector cursor failed.'));
-      cursorRequest.onsuccess = () => {
-        const cursor = cursorRequest.result;
-        if (!cursor) return;
-        const record = cursor.value as PersistedVectorRecord;
-        if (matchesFilter(record, filter)) records.push(record);
-        cursor.continue();
-      };
-      transaction.oncomplete = () => {
-        database.close();
-        resolve(records);
-      };
-      transaction.onerror = () =>
-        reject(transaction.error ?? new Error('Vector database read failed.'));
-    };
+  const records: PersistedVectorRecord[] = [];
+  await readWorkerStorePages(dbName, 'vectors', (batch) => {
+    for (const raw of batch) {
+      const record = raw as PersistedVectorRecord;
+      if (matchesFilter(record, filter)) records.push(record);
+    }
   });
+  return records;
 }
 
 function matchesFilter(record: PersistedVectorRecord, filter: VectorSearchFilter): boolean {
@@ -195,6 +205,7 @@ function createIndexKey(dbName: string, filter: VectorSearchFilter): string {
     filter.embeddingProvider ?? '',
     filter.embeddingModel ?? '',
     String(filter.dimension ?? 0),
+    JSON.stringify(filter.filePathPrefixes ?? []),
   ].join('\0');
 }
 

@@ -13,11 +13,162 @@ import type { DataAdapter, TFile, Vault } from 'obsidian';
 import type { ChatConfig, RAGConfig } from '../settings';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { MemoryVectorStore, type VectorEntry } from './store';
+import { calculateRagStatus } from './status';
 import { IndexedDbBM25Index } from './bm25';
 import { planIndexPendingFilesRust } from './rust-core';
 import { createContentHash } from './hash';
+import { RAGQueryEngine } from './query';
+import { getRagCandidateFiles } from '../utils/vault';
 
 const bm25DbNames = new Set<string>();
+
+describe('인덱싱 제외 정책', () => {
+  it.each(
+    ['vector', 'bm25', 'hybrid', 'ann'].flatMap((mode) =>
+      ['true', '"true"', '0', '1', '트루', '""', 'null', '', '[]', '{}'].map((value) => ({
+        mode,
+        value,
+      })),
+    ),
+  )(
+    '$mode 검색은 YAML 값 $value의 제외와 복구를 공유하며 오래된 인덱스도 차단한다',
+    async ({ mode, value }) => {
+      const contents = new Map([['private.md', 'uniquesecret private evidence']]);
+      const vault = createVault(contents);
+      const file = vault.getFiles()[0];
+      const store = new MemoryVectorStore();
+      const embedBatch = vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0])));
+      const provider: EmbeddingProvider = {
+        embed: () => Promise.resolve([1, 0]),
+        embedBatch,
+      };
+      const config = createRagConfig();
+      const chat = createChatConfig();
+      const dbName = `exclusion-search-${mode}-${crypto.randomUUID()}`;
+      bm25DbNames.add(dbName);
+      const bm25 = new IndexedDbBM25Index(dbName);
+      try {
+        await bm25.load();
+        const indexer = new VaultIndexer(vault, store, provider, config, chat, bm25);
+        await indexer.indexFile(file);
+        const engine = new RAGQueryEngine(
+          mode === 'bm25' ? null : store,
+          mode === 'bm25' ? null : provider,
+          mode === 'vector' ? undefined : bm25,
+          mode === 'bm25' ? 1 : 0.3,
+          0,
+          {
+            corpusStore: store,
+            annEnabled: mode === 'ann',
+            annMinEntryCount: 1,
+            getCandidatePaths: async () =>
+              new Set(
+                (await getRagCandidateFiles(vault, config, chat)).map(
+                  (candidate) => candidate.path,
+                ),
+              ),
+          },
+        );
+        expect(
+          (await engine.query('uniquesecret', 5, 0)).map((result) => result.sourcePath),
+        ).toContain(file.path);
+        contents.set(
+          file.path,
+          `---\nsuperpower-inside-exclude: ${value}\n---\nuniquesecret private evidence`,
+        );
+        // 제거 이벤트를 처리하기 전의 벡터·키워드 인덱스도 검색 결과에 나타나면 안 됩니다.
+        expect(await store.getIndexedFilePaths()).toContain(file.path);
+        expect(await bm25.getSourcePaths()).toContain(file.path);
+        expect(await engine.query('uniquesecret', 5, 0)).toEqual([]);
+        embedBatch.mockClear();
+        await indexer.indexFile(file);
+        expect(embedBatch).not.toHaveBeenCalled();
+        expect(await store.getIndexedFilePaths()).toEqual([]);
+        expect(await bm25.getSourcePaths()).toEqual([]);
+        for (const frontmatter of [
+          '---\nsuperpower-inside-exclude: false\n---\n',
+          '---\nsuperpower-inside-exclude: "false"\n---\n',
+          '',
+        ]) {
+          contents.set(file.path, `${frontmatter}uniquesecret private evidence`);
+          await indexer.indexFile(file);
+          expect(
+            (await engine.query('uniquesecret', 5, 0)).map((result) => result.sourcePath),
+          ).toContain(file.path);
+        }
+      } finally {
+        bm25.close();
+      }
+    },
+  );
+  it.each(['yaml', 'path', 'extension'])(
+    '대기 중 %s 제외로 바뀐 문서는 임베딩하지 않고 기존 인덱스를 제거한다',
+    async (kind) => {
+      const contents = new Map([['private.md', 'private secret']]);
+      const vault = createVault(contents);
+      const file = vault.getFiles()[0];
+      const store = new MemoryVectorStore();
+      const embedBatch = vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0])));
+      const config = createRagConfig();
+      const dbName = `exclusion-${kind}-${Date.now()}`;
+      bm25DbNames.add(dbName);
+      const bm25 = new IndexedDbBM25Index(dbName);
+      const indexer = new VaultIndexer(
+        vault,
+        store,
+        { embedBatch } as unknown as EmbeddingProvider,
+        config,
+        createChatConfig(),
+        bm25,
+      );
+      await indexer.indexFile(file);
+      expect(await store.getIndexedFilePaths()).toContain(file.path);
+      if (kind === 'yaml')
+        contents.set(file.path, '---\nsuperpower-inside-exclude: true\n---\nprivate secret');
+      if (kind === 'path') config.excludePaths.push(file.path);
+      if (kind === 'extension') config.excludeExts.push('md');
+      embedBatch.mockClear();
+      const result = await indexer.indexFile(file);
+      expect(result.skipped).toBe(1);
+      expect(embedBatch).not.toHaveBeenCalled();
+      expect(await store.getIndexedFilePaths()).not.toContain(file.path);
+      expect(await bm25.getSourcePaths()).not.toContain(file.path);
+      if (kind === 'yaml') {
+        contents.set(file.path, '---\nsuperpower-inside-exclude: false\n---\npublic');
+        await indexer.indexFile(file);
+        expect(embedBatch).toHaveBeenCalledOnce();
+        expect(await store.getIndexedFilePaths()).toContain(file.path);
+        expect(await bm25.getSourcePaths()).toContain(file.path);
+      }
+      bm25.close();
+    },
+  );
+  it('임베딩 응답을 기다리는 동안 YAML로 제외하면 늦은 벡터와 BM25를 모두 제거한다', async () => {
+    const contents = new Map([['private.md', 'private secret']]);
+    const vault = createVault(contents);
+    const file = vault.getFiles()[0];
+    const store = new MemoryVectorStore();
+    const dbName = `exclusion-inflight-${Date.now()}`;
+    bm25DbNames.add(dbName);
+    const bm25 = new IndexedDbBM25Index(dbName);
+    const embedBatch = vi.fn((texts: string[]) => {
+      contents.set(file.path, '---\nsuperpower-inside-exclude: true\n---\nprivate secret');
+      return Promise.resolve(texts.map(() => [1, 0]));
+    });
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      { embedBatch } as unknown as EmbeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+      bm25,
+    );
+    expect((await indexer.indexFile(file)).skipped).toBe(1);
+    expect(await store.getEntries()).toEqual([]);
+    expect(await bm25.getSourcePaths()).not.toContain(file.path);
+    bm25.close();
+  });
+});
 
 afterEach(async () => {
   await Promise.all([...bm25DbNames].map((name) => Dexie.delete(name)));
@@ -794,6 +945,129 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(entries.some((entry) => entry.metadata.filePath === 'a.md')).toBe(true);
     expect(entries.find((entry) => entry.metadata.filePath === 'b.md')?.metadata.text).toBe('old');
   });
+
+  it('문서 삭제 후 증분 인덱싱은 벡터·BM25·통계를 현재 문서 기준으로 수렴시킨다', async () => {
+    const contents = new Map([
+      ['a.md', 'alpha 문서 내용'],
+      ['b.md', 'beta 문서 내용'],
+    ]);
+    const vault = createVault(contents);
+    const store = new MemoryVectorStore();
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+    await bm25.load();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const ragConfig: RAGConfig = { ...createRagConfig(), enableBM25: true };
+    const chatConfig = createChatConfig();
+    const indexer = new VaultIndexer(vault, store, embeddingProvider, ragConfig, chatConfig, bm25);
+
+    await indexer.indexPending();
+    const before = await calculateRagStatus(vault, store, ragConfig, chatConfig);
+    expect(before.healthyDocuments).toBe(2);
+    expect(before.totalVectors).toBeGreaterThan(1);
+
+    contents.delete('b.md');
+    const liveFiles = vault.getFiles();
+    liveFiles.splice(
+      liveFiles.findIndex((file) => file.path === 'b.md'),
+      1,
+    );
+
+    await indexer.indexPending();
+
+    const entries = await store.getEntries();
+    const currentEntries = entries.filter((entry) => entry.metadata.filePath === 'a.md');
+    expect(entries.some((entry) => entry.metadata.filePath === 'b.md')).toBe(false);
+    expect([...bm25.search('beta').keys()]).toEqual([]);
+    const after = await calculateRagStatus(vault, store, ragConfig, chatConfig);
+    expect(after.healthyDocuments).toBe(1);
+    expect(after.totalVectors).toBe(currentEntries.length);
+    expect(after.updateRequiredDocuments).toEqual([]);
+  });
+
+  it('증분 인덱싱도 현재 대상이 아닌 벡터와 BM25 문서를 제거한다', async () => {
+    const file = createFile('current.md', 1000, 80);
+    const vault = createVault(new Map([[file.path, '현재 문서 내용']]));
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('deleted.md')]);
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+    await bm25.load();
+    bm25.addDocument('deleted.md::0', 'staleterm 오래된 문서', 'deleted.md');
+    await bm25.persist();
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      { ...createRagConfig(), enableBM25: true },
+      createChatConfig(),
+      bm25,
+    );
+
+    await indexer.indexPending();
+
+    const entries = await store.getEntries();
+    expect(entries.some((entry) => entry.metadata.filePath === 'deleted.md')).toBe(false);
+    expect([...bm25.search('staleterm').keys()]).toEqual([]);
+  });
+
+  it('가드 없는 배치 옵션은 파일 청크를 한 번에 임베딩한다', async () => {
+    const paragraph = 'x'.repeat(80);
+    const file = createFile('bulk.md', 1000, paragraph.length * 12);
+    const vault = createVault(
+      new Map([
+        [file.path, Array.from({ length: 12 }, (_, index) => `${index} ${paragraph}`).join('\n\n')],
+      ]),
+    );
+    const store = new MemoryVectorStore();
+    const batchSizes: number[] = [];
+    const embeddingProvider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => {
+        batchSizes.push(texts.length);
+        return Promise.resolve(texts.map(() => [1, 0]));
+      },
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      embeddingProvider,
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    await indexer.indexFile(file, { maxEmbeddingBatchSize: undefined, indexingYieldMs: 0 });
+
+    expect(batchSizes).toHaveLength(1);
+    expect(batchSizes[0]).toBeGreaterThan(1);
+  });
+
+  it('메타데이터가 같아도 내용이 바뀐 파일은 전체 재인덱싱에서 다시 색인한다', async () => {
+    const contents = new Map([['same.md', 'alpha 원본 내용']]);
+    const vault = createVault(contents);
+    const store = new MemoryVectorStore();
+    const embedBatch = vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0])));
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      { embed: () => Promise.resolve([1, 0]), embedBatch },
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    await indexer.reindexAll();
+    contents.set('same.md', 'bravo 원본 내용');
+    await indexer.reindexAll();
+
+    expect(embedBatch).toHaveBeenCalledTimes(2);
+    const entries = await store.getEntries();
+    expect(entries.some((entry) => entry.metadata.text.includes('bravo'))).toBe(true);
+  });
 });
 
 function createRagConfig(): RAGConfig {
@@ -812,13 +1086,6 @@ function createRagConfig(): RAGConfig {
     annClusterCount: 0,
     annProbeCount: 4,
     structuralGraphEnabled: true,
-    entityAutoMergeThreshold: 0.88,
-    entityPendingMergeThreshold: 0.72,
-    graphRagEnabled: false,
-    graphRagModel: '',
-    graphRagMaxFilesPerRun: 50,
-    graphRagMaxConcurrentRequests: 1,
-    graphRagQueryMode: 'auto',
     enableBM25: false,
     bm25Weight: 0.3,
     performanceTuningMode: 'auto',
@@ -827,8 +1094,6 @@ function createRagConfig(): RAGConfig {
     indexingYieldMs: 25,
     slowEventLoopThresholdMs: 150,
     slowBatchThresholdMs: 3000,
-    graphRagAutoSyncEnabled: false,
-    graphRagAutoSyncIntervalMin: 30,
   };
 }
 

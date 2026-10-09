@@ -1,25 +1,10 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import type { DataAdapter, TFile } from 'obsidian';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
-import type { LLMProvider } from '../llm/providers';
-import { resolveProviderCapability } from '../llm/provider-capabilities';
-import { buildKnowledgeGraphContract } from '../graph/knowledge-contract';
-import { GraphRagQueryEngine } from '../graph/query-engine';
-import {
-  InMemoryKnowledgeGraphStore,
-  type GraphEntityRecord,
-  type GraphEvidenceRecord,
-  type GraphRelationRecord,
-} from '../graph/store';
-
-const TEST_PROVIDER_CAPABILITY = resolveProviderCapability({
-  providerKey: 'openai',
-  model: 'test-model',
-});
 import { IndexedDbBM25Index } from './bm25';
-import { LLMRAGResultReranker, RAGQueryEngine } from './query';
+import { RAGQueryEngine } from './query';
 import { MemoryVectorStore, type VectorEntry } from './store';
 
 const bm25DbNames = new Set<string>();
@@ -30,6 +15,159 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('검색 임베딩 대기 중 제외한 문서는 오래된 벡터·BM25가 남아도 반환하지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    const entry = createEntry('private.md', [1, 0], 'specialterm');
+    await store.add([entry]);
+    const bm25 = await createBm25([]);
+    bm25.addDocument(entry.id, entry.metadata.text);
+    let paths = new Set(['private.md']);
+    const engine = new RAGQueryEngine(
+      store,
+      {
+        embed: () => {
+          paths = new Set();
+          return Promise.resolve([1, 0]);
+        },
+        embedBatch: () => Promise.resolve([]),
+      },
+      bm25,
+      0.3,
+      0,
+      {
+        getCandidatePaths: () => Promise.resolve(paths),
+      },
+    );
+    expect(await engine.query('specialterm', 5, 0)).toEqual([]);
+  });
+  it('구조 검색도 같은 작업자 준비 시간을 허용하고 30ms 고정 제한을 재사용하지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('seed.md', [1, 0], 'seed evidence')]);
+    const search = store.search.bind(store);
+    vi.spyOn(store, 'search').mockImplementation(async (request) => {
+      await new Promise((resolve) => window.setTimeout(resolve, 60));
+      return search(request);
+    });
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      structuralGraphEnabled: true,
+      structuralMetadataContext: createMetadataContext({ resolvedLinks: {} }),
+    });
+    await engine.query('seed', 2);
+    expect(
+      engine.getLastRetrievalDiagnostics().find((item) => item.providerId === 'structural-graph')
+        ?.status,
+    ).toBe('ok');
+  });
+
+  it('후보가 topK보다 많아도 벡터 없는 BM25 결과를 유지한다', async () => {
+    const store = new MemoryVectorStore();
+    const entries = Array.from({ length: 8 }, (_, index) =>
+      createEntry(`lecture-${index}.txt`, [], 'no accident keyword'),
+    );
+    await store.add(entries);
+    const bm25 = await createBm25([]);
+    for (const entry of entries) {
+      bm25.addCorpusDocument({
+        id: entry.id,
+        sourcePath: entry.metadata.filePath,
+        text: entry.metadata.text,
+        sourceMtime: entry.metadata.sourceMtime,
+        sourceSize: entry.metadata.sourceSize,
+        contentHash: entry.metadata.contentHash,
+      });
+    }
+    await bm25.persist();
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0, { corpusStore: store });
+    const results = await engine.query('accident', 3, 0);
+    expect(results).toHaveLength(3);
+    expect(results.every((result) => result.bm25Score > 0)).toBe(true);
+  });
+
+  it('구조 그래프 후보는 벡터 근거가 약하면 seed 벡터 후보를 앞지르지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('seed.md', [0.8, 0.6], 'seed text'),
+      createEntry('linked.md', [0, 1], 'linked text'),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
+      structuralGraphEnabled: true,
+      structuralMetadataContext: createMetadataContext({
+        resolvedLinks: {
+          'seed.md': { 'linked.md': 1 },
+        },
+      }),
+    });
+
+    const results = await engine.query('질문', 2);
+
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
+      'seed.md',
+      'linked.md',
+    ]);
+  });
+
+  it('BM25 문서와 공통 원문의 revision이 다르면 이전 키워드 점수를 새 본문에 붙이지 않는다', async () => {
+    const latest = createEntry('source.txt', [], '최신 원문');
+    const sourceStore = new MemoryVectorStore();
+    await sourceStore.add([latest]);
+    const bm25 = await createBm25([]);
+    bm25.addCorpusDocument({
+      id: latest.id,
+      sourcePath: latest.metadata.filePath,
+      text: 'oldterm 이전 근거',
+      sourceMtime: 1000,
+      sourceSize: latest.metadata.sourceSize,
+      contentHash: 'old',
+    });
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0, { corpusStore: sourceStore });
+    expect(await engine.query('oldterm', 5, 0)).toEqual([]);
+  });
+  it('같은 청크 ID의 오래된 벡터를 제거해도 최신 BM25 근거는 병합에서 살아남는다', async () => {
+    const latest = createEntry('source.txt', [], 'freshterm 최신 근거');
+    const stale = {
+      ...latest,
+      vector: [1, 0],
+      metadata: { ...latest.metadata, contentHash: 'old', text: '이전 근거' },
+    };
+    const vectors = new MemoryVectorStore();
+    await vectors.add([stale]);
+    const bm25 = await createBm25([]);
+    bm25.addCorpusDocument({
+      id: latest.id,
+      sourcePath: latest.metadata.filePath,
+      text: latest.metadata.text,
+      startLine: 0,
+      endLine: 0,
+      sourceMtime: 1000,
+      sourceSize: latest.metadata.sourceSize,
+      contentHash: 'hash',
+    });
+    const sourceStore = new MemoryVectorStore();
+    await sourceStore.add([latest]);
+    const engine = new RAGQueryEngine(
+      vectors,
+      { embed: () => Promise.resolve([1, 0]), embedBatch: () => Promise.resolve([]) },
+      bm25,
+      0.3,
+      0,
+      { corpusStore: sourceStore },
+    );
+    const results = await engine.query('freshterm', 5, 0);
+    expect(results[0]?.entry.metadata.text).toBe(latest.metadata.text);
+    expect(results[0]?.retrievalSources).toEqual(['bm25']);
+  });
+  it('BM25 후보도 현재 검색 대상 목록에 속한 파일만 반환한다', async () => {
+    const bm25 = await createBm25([
+      ['visible.md', 'specialterm'],
+      ['excluded.md', 'specialterm'],
+    ]);
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0, {
+      getCandidatePaths: () => Promise.resolve(new Set(['visible.md'])),
+    });
+    expect((await engine.query('specialterm', 5)).map((result) => result.sourcePath)).toEqual([
+      'visible.md',
+    ]);
+  });
   it('임베딩과 벡터 저장소 없이 BM25 corpus만으로 결과를 반환한다', async () => {
     const bm25 = await createBm25([['notes/customer.md::0', '핵심 고객 문제와 해결 전략']]);
     await bm25.persist();
@@ -47,6 +185,99 @@ describe('RAGQueryEngine', () => {
     expect(results[0]?.entry.metadata.text).toContain('고객 문제');
   });
 
+  it('질의 임베딩이 실패해도 BM25로 계속 검색하고 fallback diagnostic을 남긴다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('keyword.md', [1, 0], '특수 키워드가 있는 원문')]);
+    const bm25 = await createBm25([['keyword.md', '특수 키워드가 있는 원문']]);
+    const engine = new RAGQueryEngine(
+      store,
+      {
+        embed: () => Promise.reject(new Error('embedding unavailable')),
+        embedBatch: () => Promise.reject(new Error('embedding unavailable')),
+      },
+      bm25,
+      1,
+      0,
+    );
+
+    const results = await engine.query('특수 키워드', 5, 0);
+
+    expect(results.map((result) => result.sourcePath)).toEqual(['keyword.md']);
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'query-embedding',
+          source: 'embedding',
+          status: 'error',
+          skippedReason: 'query-embedding-failed',
+        }),
+        expect.objectContaining({
+          providerId: 'exact-vector',
+          status: 'skipped',
+          skippedReason: 'query-embedding-unavailable',
+        }),
+        expect.objectContaining({ providerId: 'bm25', status: 'ok' }),
+      ]),
+    );
+  });
+
+  it('loaded BM25도 현재 Vault metadata coverage가 빠지면 partial로 판정한다', async () => {
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+    await bm25.load();
+    bm25.addCorpusDocument({
+      id: 'notes/indexed.md::0',
+      text: '인덱스된 고객 근거',
+      sourcePath: 'notes/indexed.md',
+      startLine: 0,
+      endLine: 0,
+      sourceMtime: 10,
+      sourceSize: 20,
+      contentHash: 'current-hash',
+      indexedAt: 30,
+    });
+    await bm25.persist();
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0);
+
+    await expect(
+      engine.getIndexReadiness([
+        { path: 'notes/indexed.md', mtime: 10, size: 20 },
+        { path: 'notes/new.md', mtime: 40, size: 50 },
+      ]),
+    ).resolves.toMatchObject({
+      readiness: 'partial',
+    });
+  });
+
+  it.each([
+    { contentHash: 'current-hash', readiness: 'ready' },
+    { contentHash: undefined, readiness: 'stale' },
+  ])(
+    'BM25 해시 $contentHash의 준비 상태를 $readiness로 판정한다',
+    async ({ contentHash, readiness }) => {
+      const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+      await bm25.load();
+      bm25.addCorpusDocument({
+        id: 'notes/indexed.md::0',
+        text: '인덱스된 고객 근거',
+        sourcePath: 'notes/indexed.md',
+        startLine: 0,
+        endLine: 0,
+        sourceMtime: 10,
+        sourceSize: 20,
+        contentHash,
+        indexedAt: 30,
+      });
+      await bm25.persist();
+      const engine = new RAGQueryEngine(null, null, bm25, 1, 0);
+
+      await expect(
+        engine.getIndexReadiness([{ path: 'notes/indexed.md', mtime: 10, size: 20 }]),
+      ).resolves.toMatchObject({
+        readiness,
+      });
+    },
+  );
+
   it('folder scope가 있으면 해당 경로의 후보만 검색한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([
@@ -62,117 +293,16 @@ describe('RAGQueryEngine', () => {
     ]);
   });
 
-  it('재랭커가 직접 근거로 더 적합한 낮은 점수 후보를 topK 앞으로 올린다', async () => {
+  it('현재 검색 점수와 다양성 선택으로 topK를 결정하고 반복 질의의 순서를 보존한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([
       createEntry('semantic.md', [1, 0], '선교 여행에 대한 일반 설명'),
       createEntry('direct.md', [0.98, 0.2], 'Paul과 Barnabas 관계에 대한 직접 근거'),
     ]);
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      reranker: {
-        rerank: () => Promise.resolve(['direct.md::0', 'semantic.md::0']),
-      },
-      rerankCandidateLimit: 20,
-    });
-
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1);
     const results = await engine.query('Paul과 Barnabas 관계', 1);
-
-    expect(results[0]?.entry.metadata.filePath).toBe('direct.md');
-    expect(engine.getLastRetrievalDiagnostics()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          providerId: 'llm-reranker',
-          source: 'reranker',
-          status: 'ok',
-          skippedReason: 'applied',
-        }),
-      ]),
-    );
-  });
-
-  it('재랭커가 실패하면 기존 점수 정렬로 fallback한다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], '선교 여행에 대한 일반 설명'),
-      createEntry('direct.md', [0.98, 0.2], 'Paul과 Barnabas 관계에 대한 직접 근거'),
-    ]);
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      reranker: {
-        rerank: () => Promise.reject(new Error('rerank failed')),
-      },
-      rerankCandidateLimit: 20,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 1);
-
-    expect(results[0]?.entry.metadata.filePath).toBe('semantic.md');
-    expect(engine.getLastRetrievalDiagnostics()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          providerId: 'llm-reranker',
-          source: 'reranker',
-          status: 'error',
-          skippedReason: 'error',
-        }),
-      ]),
-    );
-  });
-
-  it('LLM 재랭커 응답의 JSON 추출, 외부 id 제거, 중복 제거, 최종 순서 계획은 Rust bridge를 따른다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], '선교 여행에 대한 일반 설명'),
-      createEntry('direct.md', [0.98, 0.2], 'Paul과 Barnabas 관계에 대한 직접 근거'),
-      createEntry('tail.md', [0.97, 0.24], '나머지 관련 근거'),
-    ]);
-    const provider = createRerankProvider(
-      '결과입니다.\n```json\n{"rankedIds":["direct.md::0","missing.md::0","semantic.md::0","direct.md::0"]}\n```',
-    );
-    const reranker = new LLMRAGResultReranker(provider);
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      reranker,
-      rerankCandidateLimit: 20,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 3);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'direct.md',
-      'semantic.md',
-      'tail.md',
-    ]);
-    expect(reranker.getLastRerankStatus()).toBe('applied');
-  });
-
-  it('LLM reranker invalid JSON records a fallback diagnostic', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], 'semantic match'),
-      createEntry('direct.md', [0.98, 0.2], 'direct evidence'),
-    ]);
-    const reranker = new LLMRAGResultReranker(createRerankProvider('not-json'));
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      reranker,
-      rerankCandidateLimit: 20,
-    });
-
-    const results = await engine.query('direct evidence', 2);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'semantic.md',
-      'direct.md',
-    ]);
-    expect(reranker.getLastRerankStatus()).toBe('invalid-json');
-    expect(engine.getLastRetrievalDiagnostics()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          providerId: 'llm-reranker',
-          source: 'reranker',
-          status: 'error',
-          skippedReason: 'invalid-json',
-        }),
-      ]),
-    );
+    expect(results.map((result) => result.sourcePath)).toEqual(['semantic.md']);
+    expect(await engine.query('Paul과 Barnabas 관계', 1)).toEqual(results);
   });
 
   it('벡터 상위 후보 밖의 BM25 전용 후보도 최종 후보에 포함한다', async () => {
@@ -314,143 +444,6 @@ describe('RAGQueryEngine', () => {
     ]);
   });
 
-  it('GraphRAG가 활성화되면 graph 후보가 낮은 vector score라도 최종 결과에 참여한다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], '일반 문서 내용'),
-      createEntry('graph.md', [0, 1], 'Paul and Barnabas traveled together.'),
-    ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence(createEvidence());
-    await graphStore.upsertEntity(createGraphEntity('Paul'));
-    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
-    await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      graphRagEnabled: true,
-      graphRagQueryEngine: graphEngine,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 2);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toContain('graph.md');
-    expect(
-      results.find((result) => result.entry.metadata.filePath === 'graph.md')?.selectionReason,
-    ).toBe('strong-graph-evidence');
-    expect(engine.getLastRetrievalDiagnostics()).toEqual([
-      expect.objectContaining({ providerId: 'exact-vector' }),
-      expect.objectContaining({ providerId: 'graph-rag', source: 'graph-local' }),
-    ]);
-  });
-
-  it('GraphRAG provider가 실패해도 기본 vector RAG 결과를 반환한다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([createEntry('semantic.md', [1, 0], '기본 벡터 근거')]);
-    const graphEngine = new FailingGraphRagQueryEngine(
-      new InMemoryKnowledgeGraphStore(),
-      store,
-      buildKnowledgeGraphContract(),
-    );
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      graphRagEnabled: true,
-      graphRagQueryEngine: graphEngine,
-    });
-
-    const results = await engine.query('질문', 1);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['semantic.md']);
-    expect(engine.getLastRetrievalDiagnostics()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ providerId: 'graph-rag', status: 'error' }),
-      ]),
-    );
-  });
-
-  it('GraphRAG 근거 점수가 높으면 기본 threshold에서도 낮은 vector 후보를 유지한다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], '일반 문서 내용'),
-      createEntry('graph.md', [-1, 0], 'Paul and Barnabas traveled together.'),
-    ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence(createEvidence());
-    await graphStore.upsertEntity(createGraphEntity('Paul'));
-    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
-    await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3);
-
-    const graphEnabledEngine = new RAGQueryEngine(
-      store,
-      createEmbeddingProvider([1, 0]),
-      undefined,
-      0.3,
-      0.5,
-      {
-        graphRagEnabled: true,
-        graphRagQueryEngine: graphEngine,
-      },
-    );
-
-    const withoutGraph = await engine.query('Paul과 Barnabas 관계', 2);
-    const withGraph = await graphEnabledEngine.query('Paul과 Barnabas 관계', 2);
-
-    expect(withoutGraph.map((result) => result.entry.metadata.filePath)).not.toContain('graph.md');
-    expect(withGraph.map((result) => result.entry.metadata.filePath)).toContain('graph.md');
-  });
-
-  it('GraphRAG 점수 후보가 직접 semantic 후보를 부당하게 앞지르지 않는다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('semantic.md', [1, 0], 'Paul과 Barnabas 관계에 대한 직접 설명'),
-      createEntry('graph.md', [0.2, 0.98], 'Paul and Barnabas traveled together.'),
-    ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence(createEvidence());
-    await graphStore.upsertEntity(createGraphEntity('Paul'));
-    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
-    await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      graphRagEnabled: true,
-      graphRagQueryEngine: graphEngine,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 2);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'semantic.md',
-      'graph.md',
-    ]);
-  });
-
-  it('강한 GraphRAG 근거는 약한 semantic 후보보다 우선하되 직접 semantic 후보는 넘지 않는다', async () => {
-    const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('direct.md', [1, 0], 'Paul과 Barnabas 관계에 대한 직접 설명'),
-      createEntry('weak-semantic.md', [0.9, 0.436], 'Paul과 Barnabas 이름만 언급하는 약한 문서'),
-      createEntry('graph.md', [-1, 0], 'Paul and Barnabas traveled together.'),
-    ]);
-    const graphStore = new InMemoryKnowledgeGraphStore();
-    await graphStore.addEvidence(createEvidence());
-    await graphStore.upsertEntity(createGraphEntity('Paul'));
-    await graphStore.upsertEntity(createGraphEntity('Barnabas'));
-    await graphStore.addRelation(createGraphRelation());
-    const graphEngine = new GraphRagQueryEngine(graphStore, store, buildKnowledgeGraphContract());
-    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      graphRagEnabled: true,
-      graphRagQueryEngine: graphEngine,
-    });
-
-    const results = await engine.query('Paul과 Barnabas 관계', 3);
-
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'direct.md',
-      'graph.md',
-      'weak-semantic.md',
-    ]);
-  });
-
   it('현재 embedding model과 맞지 않는 stale 후보가 retrieval pool을 독점하지 않는다', async () => {
     const store = new MemoryVectorStore();
     const freshEntry = createEntry('fresh.md', [0.9, 0.1], '현재 모델 벡터');
@@ -470,27 +463,27 @@ describe('RAGQueryEngine', () => {
     expect(results[0]?.entry.metadata.filePath).toBe('fresh.md');
   });
 
-  it('구조 그래프 후보는 벡터 근거가 약하면 seed 벡터 후보를 앞지르지 않는다', async () => {
+  it('같은 model과 dimension이어도 현재 embedding provider와 다른 후보를 제외한다', async () => {
     const store = new MemoryVectorStore();
-    await store.add([
-      createEntry('seed.md', [0.8, 0.6], 'seed text'),
-      createEntry('linked.md', [0, 1], 'linked text'),
-    ]);
+    const stale = createEntry('stale-provider.md', [1, 0], '이전 공급자 벡터');
+    stale.metadata.embeddingProvider = 'legacy-provider';
+    const fresh = createEntry('fresh-provider.md', [0.9, 0.1], '현재 공급자 벡터');
+    fresh.metadata.embeddingProvider = 'current-provider';
+    await store.add([stale, fresh]);
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1, {
-      structuralGraphEnabled: true,
-      structuralMetadataContext: createMetadataContext({
-        resolvedLinks: {
-          'seed.md': { 'linked.md': 1 },
-        },
-      }),
+      embeddingProvider: 'current-provider',
+      embeddingModel: 'text-embedding-3-small',
     });
 
     const results = await engine.query('질문', 2);
 
-    expect(results.map((result) => result.entry.metadata.filePath)).toEqual([
-      'seed.md',
-      'linked.md',
-    ]);
+    expect(results.map((result) => result.entry.metadata.filePath)).toEqual(['fresh-provider.md']);
+    await expect(
+      engine.getIndexReadiness([
+        { path: 'stale-provider.md', mtime: 1000, size: '이전 공급자 벡터'.length },
+        { path: 'fresh-provider.md', mtime: 1000, size: '현재 공급자 벡터'.length },
+      ]),
+    ).resolves.toMatchObject({ readiness: 'stale' });
   });
 
   it('MMR 다양성 선택으로 같은 파일의 유사 청크가 topK를 독점하지 않는다', async () => {
@@ -533,12 +526,6 @@ function createEmbeddingProvider(vector: number[]): EmbeddingProvider {
   };
 }
 
-class FailingGraphRagQueryEngine extends GraphRagQueryEngine {
-  override query(): Promise<never> {
-    return Promise.reject(new Error('simulated graph retrieval failure'));
-  }
-}
-
 function createEntry(path: string, vector: number[], text: string, startLine = 0): VectorEntry {
   return {
     id: `${path}::${startLine}`,
@@ -555,14 +542,6 @@ function createEntry(path: string, vector: number[], text: string, startLine = 0
       embeddingProvider: 'openai',
       embeddingModel: 'text-embedding-3-small',
     },
-  };
-}
-
-function createRerankProvider(response: string): LLMProvider {
-  return {
-    capability: TEST_PROVIDER_CAPABILITY,
-    chat: () => Promise.resolve(response),
-    streamChat: () => Promise.resolve(),
   };
 }
 
@@ -606,54 +585,6 @@ class PathLookupStore extends MemoryVectorStore {
     const allowed = new Set(filePaths);
     return (await super.getEntries()).filter((entry) => allowed.has(entry.metadata.filePath));
   }
-}
-
-function createEvidence(): GraphEvidenceRecord {
-  return {
-    id: 'evidence::graph',
-    filePath: 'graph.md',
-    entryId: 'graph.md::0',
-    startLine: 0,
-    endLine: 0,
-    quote: 'Paul and Barnabas traveled together.',
-    contentHash: 'hash',
-    extractionModelKey: 'openai:gpt-4o-mini',
-    updatedAt: 1,
-  };
-}
-
-function createGraphEntity(name: string): GraphEntityRecord {
-  return {
-    id: `entity::general::person::${name.toLowerCase()}`,
-    ontologySchemaId: 'knowledge-graph',
-    ontologyVersion: 1,
-    typeId: 'person',
-    canonicalName: name,
-    aliases: [],
-    description: '',
-    properties: {},
-    confidence: 0.9,
-    evidenceIds: ['evidence::graph'],
-    createdAt: 1,
-    updatedAt: 1,
-  };
-}
-
-function createGraphRelation(): GraphRelationRecord {
-  return {
-    id: 'relation::graph',
-    ontologySchemaId: 'knowledge-graph',
-    ontologyVersion: 1,
-    relationTypeId: 'collaborated_with',
-    sourceEntityId: 'entity::general::person::paul',
-    targetEntityId: 'entity::general::person::barnabas',
-    description: 'Paul and Barnabas traveled together.',
-    properties: {},
-    confidence: 0.9,
-    evidenceIds: ['evidence::graph'],
-    createdAt: 1,
-    updatedAt: 1,
-  };
 }
 
 function createMetadataContext(input: { resolvedLinks?: Record<string, Record<string, number>> }) {

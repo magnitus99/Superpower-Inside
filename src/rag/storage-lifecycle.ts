@@ -1,4 +1,5 @@
 import Dexie from 'dexie';
+import { DEFAULT_CHUNK_CONTRACT } from './search-defaults';
 import {
   planIndexedDbBoundedCleanupRust,
   planIndexedDbStorageLayoutRust,
@@ -24,7 +25,37 @@ export interface IndexedDbCleanupOptions {
   maxDeletions?: number;
   preserveEmbeddingCache?: boolean;
   preserveBm25?: boolean;
-  preserveGraph?: boolean;
+}
+
+/** 청킹 계약 버전. 청커 동작이나 청크 저장 형식이 바뀌면 올려 인덱스 세대를 교체합니다. */
+export const RAG_INDEX_CONTRACT_VERSION = 3;
+
+/** 청킹 계약 v1의 기본값은 기존 세대 이름을 그대로 써서 불필요한 재색인을 피합니다. */
+const LEGACY_GENERATION_CONTRACT = {
+  version: 1,
+  chunkSize: DEFAULT_CHUNK_CONTRACT.chunkSize,
+  overlap: DEFAULT_CHUNK_CONTRACT.overlap,
+};
+
+/**
+ * 청킹 계약에 따른 인덱스 세대 이름을 만듭니다.
+ *
+ * 공통 원문·벡터·BM25를 같은 청킹 세대로 옮깁니다. 임베딩 캐시는 재사용합니다.
+ */
+export function createRagIndexNamespace(rag: { chunkSize: number; overlap: number }): string {
+  const contract = {
+    version: RAG_INDEX_CONTRACT_VERSION,
+    chunkSize: rag.chunkSize,
+    overlap: rag.overlap,
+  };
+  if (
+    contract.version === LEGACY_GENERATION_CONTRACT.version &&
+    contract.chunkSize === LEGACY_GENERATION_CONTRACT.chunkSize &&
+    contract.overlap === LEGACY_GENERATION_CONTRACT.overlap
+  ) {
+    return '';
+  }
+  return `idx-v${contract.version}:${contract.chunkSize}:${contract.overlap}`;
 }
 
 export function createRagStorageLayout(input: {
@@ -32,12 +63,14 @@ export function createRagStorageLayout(input: {
   vaultIdentity: string;
   legacyVaultName: string;
   embeddingNamespace: string;
+  indexNamespace: string;
 }): RagStorageLayout {
   const layout = planIndexedDbStorageLayoutRust(
     input.pluginId,
     input.vaultIdentity,
     input.legacyVaultName,
     input.embeddingNamespace,
+    input.indexNamespace,
   );
   if (!layout) {
     throw new Error('Rust storage layout planning failed');
@@ -52,9 +85,8 @@ export async function cleanupStaleIndexedDbGenerations(
 ): Promise<IndexedDbCleanupResult> {
   const databaseNames = await host.listDatabaseNames();
   const preserveEmbeddingCache = options.preserveEmbeddingCache ?? true;
-  const activeNames = [layout.active.vector];
+  const activeNames = [layout.active.vector, layout.active.corpus];
   if (options.preserveBm25 ?? true) activeNames.push(layout.active.bm25);
-  if (options.preserveGraph ?? true) activeNames.push(layout.active.graph);
   if (preserveEmbeddingCache) activeNames.push(layout.active.embeddingCache);
   const plan = planIndexedDbBoundedCleanupRust(
     databaseNames,

@@ -20,13 +20,6 @@ const baseRagConfig: RAGConfig = {
   annClusterCount: 0,
   annProbeCount: 4,
   structuralGraphEnabled: true,
-  entityAutoMergeThreshold: 0.88,
-  entityPendingMergeThreshold: 0.72,
-  graphRagEnabled: false,
-  graphRagModel: '',
-  graphRagMaxFilesPerRun: 50,
-  graphRagMaxConcurrentRequests: 1,
-  graphRagQueryMode: 'auto',
   enableBM25: false,
   bm25Weight: 0.3,
   performanceTuningMode: 'auto',
@@ -35,8 +28,6 @@ const baseRagConfig: RAGConfig = {
   indexingYieldMs: 25,
   slowEventLoopThresholdMs: 150,
   slowBatchThresholdMs: 3000,
-  graphRagAutoSyncEnabled: false,
-  graphRagAutoSyncIntervalMin: 30,
 };
 
 const chatConfig: ChatConfig = {
@@ -50,6 +41,41 @@ const chatConfig: ChatConfig = {
 };
 
 describe('calculateRagStatus', () => {
+  it('현재 문서와 동기화된 healthy 벡터만 통계에 합산한다', async () => {
+    const vault = createVault([
+      createFile('healthy.md', 1000, 10),
+      createFile('stale.md', 2000, 20),
+      createFile('legacy.md', 1000, 10),
+    ]);
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('healthy.md', {
+        sourceMtime: 1000,
+        sourceSize: 10,
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+      }),
+      createEntry('stale.md', {
+        sourceMtime: 1000,
+        sourceSize: 20,
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+      }),
+      createEntry('deleted.md', {
+        sourceMtime: 1000,
+        sourceSize: 10,
+        embeddingProvider: 'openai',
+        embeddingModel: 'text-embedding-3-small',
+      }),
+      createLegacyEntry('legacy.md'),
+    ]);
+
+    const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
+
+    expect(status.healthyDocuments).toBe(1);
+    expect(status.totalVectors).toBe(1);
+  });
+
   it('신규 문서를 missing으로 분류한다', async () => {
     const vault = createVault([createFile('note.md', 1000, 10)]);
     const store = new MemoryVectorStore();

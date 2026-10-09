@@ -1,5 +1,4 @@
 import {
-  formatMcpJsonRust,
   validateMcpJsonRust,
   type RustMcpJsonValidationResult,
 } from '../rag/rust-core';
@@ -18,16 +17,6 @@ export function validateMcpJson(jsonString: string): LegacyMcpJsonValidationResu
   }
 
   return validateMcpJsonFallback(jsonString);
-}
-
-export function formatMcpJson(jsonString: string): string | null {
-  const formattedByRust = formatMcpJsonRust(jsonString);
-  if (formattedByRust !== null) {
-    return formattedByRust;
-  }
-  const result = validateMcpJsonFallback(jsonString);
-  if (!result.valid) return null;
-  return JSON.stringify(result.data, null, 2);
 }
 
 function validateMcpJsonFallback(jsonString: string): LegacyMcpJsonValidationResult {
