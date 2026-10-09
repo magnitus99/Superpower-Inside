@@ -25,6 +25,38 @@ vi.mock('obsidian', () => {
 });
 
 describe('buildChatContext RAG 출처 검증', () => {
+  it('플러그인 코드 질문은 명시한 자료만 읽고 자동 검색과 질의 확장을 건너뛴다', async () => {
+    const explicit = createFile('Example.md', '명시적으로 제공한 합성 자료 [[archive/Other]]', 1000);
+    const unrelated = createFile('archive/Other.md', '자동 첨부되면 안 되는 합성 자료', 1000);
+    const app = createApp(
+      new Map([
+        [explicit.path, explicit],
+        [unrelated.path, unrelated],
+      ]),
+    );
+    const query = vi.fn<RagQueryLike['query']>(() => Promise.resolve([]));
+    const queryExpander = vi.fn(() => Promise.resolve('archive'));
+    const context = await buildChatContext('Sample Query로 archive 쿼리를 작성해줘 @Example.md', {
+      app,
+      ragEngine: { query },
+      queryExpander,
+      explicitContextOnly: true,
+    });
+    expect(context.citations.map((citation) => citation.filePath)).toEqual(['Example.md']);
+    expect(context.systemPrompt).toContain('명시적으로 제공한 합성 자료');
+    expect(context.systemPrompt).not.toContain('자동 첨부되면 안 되는 합성 자료');
+    expect(query).not.toHaveBeenCalled();
+    expect(queryExpander).not.toHaveBeenCalled();
+    const empty = await buildChatContext('Sample Query로 archive 쿼리를 작성해줘', {
+      app,
+      ragEngine: { query },
+      queryExpander,
+      explicitContextOnly: true,
+    });
+    expect(empty.citations).toEqual([]);
+    expect(empty.attachments.some((item) => item.id.startsWith('folder:auto:'))).toBe(false);
+    expect(queryExpander).not.toHaveBeenCalled();
+  });
   it('태그의 본문·속성·하위 태그 문서만 첨부하고 중복·제외·범위 밖 자료를 막는다', async () => {
     const files = [
       createFile('Alpha.md', '합성 태그 본문 근거', 1000),

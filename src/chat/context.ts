@@ -80,6 +80,8 @@ interface BuildContextOptions {
   queryExpander?: (question: string) => Promise<string | { query: string; variants: string[] }>;
   /** 활성 도구 루프가 후보 검색·읽기를 맡을 때 비싼 암시적 폴더 전체 선별을 건너뜁니다. */
   deferImplicitFolderEvidenceToTools?: boolean;
+  /** 플러그인 전용 생성에서는 명시한 자료만 읽고 자동 검색을 하지 않습니다. */
+  explicitContextOnly?: boolean;
 }
 
 const DEFAULT_MAX_FOLDER_FILES = 12;
@@ -135,9 +137,11 @@ export async function buildChatContext(
     autoRagReason: 'disabled',
   };
   // 명시 태그는 해당 문서의 원문을 첨부하며 전체 볼트 RAG로 범위를 넓히지 않는다.
-  const shouldUseAutoRag = mentionPlan.useAutoRag;
+  const shouldUseAutoRag = mentionPlan.useAutoRag && options.explicitContextOnly !== true;
   const expansion =
-    options.queryExpander && (shouldUseAutoRag || mentionPlan.folderIndices.length > 0)
+    options.queryExpander &&
+    options.explicitContextOnly !== true &&
+    (shouldUseAutoRag || mentionPlan.folderIndices.length > 0)
       ? await options.queryExpander(question).catch((error: unknown) => {
           if (error instanceof DOMException && error.name === 'AbortError') throw error;
           return question;
@@ -231,7 +235,7 @@ export async function buildChatContext(
     );
   }
 
-  for (const fileResult of fileResults) {
+  for (const fileResult of options.explicitContextOnly ? [] : fileResults) {
     const expansion = await expandReferencedVaultFiles(
       fileResult.file,
       fileResult.content,

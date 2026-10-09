@@ -4923,7 +4923,9 @@ export class ChatView extends ItemView {
     const skipAutoRag = this.skipAutoRagOnce;
     this.skipAutoRagOnce = false;
     const ragEngine: RagQueryLike | null = await resolveChatRagEngine(
-      skipAutoRag || this.parseMentions(lastUserText).some((mention) => mention.type === 'tag'),
+      skipAutoRag ||
+        pluginDocumentation !== null ||
+        this.parseMentions(lastUserText).some((mention) => mention.type === 'tag'),
       () => this.plugin.prepareRagForChat(),
       () => this.plugin.ragEngine,
     );
@@ -4942,6 +4944,7 @@ export class ChatView extends ItemView {
       ragMinScore: this.plugin.settings.rag.minScore,
       maxContextChars: provider?.contextBudget?.evidenceChars,
       deferImplicitFolderEvidenceToTools,
+      explicitContextOnly: pluginDocumentation !== null,
       queryExpander: (question) =>
         expandVaultSearchPlan(question, provider, previousUserQuestions, signal),
     });
