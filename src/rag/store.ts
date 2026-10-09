@@ -1,4 +1,8 @@
 import Dexie from 'dexie';
+import {
+  GeneratedArtifactDatabase,
+  type GeneratedArtifactBinding,
+} from '../storage/generated-artifacts';
 import type { DataAdapter } from 'obsidian';
 import { readJsonFromVault } from '../utils/vault';
 import {
@@ -67,6 +71,7 @@ export interface VectorStoreStats {
 }
 
 export interface IndexedDbVectorStoreOptions {
+  artifactOwnership?: GeneratedArtifactBinding;
   hydrateAllEntryLimit?: number;
   pageSize?: number;
   maxRuntimePayloadBytes?: number;
@@ -196,13 +201,13 @@ interface VectorStoreMetaRecord {
   updated: number;
 }
 
-class VectorStoreDB extends Dexie {
+class VectorStoreDB extends GeneratedArtifactDatabase {
   vectors!: Dexie.Table<IndexedDbVectorRecord, string>;
   fileIndex!: Dexie.Table<FileIndexRecord, string>;
   meta!: Dexie.Table<VectorStoreMetaRecord, string>;
 
-  constructor(name: string) {
-    super(name);
+  constructor(name: string, ownership?: GeneratedArtifactBinding) {
+    super(name, ownership);
     this.version(1).stores({
       vectors: 'id, filePath, updated',
     });
@@ -551,7 +556,7 @@ export class IndexedDbVectorStore implements VectorStore {
   } | null = null;
 
   constructor(dbName = 'SuperpowerInsideVectorStore', options: IndexedDbVectorStoreOptions = {}) {
-    this.db = new VectorStoreDB(dbName);
+    this.db = new VectorStoreDB(dbName, options.artifactOwnership);
     this.hydrateAllEntryLimit = Math.max(
       1,
       Math.floor(options.hydrateAllEntryLimit ?? DEFAULT_HYDRATE_ALL_ENTRY_LIMIT),

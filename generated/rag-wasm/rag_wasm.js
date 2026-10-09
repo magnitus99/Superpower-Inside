@@ -2945,6 +2945,26 @@ export function plan_research_summary_batches_json(item_sizes_json, max_items, m
 }
 
 /**
+ * 호스트가 제공한 메타데이터만으로 소유권·현행 데이터 보호·용량을 판정합니다.
+ * @param {string} raw
+ * @returns {string}
+ */
+export function plan_retired_artifacts_json(raw) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(raw, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_retired_artifacts_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 완료된 대화의 제한된 요약 입력과 한 줄 제목을 반환합니다.
  * @param {string} messages_json
  * @param {string} generated_title
@@ -3840,6 +3860,33 @@ export function tokenize_json(text) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 생성물 소유권을 검증하고 저장·이동·삭제 기록을 갱신합니다.
+ * @param {string} raw
+ * @param {string} change_raw
+ * @param {string} roots_raw
+ * @param {boolean} remove
+ * @returns {string}
+ */
+export function update_generated_artifact_registry_json(raw, change_raw, roots_raw, remove) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(raw, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(change_raw, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(roots_raw, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.update_generated_artifact_registry_json(ptr0, len0, ptr1, len1, ptr2, len2, remove);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 

@@ -1,4 +1,8 @@
 import Dexie from 'dexie';
+import {
+  GeneratedArtifactDatabase,
+  type GeneratedArtifactBinding,
+} from '../storage/generated-artifacts';
 import type { RetrievalCorpusStore } from './corpus-store';
 import type { FileIndexRecord, VectorEntry } from './store';
 import type { SourceDocument } from './source-document';
@@ -9,12 +13,12 @@ export interface DocumentCorpusStore extends RetrievalCorpusStore {
   getFileIndexRecords(): Promise<FileIndexRecord[]>;
 }
 
-class DocumentCorpusDB extends Dexie {
+class DocumentCorpusDB extends GeneratedArtifactDatabase {
   documents!: Dexie.Table<SourceDocument, string>;
   files!: Dexie.Table<FileIndexRecord, string>;
 
-  constructor(name: string) {
-    super(name);
+  constructor(name: string, ownership?: GeneratedArtifactBinding) {
+    super(name, ownership);
     this.version(1).stores({ documents: 'id, sourcePath', files: 'filePath' });
   }
 }
@@ -22,8 +26,8 @@ class DocumentCorpusDB extends Dexie {
 export class IndexedDbDocumentCorpusStore implements DocumentCorpusStore {
   private readonly db: DocumentCorpusDB;
 
-  constructor(name: string) {
-    this.db = new DocumentCorpusDB(name);
+  constructor(name: string, ownership?: GeneratedArtifactBinding) {
+    this.db = new DocumentCorpusDB(name, ownership);
   }
 
   async replaceFileDocuments(

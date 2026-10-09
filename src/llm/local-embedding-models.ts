@@ -1,6 +1,10 @@
 import { normalizePath, requestUrl, type App } from 'obsidian';
 import { localModelRangeMatchesRust } from '../rag/rust-core';
 import { appLogger } from '../utils/logger';
+import {
+  createGeneratedFileAdapter,
+  GeneratedArtifactRegistry,
+} from '../storage/generated-artifacts';
 import { EMBEDDINGGEMMA_ASSETS } from '../../generated/embeddinggemma-assets';
 import {
   buildTernlightReleaseAssetUrl,
@@ -62,6 +66,7 @@ export class LocalEmbeddingModels {
     private readonly assets: Record<LocalEmbeddingModelId, readonly LocalModelAsset[]>,
     private readonly download: LocalModelDownload = downloadAsset,
     private readonly chunkBytes = 4 * 1024 * 1024,
+    private readonly artifacts?: GeneratedArtifactRegistry,
   ) {}
 
   state(id: LocalEmbeddingModelId): LocalModelState {
@@ -142,7 +147,7 @@ export class LocalEmbeddingModels {
     if (operation) await operation.promise.catch(() => undefined);
     this.update(id, { phase: 'deleting', error: undefined });
     try {
-      await this.adapter.writeBinary(this.deletionMarker(id), new ArrayBuffer(0));
+      await this.artifactAdapter(id).writeBinary(this.deletionMarker(id), new ArrayBuffer(0));
       for (const asset of this.assets[id]) {
         const path = this.path(id, asset.file);
         if (await this.adapter.exists(path)) await this.adapter.remove(path);
@@ -163,6 +168,12 @@ export class LocalEmbeddingModels {
 
   private path(id: LocalEmbeddingModelId, file: string): string {
     return normalizePath(`${this.root}/${id === 'ternlight-base' ? '' : `${id}/`}${file}`);
+  }
+
+  private artifactAdapter(id: LocalEmbeddingModelId): ModelAdapter {
+    return this.artifacts
+      ? createGeneratedFileAdapter(this.adapter, this.artifacts.forFeature(`local-model:${id}`))
+      : this.adapter;
   }
 
   private update(id: LocalEmbeddingModelId, change: Partial<LocalModelState>): void {
@@ -195,6 +206,7 @@ export class LocalEmbeddingModels {
         this.update(id, { hasFiles: true });
         const bytes = await this.adapter.readBinary(path);
         if (await validAsset(asset, bytes)) {
+          this.artifacts?.forFeature(`local-model:${id}`).register('file', path);
           completed += asset.size;
           this.update(id, { completedBytes: completed, hasFiles: true });
           continue;
@@ -240,12 +252,12 @@ export class LocalEmbeddingModels {
       if (!(await this.adapter.exists(directory))) await this.adapter.mkdir?.(directory);
       const temporary = `${path}.download.tmp`;
       try {
-        await this.adapter.writeBinary(temporary, bytes.buffer);
+        await this.artifactAdapter(id).writeBinary(temporary, bytes.buffer);
         signal.throwIfAborted();
         if (await this.adapter.exists(path)) await this.adapter.remove(path);
-        await this.adapter.rename(temporary, path);
+        await this.artifactAdapter(id).rename(temporary, path);
       } finally {
-        if (await this.adapter.exists(temporary)) await this.adapter.remove(temporary);
+        if (await this.adapter.exists(temporary)) await this.artifactAdapter(id).remove(temporary);
       }
       completed += asset.size;
       this.update(id, { hasFiles: true });
@@ -292,22 +304,29 @@ export function getLocalEmbeddingModels(options: {
   managers.set(adapter, available);
   let manager = available.get(key);
   if (!manager) {
-    manager = new LocalEmbeddingModels(adapter, root, {
-      'ternlight-base': [
-        {
-          file: TERNLIGHT_MODEL_FILE_NAME,
-          size: TERNLIGHT_MODEL_BYTE_LENGTH,
-          sha256: TERNLIGHT_MODEL_SHA256,
-          url: buildTernlightReleaseAssetUrl(options.pluginVersion),
-        },
-      ],
-      'embeddinggemma-300m': EMBEDDINGGEMMA_ASSETS.map((asset) => ({
-        ...asset,
-        url:
-          asset.url ||
-          `${buildTernlightReleaseAssetUrl(options.pluginVersion).slice(0, -TERNLIGHT_MODEL_FILE_NAME.length)}${asset.file}`,
-      })),
-    });
+    manager = new LocalEmbeddingModels(
+      adapter,
+      root,
+      {
+        'ternlight-base': [
+          {
+            file: TERNLIGHT_MODEL_FILE_NAME,
+            size: TERNLIGHT_MODEL_BYTE_LENGTH,
+            sha256: TERNLIGHT_MODEL_SHA256,
+            url: buildTernlightReleaseAssetUrl(options.pluginVersion),
+          },
+        ],
+        'embeddinggemma-300m': EMBEDDINGGEMMA_ASSETS.map((asset) => ({
+          ...asset,
+          url:
+            asset.url ||
+            `${buildTernlightReleaseAssetUrl(options.pluginVersion).slice(0, -TERNLIGHT_MODEL_FILE_NAME.length)}${asset.file}`,
+        })),
+      },
+      undefined,
+      undefined,
+      new GeneratedArtifactRegistry(options.app, options.pluginId, ['.superpower-inside', root]),
+    );
     available.set(key, manager);
   }
   return manager;

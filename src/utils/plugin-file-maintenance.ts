@@ -1,4 +1,8 @@
 import type { DataAdapter } from 'obsidian';
+import {
+  createGeneratedFileAdapter,
+  type GeneratedArtifactBinding,
+} from '../storage/generated-artifacts';
 
 import {
   planPluginOwnedFileMaintenanceRust,
@@ -17,6 +21,8 @@ export interface PluginOwnedFileMaintenanceOptions {
   legacyDataDirectory?: string;
   allowLegacyCleanup?: boolean;
   includePluginDirectory?: boolean;
+  includeLegacyDirectory?: boolean;
+  eventLogOwnership?: GeneratedArtifactBinding;
   maxEventLogBytes?: number;
   staleTempAgeMs?: number;
   maxDeletions?: number;
@@ -37,7 +43,7 @@ export async function maintainPluginOwnedFiles(
   const legacyDataDirectory = options.legacyDataDirectory ?? LEGACY_PLUGIN_DATA_DIRECTORY;
   const directories = [
     ...(options.includePluginDirectory === false ? [] : [options.pluginDirectory]),
-    legacyDataDirectory,
+    ...(options.includeLegacyDirectory === false ? [] : [legacyDataDirectory]),
   ];
   const records = await listOwnedFileRecords(options.adapter, directories);
   const plan = planPluginOwnedFileMaintenanceRust({
@@ -70,7 +76,12 @@ export async function maintainPluginOwnedFiles(
   let rotatedEventLogPath: string | null = null;
   if (plan.rotateEventLogPath) {
     try {
-      await rotatePluginEventLog(options.adapter, plan.rotateEventLogPath);
+      await rotatePluginEventLog(
+        options.eventLogOwnership
+          ? createGeneratedFileAdapter(options.adapter, options.eventLogOwnership)
+          : options.adapter,
+        plan.rotateEventLogPath,
+      );
       rotatedEventLogPath = plan.rotateEventLogPath;
     } catch {
       failedPaths.push(plan.rotateEventLogPath);

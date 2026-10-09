@@ -114,7 +114,6 @@ import {
 import { appLogger, normalizeLoggerConfig, type AppLogger } from './src/utils/logger';
 import { CoalescedAsyncRunner } from './src/utils/coalesced-async-runner';
 import {
-  cleanupStaleIndexedDbGenerations,
   createRagIndexNamespace,
   createRagStorageLayout,
   deleteRagIndexedDbGenerations,
@@ -130,7 +129,12 @@ import {
   RAG_STORAGE_MAINTENANCE_COMPLETION_KEY,
   runRagStorageMaintenance,
 } from './src/rag/storage-maintenance';
-import { cleanupInactiveRagIndexedDb } from './src/rag/storage-registry';
+import { RetiredArtifactService, createRetiredArtifactHost } from './src/storage/retired-artifacts';
+import {
+  GENERATED_ARTIFACT_FEATURES,
+  GeneratedArtifactRegistry,
+  createGeneratedFileAdapter,
+} from './src/storage/generated-artifacts';
 import { buildPluginIndexedDbNames, resetPluginOwnedData } from './src/utils/plugin-data-reset';
 import { maintainPluginOwnedFiles } from './src/utils/plugin-file-maintenance';
 
@@ -575,10 +579,59 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return `${this.app.vault.configDir}/plugins/${this.manifest?.id ?? 'superpower-inside'}`;
   }
 
+  private retiredArtifactService: RetiredArtifactService | null = null;
+  private generatedArtifactRegistry: GeneratedArtifactRegistry | null = null;
+  private activeArtifactDatabaseNames: Set<string> | null = null;
+
+  private get generatedArtifacts(): GeneratedArtifactRegistry {
+    return (this.generatedArtifactRegistry ??= new GeneratedArtifactRegistry(
+      this.app,
+      this.manifest?.id ?? 'superpower-inside',
+      ['.superpower-inside', this.getPluginDirectoryPath()],
+    ));
+  }
+
+  get retiredArtifacts(): RetiredArtifactService {
+    return (this.retiredArtifactService ??= new RetiredArtifactService(
+      createRetiredArtifactHost(this.app.vault.adapter, async () => {
+        const revision = this.ragRuntimeInitRunId;
+        const layout = createRagStorageLayout({
+          pluginId: this.manifest.id,
+          vaultIdentity: this.getVaultStorageIdentity(),
+          legacyVaultName: this.getVaultName(),
+          embeddingNamespace: 'artifact-inspection',
+          indexNamespace: 'artifact-inspection',
+        });
+        const [recovery, maintenance] = await Promise.all([
+          this.vectorStore?.getMetaValue?.<string>(AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY),
+          this.vectorStore?.getMetaValue?.<string>(RAG_STORAGE_MAINTENANCE_COMPLETION_KEY),
+        ]);
+        if (revision !== this.ragRuntimeInitRunId || this.unloaded) {
+          throw new Error('Storage changed during inspection');
+        }
+        return {
+          pluginId: this.manifest.id,
+          vaultPrefixes: layout.ownedVaultPrefixes,
+          legacyNames: [...layout.cleanupLegacyNames, this.createIndexedDbName('KnowledgeGraph')],
+          activeNames: [...(this.activeArtifactDatabaseNames ?? [])],
+          legacyFilesSafe: Boolean(recovery && recovery === maintenance && this.bm25Index?.isReady),
+          revision,
+          tracked: this.generatedArtifacts.read(),
+          activeArtifacts: this.generatedArtifacts.active,
+          features: GENERATED_ARTIFACT_FEATURES,
+          artifactFileRoots: ['.superpower-inside', this.getPluginDirectoryPath()],
+        };
+      }),
+      this.getLogger(),
+    ));
+  }
+
   private async runStartupPluginFileMaintenance(): Promise<void> {
     try {
       const result = await maintainPluginOwnedFiles({
         adapter: this.app.vault.adapter,
+        includeLegacyDirectory: false,
+        eventLogOwnership: this.generatedArtifacts.forFeature('agent-diagnostics'),
         pluginDirectory: this.getPluginDirectoryPath(),
         eventLogPath: this.getAgentDiagnosticsEventLogPath(),
       });
@@ -660,7 +713,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     if (!this.agentDiagnosticsService) {
       this.agentDiagnosticsService = new AgentDiagnosticsService({
-        adapter: this.app.vault.adapter,
+        adapter: createGeneratedFileAdapter(
+          this.app.vault.adapter,
+          this.generatedArtifacts.forFeature('agent-diagnostics'),
+        ),
         filePath: this.getAgentDiagnosticsFilePath(),
         eventLogPath: this.getAgentDiagnosticsEventLogPath(),
         refreshBus: this.refreshBus,
@@ -1873,7 +1929,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
         embeddingNamespace,
         indexNamespace: createRagIndexNamespace(rag),
       });
-      this.documentCorpus = new IndexedDbDocumentCorpusStore(storageLayout.active.corpus);
+      this.documentCorpus = new IndexedDbDocumentCorpusStore(
+        storageLayout.active.corpus,
+        this.generatedArtifacts.forFeature('rag-corpus'),
+      );
+      for (const name of Object.values(storageLayout.active))
+        (this.activeArtifactDatabaseNames ??= new Set<string>()).add(name);
       this.vaultDocumentCorpus = new VaultDocumentCorpus(
         this.app.vault,
         this.documentCorpus,
@@ -1915,6 +1976,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
         const nextBm25Index = new IndexedDbBM25Index(
           storageLayout.active.bm25,
           this.app.vault.adapter,
+          undefined,
+          { artifactOwnership: this.generatedArtifacts.forFeature('rag-bm25') },
         );
         bm25Index = nextBm25Index;
         this.bm25Index = nextBm25Index;
@@ -2058,6 +2121,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
 
       const embeddingProvider = new CachedEmbeddingProvider(rawProvider, embeddingNamespace, {
+        artifactOwnership: this.generatedArtifacts.forFeature('embedding-cache'),
         dbName: storageLayout.active.embeddingCache,
         persistent: profile.strategy !== 'ternlight',
       });
@@ -2093,7 +2157,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       const indexingYieldMs = performanceSettings.enabled ? performanceSettings.indexingYieldMs : 0;
 
       // Vector store
-      const vectorStore = new IndexedDbVectorStore(storageLayout.active.vector);
+      const vectorStore = new IndexedDbVectorStore(storageLayout.active.vector, {
+        artifactOwnership: this.generatedArtifacts.forFeature('rag-vectors'),
+      });
       await this.runRagRuntimeInitStep('legacy-vector-import', () =>
         importLegacyJsonVectorStore(
           this.app.vault.adapter,
@@ -2288,21 +2354,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
               reconcileBm25SourceBatch: (validFilePaths) =>
                 bm25Index?.reconcileSourcePaths(validFilePaths) ??
                 Promise.resolve({ remainingWork: false }),
-              cleanupStaleGenerationBatch: () =>
-                cleanupStaleIndexedDbGenerations(storageLayout, {
-                  preserveEmbeddingCache: embeddingProvider.persistentCacheEnabled,
-                  preserveBm25: bm25Index !== undefined,
-                }),
-              cleanupInactiveVaultDatabaseBatch: () =>
-                cleanupInactiveRagIndexedDb(storageLayout, this.manifest.id),
-              cleanupLegacyFileArtifacts: () =>
-                maintainPluginOwnedFiles({
-                  adapter: this.app.vault.adapter,
-                  pluginDirectory: this.getPluginDirectoryPath(),
-                  eventLogPath: this.getAgentDiagnosticsEventLogPath(),
-                  allowLegacyCleanup: true,
-                  includePluginDirectory: false,
-                }),
               yieldToHost: () => this.waitForRagBackgroundCapacity(),
             },
             fingerprint,

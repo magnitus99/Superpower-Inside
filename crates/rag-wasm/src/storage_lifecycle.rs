@@ -1,17 +1,17 @@
-//! Deterministic IndexedDB storage lifecycle policy.
+//! 결정적인 볼트별 저장소 생명주기 정책입니다.
 //!
-//! Host code supplies vault identity and database snapshots. This module decides names and
-//! deletions without opening IndexedDB or depending on Obsidian APIs.
+//! 호스트가 제공한 식별자와 스냅샷으로 이름·유지보수 대상을 계산합니다.
+//! 데이터베이스를 열거나 호스트 API를 호출하지 않습니다.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value as JsonValue, json};
 use wasm_bindgen::prelude::wasm_bindgen;
 
-/// Current `IndexedDB` storage contract. A version change starts a fresh database generation.
-// Contract v3 was shipped briefly in 1.5.2, but it hid otherwise valid v2 indexes and forced
-// users to rebuild them. Version 1.5.3 deliberately resumes the stable v2 generation. A v3
-// database is never opened as active data and is deleted only after v2 coverage and health pass.
+/// 현재 저장소 계약입니다. 버전이 바뀌면 새로운 데이터베이스 세대를 사용합니다.
+// 1.5.2에서 잠시 배포한 v3는 유효한 v2 인덱스를 가려 재색인을 유발했습니다.
+// 1.5.3부터 안정적인 v2를 다시 사용합니다. v3는 활성 저장소로 열지 않으며,
+// 지원 종료 생성물 정책에 따라 사용자가 정리를 선택할 때 제거합니다.
 const STORAGE_CONTRACT_VERSION: u32 = 2;
 /// Legacy global embedding cache database created before per-vault generations.
 const LEGACY_EMBEDDING_CACHE_NAME: &str = "SuperpowerInsideEmbeddingCache";

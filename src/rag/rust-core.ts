@@ -1,4 +1,12 @@
+import type {
+  ArtifactRecord,
+  RetiredArtifactContext,
+  RetiredArtifactPlan,
+} from '../storage/retired-artifacts';
+import type { GeneratedArtifactRecord } from '../storage/generated-artifacts';
 import {
+  update_generated_artifact_registry_json,
+  plan_retired_artifacts_json,
   plan_session_title_json,
   plan_plugin_aware_indices_json,
   select_plugin_context7_library_id,
@@ -2489,6 +2497,85 @@ export function planInactiveIndexedDbCleanupRust(
     const raw = plan_inactive_indexed_db_cleanup_json(JSON.stringify(input));
     const parsed: unknown = JSON.parse(raw);
     return isInactiveIndexedDbCleanupPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planRetiredArtifactsRust(
+  context: RetiredArtifactContext,
+  records: readonly ArtifactRecord[],
+  approval?: { records: readonly ArtifactRecord[]; revision: number },
+): RetiredArtifactPlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_retired_artifacts_json(JSON.stringify({ context, records, approval })),
+    );
+    if (!parsed || typeof parsed !== 'object') return null;
+    const plan = parsed as Partial<RetiredArtifactPlan>;
+    if (
+      !Number.isSafeInteger(plan.bytes) ||
+      !Number.isSafeInteger(plan.revision) ||
+      typeof plan.capacity !== 'string' ||
+      typeof plan.changed !== 'boolean' ||
+      !Array.isArray(plan.records)
+    )
+      return null;
+    if (
+      !plan.records.every((record: unknown) => {
+        if (!record || typeof record !== 'object') return false;
+        const item = record as Partial<ArtifactRecord>;
+        return (
+          (item.kind === 'file' || item.kind === 'database') &&
+          typeof item.id === 'string' &&
+          Number.isSafeInteger(item.bytes) &&
+          typeof item.modified === 'number' &&
+          Number.isFinite(item.modified) &&
+          item.modified >= 0
+        );
+      })
+    )
+      return null;
+    return { ...plan, hasArtifacts: plan.records.length > 0 } as RetiredArtifactPlan;
+  } catch {
+    return null;
+  }
+}
+
+export function updateGeneratedArtifactRegistryRust(
+  records: unknown,
+  change: GeneratedArtifactRecord | undefined,
+  roots: readonly string[],
+  remove: boolean,
+): GeneratedArtifactRecord[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      update_generated_artifact_registry_json(
+        JSON.stringify(records),
+        change ? JSON.stringify(change) : '',
+        JSON.stringify(roots),
+        remove,
+      ),
+    );
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((value: unknown) => {
+        if (!value || typeof value !== 'object') return false;
+        const record = value as Partial<GeneratedArtifactRecord>;
+        return (
+          (record.kind === 'file' || record.kind === 'database') &&
+          typeof record.id === 'string' &&
+          typeof record.featureId === 'string' &&
+          typeof record.stamp === 'string' &&
+          typeof record.formatVersion === 'number' &&
+          Number.isFinite(record.formatVersion)
+        );
+      })
+    )
+      return null;
+    return parsed as GeneratedArtifactRecord[];
   } catch {
     return null;
   }

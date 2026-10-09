@@ -1,5 +1,9 @@
 import { requestUrl, type RequestUrlParam, type RequestUrlResponse } from 'obsidian';
 import Dexie from 'dexie';
+import {
+  GeneratedArtifactDatabase,
+  type GeneratedArtifactBinding,
+} from '../storage/generated-artifacts';
 import { t } from '../i18n';
 import { createIndexedDbRecordKeyRust, planIndexedDbBoundedRetentionRust } from '../rag/rust-core';
 import { assertValidEmbeddingBatch } from './embedding-validation';
@@ -27,12 +31,12 @@ interface EmbeddingAccessRecord {
   updated: number;
 }
 
-class EmbeddingCacheDB extends Dexie {
+class EmbeddingCacheDB extends GeneratedArtifactDatabase {
   embeddings!: Dexie.Table<EmbeddingRecord, string>;
   access!: Dexie.Table<EmbeddingAccessRecord, string>;
 
-  constructor(name: string) {
-    super(name);
+  constructor(name: string, ownership?: GeneratedArtifactBinding) {
+    super(name, ownership);
     this.version(1).stores({
       embeddings: 'id, textHash, updated',
     });
@@ -614,6 +618,7 @@ export function createEmbeddingCacheNamespace(providerKey: string, modelName: st
 }
 
 export interface CachedEmbeddingProviderOptions {
+  artifactOwnership?: GeneratedArtifactBinding;
   dbName?: string;
   persistent?: boolean;
   maxPersistentEntries?: number;
@@ -652,6 +657,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
         : new EmbeddingCacheDB(
             options.dbName ??
               `SuperpowerInsideEmbeddingCache-v2:${requireIndexedDbRecordKey('embedding-cache', cacheNamespace)}`,
+            options.artifactOwnership,
           );
     this.maxPersistentEntries = normalizeCacheLimit(
       options.maxPersistentEntries,

@@ -31,7 +31,10 @@ pub use settings_ui::{
     parse_settings_number,
 };
 
-/// IndexedDB naming, generation cleanup, and stale-record reconciliation policy.
+/// 지원이 끝난 생성물의 소유권·삭제 가능 여부·용량 정책입니다.
+mod retired_artifacts;
+pub use retired_artifacts::{plan_retired_artifacts_json, update_generated_artifact_registry_json};
+/// 볼트별 저장소 세대와 현행 레코드의 유지보수 정책입니다.
 mod storage_lifecycle;
 pub use storage_lifecycle::{
     create_indexed_db_record_key, plan_inactive_indexed_db_cleanup_json,

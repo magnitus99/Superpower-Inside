@@ -12,7 +12,7 @@ describe('RAG storage maintenance', () => {
 
     await runRagStorageMaintenance(fixture.host, fixture.fingerprint, false, () => false);
 
-    expect(fixture.order).toEqual(['prune-cache', 'reconcile-bm25', 'cleanup-inactive']);
+    expect(fixture.order).toEqual(['prune-cache', 'reconcile-bm25']);
   });
 
   it('reconciles against every valid RAG path, including files outside quiet recovery', async () => {
@@ -33,14 +33,11 @@ describe('RAG storage maintenance', () => {
       runRagStorageMaintenance(fixture.host, fixture.fingerprint, true, () => false),
     ).rejects.toThrow('health gate');
     expect(fixture.host.reconcileActiveStoreBatch).not.toHaveBeenCalled();
-    expect(fixture.host.cleanupStaleGenerationBatch).not.toHaveBeenCalled();
-    expect(fixture.host.cleanupLegacyFileArtifacts).not.toHaveBeenCalled();
   });
 
-  it('runs reconciliation before bounded stale generation cleanup and records completion last', async () => {
+  it('지원 종료 데이터는 자동 삭제하지 않고 현행 인덱스만 유지보수한다', async () => {
     const fixture = await createFixture({
       reconciliationComplete: [false, true],
-      cleanupResults: [cleanupResult(['stale-v3'], 1), cleanupResult([], 0)],
     });
 
     await runRagStorageMaintenance(fixture.host, fixture.fingerprint, true, () => false);
@@ -51,11 +48,6 @@ describe('RAG storage maintenance', () => {
       'reconcile',
       'prune-cache',
       'reconcile-bm25',
-      'cleanup-inactive',
-      'cleanup',
-      'yield',
-      'cleanup',
-      'cleanup-files',
       'complete',
     ]);
   });
@@ -68,30 +60,6 @@ describe('RAG storage maintenance', () => {
     await expect(
       runRagStorageMaintenance(fixture.host, fixture.fingerprint, true, () => false),
     ).rejects.toThrow('health changed');
-    expect(fixture.host.cleanupStaleGenerationBatch).not.toHaveBeenCalled();
-    expect(fixture.host.writeMaintenanceFingerprint).not.toHaveBeenCalled();
-  });
-
-  it('leaves blocked deletion unfinished so a later run can retry', async () => {
-    const blocked = cleanupResult([], 0, ['stale-v3']);
-    const fixture = await createFixture({ cleanupResults: [blocked] });
-
-    await expect(
-      runRagStorageMaintenance(fixture.host, fixture.fingerprint, true, () => false),
-    ).rejects.toThrow('blocked');
-    expect(fixture.host.writeMaintenanceFingerprint).not.toHaveBeenCalled();
-  });
-
-  it('does not record completion when legacy file cleanup is incomplete', async () => {
-    const fixture = await createFixture();
-    fixture.host.cleanupLegacyFileArtifacts.mockResolvedValue({
-      failedPaths: ['.superpower-inside/vectors.json'],
-      remainingDeleteCount: 0,
-    });
-
-    await expect(
-      runRagStorageMaintenance(fixture.host, fixture.fingerprint, true, () => false),
-    ).rejects.toThrow('Legacy plugin file cleanup');
     expect(fixture.host.writeMaintenanceFingerprint).not.toHaveBeenCalled();
   });
 
@@ -106,14 +74,12 @@ describe('RAG storage maintenance', () => {
     await expect(
       runRagStorageMaintenance(fixture.host, fixture.fingerprint, true, () => cancelled),
     ).rejects.toThrow('cancelled');
-    expect(fixture.host.cleanupStaleGenerationBatch).not.toHaveBeenCalled();
   });
 });
 
 interface FixtureOptions {
   pendingCounts?: number[];
   reconciliationComplete?: boolean[];
-  cleanupResults?: ReturnType<typeof cleanupResult>[];
   fileSnapshots?: Array<readonly { path: string; mtime: number; size: number }[]>;
   maintenanceFingerprintCurrent?: boolean;
   validFilePaths?: string[];
@@ -123,7 +89,6 @@ async function createFixture(options: FixtureOptions = {}) {
   const order: string[] = [];
   const pendingCounts = [...(options.pendingCounts ?? [0])];
   const reconciliation = [...(options.reconciliationComplete ?? [true])];
-  const cleanup = [...(options.cleanupResults ?? [cleanupResult([], 0)])];
   const snapshots = [...(options.fileSnapshots ?? [FILES])];
   const { planRagAutomaticRecoveryRust } = await import('./rust-core');
   const fingerprint = planRagAutomaticRecoveryRust(FILES, '', 0, 0)?.fingerprint ?? '';
@@ -156,32 +121,10 @@ async function createFixture(options: FixtureOptions = {}) {
       order.push('reconcile-bm25');
       return Promise.resolve({ remainingWork: false });
     }),
-    cleanupStaleGenerationBatch: vi.fn(() => {
-      order.push('cleanup');
-      return Promise.resolve(cleanup.shift() ?? cleanupResult([], 0));
-    }),
-    cleanupInactiveVaultDatabaseBatch: vi.fn(() => {
-      order.push('cleanup-inactive');
-      return Promise.resolve(cleanupResult([], 0));
-    }),
-    cleanupLegacyFileArtifacts: vi.fn<RagStorageMaintenanceHost['cleanupLegacyFileArtifacts']>(
-      () => {
-        order.push('cleanup-files');
-        return Promise.resolve({ failedPaths: [], remainingDeleteCount: 0 });
-      },
-    ),
     yieldToHost: vi.fn(() => {
       order.push('yield');
       return Promise.resolve();
     }),
   } satisfies RagStorageMaintenanceHost;
   return { host, order, fingerprint };
-}
-
-function cleanupResult(
-  deletedNames: string[],
-  remainingDeleteCount: number,
-  blockedNames: string[] = [],
-) {
-  return { deletedNames, blockedNames, failedNames: [], remainingDeleteCount };
 }

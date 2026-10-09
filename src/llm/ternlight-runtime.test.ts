@@ -81,8 +81,11 @@ describe('Ternlight worker runtime', () => {
 function createRuntimeOptions(createWorker: TernlightWorkerFactory, version = 'worker-test') {
   const bytes = readFileSync(join(process.cwd(), TERNLIGHT_MODEL_FILE_NAME));
   const model = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const localStorage = new Map<string, unknown>();
   return {
     app: {
+      loadLocalStorage: (key: string) => localStorage.get(key),
+      saveLocalStorage: (key: string, value: unknown) => localStorage.set(key, value),
       vault: {
         configDir: '.obsidian',
         adapter: {

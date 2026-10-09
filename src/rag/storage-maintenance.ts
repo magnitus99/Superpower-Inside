@@ -1,6 +1,5 @@
 import type { RustRagAutomaticRecoveryFileInput } from './rust-core';
 import { planRagAutomaticRecoveryRust, planRagStorageHealthRust } from './rust-core';
-import type { IndexedDbCleanupResult } from './storage-lifecycle';
 
 export const RAG_STORAGE_MAINTENANCE_COMPLETION_KEY =
   'rag-storage-maintenance:v3:completed-fingerprint';
@@ -26,12 +25,6 @@ export interface RagStorageMaintenanceHost {
   }): Promise<{ complete: boolean }>;
   pruneEmbeddingCacheBatch(): Promise<{ remainingWork: boolean }>;
   reconcileBm25SourceBatch(validFilePaths: readonly string[]): Promise<{ remainingWork: boolean }>;
-  cleanupStaleGenerationBatch(): Promise<IndexedDbCleanupResult>;
-  cleanupInactiveVaultDatabaseBatch(): Promise<IndexedDbCleanupResult>;
-  cleanupLegacyFileArtifacts(): Promise<{
-    failedPaths: readonly string[];
-    remainingDeleteCount: number;
-  }>;
   yieldToHost(): Promise<void>;
 }
 
@@ -72,39 +65,7 @@ export async function runRagStorageMaintenance(
     isCancelled,
   );
 
-  while (!isCancelled()) {
-    const inactiveCleanup = await host.cleanupInactiveVaultDatabaseBatch();
-    if (inactiveCleanup.blockedNames.length > 0 || inactiveCleanup.failedNames.length > 0) {
-      throw new Error('Inactive vault IndexedDB cleanup was blocked or failed');
-    }
-    if (inactiveCleanup.remainingDeleteCount === 0 && inactiveCleanup.deletedNames.length === 0) {
-      break;
-    }
-    await host.yieldToHost();
-  }
-  throwIfCancelled(isCancelled);
-
   if (activeStoreAlreadyMaintained) return;
-
-  while (!isCancelled()) {
-    const health = await inspectHealth(host, expectedFingerprint, true);
-    if (!health.canDeleteStaleGenerations) {
-      throw new Error('RAG storage health changed before stale generation cleanup');
-    }
-    const cleanup = await host.cleanupStaleGenerationBatch();
-    if (cleanup.blockedNames.length > 0 || cleanup.failedNames.length > 0) {
-      throw new Error('Stale IndexedDB generation cleanup was blocked or failed');
-    }
-    if (cleanup.remainingDeleteCount === 0 && cleanup.deletedNames.length === 0) break;
-    await host.yieldToHost();
-  }
-  throwIfCancelled(isCancelled);
-
-  const legacyCleanup = await host.cleanupLegacyFileArtifacts();
-  if (legacyCleanup.failedPaths.length > 0 || legacyCleanup.remainingDeleteCount > 0) {
-    throw new Error('Legacy plugin file cleanup was incomplete');
-  }
-  throwIfCancelled(isCancelled);
 
   const finalHealth = await inspectHealth(host, expectedFingerprint, true);
   if (!finalHealth.canDeleteStaleGenerations) {

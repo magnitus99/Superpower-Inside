@@ -1,4 +1,8 @@
 import Dexie from 'dexie';
+import {
+  GeneratedArtifactDatabase,
+  type GeneratedArtifactBinding,
+} from '../storage/generated-artifacts';
 import type { DataAdapter } from 'obsidian';
 import { planStaleIndexSourcePathsRust, RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
 import {
@@ -76,17 +80,18 @@ interface BM25Snapshot {
 }
 
 export interface IndexedDbBM25IndexOptions {
+  artifactOwnership?: GeneratedArtifactBinding;
   maxSnapshotBytes?: number;
   workerFactory?: BM25WorkerFactory;
 }
 
-class BM25IndexDB extends Dexie {
+class BM25IndexDB extends GeneratedArtifactDatabase {
   meta!: Dexie.Table<BM25MetaRecord, string>;
   documents!: Dexie.Table<BM25DocumentRecord, string>;
   mutations!: Dexie.Table<BM25MutationRecord, string>;
 
-  constructor(name: string) {
-    super(name);
+  constructor(name: string, ownership?: GeneratedArtifactBinding) {
+    super(name, ownership);
     this.version(1).stores({
       meta: 'key',
     });
@@ -125,7 +130,7 @@ export class IndexedDbBM25Index {
     legacyPath = '.superpower-inside/bm25-index.json',
     options: IndexedDbBM25IndexOptions = {},
   ) {
-    this.db = new BM25IndexDB(dbName);
+    this.db = new BM25IndexDB(dbName, options.artifactOwnership);
     this.legacyAdapter = legacyAdapter;
     this.legacyPath = legacyPath;
     this.runtime = null;
