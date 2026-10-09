@@ -20,6 +20,7 @@ import type {
 } from './types';
 import type { ContextAttachment, SourceCitation } from './types';
 import { loadChat, saveChat } from './persistence';
+import { summarizeSessionTitle } from './session-title';
 import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
 import { collectTagMentionFiles } from './tag-mentions';
 import { planTagMentionsRust, planPluginAwareIndicesRust } from '../rag/rust-core';
@@ -2617,6 +2618,31 @@ export class ChatView extends ItemView {
     }, this.plugin.settings.chat.autoSaveDebounceMs);
   }
 
+  private async summarizeCurrentSessionTitle(
+    provider: LLMProvider,
+    run: ChatRunHandle<AbortController>,
+  ): Promise<void> {
+    const session = this.session;
+    try {
+      const changed = await summarizeSessionTitle(
+        session,
+        this.messages,
+        provider,
+        run.controller.signal,
+        () => this.session === session && isChatRunActive(this.activeRun, run),
+      );
+      if (!changed) return;
+      this.updateHeaderTitle();
+      await this.saveCurrentSession();
+    } catch (error) {
+      if (!isChatRunActive(this.activeRun, run)) return;
+      this.plugin.logger.warn(t('chatSessionTitleFailedLog'), {
+        source: 'chat.session-title',
+        error,
+      });
+    }
+  }
+
   private clearAutoSaveTimer(): void {
     if (!this.autoSaveTimer) return;
     window.clearTimeout(this.autoSaveTimer);
@@ -3764,6 +3790,7 @@ export class ChatView extends ItemView {
       }
       if (finalization.saveSession) {
         await this.saveCurrentSession(true);
+        await this.summarizeCurrentSessionTitle(provider, run);
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
         this.activeRun = null;
@@ -4662,6 +4689,7 @@ export class ChatView extends ItemView {
     this.abortController = abortController;
     this.setLoading(true);
     setHidden(this.typingIndicator, false);
+    let titleProvider: LLMProvider | undefined;
 
     try {
       const messageIndex = this.messages.findIndex((item) => item.id === messageId);
@@ -4721,6 +4749,7 @@ export class ChatView extends ItemView {
         );
         if (!resumedProvider) throw new Error(t('noActiveProviderNotice'));
         const provider = resumedProvider.provider;
+        titleProvider = provider;
         const promptContext = await this.buildPromptContext(
           currentQuestion,
           previousUserQuestions,
@@ -4874,6 +4903,7 @@ export class ChatView extends ItemView {
       }
       if (finalization.saveSession) {
         await this.saveCurrentSession(true);
+        if (titleProvider) await this.summarizeCurrentSessionTitle(titleProvider, run);
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
         setHidden(this.typingIndicator, true);

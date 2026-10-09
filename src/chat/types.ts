@@ -255,7 +255,7 @@ export interface ChatSession {
 export interface SessionState {
   /** 볼트 내 상대 경로 (.md 파일), 미저장 시 null */
   filePath: string | null;
-  /** 세션 제목 (첫 사용자 메시지에서 자동 생성 또는 사용자 지정) */
+  /** 세션 제목 (응답 완료 후 대화 요약 또는 사용자 지정) */
   title: string;
   /** 마지막 저장 이후 변경 사항이 있으면 true */
   isDirty: boolean;

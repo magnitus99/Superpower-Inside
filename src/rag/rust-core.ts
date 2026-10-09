@@ -1,4 +1,5 @@
 import {
+  plan_session_title_json,
   plan_plugin_aware_indices_json,
   select_plugin_context7_library_id,
   plan_native_vault_source_citation_indices_json,
@@ -3443,6 +3444,35 @@ export function planChatMetaRust(
     const parsed: unknown = JSON.parse(raw);
     if (!isChatMetaPlan(parsed)) return null;
     return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function planSessionTitleRust(
+  messages: readonly unknown[],
+  generatedTitle = '',
+): { conversation: import('../llm/providers').ChatMessage[]; title: string } | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_session_title_json(JSON.stringify(messages), generatedTitle),
+    );
+    if (!parsed || typeof parsed !== 'object') return null;
+    const plan = parsed as { conversation?: unknown; title?: unknown };
+    if (!Array.isArray(plan.conversation) || typeof plan.title !== 'string') return null;
+    const conversation: unknown[] = plan.conversation;
+    if (
+      !conversation.every((message): message is import('../llm/providers').ChatMessage => {
+        if (!message || typeof message !== 'object') return false;
+        const item = message as { role?: unknown; content?: unknown };
+        return (
+          (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string'
+        );
+      })
+    )
+      return null;
+    return { conversation, title: plan.title };
   } catch {
     return null;
   }

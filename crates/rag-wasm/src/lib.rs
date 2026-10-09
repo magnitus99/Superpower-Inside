@@ -53,6 +53,9 @@ mod performance_guard;
 pub use performance_guard::plan_rag_performance_guard_json;
 
 mod chat_input;
+/// 완료된 채팅 세션의 제목 요약 입력과 정규화.
+mod session_title;
+pub use session_title::plan_session_title_json;
 mod tag_mentions;
 pub use tag_mentions::plan_tag_mentions_json;
 mod model_context;

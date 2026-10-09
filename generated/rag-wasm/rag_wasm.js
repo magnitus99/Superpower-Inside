@@ -2945,6 +2945,29 @@ export function plan_research_summary_batches_json(item_sizes_json, max_items, m
 }
 
 /**
+ * 완료된 대화의 제한된 요약 입력과 한 줄 제목을 반환합니다.
+ * @param {string} messages_json
+ * @param {string} generated_title
+ * @returns {string}
+ */
+export function plan_session_title_json(messages_json, generated_title) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(messages_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(generated_title, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_session_title_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * 현재 내용 기반 청크 ID와 일치하는 저장 벡터의 이관 인덱스를 반환합니다.
  * @param {string} input_json
  * @returns {string}
