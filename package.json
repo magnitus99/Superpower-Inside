@@ -1,7 +1,7 @@
 {
   "name": "superpower-inside",
   "version": "2.3.0",
-  "description": "Find answers in your notes, compare sources, and draft with AI inside Obsidian.",
+  "description": "Find answers in your notes, compare sources, and draft with AI.",
   "main": "main.js",
   "scripts": {
     "prepare": "node scripts/install-copy-hooks.mjs",
