@@ -1,6 +1,22 @@
 export type Language = 'ko' | 'en';
 
 export interface I18nKeys {
+  retiredArtifactsSection: string;
+  retiredArtifactsTitle: string;
+  retiredArtifactsDesc: string;
+  retiredArtifactsScanning: string;
+  retiredArtifactsSize: string;
+  retiredArtifactsEmpty: string;
+  retiredArtifactsReview: string;
+  retiredArtifactsRetry: string;
+  retiredArtifactsScanFailed: string;
+  retiredArtifactsConfirm: string;
+  retiredArtifactsDelete: string;
+  retiredArtifactsKeep: string;
+  retiredArtifactsRunning: string;
+  retiredArtifactsPartial: string;
+  retiredArtifactsChanged: string;
+  retiredArtifactsDone: string;
   settingsChooseFolder: string;
   settingsProviderSetupSteps: string;
   settingsAddModelManually: string;
@@ -1576,6 +1592,25 @@ export interface I18nKeys {
 }
 
 const ko: I18nKeys = {
+  retiredArtifactsSection: '저장 공간',
+  retiredArtifactsTitle: '지원이 끝난 데이터',
+  retiredArtifactsDesc:
+    '예전에 플러그인이 만든 데이터 중 더 이상 사용하거나 지원하지 않는 항목입니다. 삭제할지는 직접 선택할 수 있습니다.',
+  retiredArtifactsScanning: '용량을 확인하고 있습니다…',
+  retiredArtifactsSize: '약 {size} MB',
+  retiredArtifactsEmpty: '정리할 데이터가 없습니다.',
+  retiredArtifactsReview: '정리…',
+  retiredArtifactsRetry: '다시 확인',
+  retiredArtifactsScanFailed: '용량을 확인하지 못했습니다. 다시 시도해주세요.',
+  retiredArtifactsConfirm:
+    '지원이 끝난 데이터가 약 {size} MB 남아 있습니다. 플러그인은 이 데이터를 더 이상 사용하거나 지원하지 않습니다. 삭제할까요?',
+  retiredArtifactsDelete: '삭제',
+  retiredArtifactsKeep: '유지',
+  retiredArtifactsRunning: '정리하고 있습니다…',
+  retiredArtifactsPartial: '일부 데이터를 삭제하지 못했습니다. 다시 시도할 수 있습니다.',
+  retiredArtifactsChanged:
+    '확인 중 데이터가 바뀌어 일부 항목을 유지했습니다. 용량을 다시 확인해주세요.',
+  retiredArtifactsDone: '지원이 끝난 데이터를 삭제했습니다.',
   settingsChooseFolder: '볼트 폴더 선택',
   settingsProviderSetupSteps:
     '연결 정보를 입력한 뒤 모델을 가져오거나 직접 추가하고 테스트하세요. 테스트는 실제 요청을 보내며 서버에 따라 비용이 발생할 수 있습니다.',
@@ -3346,6 +3381,25 @@ const ko: I18nKeys = {
 };
 
 const en: I18nKeys = {
+  retiredArtifactsSection: 'Storage',
+  retiredArtifactsTitle: 'Data from retired features',
+  retiredArtifactsDesc:
+    'These files were created by features the plugin no longer uses or supports. You can choose whether to delete them.',
+  retiredArtifactsScanning: 'Checking size…',
+  retiredArtifactsSize: 'About {size} MB',
+  retiredArtifactsEmpty: 'There is no retired data to clean up.',
+  retiredArtifactsReview: 'Clean up…',
+  retiredArtifactsRetry: 'Check again',
+  retiredArtifactsScanFailed: 'Could not check the size. Please try again.',
+  retiredArtifactsConfirm:
+    'About {size} MB remains from retired features. The plugin no longer uses or supports this data. Delete it?',
+  retiredArtifactsDelete: 'Delete',
+  retiredArtifactsKeep: 'Keep',
+  retiredArtifactsRunning: 'Cleaning up…',
+  retiredArtifactsPartial: 'Some data could not be deleted. You can try again.',
+  retiredArtifactsChanged:
+    'Some data changed during the check and was kept. Please review the updated size.',
+  retiredArtifactsDone: 'Data from retired features was deleted.',
   settingsChooseFolder: 'Choose a vault folder',
   settingsProviderSetupSteps:
     'Enter connection details, import or add a model, then test it. Testing sends a real request and may incur charges.',

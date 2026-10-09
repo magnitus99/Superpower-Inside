@@ -1,4 +1,6 @@
 import { chatGPTOAuth } from './llm/chatgpt-oauth';
+import { buildRetiredArtifactSettings } from './storage/retired-artifacts-settings';
+import type { RetiredArtifactService } from './storage/retired-artifacts';
 import { buildChatGPTLoginSettings } from './llm/chatgpt-login-ui';
 import { DEFAULT_CHUNK_CONTRACT, DEFAULT_SEARCH_QUALITY } from './rag/search-defaults';
 import {
@@ -1026,6 +1028,7 @@ export function migrateLegacyProviderProfiles(
 }
 
 export interface PluginLike {
+  readonly retiredArtifacts?: RetiredArtifactService;
   app: App;
   ragEngine: import('./rag/query').RAGQueryEngine | null;
   getSourceFileProcessingStatus?(
@@ -2083,6 +2086,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const workspace = containerEl.createDiv({ cls: 'superpower-inside-settings-workspace' });
     this.buildGeneralStatusSection(workspace);
     this.buildGeneralBasicsSection(workspace);
+    if (this.plugin.retiredArtifacts) {
+      const storage = this.createSettingsSection(workspace, t('retiredArtifactsSection'), {
+        description: t('retiredArtifactsDesc'),
+      });
+      buildRetiredArtifactSettings(storage.body, this.app, this.plugin.retiredArtifacts);
+    }
     this.buildAgentDiagnosticsSection(workspace);
     this.buildGeneralAdvancedSection(workspace);
   }

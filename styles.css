@@ -5493,6 +5493,20 @@ button.superpower-inside-prompt-danger-btn:disabled {
   line-height: 1.3;
 }
 
+.superpower-inside-confirm-modal-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--size-4-2);
+  margin-top: var(--size-4-4);
+}
+
+.superpower-inside-confirm-modal-buttons button {
+  height: auto;
+  min-height: var(--input-height);
+  white-space: normal;
+}
+
 .superpower-inside-edit-modal-buttons {
   display: flex;
   gap: 8px;
