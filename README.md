@@ -1,289 +1,279 @@
 # Superpower Inside
 
+[English](#english) | [한국어](#한국어)
+
 [![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)](https://obsidian.md/plugins?id=superpower-inside)
 [![license](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
 [![price](https://img.shields.io/badge/price-free%20%26%20open%20source-0f766e)](LICENSE)
 
-> **Your vault is full of answers. Stop hunting note by note.**
+## English
 
-Superpower Inside turns your Obsidian vault into an AI research partner. Ask one question, and it searches across your notes, reads the right parts, connects the dots, and answers with sources you can open and verify.
+> **You already did the reading. Put those notes to work.**
 
-**[Install from Obsidian Community Plugins](https://obsidian.md/plugins?id=superpower-inside)** · **[Download the latest release](https://github.com/magnitus99/Superpower-Inside/releases/latest)** · **[한국어로 읽기](#한국어)**
+Superpower Inside brings AI research and writing into Obsidian. Ask it to find a past decision, compare your research, or turn scattered notes into a draft—with vault sources you can open and check.
 
-| Ask the vault, not the file tree | Check the evidence | Bring your own AI |
-| --- | --- | --- |
-| Research can span eligible notes across your vault. The answer states coverage limits. | Inspect available sources, open the original, and check whether it supports the claim. | Connect OpenAI, Claude, Ollama, OpenRouter, or an OpenAI-compatible endpoint. |
+- **Get the decision back.** Ask what changed, why, and where it was recorded.
+- **Use what you've learned.** Pull reading notes into an outline, comparison, or study session.
+- **Stay with your work.** Reference the current note, open tabs, a folder, or a tag from the chat.
 
-> [!IMPORTANT]
-> Superpower Inside is **desktop-only**, free, and open source. The plugin has no paid tier or account requirement. Your chosen AI provider may require an account and charge for usage.
+The superpower is inside: your observations, your research, your decisions. Give them a question, and get something you can use next.
 
----
+**[Install in Obsidian](https://obsidian.md/plugins?id=superpower-inside)** · **[Download a release](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
-## How it works
+**Free, open source, desktop only.** The plugin has no subscription or signup; your AI provider may charge or require an account. [Third-party notices](THIRD_PARTY_NOTICES.md).
 
-```
-Ask naturally → It searches your vault → It reads and connects the evidence → It answers with sources
-```
+### Who is it for?
 
-Inspect the answer, available sources, and work log. Research is bounded by file eligibility, tool limits, and the evidence that could be verified.
+- **Already paying for ChatGPT?** Connect with browser sign-in and use models available to your account through the Codex backend. Account access and usage limits apply.
+- **Researchers and students:** compare sources, examine disagreements, and make questions from your study notes.
+- **Project leads and builders:** ask for decisions, blockers, recorded owners, and next actions across meeting and project notes.
+- **Writers and knowledge workers:** reuse your reading, examples, and arguments without copying every note into another app.
 
-## Why you'll love it
+### The vault where it earns its place
 
-**🔍 Ask anything, not just what you remember**
+Have you ever thought, “I know I wrote that down”? Start there.
 
-Searching for a keyword finds files that contain that word. Superpower Inside understands what you're *asking*—themes, changes, contradictions, summaries—across your entire vault. You don't need to know where the answer lives. Just ask.
+- A project with planning notes, meeting minutes, and decisions recorded over time.
+- A research or reading collection with overlapping claims and different conclusions.
+- A personal knowledge vault with linked ideas you want to use in your next piece of work.
 
-**📎 Inspect the sources behind vault claims**
+Readable text, useful headings, dates, links, and tags give it more to work with. Markdown, plain text, code, JSON, and CSV are supported; scanned PDFs, images, and audio need a text version first.
 
-The Sources tab lists notes and retrieved ranges. Open the original, copy the link, or insert the evidence into your active note. General knowledge and proposed content may have no vault source; inspect support before relying on a claim.
+### What you can do
 
-**🧭 It sees connections you might miss**
+#### 1. Ask a question across your notes
 
-Keyword search, semantic search, and chat tools use the same supported text files, including Markdown, plain text, and code. Retrieved passages are checked against the current source before they become answer evidence.
+Keyword and meaning-based search help find relevant material even when you don't remember the filename. Vault tools can read passages, follow note links, and compare the evidence they find.
 
-JSON keys, CSV headers and records, and code block boundaries stay attached to the shared passages. The vault statistics tool reports each file's source, keyword, and embedding readiness separately.
+> Compare the original plan with the meeting decisions in @[Projects/Launch]. What changed? Show the sources and next actions.
 
-**🏠 Built-in search runs locally**
+- Narrow the task by folder or tag, or ask it to search across eligible vault files.
+- Keep headings, code boundaries, JSON keys, and CSV headers with retrieved passages.
+- Check the stated coverage: bounded research is not a promise that every note was read.
 
-The built-in embedding model and search indexes run on your machine. The model asset may be downloaded once. Chat, summaries, and optional remote embeddings can send content to the providers you select. Use local providers when these tasks must stay on your device.
+#### 2. Open the evidence behind the answer
 
-**✋ You're always in control**
+Sources show file paths and available heading or line locations. Open the original, copy its link, or insert a cited passage into your active note.
 
-Stop any research run mid-stream. See what was searched, what was found, and what wasn't covered. When something goes wrong, you get a clear next step—not a wall of technical errors.
+- See which passages were checked against the current file and which need review.
+- Inspect sources and the work log below the answer when you need them.
+- See context limits and omitted references when the selected material exceeds the model's budget.
 
-**🧹 A calm interface, not a mess of logs**
+#### 3. Bring the work on your screen into chat
 
-Final answer, work log, and sources stay separated. You see the conclusion first, the evidence when you want it, and nothing you don't need.
+Type `@` and choose a reference. The composer previews references before you send.
 
-## Try it the moment you install
-
-```
-Summarize the core themes in my vault, with sources for each claim.
-
-Find decisions that changed between my planning notes and final meeting minutes.
-
-Find recurring claims in @[Research] whose supporting evidence is missing from the checked notes. Distinguish missing evidence from false claims.
-
-Review @[Projects/Launch]. List blockers, evidence, owners, and next actions in a table. Mark missing owners as unknown.
-```
-
-## Focus your question when it matters
-
-| Type this | What it does |
+| Reference | Use it for |
 | --- | --- |
-| `@note.md` | Pin a specific note to the conversation. |
-| `@[folder/path]` | Scope the research to one folder. |
-| `@server` | Bring in a connected external tool for this question. |
+| `@current` | The active note. |
+| `@tabs` | Files open in Obsidian tabs. |
+| `@note.md` | One specific file. |
+| `@[Projects/Launch]` | A folder's eligible files. |
+| `@#research` | Notes matching an Obsidian tag, including nested tags. |
+| `@server` | A connected external tool server. |
 
-Use file and folder mentions to focus vault research. Mentioning only an external server skips automatic vault search for that turn; add a file or folder mention when you also need vault evidence.
+Mentioning only an external server skips automatic vault search for that turn. Add a vault reference when you want both.
 
-## Connect external tools
+#### 4. Turn notes into the result you need
 
-Open **Settings → Superpower Inside → External tools → Server setup → Advanced JSON editor**. The editor follows the [Claude Desktop `mcpServers` convention](https://modelcontextprotocol.io/docs/develop/connect-local-servers), rather than a configuration format required by the MCP protocol.
+Choose a prompt preset, then say what you want. Save recurring preferences in the prompt library, with a global default or a prompt for the current conversation.
 
-The top-level `mcpServers` object maps server names to settings. Each server needs a `command` string; `args` is an optional array of strings, and `env` is an optional object of string values. The plugin supports local **stdio** servers. Remote HTTP/SSE configurations with `url` and `headers` are not supported. Use valid JSON without comments or trailing commas.
+- **Reading and research:** compare arguments, summarize sources, or test your recall.
+- **Meetings and projects:** collect decisions, unresolved questions, and next actions.
+- **Writing and reflection:** draft from your notes, review your week, or check a story's consistency.
+- **Organization and technical work:** propose a map of content or investigate a problem using recorded evidence.
 
-Keep existing server entries when adding another server. **Apply server settings** replaces the configured server list with the editor contents.
+These are requests you can make, not automatic edits to your vault. The built-in vault tools are read-only; review drafts and proposed changes before using them.
 
-## Ask for a usable result
+#### 5. Choose your AI. Keep search local.
 
-State the result you need, the relevant notes, and the format or boundary that matters. A short question is enough for a simple task. For example:
+Connect ChatGPT browser sign-in, OpenAI API, Claude, Ollama, OpenRouter, or an OpenAI-compatible endpoint. Test and select the model you want; available features depend on the model and connection.
 
-```text
-Compare the launch decisions in @[Projects/Launch] for a project lead.
-Use a table with decision, before, after, and source. Keep recorded dates unchanged.
-Separate inferred reasons from recorded reasons and flag unverified coverage.
-```
+- Choose **Ternlight** for short English notes (about 10 MB), or **EmbeddingGemma 300M** for multilingual notes (about 1.27 GB). Download and manage their files in settings; switching models rebuilds the index.
+- Search indexes and built-in embeddings stay on your device. Meaning-based search needs the model files and indexing to be ready.
+- Chat and optional remote embeddings can send content to your selected provider. Use a local chat provider as well when that content must stay on your machine.
 
-Refine the answer with a follow-up such as “Keep the evidence, shorten the background, and put next actions first.” Keep recurring preferences in the prompt library and task-specific requirements in the chat message. The chat prompt library supports a global default and a prompt for the current session. Generated prompts use a bounded embedding-index summary with sample passages, sent to the selected generation model; review the generated body before applying it.
+#### 6. Connect tools and look up plugin syntax
 
-These examples follow the [official ChatGPT prompting guide](https://learn.chatgpt.com/docs/prompting). For GPT-6.1 Sol, consult the [official model documentation](https://developers.openai.com/api/docs/models/gpt-6.1-sol) and check provider availability and tool compatibility. Choosing a prompt does not change the configured model or reasoning setting.
+Add local MCP tools when a task needs information beyond your notes. Trusted tools can run automatically; tools requiring approval wait for you.
 
-GPT-6.1 Sol requires the Responses API for OpenAI tool calling. The plugin’s current direct OpenAI connection uses Chat Completions, so native tool research with that model requires a provider implementation update. Prompt changes alone do not establish compatibility.
+With **Answers informed by installed plugins** enabled and **Context7 MCP** connected, name an active plugin in your question to retrieve its documentation before generation. Use this for plugin-specific queries or templates; the lookup does not verify your settings, installed-version compatibility, or code execution.
 
-## Get started in three steps
+### Start with one question you actually care about
 
-1. Open **Settings → Community plugins** in Obsidian and search for **Superpower Inside**.
-2. Install, enable, and connect the AI model you prefer.
-3. Open the sidebar and ask your vault something you've been wondering about.
+1. Install and enable **Superpower Inside** in Obsidian's **Community plugins**.
+2. Add an AI connection in the plugin settings, test a model, and select it in chat.
+3. Open the chat sidebar and try one of these:
 
-Smart keyword search and read-only vault tools work immediately—no extra setup required. The built-in private search model is selected by default for meaning-based search. Advanced indexing runs quietly in the background and only surfaces when it needs your attention.
+> **Project:** “In @[Projects/Launch], what is still blocking launch? Give me a table of evidence, recorded owners, and next actions.”
+>
+> **Reading:** “Compare the claims in @#research. Where do they agree, and where does the evidence differ?”
+>
+> **Writing:** “Use @tabs to draft an outline. Keep my arguments and cite the notes behind them.”
 
-#### Manual install
-
-1. Download the [latest GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest).
-2. Copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/superpower-inside/`.
-3. Reload community plugins and enable **Superpower Inside**.
-
-### Connect with ChatGPT browser sign-in
-
-Choose **OpenAI API** for an API key, or **OpenAI ChatGPT (OAuth)** to use your ChatGPT subscription through the Codex backend.
-
-1. In **Settings → Superpower Inside → AI connections**, add a connection and select **OpenAI ChatGPT (OAuth)**.
-2. Click **Sign in with ChatGPT**. Complete sign-in in the browser that opens, or open the displayed sign-in link yourself. The plugin receives the local callback and connects automatically; no relay URL, API key, or pasted token is needed.
-3. Fetch or manually add a model available to your account, run its generation test, then select it in chat. Keep a separate connection for embeddings, such as the built-in local search model.
-
-The plugin renews OAuth tokens automatically and restores the connection on this device after restart. **Disconnect** removes its saved credentials. This follows the [Codex browser sign-in flow](https://learn.chatgpt.com/docs/auth); account access, supported models, and subscription limits depend on OpenAI. Responses are buffered by Obsidian, and stopping a run may not cancel inference already running on the server. Contract tests cover local OAuth callbacks and provider behavior; they do not verify a live subscription login or model inference.
+Keyword search and built-in vault tools do not require an embedding index. Let meaning-based indexing finish in the background while you start.
 
 <details>
-<summary><strong>Privacy, security, and honest limits</strong></summary>
+<summary><strong>ChatGPT sign-in, manual install, and external tools</strong></summary>
 
-- Settings and API keys are stored unencrypted in this device's Obsidian local plugin storage and plugin `data.json`. They can be included in vault sync and local backups.
-- ChatGPT OAuth credentials are stored unencrypted only in this device's Obsidian local storage, separately from vault settings and `data.json`. Protect local backups and disconnect accounts you no longer use.
-- Chat messages, selected notes, retrieved passages, and tool results may be sent to the AI model or connected tools you configure.
-- Whole-vault research inventories and screens eligible files locally. Only bounded evidence from locally selected files is sent to your chosen AI model, and coverage or transfer limits are stated in the answer.
-- The built-in vault tools are read-only. They can search, verify retrieved passages against current files, follow note links, read bounded ranges, list files, and report statistics—but they cannot create, modify, move, or delete files.
-- Search indexes are stored locally in Obsidian's browser storage for this vault.
-- Connected external tools launch local commands you configure. Trusted tools run automatically; risky ones stay behind your approval. Only add tools you trust.
-- If the built-in search model file is missing, the plugin downloads the matching release asset once, verifies its integrity, and then reuses it offline. No note content is included in that download request.
-- Desktop-only features mean mobile Obsidian is not supported.
+- **ChatGPT:** add an **OpenAI ChatGPT (OAuth)** connection and click **Sign in with ChatGPT**. Complete browser sign-in, fetch or add an available model, and run its generation test. Embeddings use a separate connection, such as a built-in local model.
+- **API key:** choose **OpenAI API** instead of the ChatGPT connection.
+- **Manual install:** download the plugin files from a GitHub Release into `.obsidian/plugins/superpower-inside/`, then reload and enable the plugin. Include every shipped runtime asset, not just `main.js`, `manifest.json`, and `styles.css`.
+- **MCP:** open **External tools → Server setup → Advanced JSON editor**. Use a top-level `mcpServers` object with named entries containing `command`, optional `args`, and optional string-valued `env`. Local stdio servers are supported; remote HTTP/SSE configurations are not. Applying the editor replaces the configured server list, so keep existing entries.
 
 </details>
+
+<details>
+<summary><strong>Your data and the limits to know</strong></summary>
+
+- Exclude notes with `superpower-inside-exclude: true` in top-level YAML, or use the document exclusion command. Path and extension exclusions also apply to search, indexing, and built-in vault tools.
+- Chat messages, selected passages, and tool results may go to the AI provider or tools you configure. Local search does not make remote chat private.
+- API keys are stored unencrypted in local plugin settings and `data.json`; vault sync and backups may include them. ChatGPT OAuth credentials are stored separately in this device's Obsidian local storage, also unencrypted.
+- Local model downloads contain no note content. Indexes stay in local browser storage for this vault.
+- AI can miss evidence or make mistakes. A source link helps you check a claim; it does not guarantee the claim is correct. General knowledge and new drafts may have no vault source.
+- Responses are buffered rather than shown token by token. Stopping a run may not cancel inference already running at the provider.
+- Mobile Obsidian is not supported.
+
+</details>
+
+**Pick a question you've been putting off. [Ask your vault.](https://obsidian.md/plugins?id=superpower-inside)**
 
 ---
 
 ## 한국어
 
-> **답은 이미 볼트 안에 있습니다. 이제 노트를 하나씩 뒤지는 대신, 볼트 전체에 질문하세요.**
+> **읽고, 적고, 저장까지 했잖아요. 이제 써먹으세요.**
 
-Superpower Inside는 볼트 전체를 AI 리서치 파트너로 바꿉니다. 질문 하나만 던지면 관련 노트를 검색하고, 필요한 부분을 읽고, 흩어진 단서를 연결한 뒤, 바로 열어서 확인할 수 있는 출처와 함께 답합니다.
+Superpower Inside는 Obsidian 안에서 노트를 찾아 읽고, 비교하고, 글로 만드는 AI 플러그인입니다. 지난 결정·흩어진 연구 자료·초안에 필요한 근거를 질문으로 찾고, 볼트 출처를 열어 직접 확인하세요.
 
-**[커뮤니티 플러그인에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[최신 릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
+- **그때 내린 결정, 다시 찾으세요.** 무엇이 바뀌었고 어디에 기록됐는지 물어보세요.
+- **읽은 만큼 써먹으세요.** 독서 노트를 개요·비교표·학습 질문으로 꺼내세요.
+- **지금 하던 일을 이어가세요.** 현재 노트·열린 탭·폴더·태그를 채팅에 바로 연결하세요.
 
-| 파일 트리가 아니라 볼트에 질문하세요 | 답변의 근거를 확인하세요 | 원하는 AI를 연결하세요 |
-| --- | --- | --- |
-| 볼트의 조사 대상 노트를 함께 찾고 답변에서 확인 범위와 한계를 확인합니다. | 제공된 출처를 열어 원문이 주장을 뒷받침하는지 검증하세요. | OpenAI, Claude, Ollama, OpenRouter 또는 OpenAI 호환 서버를 연결하세요. |
+초능력은 내가 남긴 관찰, 자료, 결정 안에 있습니다. Superpower Inside는 그 기록을 다음 작업에 쓸 수 있게 꺼내줍니다.
 
-> [!IMPORTANT]
-> **데스크톱 전용**, 무료, 오픈소스입니다. 플러그인 자체에는 유료 등급이나 계정 가입이 없습니다. 선택한 AI 제공자는 계정과 별도 사용 요금을 요구할 수 있습니다.
+**[Obsidian에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
----
+**무료·오픈소스·데스크톱 전용입니다.** 플러그인 구독료나 회원가입은 없으며, 선택한 AI 제공자의 계정·요금은 별도입니다. [서드파티 고지](THIRD_PARTY_NOTICES.md).
 
-### 작동 방식
+### 이런 분께 잘 맞습니다
 
-```
-자연어로 질문 → 볼트를 검색 → 근거를 읽고 연결 → 출처와 함께 답변
-```
+- **이미 ChatGPT를 구독하는 분:** 브라우저 로그인으로 연결하고 Codex 서버를 통해 계정에서 지원하는 모델을 사용하세요. 계정별 접근 권한과 사용 한도는 적용됩니다.
+- **연구자·학생:** 자료의 주장을 비교하고, 서로 다른 결론을 살펴보고, 공부한 내용으로 복습 질문을 만드세요.
+- **프로젝트 담당자·개발자:** 회의록과 기획 노트에서 결정·장애 요인·기록된 담당자·다음 행동을 모으세요.
+- **작가·지식 노동자:** 노트를 다른 앱에 하나씩 복사하지 않고, 읽어 둔 자료와 논거로 글을 쓰세요.
 
-답변, 제공된 출처와 작업 기록을 확인하고 재사용하세요. 조사 범위는 대상 파일, 도구 한도와 검증 가능한 근거에 따라 제한됩니다.
+### 이런 볼트에서 먼저 써보세요
 
-### 이런 점이 달라집니다
+“분명 어딘가에 적었는데.” 이 말이 나오는 볼트라면 시작하기 좋습니다.
 
-**🔍 기억하고 있어야만 찾을 수 있는 게 아니라, 궁금한 걸 그냥 물어보세요**
+- 기획·회의록·의사결정이 시간순으로 쌓인 **프로젝트 볼트**.
+- 같은 주제를 다루지만 주장과 결론이 다른 **연구·독서 볼트**.
+- 서로 연결된 생각을 다음 글이나 업무에 쓰고 싶은 **개인 지식 볼트**.
 
-키워드 검색은 그 단어가 들어간 파일만 찾아줍니다. Superpower Inside는 주제, 변화, 모순, 요약처럼 *질문 자체*를 이해하고 볼트 전체에서 답을 찾습니다. 어디에 근거가 있는지 미리 알 필요가 없습니다.
+읽을 수 있는 본문에 제목·날짜·링크·태그가 있으면 비교와 탐색에 도움이 됩니다.
 
-**📎 볼트 기반 주장의 출처를 확인하세요**
+- Markdown·일반 텍스트·코드·JSON·CSV를 지원합니다.
+- 스캔 PDF·이미지·음성은 먼저 텍스트로 준비하세요.
 
-출처 탭은 노트와 검색된 구간을 목록으로 보여줍니다. 원문 열기, 링크 복사, 활성 노트 삽입으로 이어집니다. 일반 지식과 새로 작성한 제안에는 볼트 출처가 없을 수 있으므로 주장의 근거를 확인하세요.
+### 기능을 이렇게 써보세요
 
-**🧭 놓치기 쉬운 연결을 보여줍니다**
+#### 1. 노트를 넘나들며 질문하세요
 
-키워드·의미 검색과 채팅 도구는 같은 지원 텍스트 파일을 사용합니다. Markdown, 일반 텍스트, 코드 등에서 찾은 구간은 현재 원문을 확인한 뒤 답변 근거로 사용합니다.
+파일명을 몰라도 키워드·의미 검색으로 관련 자료를 찾습니다. 볼트 도구는 필요한 구간을 읽고, 노트 링크를 따라가며, 찾은 근거를 비교할 수 있습니다.
 
-JSON 키, CSV 헤더·레코드, 코드 블록 경계도 공통 검색 구간에 보존합니다. 볼트 통계 도구에서는 파일별 원문·키워드·임베딩 처리 상태를 구분해 확인할 수 있습니다.
+> @[Projects/Launch]의 최초 기획과 회의 결정을 비교해줘. 무엇이 바뀌었는지 출처와 다음 행동을 함께 보여줘.
 
-**🏠 내장 검색은 기기 안에서 실행됩니다**
+- 폴더·태그로 범위를 좁히거나, 검색 대상 볼트 파일에서 찾아달라고 요청하세요.
+- 검색 구간에는 제목·코드 경계·JSON 키·CSV 헤더가 함께 보존됩니다.
+- 답변의 조사 범위를 확인하세요. 제한된 조사를 모든 노트를 읽은 결과로 받아들이지는 마세요.
 
-내장 임베딩 모델과 검색 인덱스는 기기 안에서 실행됩니다. 모델 파일은 최초에 내려받을 수 있습니다. 채팅, 요약과 선택적인 원격 임베딩은 설정한 제공자에게 내용을 전송할 수 있습니다. 이 작업도 기기 안에서 처리하려면 로컬 제공자를 사용하세요.
+#### 2. 답변의 근거를 바로 여세요
 
-**✋ 언제든 중단하고, 언제든 확인하세요**
+출처에는 파일 경로와 확인 가능한 제목·줄 위치가 표시됩니다. 원문을 열고, 링크를 복사하고, 출처 구간을 활성 노트에 삽입할 수 있습니다.
 
-조사 중이라면 실행 중간에 멈출 수 있습니다. 무엇을 검색했고, 무엇을 찾았고, 무엇을 커버하지 못했는지 답변에 명확히 보여줍니다. 문제가 생기면 기술적 오류 대신 다음 행동을 먼저 보여줍니다.
+- 현재 파일과 대조한 근거와 추가 확인이 필요한 자료를 구분해 보세요.
+- 필요할 때 답변 아래의 출처와 작업 기록을 펼치세요.
+- 선택한 자료가 모델 한도를 넘으면 컨텍스트 제한과 빠진 참조를 확인하세요.
 
-**🧹 로그 더미가 아니라 정돈된 화면**
+#### 3. 지금 화면에 열린 작업을 가져오세요
 
-최종 답변, 작업 기록, 출처가 분리되어 보입니다. 결론을 먼저, 근거는 원할 때, 불필요한 건 보지 않아도 됩니다.
+`@`를 입력하고 참조를 고르세요. 보내기 전에 입력창에서 참조를 미리 확인할 수 있습니다.
 
-### 설치 후 가장 먼저 던져볼 질문
-
-```
-이 볼트의 핵심 주제를 정리하고, 가장 강한 근거마다 출처를 달아줘.
-
-기획 노트와 최종 회의록 사이에서 바뀐 의사결정을 찾아줘.
-
-@[Research]에서 반복되는 주장 중 확인한 노트에 근거가 없는 것을 찾아줘. 근거 부족과 틀린 주장을 구분해줘.
-
-@[Projects/Launch]의 장애 요인, 근거, 담당자와 다음 행동을 표로 정리해줘. 담당자가 없으면 미확인으로 표시해줘.
-```
-
-### 정확한 범위를 지정하고 싶을 때
-
-| 이렇게 쓰면 | 이렇게 작동합니다 |
+| 참조 | 가져오는 범위 |
 | --- | --- |
-| `@note.md` | 특정 노트를 대화에 고정합니다. |
-| `@[folder/path]` | 조사 범위를 한 폴더로 좁힙니다. |
-| `@server` | 이 질문에 연결된 외부 도구를 가져옵니다. |
+| `@current` | 현재 활성 노트. |
+| `@tabs` | Obsidian 탭에 열린 파일. |
+| `@note.md` | 지정한 파일 하나. |
+| `@[Projects/Launch]` | 해당 폴더의 검색 대상 파일. |
+| `@#research` | 해당 Obsidian 태그와 하위 태그가 붙은 노트. |
+| `@server` | 연결한 외부 도구 서버. |
 
-파일·폴더 멘션으로 볼트 조사에 초점을 맞출 수 있습니다. 외부 서버만 멘션하면 그 턴의 볼트 자동 검색을 건너뜁니다. 볼트 근거도 필요하면 파일이나 폴더를 함께 멘션하세요.
+외부 서버만 멘션하면 그 질문의 볼트 자동 검색은 건너뜁니다. 볼트 근거도 필요하면 노트·폴더 등의 참조를 함께 넣으세요.
 
-### 외부 도구 연결하기
+#### 4. 모아 둔 노트를 결과물로 바꾸세요
 
-**설정 → Superpower Inside → 외부 도구 → 서버 설정 → 고급 JSON 편집**을 엽니다. 편집기는 [Claude Desktop의 `mcpServers` 관례](https://modelcontextprotocol.io/docs/develop/connect-local-servers)를 따릅니다. MCP 프로토콜 자체가 정한 설정 파일 형식은 아닙니다.
+프리셋을 고르고 원하는 결과를 말하세요. 반복해서 쓰는 요구는 프롬프트 보관함에 저장하고, 전체 기본값이나 현재 대화에 적용할 수 있습니다.
 
-최상위 `mcpServers` 객체 안에 서버 이름별 설정을 넣습니다. 각 서버의 `command`는 필수 문자열입니다. `args`는 문자열 배열, `env`는 문자열 값을 담는 객체이며 둘 다 생략할 수 있습니다. 플러그인은 로컬 **stdio** 서버를 지원합니다. `url`과 `headers`를 쓰는 원격 HTTP/SSE 설정은 지원하지 않습니다. 주석과 마지막 쉼표가 없는 JSON을 사용하세요.
+- **독서·연구:** 논거 비교, 자료 요약, 이해도 점검.
+- **회의·프로젝트:** 결정 정리, 미해결 질문, 다음 행동.
+- **글쓰기·회고:** 노트 기반 초안, 주간 회고, 이야기 설정의 일관성 점검.
+- **정리·기술 기록:** 목차 제안, 기록된 근거로 문제 조사.
 
-서버를 추가할 때는 기존 서버 항목을 유지하세요. **서버 설정 적용**을 누르면 편집기 내용으로 서버 목록 전체를 교체합니다.
+내장 볼트 도구는 읽기 전용이므로, 위 작업은 AI에게 결과물이나 제안을 요청하는 방식입니다. 초안과 변경 제안은 검토한 뒤 사용하세요.
 
-### 바로 쓸 수 있는 답변 요청하기
+#### 5. AI는 고르고, 검색은 로컬로 쓰세요
 
-필요한 결과, 관련 노트와 중요한 형식·경계를 알려주세요. 간단한 작업에는 짧은 질문이면 충분합니다.
+ChatGPT 브라우저 로그인·OpenAI API·Claude·Ollama·OpenRouter·OpenAI 호환 서버를 연결하고 원하는 모델을 테스트해 선택하세요. 사용 가능한 기능은 모델과 연결 방식에 따라 다릅니다.
 
-```text
-@[Projects/Launch]의 출시 결정을 프로젝트 담당자가 볼 수 있게 비교해줘.
-결정, 이전, 이후, 출처를 표로 쓰고 기록된 날짜는 바꾸지 마.
-이유가 기록된 경우와 추론한 경우를 구분하고 확인하지 못한 범위를 밝혀줘.
-```
+- 짧은 영어 노트에는 **Ternlight**(약 10 MB), 한국어 등 다국어 노트에는 **EmbeddingGemma 300M**(약 1.27 GB)을 선택하세요. 설정에서 파일을 관리할 수 있으며, 모델을 바꾸면 인덱스를 다시 만듭니다.
+- 검색 인덱스와 내장 임베딩은 기기 안에 남습니다. 의미 검색은 모델 준비와 인덱싱이 끝난 뒤 사용할 수 있습니다.
+- 채팅과 선택한 원격 임베딩은 제공자에게 내용을 보낼 수 있습니다. 채팅 내용도 기기 안에 두려면 로컬 채팅 제공자를 함께 사용하세요.
 
-답변을 본 뒤 “근거는 유지하고 배경을 줄여줘. 다음 행동을 먼저 써줘”처럼 후속 요청으로 다듬으세요. 반복되는 선호는 프롬프트 보관함에, 이번 작업에만 필요한 요구는 채팅 메시지에 둡니다. 채팅의 프롬프트 보관함에서 전역 기본값과 현재 세션의 프롬프트를 적용할 수 있습니다. 프롬프트 생성은 대표 구간을 포함한 제한된 임베딩 인덱스 요약을 선택한 생성 모델에 전송합니다. 생성된 본문을 검토한 뒤 적용하세요.
+#### 6. 외부 도구와 플러그인 문서를 연결하세요
 
-예시는 [ChatGPT 공식 프롬프팅 가이드](https://learn.chatgpt.com/docs/prompting)를 따릅니다. GPT-6.1 Sol을 사용할 때는 [공식 모델 문서](https://developers.openai.com/api/docs/models/gpt-6.1-sol)와 제공자의 모델·도구 지원을 확인하세요. 프롬프트를 선택해도 설정한 모델과 추론 강도는 바뀌지 않습니다.
+노트 밖의 정보가 필요하면 로컬 MCP 도구를 연결하세요. 신뢰한 도구는 자동 실행할 수 있고, 승인이 필요한 도구는 기다립니다.
 
-GPT-6.1 Sol의 OpenAI 도구 호출은 Responses API가 필요합니다. 현재 플러그인의 직접 OpenAI 연결은 Chat Completions를 사용하므로, 이 모델의 네이티브 도구 조사는 provider 구현 변경이 필요합니다. 프롬프트 수정만으로 호환성이 확보되지는 않습니다.
+**설치된 플러그인에 맞춘 답변**을 켜고 **Context7 MCP**를 연결하세요.
 
-### 세 단계면 시작됩니다
+- 질문에 활성 플러그인 이름을 적으면 해당 문서를 먼저 조회해 전용 쿼리나 템플릿 작성에 활용합니다.
+- 내 설정·설치 버전과의 호환성·코드 실행 결과는 별도로 확인해야 합니다.
 
-1. Obsidian **설정 → 커뮤니티 플러그인**에서 **Superpower Inside**를 검색합니다.
-2. 설치하고 활성화한 뒤 원하는 AI 모델을 연결합니다.
-3. 사이드바를 열고 볼트에 대해 궁금했던 질문을 던집니다.
+### 계속 미뤄 둔 질문 하나로 시작하세요
 
-키워드 검색과 읽기 전용 볼트 도구는 추가 설정 없이 바로 작동합니다. 내장 비공개 검색 모델이 기본으로 선택되어 의미 기반 검색도 즉시 사용할 수 있습니다. 고급 인덱싱은 조용히 백그라운드에서 진행되고, 정말 필요할 때만 알려줍니다.
+1. Obsidian **커뮤니티 플러그인**에서 **Superpower Inside**를 설치하고 활성화하세요.
+2. 플러그인 설정에서 AI를 연결하고 모델을 테스트한 뒤 채팅에서 선택하세요.
+3. 채팅 사이드바를 열고 질문하세요.
 
-#### 수동 설치
+> **프로젝트:** “@[Projects/Launch]에서 출시를 막는 일이 뭐야? 근거·기록된 담당자·다음 행동을 표로 정리해줘.”
+>
+> **독서:** “@#research의 주장을 비교해줘. 어디서 동의하고, 어떤 근거에서 갈려?”
+>
+> **글쓰기:** “@tabs로 글의 개요를 만들어줘. 내 논거를 유지하고 근거 노트를 달아줘.”
 
-1. [최신 GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest)를 내려받습니다.
-2. `main.js`, `manifest.json`, `styles.css`를 `.obsidian/plugins/superpower-inside/`에 복사합니다.
-3. 커뮤니티 플러그인을 다시 불러온 뒤 **Superpower Inside**를 활성화합니다.
-
-### 브라우저 로그인으로 ChatGPT 연결하기
-
-API 키로 연결하려면 **OpenAI API**, ChatGPT 구독을 Codex 서버에서 사용하려면 **OpenAI ChatGPT (OAuth)**를 선택하세요.
-
-1. **설정 → Superpower Inside → AI 연결**에서 연결을 추가하고 **OpenAI ChatGPT (OAuth)**를 선택하세요.
-2. **ChatGPT로 로그인**을 누르고 열린 브라우저에서 로그인을 완료하세요. 표시된 로그인 주소를 직접 열어도 됩니다. 플러그인이 로컬 콜백을 받아 자동으로 연결하므로 중계 URL·API 키·토큰 붙여넣기가 필요하지 않습니다.
-3. 계정에서 사용할 모델을 가져오거나 직접 추가하고 생성 테스트를 실행한 뒤 채팅에서 선택하세요. 임베딩은 내장 로컬 검색 모델 등 별도 연결을 유지하세요.
-
-토큰은 자동 갱신되며 이 기기에서 재시작해도 연결이 복원됩니다. **연결 해제**는 저장된 인증 정보를 삭제합니다. [Codex 브라우저 로그인 흐름](https://learn.chatgpt.com/docs/auth)을 사용하며 계정 접근 권한·지원 모델·구독 사용 한도는 OpenAI에서 결정합니다. Obsidian은 응답을 버퍼링하며 실행 중단 시 서버에서 이미 진행 중인 추론은 취소되지 않을 수 있습니다. 계약 테스트는 로컬 OAuth 콜백과 provider 동작을 검증하며 실제 구독 로그인이나 모델 추론 성공을 검증하지 않습니다.
+키워드 검색과 내장 볼트 도구에는 임베딩 인덱스가 필요하지 않습니다. 먼저 질문하고, 의미 검색용 인덱싱은 백그라운드에서 마치세요.
 
 <details>
-<summary><strong>개인정보, 보안, 솔직한 한계</strong></summary>
+<summary><strong>ChatGPT 로그인·수동 설치·외부 도구 설정</strong></summary>
 
-- 설정과 API 키는 암호화되지 않은 값으로 이 기기의 Obsidian 로컬 플러그인 저장소와 플러그인 `data.json`에 보관됩니다. 볼트 동기화와 로컬 백업에 포함될 수 있습니다.
-- ChatGPT OAuth 인증 정보는 볼트 설정과 `data.json`에서 분리해 이 기기의 Obsidian 로컬 저장소에만 암호화 없이 보관됩니다. 로컬 백업을 보호하고 더 이상 사용하지 않는 계정은 연결 해제하세요.
-- 채팅 메시지, 선택한 노트, 검색된 구간, 도구 결과는 사용자가 설정한 AI 모델이나 연결된 도구로 전송될 수 있습니다.
-- 볼트 전체 리서치는 대상 파일 목록과 선별을 로컬에서 수행합니다. 로컬에서 고른 파일의 제한된 근거만 설정한 AI 모델로 전송하며, 확인 범위나 전송 한계는 답변에 표시합니다.
-- 내장 볼트 도구는 읽기 전용입니다. 검색, 현재 파일에 대한 검증, 노트 연결 확인, 제한된 범위 읽기, 파일 목록, 통계 보고는 하지만 파일을 생성·수정·이동·삭제할 수 없습니다.
-- 검색 인덱스는 해당 볼트의 Obsidian 브라우저 저장소에 로컬로 보관됩니다.
-- 연결된 외부 도구는 사용자가 설정한 로컬 명령을 실행합니다. 신뢰한 도구는 자동 실행되고, 위험한 도구는 승인 뒤에 실행됩니다. 신뢰하는 도구만 추가하세요.
-- 내장 검색 모델 파일이 없으면 같은 버전의 릴리스 자산을 한 번 내려받아 무결성을 검증한 뒤 오프라인으로 재사용합니다. 이 다운로드 요청에는 노트 내용이 포함되지 않습니다.
-- 데스크톱 전용 기능을 사용하므로 모바일 Obsidian은 지원하지 않습니다.
+- **ChatGPT:** **OpenAI ChatGPT (OAuth)** 연결을 추가하고 **ChatGPT로 로그인**을 누르세요. 브라우저 로그인을 마친 뒤 사용 가능한 모델을 가져오거나 추가하고 생성 테스트를 실행하세요. 임베딩에는 내장 로컬 모델 등 별도 연결을 사용합니다.
+- **API 키:** ChatGPT 연결 대신 **OpenAI API**를 선택하세요.
+- **수동 설치:** GitHub Release의 플러그인 파일을 `.obsidian/plugins/superpower-inside/`에 넣고 플러그인을 다시 불러와 활성화하세요. `main.js`·`manifest.json`·`styles.css` 외에 릴리스에 포함된 런타임 자산도 모두 필요합니다.
+- **MCP:** **외부 도구 → 서버 설정 → 고급 JSON 편집**에서 최상위 `mcpServers` 안에 서버별 `command`, 선택 항목 `args`, 문자열 값의 `env`를 넣으세요. 로컬 stdio 서버를 지원하며 원격 HTTP/SSE 설정은 지원하지 않습니다. 적용하면 서버 목록 전체가 교체되므로 기존 항목을 유지하세요.
 
 </details>
 
----
+<details>
+<summary><strong>데이터와 사용 한계</strong></summary>
 
-## License
+- 노트 맨 위 YAML에 `superpower-inside-exclude: true`를 넣거나 문서 제외 명령으로 검색 대상에서 빼세요. 경로·확장자 제외도 검색·인덱싱·내장 볼트 도구에 함께 적용됩니다.
+- 채팅 메시지·선택한 구간·도구 결과는 설정한 AI 제공자나 도구로 전송될 수 있습니다. 검색이 로컬이어도 원격 채팅 내용은 전송됩니다.
+- API 키는 로컬 플러그인 설정과 `data.json`에 암호화 없이 저장되며 볼트 동기화·백업에 포함될 수 있습니다. ChatGPT OAuth 자격 증명은 이 기기의 Obsidian 로컬 저장소에 별도로 저장되며, 역시 암호화되지 않습니다.
+- 로컬 모델 다운로드에 노트 내용은 포함되지 않습니다. 인덱스는 해당 볼트의 로컬 브라우저 저장소에 남습니다.
+- AI는 근거를 놓치거나 틀릴 수 있습니다. 출처는 주장을 확인하는 수단이며 정답 보장은 아닙니다. 일반 지식과 새 초안에는 볼트 출처가 없을 수 있습니다.
+- 응답은 토큰별 실시간 표시가 아니라 모아서 수신합니다. 중단해도 제공자에서 이미 실행 중인 추론은 계속될 수 있습니다.
+- 모바일 Obsidian은 지원하지 않습니다.
 
-[MIT](LICENSE)
+</details>
 
-[Third-party notices](THIRD_PARTY_NOTICES.md)
+**쌓아 둔 기록에, 오늘 필요한 질문을 던지세요. [볼트에서 시작하세요.](https://obsidian.md/plugins?id=superpower-inside)**
