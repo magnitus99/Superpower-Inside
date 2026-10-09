@@ -35,7 +35,7 @@ describe('채팅 provider 실행 연결', () => {
         text: '',
         json: {
           data: [
-            { id: 'working', context_length: 8192, max_completion_tokens: 512 },
+            { id: 'working', context_length: 128000, max_completion_tokens: 65536 },
             { id: 'other', context_length: 128000 },
           ],
         },
@@ -47,8 +47,8 @@ describe('채팅 provider 실행 연결', () => {
       } as Awaited<ReturnType<typeof requestUrl>>);
     const resolved = await prepareChatProviderForModel(settings, 'profile:remote:working');
     expect(resolved?.provider.contextBudget).toMatchObject({
-      contextTokens: 8192,
-      outputTokens: 512,
+      contextTokens: 128000,
+      outputTokens: 65536,
       source: 'provider',
     });
     expect(vi.mocked(requestUrl).mock.calls[0]?.[0]).toMatchObject({
@@ -63,7 +63,7 @@ describe('채팅 provider 실행 연결', () => {
         : {},
     ).toMatchObject({
       model: 'working',
-      max_tokens: 512,
+      max_tokens: 65536,
     });
   });
 

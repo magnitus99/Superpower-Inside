@@ -36,7 +36,10 @@ export async function fetchModelContext(
   } finally {
     if (timeout !== undefined) window.clearTimeout(timeout);
   }
-  const plan = planModelContextRust(metadata);
+  const plan = planModelContextRust({
+    ...(typeof metadata === 'object' && metadata !== null ? metadata : {}),
+    nativeOutput: strategy === 'openAIChatGPT',
+  });
   if (!plan) throw new Error(t('chatInputBudgetExceeded'));
   return plan;
 }
@@ -46,30 +49,43 @@ export function withModelContext(
   provider: LLMProvider,
   contextBudget: ModelContextBudget,
 ): LLMProvider {
-  const optionsFor = (options?: ChatOptions): ChatOptions => ({
-    ...options,
-    inputBudgetBytes: contextBudget.inputBytes,
-    maxOutputTokens: contextBudget.outputTokens,
-    contextTokens: contextBudget.contextTokens,
-  });
+  const optionsFor = (usedBytes: number, options?: ChatOptions): ChatOptions => {
+    const requestBudget = planModelContextRust({
+      contextLength: contextBudget.sharedContextTokens,
+      maxInputTokens: contextBudget.maxInputTokens,
+      maxOutputTokens: contextBudget.outputTokens,
+      usedInputBytes: usedBytes,
+    });
+    if (!requestBudget) throw new Error(t('chatInputBudgetExceeded'));
+    return {
+      ...options,
+      inputBudgetBytes: contextBudget.inputBytes,
+      maxOutputTokens: contextBudget.nativeOutput ? undefined : requestBudget.outputTokens,
+      contextTokens: contextBudget.contextTokens,
+    };
+  };
   return {
     capability: provider.capability,
     contextBudget,
     getObservedModel: () => provider.getObservedModel?.(),
-    chat: async (messages, temperature, tools, options) =>
-      provider.chat(
-        prepareProviderRequest(messages, tools, contextBudget.inputBytes).messages,
+    chat: async (messages, temperature, tools, options) => {
+      const request = prepareProviderRequest(messages, tools, contextBudget.inputBytes);
+      return provider.chat(
+        request.messages,
         temperature,
         tools,
-        optionsFor(options),
-      ),
-    streamChat: async (messages, onChunk, temperature, tools, options) =>
-      provider.streamChat(
-        prepareProviderRequest(messages, tools, contextBudget.inputBytes).messages,
+        optionsFor(request.usedBytes, options),
+      );
+    },
+    streamChat: async (messages, onChunk, temperature, tools, options) => {
+      const request = prepareProviderRequest(messages, tools, contextBudget.inputBytes);
+      return provider.streamChat(
+        request.messages,
         onChunk,
         temperature,
         tools,
-        optionsFor(options),
-      ),
+        optionsFor(request.usedBytes, options),
+      );
+    },
   };
 }

@@ -19,10 +19,11 @@ describe('모델 정보와 실제 전송 예산', () => {
     const config = { apiKey: '', models: [], enabled: true };
     vi.mocked(fetchAnthropicModelInfo).mockResolvedValue({
       id: 'selected',
-      contextLength: 200000,
+      maxInputTokens: 200000,
       maxOutputTokens: 8192,
     });
     expect((await fetchModelContext('claude', config, 'selected')).contextTokens).toBe(200000);
+    expect((await fetchModelContext('claude', config, 'selected')).outputTokens).toBe(8192);
     expect(fetchAnthropicModelInfo).toHaveBeenLastCalledWith(config, 'selected');
     vi.mocked(fetchOllamaModelInfo).mockResolvedValue({ id: 'local', contextLength: 8192 });
     expect((await fetchModelContext('ollama', config, 'local')).contextTokens).toBe(8192);
@@ -65,7 +66,7 @@ describe('모델 정보와 실제 전송 예산', () => {
     const large = planModelContextRust({ contextLength: 128000 });
     expect(small?.outputTokens).toBe(1024);
     expect(large!.inputBytes).toBeGreaterThan(small!.inputBytes);
-    expect(small!.inputBytes + small!.outputTokens + small!.marginTokens).toBe(8192);
+    expect(small!.marginTokens).toBe(0);
     for (const contextLength of [1, 2, 32, 1024]) {
       const budget = planModelContextRust({ contextLength })!;
       expect(budget.inputBytes + budget.outputTokens + budget.marginTokens).toBe(contextLength);
@@ -73,6 +74,81 @@ describe('모델 정보와 실제 전송 예산', () => {
     for (const value of [0, -1, 1.5, '128000', null]) {
       expect(planModelContextRust({ contextLength: value })?.contextTokens).toBe(50000);
     }
+  });
+
+  it('공급자 출력 한도는 4,096이나 컨텍스트의 ¼로 줄이지 않고 누락 항목만 기본값을 쓴다', () => {
+    expect(planModelContextRust({ contextLength: 128_000, maxOutputTokens: 65_536 })).toMatchObject(
+      {
+        outputTokens: 65_536,
+        outputSource: 'provider',
+        inputBytes: 127_999,
+      },
+    );
+    expect(planModelContextRust({ contextLength: 128_000 })).toMatchObject({
+      contextTokens: 128_000,
+      outputTokens: 4096,
+      outputSource: 'fallback',
+      source: 'provider',
+    });
+    expect(planModelContextRust({ maxOutputTokens: 65_536 })).toMatchObject({
+      contextTokens: 50_000,
+      outputTokens: 65_536,
+      outputSource: 'provider',
+      source: 'fallback',
+    });
+    expect(
+      planModelContextRust({ maxInputTokens: 200_000, maxOutputTokens: 64_000 }),
+    ).toMatchObject({
+      inputBytes: 200_000,
+      outputTokens: 64_000,
+      source: 'provider',
+    });
+  });
+
+  it('공유 컨텍스트는 실제 요청 크기만큼만 출력 공간을 조정하고 별도 입력 한도에서는 빼지 않는다', async () => {
+    const chat = vi.fn<LLMProvider['chat']>().mockResolvedValue('answer');
+    const streamChat = vi.fn<LLMProvider['streamChat']>().mockResolvedValue(undefined);
+    const underlying = { chat, streamChat, capability: {} } as unknown as LLMProvider;
+    const provider = withModelContext(
+      underlying,
+      planModelContextRust({ contextLength: 8192, maxOutputTokens: 8192 })!,
+    );
+    await provider.chat([{ role: 'user', content: 'a'.repeat(5000) }]);
+    const options = chat.mock.calls[0]?.[3];
+    expect(options?.maxOutputTokens).toBeGreaterThan(0);
+    expect(options?.maxOutputTokens).toBeLessThan(3192);
+    await provider.streamChat([{ role: 'user', content: 'a'.repeat(5000) }], vi.fn());
+    expect(streamChat.mock.calls[0]?.[4]?.maxOutputTokens).toBe(options?.maxOutputTokens);
+    const independent = withModelContext(
+      underlying,
+      planModelContextRust({ maxInputTokens: 8192, maxOutputTokens: 8192 })!,
+    );
+    await independent.chat([{ role: 'user', content: 'a'.repeat(5000) }]);
+    expect(chat.mock.calls[1]?.[3]?.maxOutputTokens).toBe(8192);
+  });
+
+  it('ChatGPT 연결은 모델 기본 출력을 유지하고 임의 출력 옵션을 보내지 않는다', async () => {
+    vi.mocked(fetchProviderModelsForStrategy).mockResolvedValue({
+      valid: true,
+      models: ['selected'],
+      modelDetails: [{ id: 'selected', contextLength: 128_000 }],
+    });
+    const budget = await fetchModelContext(
+      'openAIChatGPT',
+      { apiKey: '', models: [], enabled: true },
+      'selected',
+    );
+    expect(budget.nativeOutput).toBe(true);
+    const chat = vi.fn<LLMProvider['chat']>().mockResolvedValue('answer');
+    const streamChat = vi.fn<LLMProvider['streamChat']>().mockResolvedValue(undefined);
+    const provider = withModelContext(
+      { chat, streamChat, capability: {} } as unknown as LLMProvider,
+      budget,
+    );
+    await provider.chat([{ role: 'user', content: '질문' }]);
+    await provider.streamChat([{ role: 'user', content: '질문' }], vi.fn());
+    expect(chat.mock.calls[0]?.[3]?.maxOutputTokens).toBeUndefined();
+    expect(streamChat.mock.calls[0]?.[4]?.maxOutputTokens).toBeUndefined();
   });
 
   it('최종 모델 요청에 한도를 전달하고 필수 입력 초과를 네트워크 전에 막는다', async () => {

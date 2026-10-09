@@ -54,7 +54,7 @@ describe('provider validation', () => {
     });
     expect(await fetchAnthropicModelInfo(baseConfig, 'claude-selected')).toEqual({
       id: 'claude-selected',
-      contextLength: 200000,
+      maxInputTokens: 200000,
       maxOutputTokens: 8192,
     });
     expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
@@ -119,7 +119,7 @@ describe('provider validation', () => {
       json: { data: [{ id: 'claude', max_input_tokens: 200000, max_tokens: 8192 }] },
     });
     expect((await fetchProviderModels('claude', baseConfig)).modelDetails?.[0]).toMatchObject({
-      contextLength: 200000,
+      maxInputTokens: 200000,
       maxOutputTokens: 8192,
     });
   });

@@ -72,6 +72,7 @@ it('모델 한도는 설정 마이그레이션과 검증 갱신에서 보존한�
         id: 'selected',
         kind: 'general' as const,
         contextLength: 128000,
+        maxInputTokens: 120000,
         maxOutputTokens: 4096,
         verification: { chatStatus: 'success' as const, embeddingStatus: 'unknown' as const },
       },
@@ -82,7 +83,11 @@ it('모델 한도는 설정 마이그레이션과 검증 갱신에서 보존한�
     providerProfiles: [profile],
   });
   const model = settings.providerProfiles.find((item) => item.id === 'limits')!.models[0];
-  expect(model).toMatchObject({ contextLength: 128000, maxOutputTokens: 4096 });
+  expect(model).toMatchObject({
+    contextLength: 128000,
+    maxInputTokens: 120000,
+    maxOutputTokens: 4096,
+  });
   expect(
     upsertProviderProfileModel([model], {
       id: model.id,

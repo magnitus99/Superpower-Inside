@@ -64,7 +64,7 @@ pub fn plan_provider_model_details_json(provider: &str, payload: &str) -> String
             detail.insert("name".to_owned(), json!(name));
         }
         let context = match provider {
-            "claude" => positive(model.get("max_input_tokens")),
+            "claude" => None,
             "openAIChatGPT" => positive(model.get("context_window"))
                 .or_else(|| positive(model.get("max_context_window")))
                 .map(|window| {
@@ -88,7 +88,12 @@ pub fn plan_provider_model_details_json(provider: &str, payload: &str) -> String
             positive(top.and_then(|top| top.get("max_completion_tokens")))
                 .or_else(|| positive(model.get("max_completion_tokens")))
         };
-        for (key, limit) in [("contextLength", context), ("maxOutputTokens", output)] {
+        let input = positive(model.get("max_input_tokens"));
+        for (key, limit) in [
+            ("contextLength", context),
+            ("maxInputTokens", input),
+            ("maxOutputTokens", output),
+        ] {
             if let Some(limit) = limit {
                 detail.insert(
                     key.to_owned(),
@@ -107,32 +112,121 @@ pub fn plan_model_context_json(metadata: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(metadata) else {
         return String::new();
     };
-    let known = positive(value.get("contextLength"));
+    let shared_context = positive(value.get("contextLength"));
+    let known_input = positive(value.get("maxInputTokens"));
+    let known_output = positive(value.get("maxOutputTokens"));
+    let known = shared_context.or(known_input);
     let context = known.unwrap_or(50_000);
-    let output = positive(value.get("maxOutputTokens"))
-        .unwrap_or(4_096)
-        .min(4_096)
-        .min(context.div_euclid(4))
-        .max(1);
-    let margin = context
-        .div_euclid(10)
-        .max(1)
-        .min(context.saturating_sub(output));
-    let input = context.saturating_sub(output).saturating_sub(margin);
+    let fallback_output = if known_input.is_some() {
+        4_096
+    } else {
+        4_096.min(context.div_euclid(4)).max(1)
+    };
+    let mut output = known_output.unwrap_or(fallback_output);
+    if let Some(shared) = shared_context {
+        output = output.min(shared);
+        if let Some(used) = value.get("usedInputBytes").and_then(Value::as_u64) {
+            output = output.min(shared.saturating_sub(used));
+            if output == 0 {
+                return String::new();
+            }
+        }
+    }
+    // 공급자 한도는 임의 비율로 줄이지 않고, 정보가 없는 입력만 기본 여유 공간을 둔다.
+    let margin = if known.is_some() {
+        0
+    } else {
+        context.div_euclid(10)
+    };
+    let reserved = if known_output.is_some() {
+        1
+    } else {
+        fallback_output
+    };
+    let input = known_input.unwrap_or_else(|| context.saturating_sub(reserved + margin));
+    let input = shared_context.map_or(input, |shared| input.min(shared.saturating_sub(1)));
     let file_chars = input.div_euclid(24).min(9_000);
     let evidence_chars = input.div_euclid(6);
     let batch_size = evidence_chars
         .div_euclid(file_chars.saturating_add(256))
         .clamp(1, 8);
-    json!({"contextTokens":context,"outputTokens":output,"marginTokens":margin,
+    let mut plan = json!({"contextTokens":context,"outputTokens":output,"marginTokens":margin,
         "inputBytes":input,"evidenceChars":evidence_chars,"researchFileChars":file_chars,
         "researchProviderBudget":{"maxSelectedItems":64,"batchSize":batch_size,"maxBatches":8},"source":if known.is_some(){"provider"}else{"fallback"},
-        "counting":"utf8-upper-bound"}).to_string()
+        "outputSource":if known_output.is_some(){"provider"}else{"fallback"},
+        "nativeOutput":value.get("nativeOutput").and_then(Value::as_bool).unwrap_or(false),
+        "counting":"utf8-upper-bound"});
+    if let Some(object) = plan.as_object_mut() {
+        if let Some(input) = known_input {
+            object.insert("maxInputTokens".to_owned(), json!(input));
+        }
+        if let Some(shared) = shared_context {
+            object.insert("sharedContextTokens".to_owned(), json!(shared));
+        }
+    }
+    plan.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Value, json, plan_model_context_json, plan_provider_model_details_json};
+    #[test]
+    fn native_limits_and_independent_fallbacks_are_preserved() {
+        for (metadata, input, output, source, output_source) in [
+            (
+                json!({"contextLength":128_000,"maxOutputTokens":65_536}),
+                127_999,
+                65_536,
+                "provider",
+                "provider",
+            ),
+            (
+                json!({"maxInputTokens":200_000,"maxOutputTokens":64_000}),
+                200_000,
+                64_000,
+                "provider",
+                "provider",
+            ),
+            (
+                json!({"contextLength":128_000}),
+                123_904,
+                4_096,
+                "provider",
+                "fallback",
+            ),
+            (
+                json!({"maxOutputTokens":65_536}),
+                44_999,
+                65_536,
+                "fallback",
+                "provider",
+            ),
+        ] {
+            let plan: Value = serde_json::from_str(&plan_model_context_json(&metadata.to_string()))
+                .unwrap_or(Value::Null);
+            assert_eq!(plan.get("inputBytes"), Some(&json!(input)));
+            assert_eq!(plan.get("outputTokens"), Some(&json!(output)));
+            assert_eq!(plan.get("source"), Some(&json!(source)));
+            assert_eq!(plan.get("outputSource"), Some(&json!(output_source)));
+        }
+        let shared: Value = serde_json::from_str(&plan_model_context_json(
+            &json!({"contextLength":8192,"maxOutputTokens":8192,"usedInputBytes":5000}).to_string(),
+        ))
+        .unwrap_or(Value::Null);
+        assert_eq!(shared.get("outputTokens"), Some(&json!(3192)));
+        let separate: Value = serde_json::from_str(&plan_model_context_json(
+            &json!({"maxInputTokens":8192,"maxOutputTokens":8192,"usedInputBytes":5000})
+                .to_string(),
+        ))
+        .unwrap_or(Value::Null);
+        assert_eq!(separate.get("outputTokens"), Some(&json!(8192)));
+        assert!(
+            plan_model_context_json(
+                &json!({"contextLength":8192,"usedInputBytes":8192}).to_string()
+            )
+            .is_empty()
+        );
+    }
     #[test]
     fn limits_are_validated_and_provider_route_uses_the_smaller_window() {
         let raw = plan_provider_model_details_json(
@@ -171,7 +265,12 @@ mod tests {
             let value: Value =
                 serde_json::from_str(&plan_provider_model_details_json(provider, body))
                     .unwrap_or(Value::Null);
-            assert_eq!(value.pointer("/0/contextLength"), Some(&json!(200_000)));
+            let key = if provider == "claude" {
+                "/0/maxInputTokens"
+            } else {
+                "/0/contextLength"
+            };
+            assert_eq!(value.pointer(key), Some(&json!(200_000)));
         }
         let value: Value = serde_json::from_str(&plan_provider_model_details_json(
             "openai",

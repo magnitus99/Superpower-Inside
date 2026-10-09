@@ -1310,6 +1310,10 @@ export interface RustChatRequestPlan {
 }
 
 export interface ModelContextBudget {
+  maxInputTokens?: number;
+  sharedContextTokens?: number;
+  outputSource?: 'provider' | 'fallback';
+  nativeOutput?: boolean;
   contextTokens: number;
   outputTokens: number;
   marginTokens: number;
@@ -1342,12 +1346,24 @@ export function planModelContextRust(metadata: unknown): ModelContextBudget | nu
 export function planProviderModelDetailsRust(
   provider: string,
   payload: unknown,
-): Array<{ id: string; name?: string; contextLength?: number; maxOutputTokens?: number }> | null {
+): Array<{
+  id: string;
+  name?: string;
+  contextLength?: number;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+}> | null {
   if (!ensureRustCore()) return null;
   try {
     return JSON.parse(
       plan_provider_model_details_json(provider, JSON.stringify(payload)),
-    ) as Array<{ id: string; name?: string; contextLength?: number; maxOutputTokens?: number }>;
+    ) as Array<{
+      id: string;
+      name?: string;
+      contextLength?: number;
+      maxInputTokens?: number;
+      maxOutputTokens?: number;
+    }>;
   } catch {
     return null;
   }

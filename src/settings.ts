@@ -173,6 +173,7 @@ export interface ProviderModelVerification {
   lastError?: string;
 }
 export interface ProviderModelConfig {
+  maxInputTokens?: number;
   contextLength?: number;
   maxOutputTokens?: number;
   id: string;
@@ -315,6 +316,11 @@ export function upsertProviderProfileModel(
   const merged: ProviderModelConfig = {
     id,
     kind,
+    ...(candidate.maxInputTokens !== undefined
+      ? { maxInputTokens: candidate.maxInputTokens }
+      : existing?.maxInputTokens !== undefined
+        ? { maxInputTokens: existing.maxInputTokens }
+        : {}),
     ...(candidate.contextLength !== undefined
       ? { contextLength: candidate.contextLength }
       : existing?.contextLength !== undefined
@@ -693,12 +699,18 @@ function normalizeProviderProfileModel(value: unknown): ProviderModelConfig | nu
       : {};
   const details = planProviderModelDetailsRust('openai', {
     data: [
-      { id, context_length: source.contextLength, max_completion_tokens: source.maxOutputTokens },
+      {
+        id,
+        context_length: source.contextLength,
+        max_input_tokens: source.maxInputTokens,
+        max_completion_tokens: source.maxOutputTokens,
+      },
     ],
   })?.[0];
   return {
     ...createProviderModel(id, kind, verificationSource),
     ...(details?.contextLength ? { contextLength: details.contextLength } : {}),
+    ...(details?.maxInputTokens ? { maxInputTokens: details.maxInputTokens } : {}),
     ...(details?.maxOutputTokens ? { maxOutputTokens: details.maxOutputTokens } : {}),
   };
 }
@@ -1183,6 +1195,7 @@ function mergeSaveOptions(
 }
 
 interface ProviderModelImportCandidate {
+  maxInputTokens?: number;
   id: string;
   name?: string;
   contextLength?: number;

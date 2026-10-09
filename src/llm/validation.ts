@@ -12,6 +12,7 @@ import type { ProviderKey } from './providers';
 import { planProviderModelDetailsRust } from '../rag/rust-core';
 
 export interface ProviderModelInfo {
+  maxInputTokens?: number;
   id: string;
   name?: string;
   contextLength?: number;
