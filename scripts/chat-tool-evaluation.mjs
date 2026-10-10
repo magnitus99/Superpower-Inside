@@ -147,10 +147,13 @@ export async function evaluateToolLoop(
       role: 'system',
       content: [
         test.systemPrompt ?? '한국어로 모든 하위 질문에 답하고 확인한 원문 경로와 행을 인용하세요.',
+        options.initialContext?.systemPrompt,
         protocol === 'native'
           ? runtime.createToolEvidencePrompt(definitions)
           : runtime.createCompatibilityToolPrompt(definitions),
-      ].join('\n\n'),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
     },
     ...(test.history ?? []),
     { role: 'user', content: test.question },
@@ -165,7 +168,7 @@ export async function evaluateToolLoop(
   for (let round = 0; round <= maxRounds; round += 1) {
     const plan = runtime.planAgenticToolTurn({
       question: test.question,
-      contextAttachments: [],
+      contextAttachments: options.initialContext?.attachments ?? [],
       explicitToolServerCount: 0,
       toolDefinitions: definitions,
       toolCalls: history,
@@ -189,11 +192,13 @@ export async function evaluateToolLoop(
     if (provider) {
       providerCalls += 1;
       const deltas = new Map();
+      const request = runtime.prepareProviderRequest(
+        requestMessages,
+        protocol === 'native' ? selected : undefined,
+      );
+      options.onRequest?.(request.messages, history);
       await provider.streamChat(
-        runtime.prepareProviderRequest(
-          requestMessages,
-          protocol === 'native' ? selected : undefined,
-        ).messages,
+        request.messages,
         (chunk) => {
           content += chunk.content ?? '';
           reasoning += chunk.reasoning ?? '';
@@ -294,7 +299,7 @@ export async function evaluateToolLoop(
     );
   }
   const contract = runtime.enforceNativeToolAnswerContract(answer, history);
-  const citations = runtime.collectToolCitations([], history);
+  const citations = runtime.collectToolCitations(options.initialContext?.citations ?? [], history);
   const reads = history
     .filter((call) => call.status === 'success')
     .flatMap((call) => {
@@ -338,6 +343,7 @@ export async function evaluateToolLoop(
       ? factMatches.length / test.expectedFacts.length
       : null,
     readPaths,
+    citations,
     sourceReadCoverage: expectedPaths.length
       ? expectedPaths.filter((value) => readPaths.includes(value)).length / expectedPaths.length
       : null,

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { build } from 'esbuild';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile, mkdtemp, mkdir, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -32,6 +33,15 @@ export function getFrontMatterInfo(content) {
 export const TFile = globalThis.app?.vault.getFiles()[0]?.constructor ?? class {};
 export const TFolder = globalThis.app?.vault.getRoot()?.constructor ?? class {};
 export class FileView {}
+// 설정의 모델 선택 함수를 함께 번들하되 평가에서는 화면 생성을 허용하지 않습니다.
+class UnsupportedEvaluationUI {
+  constructor() { throw new Error('평가 환경에서는 Obsidian 화면 생성을 지원하지 않습니다.'); }
+}
+export { UnsupportedEvaluationUI as App, UnsupportedEvaluationUI as Modal,
+  UnsupportedEvaluationUI as Notice, UnsupportedEvaluationUI as Plugin,
+  UnsupportedEvaluationUI as PluginSettingTab, UnsupportedEvaluationUI as Setting };
+export const Platform = { isDesktop: true, isMobile: false };
+export function setIcon() { throw new Error('평가 환경에서는 Obsidian 아이콘 생성을 지원하지 않습니다.'); }
 export function normalizePath(value) { return value.replaceAll('\\\\', '/'); }
 export function getAllTags(cache) {
   const frontmatter = cache.frontmatter?.tags;
@@ -114,6 +124,9 @@ export async function compileRuntime(root, directory, extraExports = '') {
     ],
   });
   const runtime = (await import(pathToFileURL(outfile).href)).default;
+  runtime.evaluationFingerprint = createHash('sha256')
+    .update(await readFile(outfile))
+    .digest('hex');
   runtime.setLanguage('ko');
   return runtime;
 }

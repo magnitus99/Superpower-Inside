@@ -1,8 +1,9 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { setTimeout as wait } from 'node:timers/promises';
 import 'fake-indexeddb/auto';
 import { compileRuntime } from './evaluate-chat-quality.mjs';
 import {
@@ -14,15 +15,429 @@ import {
   runtimeExports,
   classifyFailure,
   selectVerifiedCitationRanges,
+  groundedSuccess,
+  compareAnswers,
+  validateGrade,
+  validateResumeRows,
+  answerBenchmark,
+  diagnoseResponsibilities,
+  summarizeOracle,
+  collectOracleEvidence,
+  providerBridge,
+  benchmarkRoot,
+  parseAnswerOptions,
+  createBridgeExchange,
 } from './public-vault-benchmark.mjs';
+
+test('기본 워크플로우는 전체 핵심 질문을 3회 평가하며 작은 표본은 명시적으로 선택한다', () => {
+  assert.deepEqual(parseAnswerOptions([]), {
+    dataset: 'wix',
+    count: undefined,
+    source: undefined,
+    runId: 'full',
+    repeats: 3,
+    oracle: false,
+    diagnostic: false,
+    includeSynthetic: false,
+  });
+  assert.equal(parseAnswerOptions(['enterprise']).count, undefined);
+  assert.equal(parseAnswerOptions(['wix', '12', '-', 'smoke', '1']).count, 12);
+  assert.equal(
+    parseAnswerOptions(['wix', 'all', '-', 'full', '3', 'diagnostic', '--include-synthetic'])
+      .includeSynthetic,
+    true,
+  );
+  assert.throws(() => parseAnswerOptions(['wix', '0']));
+  assert.throws(() => parseAnswerOptions(['wix', '12', '-', 'run', '0']));
+});
+
+test('실제 모델 연결에서 검색 임계값을 보존하고 인증 설정을 출력하지 않는다', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'benchmark-provider-'));
+  try {
+    await writeFile(path.join(directory, 'stop'), '중단');
+    const settings = {
+      chat: { defaultModel: 'profile:synthetic:model' },
+      rag: { chunkSize: 1000, overlap: 100, minScore: 0.3 },
+      providerProfiles: [
+        {
+          id: 'synthetic',
+          enabled: true,
+          strategy: 'test',
+          models: [{ id: 'model' }],
+          apiKey: '합성 키',
+        },
+      ],
+    };
+    await providerBridge(
+      {
+        appLogger: { configure: () => {} },
+        initializeChatGPTOAuth: () => {},
+        createProviderForStrategy: () => ({ capability: {}, contextBudget: {} }),
+        resolveUsableProviderModelRef: () => null,
+      },
+      {
+        vault: { adapter: { getBasePath: () => path.dirname(benchmarkRoot) } },
+        plugins: { plugins: { 'superpower-inside': { settings, manifest: { version: 'test' } } } },
+      },
+      directory,
+    );
+    const metadata = JSON.parse(await readFile(path.join(directory, 'provider.json'), 'utf8'));
+    assert.equal(metadata.settings.rag.minScore, 0.3);
+    assert.equal(JSON.stringify(metadata).includes('합성 키'), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('provider가 취소 신호에 응답하지 않아도 벤치마크 연결은 시간 초과를 반환한다', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'benchmark-timeout-'));
+  try {
+    await writeFile(path.join(directory, 'request.json'), JSON.stringify({ id: 1, messages: [] }));
+    await providerBridge(
+      {
+        appLogger: { configure: () => {} },
+        initializeChatGPTOAuth: () => {},
+        resolveUsableProviderModelRef: () => null,
+        createProviderForStrategy: () => ({
+          streamChat: async () => {
+            await writeFile(path.join(directory, 'stop'), '중단');
+            await new Promise(() => {});
+          },
+        }),
+      },
+      {
+        vault: { adapter: { getBasePath: () => path.dirname(benchmarkRoot) } },
+        plugins: {
+          plugins: {
+            'superpower-inside': {
+              settings: {
+                chat: { defaultModel: 'profile:synthetic:model' },
+                rag: { chunkSize: 1000, overlap: 100, minScore: 0.3 },
+                providerProfiles: [
+                  { id: 'synthetic', enabled: true, strategy: 'test', models: [{ id: 'model' }] },
+                ],
+              },
+              manifest: { version: 'test' },
+            },
+          },
+        },
+      },
+      directory,
+      20,
+    );
+    const response = JSON.parse(await readFile(path.join(directory, 'response.json'), 'utf8'));
+    assert.equal(response.id, 1);
+    assert.equal(response.error, 'timeout');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('동시 검색 임베딩 요청과 답변 요청을 순서대로 전달하고 실패 뒤에도 이어간다', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'benchmark-concurrent-'));
+  const requests = [];
+  let server;
+  try {
+    const exchange = createBridgeExchange(directory, { hostPid: process.pid });
+    server = providerBridge(
+      {
+        appLogger: { configure: () => {} },
+        initializeChatGPTOAuth: () => {},
+        resolveUsableProviderModelRef: () => ({
+          profile: { id: 'local', strategy: 'ternlight' },
+          modelId: 'ternlight-base',
+        }),
+        TernlightEmbeddingProvider: class {
+          async embed(text) {
+            requests.push(text);
+            await wait(20);
+            return [1, 0];
+          }
+          async embedBatch(texts) {
+            requests.push(...texts);
+            return texts.map(() => [0, 1]);
+          }
+          close() {
+            requests.push('closed');
+          }
+        },
+        createProviderForStrategy: () => ({
+          streamChat: async (messages, onChunk) => {
+            requests.push(messages[0].content);
+            onChunk({ content: '합성 답변' });
+          },
+        }),
+      },
+      {
+        vault: { adapter: { getBasePath: () => path.dirname(benchmarkRoot) } },
+        plugins: {
+          plugins: {
+            'superpower-inside': {
+              settings: {
+                chat: { defaultModel: 'profile:test:model' },
+                rag: {},
+                providerProfiles: [
+                  { id: 'test', enabled: true, strategy: 'test', models: [{ id: 'model' }] },
+                ],
+              },
+              manifest: { version: 'test' },
+            },
+          },
+        },
+      },
+      directory,
+    );
+    const responses = await Promise.all([
+      exchange({ operation: 'embedding', kind: 'query', texts: ['질의 하나'] }),
+      exchange({ operation: 'embedding', kind: 'document', texts: ['문서 하나'] }),
+      exchange({ messages: [{ role: 'user', content: '질문 하나' }] }),
+    ]);
+    assert.deepEqual(
+      responses.map((row) => row.id),
+      [1, 2, 3],
+    );
+    assert.deepEqual(requests, ['질의 하나', '문서 하나', '질문 하나']);
+    assert.deepEqual(responses[0].vectors, [[1, 0]]);
+    assert.deepEqual(responses[1].vectors, [[0, 1]]);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(exchange({ messages: [] }, controller.signal), /시간 초과/);
+    assert.equal((await exchange({ messages: [{ role: 'user', content: '다음 질문' }] })).id, 4);
+    await writeFile(path.join(directory, 'stop'), '중단');
+    await server;
+    assert.equal(requests.at(-1), 'closed');
+  } finally {
+    await writeFile(path.join(directory, 'stop'), '중단');
+    await server;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('검증된 검색 구간을 읽기 없이도 근거로 인정하고 요청 예산에서 빠진 근거는 구분한다', () => {
+  const row = {
+    mode: 'loop',
+    expectedPaths: ['a', 'b'],
+    retrievedPaths: ['a', 'b'],
+    evidenceCitations: [
+      { filePath: 'a', status: 'verified' },
+      { filePath: 'b', status: 'candidate' },
+    ],
+    forwardedCitationPaths: ['a'],
+    grade: { ...successfulGrade, complete: false },
+  };
+  const result = diagnoseResponsibilities(row);
+  assert.equal(result.retrievedExpectedCount, 2);
+  assert.equal(result.verifiedExpectedCount, 1);
+  assert.equal(result.forwardedExpectedCount, 1);
+  assert.equal(result.focus, 'retrieval-and-tool-strategy');
+  assert.equal(
+    diagnoseResponsibilities({
+      ...row,
+      evidenceCitations: [
+        { filePath: 'a', status: 'verified' },
+        { filePath: 'b', status: 'verified' },
+      ],
+    }).focus,
+    'evidence-delivery',
+  );
+  assert.equal(
+    diagnoseResponsibilities({ ...row, expectedPaths: [], category: 'high_level' }).focus,
+    'answer-generation',
+  );
+});
+
+test('정답 문서 제공 실험을 일반 비교에서 제외하고 회복 가능한 실패만 별도 집계한다', () => {
+  const rows = [
+    { id: 'a', repeat: 0, mode: 'bm25', grade: { ...successfulGrade, complete: false } },
+    { id: 'a', repeat: 0, mode: 'loop', grade: { ...successfulGrade, correct: false } },
+    { id: 'a', repeat: 0, mode: 'oracle', grade: successfulGrade },
+    { id: 'b', repeat: 0, mode: 'oracle', notApplicable: true },
+  ];
+  assert.equal(compareAnswers(rows).unpairedExecutions, 0);
+  assert.equal(summarizeOracle(rows).recoverableFailures.loop, 1);
+  assert.equal(summarizeOracle(rows).recoverableFailures.bm25, 1);
+  assert.equal(summarizeOracle(rows).notApplicable, 1);
+  assert.equal(summarize(rows).oracle.total, 1);
+});
+
+test('정답 문서의 잘린 읽기를 이어가며 반환 cursor를 그대로 사용한다', async () => {
+  const requests = [];
+  const native = {
+    execute: async (raw) => {
+      const args = JSON.parse(raw);
+      requests.push(args);
+      return {
+        modelText: JSON.stringify({
+          content: '합성 원문',
+          truncated: requests.length === 1,
+          nextStartLine: 1,
+          nextStartOffset: 7,
+        }),
+        citations: [{ filePath: args.path, status: 'verified' }],
+      };
+    },
+  };
+  const result = await collectOracleEvidence(native, ['a']);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].start_line, 1);
+  assert.equal(requests[1].start_offset, 7);
+  assert.deepEqual(result.readPaths, ['a']);
+});
+
+const successfulGrade = { correct: true, complete: true, supported: true, abstained: false };
+
+test('미확인 인용·도구 계약 위반·잘못된 답변 유보는 판정자가 승인해도 성공이 아니다', () => {
+  const row = { grade: successfulGrade, category: 'qa' };
+  assert.equal(groundedSuccess(row), true);
+  assert.equal(groundedSuccess({ ...row, invalidCitationCount: 1 }), false);
+  assert.equal(groundedSuccess({ ...row, violations: ['missing-source'] }), false);
+  assert.equal(groundedSuccess({ ...row, terminal: 'round-limit' }), false);
+  assert.equal(groundedSuccess({ ...row, grade: { ...successfulGrade, abstained: true } }), false);
+  assert.equal(
+    groundedSuccess({
+      ...row,
+      category: 'info_not_found',
+      grade: { ...successfulGrade, abstained: true },
+    }),
+    true,
+  );
+});
+
+test('읽기와 의미적 근거 충족을 분리하고 과도한 답변 유보의 분모를 유지한다', () => {
+  const report = summarize([
+    {
+      id: 'a',
+      mode: 'loop',
+      category: 'qa',
+      expectedPaths: ['a', 'b'],
+      readPaths: ['a', 'b'],
+      grade: { ...successfulGrade, complete: false },
+    },
+    { id: 'b', mode: 'loop', category: 'qa', grade: { ...successfulGrade, abstained: true } },
+    {
+      id: 'c',
+      mode: 'loop',
+      category: 'info_not_found',
+      grade: { ...successfulGrade, abstained: true },
+    },
+    { id: 'd', mode: 'loop', category: 'qa', error: 'timeout' },
+  ]).loop;
+  assert.equal(report.multiNoteAllRead, 1);
+  assert.equal(report.multiNoteGroundedSuccessRate, 0);
+  assert.equal(report.answerableTotal, 3);
+  assert.equal(report.answerableUnjudged, 1);
+  assert.equal(report.citationSupportedAnswerRate, 1 / 3);
+  assert.equal(report.overRefusalRate, 1 / 3);
+  assert.equal(report.unanswerableTotal, 1);
+  assert.equal(report.correctAbstentionRate, 1);
+});
+
+test('같은 질문의 쌍만 비교하고 실패를 유지하며 유형별 개선과 불확실성을 계산한다', () => {
+  const rows = [
+    { id: 'a', mode: 'bm25', category: 'qa', configuration: 'expert', error: 'timeout' },
+    { id: 'a', mode: 'loop', category: 'qa', configuration: 'expert', grade: successfulGrade },
+    { id: 'b', mode: 'bm25', category: 'qa', configuration: 'expert', grade: successfulGrade },
+    {
+      id: 'b',
+      mode: 'loop',
+      category: 'qa',
+      configuration: 'expert',
+      grade: { ...successfulGrade, correct: false },
+    },
+    { id: 'c', mode: 'loop', category: 'qa', configuration: 'expert', grade: successfulGrade },
+  ];
+  const result = compareAnswers(rows);
+  assert.equal(result.pairedQuestions, 2);
+  assert.equal(result.unpairedExecutions, 1);
+  assert.equal(result.deltaPercentagePoints, 0);
+  assert.equal(result.wins, 1);
+  assert.equal(result.losses, 1);
+  assert.equal(result.groups['expert/qa'].deltaPercentagePoints, 0);
+  assert.ok(result.delta95Interval[0] < 0);
+  assert.ok(result.delta95Interval[1] > 0);
+  assert.deepEqual(result, compareAnswers([...rows].reverse()));
+  assert.equal(compareAnswers([]).deltaPercentagePoints, null);
+});
+
+test('동일 질문의 반복 실행을 독립 질문 수로 부풀리지 않는다', () => {
+  const rows = [0, 1, 2].flatMap((repeat) => [
+    { id: 'a', repeat, mode: 'bm25', grade: successfulGrade },
+    { id: 'a', repeat, mode: 'loop', grade: successfulGrade },
+  ]);
+  const result = compareAnswers(rows);
+  assert.equal(result.pairedQuestions, 1);
+  assert.equal(result.pairedExecutions, 3);
+  assert.equal(result.delta95Interval, null);
+});
+
+test('재개 시 표본 밖·중복·다른 반복 실행 결과를 거부한다', () => {
+  const selected = [{ id: 'a' }];
+  assert.doesNotThrow(() =>
+    validateResumeRows([{ id: 'a', repeat: 0, mode: 'loop' }], selected, 1),
+  );
+  assert.throws(() => validateResumeRows([{ id: 'b', repeat: 0, mode: 'loop' }], selected, 1));
+  assert.throws(() => validateResumeRows([{ id: 'a', repeat: 1, mode: 'loop' }], selected, 1));
+  assert.throws(() => validateResumeRows([{ id: 'a', mode: 'loop' }], selected, 1));
+  assert.throws(() =>
+    validateResumeRows(
+      [
+        { id: 'a', repeat: 0, mode: 'loop' },
+        { id: 'a', repeat: 0, mode: 'loop' },
+      ],
+      selected,
+      1,
+    ),
+  );
+});
+
+test('판정 스키마를 엄격히 확인하고 하나라도 읽지 않은 인용이 있으면 근거 판정을 실패시킨다', () => {
+  const citations = [{ filePath: 'Example.md', line: 1, endLine: 10, status: 'verified' }];
+  const row = {
+    answer: '사실 [vault:Example.md:1-3] 다른 사실 [vault:Unknown.md:1-3]',
+    category: 'qa',
+  };
+  const result = validateGrade(JSON.stringify(successfulGrade), row, citations);
+  assert.equal(result.grade.supported, false);
+  assert.equal(result.invalidCitationCount, 1);
+  assert.throws(() => validateGrade('{"correct":true}', row, citations));
+  assert.equal(
+    validateGrade(
+      JSON.stringify({ ...successfulGrade, abstained: true }),
+      { answer: '자료가 없습니다.', category: 'info_not_found' },
+      [],
+    ).grade.supported,
+    true,
+  );
+  assert.equal(
+    validateGrade(
+      JSON.stringify(successfulGrade),
+      { answer: '알 수 있습니다.', category: 'high_level' },
+      [],
+    ).grade.supported,
+    false,
+  );
+});
 
 test('실제로 확인한 범위 안의 세부 인용을 인정하고 범위 밖 인용은 거부한다', () => {
   const citations = [
-    { id: 'vault:Example.md:1-20', filePath: 'Example.md', line: 1, endLine: 20, status: 'verified' },
-    { id: 'vault:Unread.md:1-20', filePath: 'Unread.md', line: 1, endLine: 20, status: 'candidate' },
+    {
+      id: 'vault:Example.md:1-20',
+      filePath: 'Example.md',
+      line: 1,
+      endLine: 20,
+      status: 'verified',
+    },
+    {
+      id: 'vault:Unread.md:1-20',
+      filePath: 'Unread.md',
+      line: 1,
+      endLine: 20,
+      status: 'candidate',
+    },
   ];
   const selected = selectVerifiedCitationRanges(
-    '[vault:Example.md:5-10] [vault:Example.md:15-30] [vault:Unread.md:5-10]', citations,
+    '[vault:Example.md:5-10] [vault:Example.md:15-30] [vault:Unread.md:5-10]',
+    citations,
   );
   assert.equal(selected.length, 1);
   assert.equal(selected[0].line, 5);
@@ -32,6 +447,11 @@ test('실제로 확인한 범위 안의 세부 인용을 인정하고 범위 밖
 test('인증 정보가 포함될 수 있는 오류 원문을 반환하지 않는다', () => {
   assert.equal(classifyFailure(new Error('429 quota secret-example')), 'usage_limit');
   assert.equal(classifyFailure(new Error('401 token secret-example')), 'authentication');
+  assert.equal(classifyFailure(new Error('Obsidian이 종료되었습니다.')), 'host_closed');
+  assert.equal(classifyFailure(new Error('선택 모델 응답 시간 초과')), 'timeout');
+  assert.equal(classifyFailure({ status: 429, message: '합성 오류' }), 'usage_limit');
+  assert.equal(classifyFailure({ status: 401, message: '합성 오류' }), 'authentication');
+  assert.equal(classifyFailure({ status: 503, message: '합성 오류' }), 'http_503');
   assert.equal(classifyFailure(new Error('unknown secret-example')), 'provider_or_runtime');
 });
 
@@ -75,6 +495,7 @@ test('순서로 쉬운 질문을 고르지 않고 각 질문 묶음을 포함한
     ),
   );
   assert.throws(() => selectQuestions(questions, 0));
+  assert.throws(() => selectQuestions([], 1));
 });
 
 test('실제 제품 색인과 도구로 합성 문서를 검색하고 인용 가능한 원문을 읽는다', async () => {
@@ -98,12 +519,13 @@ test('실제 제품 색인과 도구로 합성 문서를 검색하고 인용 가
         path.join(directory, 'raw', configuration, 'test.jsonl'),
         JSON.stringify({
           question: '바나나의 가격은?',
-          answer: '900원',
+          answer: '정답표에서만 확인할 수 있는 합성 판정 문구',
           article_ids: ['synthetic-id'],
         }) + '\n',
       );
     }
     const runtime = await compileRuntime(process.cwd(), root, runtimeExports);
+    assert.match(runtime.evaluationFingerprint, /^[a-f0-9]{64}$/);
     runtime.appLogger.configure({ mirrorToConsole: false, minLevel: 'fatal' });
     globalThis.window ??= globalThis;
     data = await loadBenchmark(runtime, 'wix', root);
@@ -132,6 +554,218 @@ test('실제 제품 색인과 도구로 합성 문서를 검색하고 인용 가
     assert.match(read.modelText, /900원/);
     assert.equal(read.citations[0].status, 'verified');
     assert.equal(data.questions.length, 3);
+    const calls = [];
+    const provider = {
+      capability: { maxToolRounds: 1 },
+      streamChat: async (messages, onChunk, temperature) => {
+        const judging = messages[0].content.includes('독립 평가자');
+        calls.push({ judging, temperature, messages });
+        onChunk({
+          content: judging
+            ? JSON.stringify(successfulGrade)
+            : `900원입니다. [vault:${documentPath}:3-3]`,
+        });
+      },
+      chat: async () => 'banana price',
+    };
+    const app = {
+      vault: { adapter: { getBasePath: () => path.dirname(root) } },
+      plugins: {
+        plugins: {
+          'superpower-inside': {
+            settings: {
+              chat: { defaultModel: 'synthetic:test' },
+              rag: { chunkSize: 2000, overlap: 200 },
+            },
+            manifest: { version: '0.0.0-test' },
+          },
+        },
+      },
+    };
+    const embeddingCalls = [];
+    const embeddingProvider = {
+      identity: { provider: 'synthetic', model: 'synthetic-vector' },
+      embed: async (text) => {
+        embeddingCalls.push({ kind: 'query', text });
+        return [1, 0];
+      },
+      embedBatch: async (texts) => {
+        embeddingCalls.push({ kind: 'document', texts });
+        return texts.map(() => [1, 0]);
+      },
+    };
+    const options = { root, provider, embeddingProvider, count: 1, repeats: 2 };
+    await assert.rejects(
+      answerBenchmark(runtime, app, { ...options, embeddingProvider: undefined }),
+      /임베딩/,
+    );
+    const report = await answerBenchmark(runtime, app, options);
+    assert.equal(report.availableQuestions, 2);
+    assert.deepEqual(report.specification.modes, ['bm25', 'product']);
+    assert.deepEqual(report.specification.embedding, embeddingProvider.identity);
+    assert.equal(report.comparison.candidateMode, 'product');
+    assert.ok(embeddingCalls.some((call) => call.kind === 'document'));
+    assert.ok(embeddingCalls.some((call) => call.kind === 'query'));
+    assert.equal(report.plannedExecutions, 4);
+    assert.equal(report.comparison.pairedQuestions, 1);
+    assert.equal(report.comparison.pairedExecutions, 2);
+    assert.equal(report.summary.bm25.groundedSuccess, 2);
+    assert.equal(report.summary.product.total, 2);
+    assert.equal(report.summary.loop, undefined);
+    assert.equal(report.publicClaims.ready, false);
+    assert.ok(calls.filter((c) => c.judging).every((c) => c.temperature === 0));
+    assert.ok(calls.filter((c) => !c.judging).every((c) => c.temperature === 0.7));
+    const review = JSON.parse(
+      (await readFile(path.join(root, 'runs/wix-answers-review.jsonl'), 'utf8')).trim(),
+    );
+    assert.equal(review.candidates.length, 4);
+    assert.ok(review.candidates.every((c) => !('mode' in c)));
+    const previousCalls = calls.length;
+    const previousDocumentBatches = embeddingCalls.filter(
+      (call) => call.kind === 'document',
+    ).length;
+    await answerBenchmark(runtime, app, options);
+    assert.equal(calls.length, previousCalls);
+    assert.equal(
+      embeddingCalls.filter((call) => call.kind === 'document').length,
+      previousDocumentBatches,
+    );
+    const diagnostic = await answerBenchmark(runtime, app, {
+      ...options,
+      oracle: true,
+      diagnostic: true,
+      runLabel: '-diagnostic',
+    });
+    assert.equal(diagnostic.plannedExecutions, 8);
+    assert.equal(diagnostic.productComparison.candidateMode, 'product');
+    assert.equal(diagnostic.productComparison.pairedExecutions, 2);
+    assert.equal(diagnostic.comparison.unpairedExecutions, 0);
+    assert.equal(diagnostic.responsibilityDiagnostics.oracle.recoverableFailures.loop, 2);
+    assert.equal(diagnostic.summary.oracle.groundedSuccess, 2);
+    assert.ok(
+      calls
+        .filter((call) => !call.judging)
+        .every(
+          (call) =>
+            !JSON.stringify(call.messages).includes('정답표에서만 확인할 수 있는 합성 판정 문구'),
+        ),
+    );
+    const diagnosticRows = (
+      await readFile(path.join(root, 'runs/wix-diagnostic-answers.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map(JSON.parse);
+    assert.ok(
+      diagnosticRows
+        .filter((row) => row.mode === 'oracle')
+        .every((row) => row.responsibility.forwardedExpectedCount === 1),
+    );
+    assert.ok(
+      diagnosticRows
+        .filter((row) => row.mode === 'product')
+        .every(
+          (row) =>
+            row.initialContext.citations.length > 0 &&
+            row.retrievalDiagnostics.some((item) => item.source === 'vector') &&
+            row.retrievalDiagnostics.some((item) => item.source === 'bm25'),
+        ),
+    );
+    assert.ok(
+      calls.some(
+        (call) =>
+          !call.judging &&
+          call.messages[0].content.includes('900원') &&
+          call.messages[0].content.includes('Source'),
+      ),
+    );
+    assert.ok(
+      diagnosticRows
+        .filter((row) => row.mode === 'loop')
+        .every((row) => row.requestObservations.length > 0),
+    );
+    const combined = await answerBenchmark(runtime, app, {
+      ...options,
+      runLabel: '-combined',
+      repeats: 1,
+      provider: {
+        ...provider,
+        capability: { maxToolRounds: 3 },
+        streamChat: async (messages, onChunk, temperature, tools) => {
+          const executed = messages.filter((message) => message.role === 'tool').length;
+          if (tools && executed < 2) {
+            onChunk({
+              toolCalls: [
+                {
+                  index: 0,
+                  id: `synthetic-${executed}`,
+                  function: {
+                    name: executed === 0 ? 'superpower_inside_search' : 'superpower_inside_read',
+                    arguments: JSON.stringify(
+                      executed === 0
+                        ? { query: '바나나', limit: 5 }
+                        : { path: documentPath, start_line: 3, end_line: 3 },
+                    ),
+                  },
+                },
+              ],
+            });
+          } else
+            onChunk({
+              content: messages[0].content.includes('독립 평가자')
+                ? JSON.stringify(successfulGrade)
+                : `900원입니다. [vault:${documentPath}:3-3]`,
+            });
+        },
+      },
+    });
+    assert.equal(combined.summary.product.groundedSuccess, 1);
+    const combinedRows = (
+      await readFile(path.join(root, 'runs/wix-combined-answers.jsonl'), 'utf8')
+    )
+      .trim()
+      .split('\n')
+      .map(JSON.parse);
+    const product = combinedRows.find((row) => row.mode === 'product');
+    assert.equal(product.toolCalls, 2);
+    assert.ok(product.readPaths.includes(documentPath));
+    const degraded = await answerBenchmark(runtime, app, {
+      ...options,
+      runLabel: '-degraded',
+      repeats: 1,
+      embeddingProvider: {
+        ...embeddingProvider,
+        embed: async () => {
+          throw new Error('합성 임베딩 실패');
+        },
+      },
+    });
+    assert.equal(degraded.summary.product.groundedSuccess, 0);
+    assert.equal(degraded.summary.product.errors, 1);
+    await assert.rejects(answerBenchmark(runtime, app, { ...options, count: 2 }), /평가 조건/);
+    await assert.rejects(answerBenchmark(runtime, app, { ...options, repeats: 3 }), /평가 조건/);
+    await assert.rejects(
+      answerBenchmark(runtime, app, {
+        ...options,
+        runLabel: '-host-closed',
+        provider: {
+          ...provider,
+          streamChat: async () => {
+            throw new Error('Obsidian이 종료되었습니다.');
+          },
+        },
+      }),
+      /Obsidian이 종료/,
+    );
+    assert.equal(
+      await readFile(path.join(root, 'runs/wix-host-closed-answers.jsonl'), 'utf8').catch(() => ''),
+      '',
+    );
+    await writeFile(
+      path.join(directory, 'documents', documentPath),
+      '# 다른 합성 자료\n\n새로운 근거입니다.',
+    );
+    await assert.rejects(answerBenchmark(runtime, app, options), /평가 조건/);
   } finally {
     await data?.index.deleteDatabase();
     await rm(root, { recursive: true, force: true });
