@@ -25,7 +25,10 @@
     "ternlight:assets": "node scripts/run-fish.mjs scripts/copy-ternlight-assets.fish",
     "rust:security": "node scripts/run-fish.mjs scripts/check-rust-security.fish",
     "security:full": "npm run lint && npm run typecheck && npm run test && npm run rag:perf-gate && npm run rust:security",
-    "format": "prettier --write src/ main.ts"
+    "format": "prettier --write src/ main.ts",
+    "rust:check": "node scripts/run-fish.mjs scripts/check-rust-local.fish",
+    "quality:local": "node scripts/check-quality.mjs",
+    "release:check": "node scripts/run-fish.mjs scripts/check-release.fish"
   },
   "dependencies": {
     "@huggingface/transformers": "4.3.1",

@@ -11,6 +11,10 @@ permissions:
   id-token: write
 
 jobs:
+  quality:
+    uses: ./.github/workflows/quality.yml
+    permissions:
+      contents: read
   copy:
     runs-on: ubuntu-latest
     permissions:
@@ -24,7 +28,7 @@ jobs:
           node-version: '22'
       - run: node scripts/check-copy.mjs --release-ref "$GITHUB_SHA" --offline
   publish:
-    needs: [copy]
+    needs: [quality, copy]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
