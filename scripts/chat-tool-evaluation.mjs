@@ -211,7 +211,7 @@ export async function evaluateToolLoop(
             deltas.set(delta.index, previous);
           }
         },
-        0.7,
+        options.temperature ?? 0.7,
         protocol === 'native' ? selected : undefined,
         { signal: options.signal, toolChoice: protocol === 'native' ? plan.toolChoice : undefined },
       );

@@ -17,10 +17,7 @@ import {
 import { createPublicToolCases } from './chat-tool-scenarios.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const fixture = JSON.parse(
-  await readFile(path.join(repository, 'tests/fixtures/chat-quality.json'), 'utf8'),
-);
-fixture.cases.push(...createPublicToolCases());
+let fixture;
 
 // 볼트 I/O만 합성 데이터로 치환하며 컨텍스트·도구·provider 구현은 그대로 번들합니다.
 const obsidianAdapter = `
@@ -61,12 +58,13 @@ export async function requestUrl(options) {
 }
 `;
 
-async function compileRuntime(root, directory) {
+export async function compileRuntime(root, directory, extraExports = '') {
   const hasBudget = await access(path.join(root, 'src/llm/request-budget.ts')).then(
     () => true,
     () => false,
   );
   const source = `
+    ${extraExports}
     export { TFile, TFolder } from 'obsidian';
     export { buildChatContext } from './src/chat/context';
     export { VaultResearchAgent } from './src/agent/research-agent';
@@ -280,44 +278,50 @@ async function evaluate(runtime, settings) {
   return results;
 }
 
-const args = process.argv.slice(2);
-const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
-const directory = await mkdtemp(path.join(tmpdir(), 'chat-quality-'));
-try {
-  const settingsPath = option('--settings');
-  const settings = settingsPath
-    ? JSON.parse(await readFile(path.resolve(settingsPath), 'utf8'))
-    : undefined;
-  const currentDirectory = path.join(directory, 'current');
-  await mkdir(currentDirectory);
-  const runtime = await compileRuntime(repository, currentDirectory);
-  const obsidianVault = option('--obsidian-vault');
-  if (obsidianVault) {
-    if (option('--compare-ref')) throw new Error('실제 볼트 비교는 각 ref에서 따로 실행하세요.');
-    if (option('--fixtures')) throw new Error('실제 볼트 사례는 메모리에서만 생성합니다.');
-    const count = Number(option('--cases') ?? 80);
-    const concurrency = Number(option('--concurrency') ?? 2);
-    if (
-      !Number.isInteger(count) ||
-      count < 1 ||
-      count > 800 ||
-      !Number.isInteger(concurrency) ||
-      concurrency < 1 ||
-      concurrency > 4
-    )
-      throw new Error('평가 개수 또는 동시 실행 범위 오류');
-    const helper = path.join(directory, 'tool-evaluation.cjs');
-    await build({
-      entryPoints: [path.join(repository, 'scripts/chat-tool-evaluation.mjs')],
-      bundle: true,
-      platform: 'node',
-      format: 'cjs',
-      outfile: helper,
-      logLevel: 'silent',
-    });
-    const output = path.resolve(option('--output') ?? path.join(directory, 'summary.json'));
-    const statusPath = path.join(directory, 'status.json');
-    const code = `void (async()=>{let stage='runtime';try{const runtime=require(${JSON.stringify(path.join(currentDirectory, 'runtime.cjs'))});
+async function main() {
+  fixture = JSON.parse(
+    await readFile(path.join(repository, 'tests/fixtures/chat-quality.json'), 'utf8'),
+  );
+  fixture.cases.push(...createPublicToolCases());
+
+  const args = process.argv.slice(2);
+  const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+  const directory = await mkdtemp(path.join(tmpdir(), 'chat-quality-'));
+  try {
+    const settingsPath = option('--settings');
+    const settings = settingsPath
+      ? JSON.parse(await readFile(path.resolve(settingsPath), 'utf8'))
+      : undefined;
+    const currentDirectory = path.join(directory, 'current');
+    await mkdir(currentDirectory);
+    const runtime = await compileRuntime(repository, currentDirectory);
+    const obsidianVault = option('--obsidian-vault');
+    if (obsidianVault) {
+      if (option('--compare-ref')) throw new Error('실제 볼트 비교는 각 ref에서 따로 실행하세요.');
+      if (option('--fixtures')) throw new Error('실제 볼트 사례는 메모리에서만 생성합니다.');
+      const count = Number(option('--cases') ?? 80);
+      const concurrency = Number(option('--concurrency') ?? 2);
+      if (
+        !Number.isInteger(count) ||
+        count < 1 ||
+        count > 800 ||
+        !Number.isInteger(concurrency) ||
+        concurrency < 1 ||
+        concurrency > 4
+      )
+        throw new Error('평가 개수 또는 동시 실행 범위 오류');
+      const helper = path.join(directory, 'tool-evaluation.cjs');
+      await build({
+        entryPoints: [path.join(repository, 'scripts/chat-tool-evaluation.mjs')],
+        bundle: true,
+        platform: 'node',
+        format: 'cjs',
+        outfile: helper,
+        logLevel: 'silent',
+      });
+      const output = path.resolve(option('--output') ?? path.join(directory, 'summary.json'));
+      const statusPath = path.join(directory, 'status.json');
+      const code = `void (async()=>{let stage='runtime';try{const runtime=require(${JSON.stringify(path.join(currentDirectory, 'runtime.cjs'))});
       runtime.setLanguage('ko'); const helper=require(${JSON.stringify(helper)});
       const settings=app.plugins.plugins['superpower-inside']?.settings;
       if(!settings)throw new Error('plugin-unavailable');
@@ -328,104 +332,115 @@ try {
       require('node:fs').writeFileSync(${JSON.stringify(output)},JSON.stringify(report,null,2));
       require('node:fs').writeFileSync(${JSON.stringify(statusPath)},JSON.stringify({completed:true}));
     }catch(error){require('node:fs').writeFileSync(${JSON.stringify(statusPath)},JSON.stringify({completed:false,stage,status:Number.isInteger(error.status)?error.status:null}));}})();'평가 시작'`;
-    const result = execFileSync(
-      option('--obsidian-cli') ?? '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli',
-      [`vault=${obsidianVault}`, 'eval', `code=${code}`],
-      { encoding: 'utf8', timeout: 30 * 60_000 },
-    );
-    if (result.includes('Error:')) throw new Error('Obsidian 평가 스크립트를 시작하지 못했습니다.');
-    const deadline = Date.now() + 90 * 60_000;
-    let status;
-    let lastProgress = 0;
-    while (true) {
-      status = await readFile(statusPath, 'utf8').then(
-        (value) => JSON.parse(value),
-        () => null,
+      const result = execFileSync(
+        option('--obsidian-cli') ?? '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli',
+        [`vault=${obsidianVault}`, 'eval', `code=${code}`],
+        { encoding: 'utf8', timeout: 30 * 60_000 },
       );
-      if (status && !status.running) break;
-      if (status?.running && !isEvaluationHostAlive(status.hostPid))
-        throw new Error('Obsidian 평가 호스트가 종료되었습니다.');
-      if (Date.now() >= deadline) throw new Error('Obsidian 평가 대기 시간이 초과되었습니다.');
-      if (status && Date.now() - lastProgress >= 30_000) {
-        console.log(
-          JSON.stringify({
-            completed: status.completed,
-            total: status.total,
-            passed: status.passed,
-          }),
+      if (result.includes('Error:'))
+        throw new Error('Obsidian 평가 스크립트를 시작하지 못했습니다.');
+      const deadline = Date.now() + 90 * 60_000;
+      let status;
+      let lastProgress = 0;
+      while (true) {
+        status = await readFile(statusPath, 'utf8').then(
+          (value) => JSON.parse(value),
+          () => null,
         );
-        lastProgress = Date.now();
+        if (status && !status.running) break;
+        if (status?.running && !isEvaluationHostAlive(status.hostPid))
+          throw new Error('Obsidian 평가 호스트가 종료되었습니다.');
+        if (Date.now() >= deadline) throw new Error('Obsidian 평가 대기 시간이 초과되었습니다.');
+        if (status && Date.now() - lastProgress >= 30_000) {
+          console.log(
+            JSON.stringify({
+              completed: status.completed,
+              total: status.total,
+              passed: status.passed,
+            }),
+          );
+          lastProgress = Date.now();
+        }
+        await wait(500);
       }
-      await wait(500);
+      if (!status.completed)
+        throw new Error(
+          `실제 볼트 평가 실패: 단계=${status.stage}, HTTP=${status.status ?? '없음'}`,
+        );
+      const report = JSON.parse(await readFile(output, 'utf8'));
+      console.log(JSON.stringify(report, null, 2));
+      if (report.failed > 0) process.exitCode = 1;
+      await rm(directory, { recursive: true, force: true });
+      process.exit(process.exitCode ?? 0);
     }
-    if (!status.completed)
-      throw new Error(`실제 볼트 평가 실패: 단계=${status.stage}, HTTP=${status.status ?? '없음'}`);
-    const report = JSON.parse(await readFile(output, 'utf8'));
-    console.log(JSON.stringify(report, null, 2));
-    if (report.failed > 0) process.exitCode = 1;
-    await rm(directory, { recursive: true, force: true });
-    process.exit(process.exitCode ?? 0);
-  }
-  const current = await evaluate(runtime, settings);
-  const report = {
-    version: fixture.version,
-    mode: settings ? 'live' : 'offline',
-    model: settings?.chat.defaultModel ?? null,
-    reviewCriteria: fixture.reviewCriteria,
-    note: '자동 값은 계약·키워드 관측값입니다. 실제 답변의 정확성·완결성은 원문과 함께 별도 검토해야 합니다.',
-    current,
-  };
-  const baselineRef = option('--compare-ref');
-  if (baselineRef) {
-    const baselineDirectory = path.join(directory, 'baseline');
-    await mkdir(baselineDirectory);
-    const archive = path.join(directory, 'baseline.tar');
-    execFileSync('git', ['archive', `--output=${archive}`, baselineRef], { cwd: repository });
-    execFileSync('tar', ['-xf', archive, '-C', baselineDirectory]);
-    report.baselineRef = baselineRef;
-    report.baseline = await evaluate(
-      await compileRuntime(baselineDirectory, baselineDirectory),
-      settings,
+    const current = await evaluate(runtime, settings);
+    const report = {
+      version: fixture.version,
+      mode: settings ? 'live' : 'offline',
+      model: settings?.chat.defaultModel ?? null,
+      reviewCriteria: fixture.reviewCriteria,
+      note: '자동 값은 계약·키워드 관측값입니다. 실제 답변의 정확성·완결성은 원문과 함께 별도 검토해야 합니다.',
+      current,
+    };
+    const baselineRef = option('--compare-ref');
+    if (baselineRef) {
+      const baselineDirectory = path.join(directory, 'baseline');
+      await mkdir(baselineDirectory);
+      const archive = path.join(directory, 'baseline.tar');
+      execFileSync('git', ['archive', `--output=${archive}`, baselineRef], { cwd: repository });
+      execFileSync('tar', ['-xf', archive, '-C', baselineDirectory]);
+      report.baselineRef = baselineRef;
+      report.baseline = await evaluate(
+        await compileRuntime(baselineDirectory, baselineDirectory),
+        settings,
+      );
+    }
+    const output = option('--output');
+    if (output) await writeFile(path.resolve(output), `${JSON.stringify(report, null, 2)}\n`);
+    console.log(
+      JSON.stringify(
+        {
+          mode: report.mode,
+          model: report.model,
+          executions: current.length,
+          passed: current.filter((item) => item.contractPassed).length,
+          failed: current.filter((item) => !item.contractPassed).length,
+          failures: current
+            .filter((item) => !item.contractPassed)
+            .map(({ id, protocol, contractPassed, elapsedMs, providerCalls, toolCalls }) => ({
+              id,
+              protocol,
+              contractPassed,
+              elapsedMs,
+              providerCalls,
+              toolCalls,
+            })),
+          baseline: report.baseline?.map(({ id, contractPassed }) => ({ id, contractPassed })),
+          output: output ?? null,
+        },
+        null,
+        2,
+      ),
     );
-  }
-  const output = option('--output');
-  if (output) await writeFile(path.resolve(output), `${JSON.stringify(report, null, 2)}\n`);
-  console.log(
-    JSON.stringify(
-      {
-        mode: report.mode,
-        model: report.model,
-        executions: current.length,
-        passed: current.filter((item) => item.contractPassed).length,
-        failed: current.filter((item) => !item.contractPassed).length,
-        failures: current
-          .filter((item) => !item.contractPassed)
-          .map(({ id, protocol, contractPassed, elapsedMs, providerCalls, toolCalls }) => ({
-            id,
-            protocol,
-            contractPassed,
-            elapsedMs,
-            providerCalls,
-            toolCalls,
-          })),
-        baseline: report.baseline?.map(({ id, contractPassed }) => ({ id, contractPassed })),
-        output: output ?? null,
-      },
-      null,
-      2,
-    ),
-  );
-  if (current.some((result) => !result.contractPassed)) process.exitCode = 1;
-} catch (error) {
-  // provider 응답·헤더·자격 증명은 오류 출력에 넣지 않습니다.
-  console.error(
-    !option('--settings') && !option('--obsidian-vault')
-      ? error.message
-      : error.message?.startsWith('설정') || error.message?.startsWith('선택 모델')
+    if (current.some((result) => !result.contractPassed)) process.exitCode = 1;
+  } catch (error) {
+    // provider 응답·헤더·자격 증명은 오류 출력에 넣지 않습니다.
+    console.error(
+      !option('--settings') && !option('--obsidian-vault')
         ? error.message
-        : '품질 평가 실행에 실패했습니다. 원문 응답이나 자격 증명은 출력하지 않았습니다.',
-  );
-  process.exitCode = 1;
-} finally {
-  await rm(directory, { recursive: true, force: true });
+        : error.message?.startsWith('설정') || error.message?.startsWith('선택 모델')
+          ? error.message
+          : '품질 평가 실행에 실패했습니다. 원문 응답이나 자격 증명은 출력하지 않았습니다.',
+    );
+    process.exitCode = 1;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(() => {
+    console.error('평가 초기화 실패');
+    process.exitCode = 1;
+  });
 }
