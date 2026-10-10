@@ -62,7 +62,11 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 ## 검증·완료
 
 - 기능·버그 수정·리팩터링은 회귀 테스트를 먼저 추가하거나 확장합니다. 실패는 재현·분석·수정하며 `eslint-disable`, `@ts-ignore`, `@ts-expect-error`, `as any`, clippy allow, `prettier-ignore`로 우회하지 않습니다.
-- 코드 변경 후 아래 순서로 실행하고 실패하면 다음 단계로 넘어가지 않습니다.
+- 작업 중·코드 변경 완료 시 `npm run quality:local`을 실행합니다. HEAD 대비 스테이징·작업 파일·새 파일을 기준으로 필요한 검사만 선택합니다. CI에서는 `--base <비교 커밋>`으로 실제 변경 범위를 전달합니다. 이미 통과한 동일 변경을 커밋·브랜치 푸시 때문에 다시 검사하지 않습니다.
+- 문서·설명·버전만 변경하면 community review와 diff 형식만 확인하고 링크·명령은 검토합니다. TS 변경은 lint → typecheck → 전체 Vitest·i18n·채팅 UX·오프라인 채팅 계약 평가를 실행합니다. 검사 스크립트·CSS·CI 변경은 관련 계약을 포함한 테스트를 실행하고, Rust 또는 WASM 빌드 경계 변경은 TS 계약과 Rust fmt·clippy·tests도 실행합니다. 변경 없는 Rust·성능·온라인 보안·Patina 검사를 일반 작업에 강제하지 않습니다.
+- 로컬 검사는 설치된 의존성·생성물을 사용하며 모델과 네트워크를 호출하지 않습니다. Rust는 `--frozen`으로 검사하며 의존성이 없으면 준비가 필요하다고 실패합니다. Rust 변경의 새 WASM 연동은 CI 준비 단계 또는 릴리스 빌드에서 확인합니다.
+- 의존성·보안 정책 변경의 CI와 수동·릴리스 CI는 `security:full`을 실행합니다. 일반 PR·main CI는 변경 범위의 검사만 실행하며 문서만 바뀌면 npm/Rust 도구 설치와 코드 테스트도 생략합니다. 이전 PR·main 실행은 새 커밋에서 취소합니다. 릴리스 게시 작업은 전체 검사와 오프라인 Patina 성공을 기다립니다.
+- 릴리스 준비는 아래 전체 검증을 한 번 실행합니다. 실패하면 다음 단계로 넘어가지 않습니다. `npm run release:check`와 버전 스크립트는 이 경로 뒤에 온라인 Patina를 실행합니다.
 
 ```fish
 npm run security:full
@@ -70,10 +74,10 @@ and npm run build
 and npm run review -- --tag (node -p "require('./manifest.json').version") --built
 ```
 
-- `security:full`은 lint → typecheck → Vitest·i18n·채팅 UX → RAG 성능 → Rust fmt·clippy·tests·WASM·deny/audit/vet/geiger·npm audit·generated 정합성을 검사합니다. 임계값이나 제외 항목을 완화하지 않습니다.
+- 기존 게이트의 구현·측정 데이터·통과 기준은 유지합니다. `security:full`은 lint → typecheck → Vitest·i18n·채팅 UX·오프라인 채팅 계약 → RAG 성능 → Rust fmt·clippy·tests·WASM·deny/audit/vet/geiger·npm audit·generated 정합성을 검사합니다. 임계값이나 제외 항목을 완화하지 않습니다.
 - UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 구조 테스트와 community review에 더해 실제 Obsidian 또는 충실한 시뮬레이션 스크린샷을 직접 찍고 봅니다. 정상·접힘/펼침·빈 상태·오류·disabled·진행 중·좁은 폭과 테마·focus·대비를 확인합니다.
 - Obsidian 네이티브 앱의 마우스·타이핑 자동화는 금지합니다. CLI·코드·로그를 사용합니다. 브라우저는 Codex 내부 → Chrome → 최후 수단 Playwright 순서입니다. 화면 검수는 커밋 전에 수행하며 촬영 불가 시 미완료 항목을 명시합니다.
-- 문서만 바꾸면 `git diff --check`와 링크·명령을 검증합니다. 완료 보고는 실제 실행한 명령·종료 상태·남은 문제를 포함하며 테스트 통과를 실제 LLM 품질 개선의 증거로 대신하지 않습니다.
+- 완료 보고는 실제 실행한 명령·종료 상태·남은 문제를 포함하며 테스트 통과를 실제 LLM 품질 개선의 증거로 대신하지 않습니다.
 - README는 현재 기능·사용 흐름을 설명합니다. 사용자 가치가 있는 기능만 자연스럽게 통합하며 커밋 로그·changelog·릴리스별 변경 파일을 만들지 않습니다. GitHub Release 요약은 사용자 관점으로 본문에만 작성합니다.
 - Patina는 릴리스 직전에 최종 제품 소개·사용 안내·홍보 문구의 영어·한국어를 검사합니다. 일반 수정·커밋·브랜치 푸시에 온라인 검사를 강제하지 않습니다. `pre-commit`은 스테이징의 diff 형식과 대상 JSON description만 로컬 검증하고 파일·인덱스를 재작성하지 않습니다. `pre-push`는 숫자 SemVer 릴리스 태그만 검사하며 삭제·개발 태그·브랜치는 레지스트리 조회와 모델 호출을 생략합니다.
 - Patina 대상은 루트 `README.md`, `package.json`·`manifest.json`의 `description`, `marketing/`·`copy/`·`releases/`의 홍보 문서입니다. 다른 사용자용 문서는 `scripts/check-copy.mjs`의 `copyDocuments`에 등록합니다. 개발 규칙·기술 명세·라이선스·테스트 자료는 제외하며 `docs/`·`public/` 또는 README라는 이름만으로 포함하지 않습니다. 외부 릴리스 본문도 게시 전에 같은 검사 대상으로 준비합니다.

@@ -30,6 +30,12 @@ if test "$CURRENT_BRANCH" != "$REQUIRED_RELEASE_BRANCH"
     exit 1
 end
 
+# 빌드가 미커밋 소스를 포함한 채 버전 커밋에 들어가는 것을 막습니다.
+if test (count (git status --porcelain)) -gt 0
+    echo "ERROR: 릴리스 준비 전에 작업 변경을 검토하고 커밋하세요."
+    exit 1
+end
+
 # 현재 버전 읽기
 set CURRENT_VERSION (jq -r '.version' manifest.json)
 echo "현재 버전: $CURRENT_VERSION"
@@ -88,57 +94,15 @@ or begin
     exit 1
 end
 
-# 릴리스 검증
-npx -y npm@10 ci
+# 릴리스 검증: 성능·보안·빌드·최종 문구를 한 번씩 검사합니다.
+npm run release:check
 or begin
-    echo "ERROR: npm ci 실패"
-    exit 1
-end
-
-npm run lint
-or begin
-    echo "ERROR: lint 실패"
-    exit 1
-end
-
-npm run typecheck
-or begin
-    echo "ERROR: typecheck 실패"
-    exit 1
-end
-
-npm run test
-or begin
-    echo "ERROR: test 실패"
-    exit 1
-end
-
-npm run rust:security
-or begin
-    echo "ERROR: Rust/WASM 보안 게이트 실패"
-    exit 1
-end
-
-npm run review -- --tag "$NEW_VERSION"
-or begin
-    echo "ERROR: Obsidian review gate 실패"
-    exit 1
-end
-
-npm run build
-or begin
-    echo "ERROR: 빌드 실패"
-    exit 1
-end
-
-npm run review -- --tag "$NEW_VERSION" --built
-or begin
-    echo "ERROR: Obsidian release asset 검증 실패"
+    echo "ERROR: 릴리스 검사 실패"
     exit 1
 end
 
 # 커밋
-git add manifest.json package.json package-lock.json versions.json main.js styles.css tern_engine_bg.wasm THIRD_PARTY_NOTICES.md scripts/validate-obsidian-review.mjs scripts/bundle-size-policy.mjs scripts/bundle-size-policy.test.mjs .github/workflows/release.yml scripts/bump-version.fish scripts/install-rust-security-tools.fish scripts/patch-rag-wasm-dts.mjs scripts/build-rag-wasm.fish scripts/copy-ternlight-assets.fish generated/rag-wasm/rag_wasm.d.ts README.md esbuild.config.mjs
+git add manifest.json package.json package-lock.json versions.json main.js styles.css tern_engine_bg.wasm THIRD_PARTY_NOTICES.md generated src/rag/rag-wasm-bytes.ts embeddinggemma-worker.js embeddinggemma-runtime.wasm embeddinggemma-runtime.mjs
 and git commit -m "chore(release): $NEW_VERSION"
 or begin
     echo "ERROR: git commit 실패"
@@ -164,7 +128,7 @@ or begin
 end
 
 echo ""
-echo "✅ $NEW_VERSION 릴리스 완료!"
+echo "✅ $NEW_VERSION 릴리스 태그 푸시 완료!"
 echo "GitHub Actions가 자동으로 릴리스를 생성합니다."
 echo "GitHub Release가 생성되면 릴리즈 요약을 본문에 직접 붙여 넣으세요. release-notes 파일은 커밋하지 않습니다."
 echo "https://github.com/magnitus99/Superpower-Inside/actions"
