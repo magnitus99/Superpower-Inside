@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
 const { resolve } = require('node:path');
-const result = spawnSync(process.execPath, [resolve(__dirname, '../scripts/check-copy.mjs'), '--staged'], { stdio: 'inherit' });
+const result = spawnSync(process.execPath, [resolve(__dirname, '../scripts/check-copy.mjs'), '--commit-local'], { stdio: 'inherit' });
 process.exit(result.status ?? 1);
