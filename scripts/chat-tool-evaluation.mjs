@@ -12,17 +12,20 @@ export function isEvaluationHostAlive(pid) {
   }
 }
 
-// 평가는 모델을 고르지 않습니다. 볼트에 저장된 활성 선택만 사용합니다.
-export function createEvaluationProvider(runtime, settings) {
+// 평가는 기본적으로 볼트에 저장된 활성 선택만 사용합니다.
+// 판정 모델을 명시하면 생성 모델과 분리된 provider를 만들 수 있습니다.
+export function createEvaluationProvider(runtime, settings, modelRef = settings?.chat?.defaultModel) {
   if (!settings) return undefined;
-  const parts = settings.chat.defaultModel.split(':');
+  if (typeof modelRef !== 'string' || !modelRef)
+    throw new Error('평가 모델 참조가 필요합니다.');
+  const parts = modelRef.split(':');
   const model = parts.slice(2).join(':');
   const profile = settings.providerProfiles.find(
     (item) => parts[0] === 'profile' && item.id === parts[1],
   );
   if (!profile?.enabled || !profile.models.some((item) => item.id === model)) {
     throw new Error(
-      '설정의 선택 모델을 사용할 수 없습니다. 평가를 위해 다른 모델을 선택하지 않습니다.',
+      '설정의 평가 모델을 사용할 수 없습니다. 볼트 설정에서 해당 모델을 사용할 수 있게 준비하세요.',
     );
   }
   return runtime.createProviderForStrategy(

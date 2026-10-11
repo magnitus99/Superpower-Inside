@@ -9,10 +9,131 @@ import {
   summarizeNative,
   renderComparison,
   publicReferences,
+  parseLeaderboardCsv,
+  snapshotToReferences,
+  assessPublicClaims,
   questionInterval,
   loadNativeCorpus,
   selectNativeCitationRanges,
+  withBenchmarkHost,
 } from './native-product-benchmark.mjs';
+
+test('장시간 평가 중에만 창의 타이머 제한을 해제하고 예외에도 원래 값으로 복구한다', async () => {
+  let throttled = true;
+  const host = {
+    getBackgroundThrottling: () => throttled,
+    setBackgroundThrottling: (value) => {
+      throttled = value;
+    },
+  };
+  await assert.rejects(
+    withBenchmarkHost(host, async () => {
+      assert.equal(throttled, false);
+      throw new Error('합성 실패');
+    }),
+    /합성 실패/,
+  );
+  assert.equal(throttled, true);
+  throttled = false;
+  assert.equal(await withBenchmarkHost(host, async () => '완료'), '완료');
+  assert.equal(throttled, false);
+});
+
+test('같은 모델을 판정자로 지정하거나 중복 반복으로 건수를 채우면 공개를 차단한다', () => {
+  const options = {
+    dataset: 'wix',
+    selectedQuestions: 1,
+    availableQuestions: 1,
+    repeats: 3,
+    generationModel: 'profile:generator:model-a',
+    judgeModel: 'profile:judge:model-b',
+    rows: [0, 1, 2].map((repeat) => ({
+      id: 'synthetic-question',
+      repeat,
+      grade: { correct: true, complete: true, supported: true, abstained: false },
+    })),
+  };
+  assert.equal(assessPublicClaims(options).ready, true);
+  assert.equal(
+    assessPublicClaims({ ...options, judgeModel: 'profile:judge:model-a' }).ready,
+    false,
+  );
+  assert.equal(
+    assessPublicClaims({ ...options, rows: [options.rows[0], options.rows[0], options.rows[0]] })
+      .ready,
+    false,
+  );
+  assert.equal(
+    assessPublicClaims({ ...options, rows: options.rows.map((row) => ({ ...row, repeat: 4 })) })
+      .ready,
+    false,
+  );
+});
+
+test('리더보드 CSV를 현재 시스템과 최고점 순으로 해석한다', () => {
+  const systems = parseLeaderboardCsv(
+    [
+      'model,overall_score,correctness',
+      'OpenAI File Search,61.03,69.8',
+      'RAGFlow,50.24,56.0',
+      'AnythingLLM,35.58,47.8',
+    ].join('\n'),
+  );
+  assert.deepEqual(systems, [
+    { product: 'OpenAI File Search', score: 61.03 },
+    { product: 'RAGFlow', score: 50.24 },
+    { product: 'AnythingLLM', score: 35.58 },
+  ]);
+  const references = snapshotToReferences({
+    url: 'https://example.com/leaderboard.csv',
+    checkedAt: '2026-10-11T00:00:00.000Z',
+    systems: [...systems].sort((a, b) => b.score - a.score),
+  });
+  assert.equal(references.length, 3);
+  assert.equal(references[0].product, 'OpenAI File Search');
+  assert.equal(references[0].score, 61.03);
+});
+
+test('전체 반복 실행과 독립 판정자가 없으면 공개 주장을 차단한다', () => {
+  const rows = Array.from({ length: 3 }, (_, index) => ({
+    id: 'synthetic-question',
+    repeat: index,
+    grade: { correct: true, complete: true, supported: true, abstained: false },
+    elapsedMs: 10,
+  }));
+  const partial = assessPublicClaims({
+    dataset: 'wix',
+    source: undefined,
+    corpusLimit: 25,
+    selectedQuestions: 1,
+    availableQuestions: 200,
+    repeats: 1,
+    rows,
+    officialProtocol: null,
+    generationModel: 'profile:generator:model-a',
+  });
+  assert.equal(partial.ready, false);
+  assert.equal(partial.publicReady, false);
+  assert.match(partial.reasons.join(' '), /전체 코퍼스/);
+  assert.match(partial.reasons.join(' '), /반복 3회 미만/);
+  assert.match(partial.reasons.join(' '), /독립 판정자/);
+
+  const complete = assessPublicClaims({
+    dataset: 'wix',
+    source: undefined,
+    corpusLimit: undefined,
+    selectedQuestions: 1,
+    availableQuestions: 1,
+    repeats: 3,
+    rows,
+    officialProtocol: null,
+    generationModel: 'profile:generator:model-a',
+    judgeModel: 'profile:judge:model-b',
+  });
+  assert.equal(complete.ready, true);
+  assert.equal(complete.publicReady, true);
+  assert.equal(complete.leaderboardReady, false);
+});
 
 test('실제 제품의 새 채팅만 실행하고 기존 세션과 선택 모델을 보존한다', async () => {
   const deleted = [];

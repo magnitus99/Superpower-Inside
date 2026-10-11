@@ -18,6 +18,14 @@ const enterpriseRelease =
 const wixSource = 'https://huggingface.co/datasets/Wix/WixQA/resolve';
 
 export function parseAnswerOptions(args) {
+  const judgeOptions = args.filter((arg) => arg.startsWith('--judge-model='));
+  const judgeModel = judgeOptions[0]?.slice('--judge-model='.length);
+  if (
+    judgeOptions.length > 1 ||
+    (judgeModel !== undefined && !/^profile:[^:]+:.+$/.test(judgeModel))
+  )
+    throw new Error('판정 모델 참조 오류');
+  args = args.filter((arg) => !arg.startsWith('--judge-model='));
   const [dataset = 'wix', amount = 'all', source, runId = 'full', repeat = '3', profile] = args;
   const count = amount === 'all' ? undefined : Number(amount);
   const repeats = Number(repeat);
@@ -42,6 +50,7 @@ export function parseAnswerOptions(args) {
     oracle: ['oracle', 'diagnostic'].includes(profile),
     diagnostic: profile === 'diagnostic',
     includeSynthetic: args.includes('--include-synthetic'),
+    ...(judgeModel ? { judgeModel } : {}),
   };
 }
 
@@ -1363,6 +1372,7 @@ export async function providerBridge(
   directory,
   requestTimeoutMs = 240000,
   nativeHandler,
+  judgeModelRef,
 ) {
   const { createEvaluationProvider } = await import('./chat-tool-evaluation.mjs');
   const settings = app.plugins.plugins['superpower-inside']?.settings;
@@ -1371,6 +1381,9 @@ export async function providerBridge(
   runtime.appLogger.configure({ mirrorToConsole: false, minLevel: 'fatal', maxEntries: 1 });
   runtime.initializeChatGPTOAuth(app);
   const provider = createEvaluationProvider(runtime, settings);
+  const judgeProvider = judgeModelRef
+    ? createEvaluationProvider(runtime, settings, judgeModelRef)
+    : null;
   const selectedEmbedding = runtime.resolveUsableProviderModelRef(
     settings,
     settings.rag.embeddingModelRef ?? '',
@@ -1395,6 +1408,8 @@ export async function providerBridge(
       },
       version: app.plugins.plugins['superpower-inside'].manifest.version,
       capability: provider.capability,
+      judgeModel: judgeModelRef ?? null,
+      judgeCapability: judgeProvider?.capability ?? null,
       contextBudget: provider.contextBudget,
       hostPid: process.pid,
       embedding,
@@ -1475,7 +1490,7 @@ export async function providerBridge(
                       ? [await localEmbeddingProvider.embed(request.texts[0], { signal })]
                       : await localEmbeddingProvider.embedBatch(request.texts, { signal });
                 })()
-              : provider.streamChat(
+              : (request.role === 'judge' && judgeProvider ? judgeProvider : provider).streamChat(
                   request.messages,
                   (chunk) => chunks.push(chunk),
                   request.temperature,
@@ -1554,13 +1569,7 @@ async function main() {
       throw new Error('제품 평가는 단일 네이티브 모드입니다.');
     await launchNative(options);
   } else if (action === 'suite') {
-    const options = parseAnswerOptions([
-      'wix',
-      'all',
-      '-',
-      process.argv[3] ?? 'full',
-      process.argv[4] ?? '3',
-    ]);
+    const options = parseAnswerOptions(['wix', 'all', '-', ...process.argv.slice(3)]);
     const { launchNative } = await import('./native-product-benchmark.mjs');
     await launchNative(options);
     await launchNative({ ...options, dataset: 'enterprise' });

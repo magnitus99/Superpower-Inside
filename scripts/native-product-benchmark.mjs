@@ -20,11 +20,65 @@ import {
   createBridgeExchange,
   providerBridge,
   runtimeExports,
+  validateResumeRows,
 } from './public-vault-benchmark.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const leaderboard =
   'https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard/resolve/main/data/final_display_data/leaderboard.csv';
+
+export function parseLeaderboardCsv(csv) {
+  const lines = csv.trim().split(/\r?\n/).filter(Boolean);
+  const header = lines
+    .shift()
+    ?.split(',')
+    .map((value) => value.trim());
+  if (!header) throw new Error('리더보드 헤더 누락');
+  const nameIndex = header.indexOf('model');
+  const scoreIndex = header.indexOf('overall_score');
+  if (nameIndex < 0 || scoreIndex < 0) throw new Error('리더보드 스키마 오류');
+  return lines
+    .map((line) => line.split(',').map((value) => value.trim()))
+    .map((cells) => ({ product: cells[nameIndex], score: Number(cells[scoreIndex]) }))
+    .filter((item) => item.product && Number.isFinite(item.score));
+}
+
+export async function loadLeaderboardSnapshot(url = leaderboard) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`리더보드 HTTP ${response.status}`);
+  const csv = await response.text();
+  const systems = parseLeaderboardCsv(csv).sort((a, b) => b.score - a.score);
+  if (!systems.length) throw new Error('리더보드 시스템 누락');
+  return {
+    url,
+    checkedAt: new Date().toISOString(),
+    sha256: createHash('sha256').update(csv).digest('hex'),
+    systemCount: systems.length,
+    top: systems[0],
+    systems,
+  };
+}
+
+export function snapshotToReferences(
+  snapshot,
+  products = ['OpenAI File Search', 'RAGFlow', 'AnythingLLM'],
+) {
+  const byProduct = new Map(snapshot.systems.map((system) => [system.product, system]));
+  return products
+    .map((product) => byProduct.get(product))
+    .filter(Boolean)
+    .map((system) => ({
+      product: system.product,
+      dataset: 'enterprise',
+      metric: '공식 종합 점수',
+      score: system.score,
+      url: snapshot.url,
+      checkedAt: snapshot.checkedAt.slice(0, 10),
+      protocol: '공식 리더보드; 제출 시 전체 500문항·공식 채점·재현 조건 필요',
+    }));
+}
+
+// 네트워크가 없을 때만 쓰는 최소 대체값입니다. 실제 실행은 원본 CSV를 스냅샷합니다.
 export const publicReferences = [
   {
     product: 'OpenAI File Search',
@@ -118,11 +172,22 @@ export function summarizeNative(rows, planned = rows.length) {
     .map((r) => r.elapsedMs)
     .filter(Number.isFinite)
     .sort((a, b) => a - b);
+  const successfulTimes = rows
+    .filter((r) => groundedSuccess(r))
+    .map((r) => r.elapsedMs)
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
   const quantile = (p) =>
     times.length ? times[Math.min(times.length - 1, Math.ceil(times.length * p) - 1)] : null;
+  const quantileOf = (values, p) =>
+    values.length ? values[Math.min(values.length - 1, Math.ceil(values.length * p) - 1)] : null;
   const ratio = (predicate) => (planned ? rows.filter(predicate).length / planned : null);
   const answered = (row) => !row.error && (!row.terminal || row.terminal === 'answer');
   const applicable = rows.filter((r) => r.expectedDocumentIds?.length);
+  const judged = rows.filter((r) => answered(r) && r.grade);
+  const infoNotFound = rows.filter((r) => r.category === 'info_not_found');
+  const toolCalls = rows.map((r) => r.toolCalls?.length).filter(Number.isFinite);
+  const answerChars = rows.map((r) => r.answer?.length).filter(Number.isFinite);
   return {
     executed: rows.length,
     planned,
@@ -140,6 +205,21 @@ export function summarizeNative(rows, planned = rows.length) {
     groundedInterval: rows.length === planned ? questionInterval(rows, groundedSuccess) : null,
     medianMs: quantile(0.5),
     p95Ms: quantile(0.95),
+    successfulMedianMs: quantileOf(successfulTimes, 0.5),
+    successfulP95Ms: quantileOf(successfulTimes, 0.95),
+    citationSupportedRate: judged.length
+      ? judged.filter((r) => r.grade.supported === true).length / judged.length
+      : null,
+    invalidCitationAnswers: rows.filter((r) => r.invalidCitationCount).length,
+    correctAbstentionRate: infoNotFound.length
+      ? infoNotFound.filter((r) => r.grade?.abstained === true).length / infoNotFound.length
+      : null,
+    averageToolCalls: toolCalls.length
+      ? toolCalls.reduce((sum, value) => sum + value, 0) / toolCalls.length
+      : null,
+    averageAnswerChars: answerChars.length
+      ? answerChars.reduce((sum, value) => sum + value, 0) / answerChars.length
+      : null,
     documentRecall: applicable.length
       ? applicable.reduce(
           (sum, r) =>
@@ -152,7 +232,81 @@ export function summarizeNative(rows, planned = rows.length) {
   };
 }
 
-export function renderComparison(report, references = publicReferences) {
+export function assessPublicClaims({
+  dataset,
+  source,
+  corpusLimit,
+  selectedQuestions,
+  availableQuestions,
+  repeats,
+  rows,
+  officialProtocol,
+  generationModel,
+  judgeModel,
+}) {
+  const generationId = generationModel?.split(':').slice(2).join(':');
+  const judgeId = judgeModel?.split(':').slice(2).join(':');
+  const independentJudge = Boolean(generationId && judgeId && generationId !== judgeId);
+  const fullRun =
+    !source &&
+    corpusLimit === undefined &&
+    Number.isInteger(selectedQuestions) &&
+    selectedQuestions > 0 &&
+    selectedQuestions === availableQuestions;
+  const errors = rows.filter((row) => row.error).length;
+  const unjudged = rows.filter(
+    (row) => !row.grade && !row.error && row.terminal !== 'clarification',
+  ).length;
+  const reasons = [];
+  if (!fullRun) reasons.push('전체 코퍼스·전체 질문 실행이 아님');
+  if (!Number.isInteger(repeats) || repeats < 3) reasons.push('반복 3회 미만');
+  if (rows.length !== selectedQuestions * repeats) reasons.push('실행 미완료');
+  if (
+    new Set(rows.map((row) => row.id)).size !== selectedQuestions ||
+    new Set(rows.map((row) => `${row.id}:${row.repeat}`)).size !== rows.length ||
+    rows.some((row) => !Number.isInteger(row.repeat) || row.repeat < 0 || row.repeat >= repeats)
+  )
+    reasons.push('질문·반복 실행 구성 불일치');
+  if (errors) reasons.push(`실행 오류 ${errors}건`);
+  if (unjudged) reasons.push(`판정 미완료 ${unjudged}건`);
+  if (!independentJudge) reasons.push('생성 모델과 다른 독립 판정자 없음');
+
+  const leaderboardReasons = [];
+  if (dataset !== 'enterprise') leaderboardReasons.push('EnterpriseRAG-Bench가 아님');
+  if (!officialProtocol) leaderboardReasons.push('공식 Enterprise 채점 프로토콜 미적용');
+  if (officialProtocol && officialProtocol.correction !== 'official')
+    leaderboardReasons.push('원본 정답 보정이 적용되지 않음');
+
+  const ready = reasons.length === 0;
+  return {
+    ready,
+    publicReady: ready,
+    leaderboardReady: ready && leaderboardReasons.length === 0,
+    fullRun,
+    independentJudge: Boolean(independentJudge),
+    errors,
+    unjudged,
+    reasons,
+    leaderboardReasons,
+  };
+}
+
+// 평가 창에만 적용하며 완료·실패 후 기존 타이머 정책을 복구합니다.
+export async function withBenchmarkHost(host, operation) {
+  const previous = host.getBackgroundThrottling();
+  try {
+    host.setBackgroundThrottling(false);
+    return await operation();
+  } finally {
+    host.setBackgroundThrottling(previous);
+  }
+}
+
+export function renderComparison(
+  report,
+  references = publicReferences,
+  leaderboardSnapshot = null,
+) {
   const percent = (value) =>
     value === null || value === undefined ? '미측정' : `${(100 * value).toFixed(1)}%`;
   const subset =
@@ -166,6 +320,11 @@ export function renderComparison(report, references = publicReferences) {
     '',
     `데이터: ${report.dataset}; 문서 ${report.documents}; 질문 ${report.selectedQuestions}/${report.availableQuestions}; 반복 ${report.repeats}; 모델 ${report.model}.`,
     `실행: 실제 Obsidian 채팅·볼트·제품 인덱스. ${subset ? '부분 실행' : '전체 질문 범위'}.`,
+    ...(leaderboardSnapshot
+      ? [
+          `리더보드 스냅샷: ${leaderboardSnapshot.systemCount}개 시스템; 최고 ${leaderboardSnapshot.top.product} ${leaderboardSnapshot.top.score}%; ${leaderboardSnapshot.checkedAt.slice(0, 10)}; sha256 ${leaderboardSnapshot.sha256.slice(0, 12)}.`,
+        ]
+      : []),
     '',
     '| 제품 | 데이터 | 지표 | 수치 | 비교 조건 |',
     '| --- | --- | --- | --- | --- |',
@@ -178,9 +337,13 @@ export function renderComparison(report, references = publicReferences) {
       ),
     '',
     `근거가 뒷받침하는 완전한 답변: ${percent(report.summary.groundedRate)}. 원본 정답 문서에 대한 인용 문서 재현율: ${percent(report.summary.documentRecall)}.`,
+    `인용 뒷받침률: ${percent(report.summary.citationSupportedRate)}. 잘못된 인용 답변: ${report.summary.invalidCitationAnswers ?? 0}. 정보 없음 문항 거부율: ${percent(report.summary.correctAbstentionRate)}.`,
+    `답변 성공 p50: ${report.summary.successfulMedianMs ?? '미측정'}ms; p95: ${report.summary.successfulP95Ms ?? '미측정'}ms. 평균 도구 호출: ${report.summary.averageToolCalls?.toFixed?.(2) ?? '미측정'}.`,
     `실행 ${report.summary.executed}/${report.summary.planned}, 오류 ${report.summary.errors}, 판정 미완료 ${report.summary.unjudged}, 추가 질문 ${report.summary.clarifications ?? 0}. 미실행·오류·판정 실패·추가 질문을 성공으로 계산하지 않습니다.`,
     '',
-    '생성 모델과 같은 모델의 자동 판정이며 공식 리더보드 채점 결과가 아닙니다. Enterprise는 공식 프롬프트와 산식을 사용하되 원본 정답을 고정하는 no-correction 방식입니다. 리더보드의 시스템별 정답 보정 및 판정 모델과 조건을 맞추기 전에는 순위를 주장하지 않습니다.',
+    report.specification?.judge === 'independent-model-v1'
+      ? `생성 모델과 다른 판정 모델(${report.specification.judgeModel})을 사용했습니다. Enterprise는 공식 프롬프트와 산식을 사용하되 원본 정답을 고정하는 no-correction 방식이므로, 리더보드의 정답 보정 조건을 맞추기 전에는 순위를 주장하지 않습니다.`
+      : '생성 모델과 같은 모델의 자동 판정이며 공식 리더보드 채점 결과가 아닙니다. Enterprise는 공식 프롬프트와 산식을 사용하되 원본 정답을 고정하는 no-correction 방식입니다. 리더보드의 시스템별 정답 보정 및 판정 모델과 조건을 맞추기 전에는 순위를 주장하지 않습니다.',
     '',
     'README에서는 전체 검증 후 데이터셋별 정확도와 근거 답변 성공률, 질문 수, 모델, 평가일을 함께 제시합니다. 제품 페이지에서는 대표 성공 사례와 실패 사례, 인용 원문, 재현 명령, 전체 비교표를 연결합니다. 서로 다른 조건에서 얻은 수치를 이용한 배수·순위·경쟁 우위 문구는 만들지 않습니다.',
     '',
@@ -347,8 +510,16 @@ export async function nativeBridge(runtime, app, directory) {
   );
   let scope;
   let product;
+  let suppressedRagEvents = false;
   const owned = new Set();
   const mountedHashes = new Map();
+  const suppressRagEvents = () => {
+    if (!suppressedRagEvents && typeof plugin.unregisterRAGEvents === 'function') {
+      plugin.unregisterRAGEvents();
+      suppressedRagEvents = true;
+    }
+  };
+  suppressRagEvents();
   const initialize = async () => {
     if (
       !plugin.ragEngine ||
@@ -443,6 +614,7 @@ export async function nativeBridge(runtime, app, directory) {
     )
       throw new Error('제품 설정이 실행 중 변경되었습니다.');
     if (request.operation === 'native-mount') {
+      suppressRagEvents();
       if (!/^Benchmark-[a-zA-Z0-9_-]+$/.test(request.scope)) throw new Error('코퍼스 범위 오류');
       if (scope && scope !== request.scope) throw new Error('코퍼스 변경 오류');
       if (!scope) {
@@ -509,7 +681,10 @@ export async function nativeBridge(runtime, app, directory) {
     throw new Error('알 수 없는 네이티브 요청');
   };
   try {
-    await providerBridge(runtime, app, directory, 240000, handle);
+    const benchmarkOptions = await readFile(path.join(directory, 'benchmark-options.json'), 'utf8')
+      .then(JSON.parse)
+      .catch(() => ({}));
+    await providerBridge(runtime, app, directory, 240000, handle, benchmarkOptions.judgeModel);
   } finally {
     plugin = app.plugins.plugins['superpower-inside'] ?? plugin;
     for (const filename of owned) {
@@ -531,6 +706,8 @@ export async function nativeBridge(runtime, app, directory) {
         await product.embeddingProvider.db?.delete();
       }
     }
+    if (suppressedRagEvents && typeof plugin.registerRAGEvents === 'function')
+      plugin.registerRAGEvents();
     await writeFile(
       path.join(directory, 'cleaned.part'),
       JSON.stringify({
@@ -543,7 +720,15 @@ export async function nativeBridge(runtime, app, directory) {
 }
 
 export async function launchNative(options) {
-  const { dataset = 'wix', count, source, runId = 'full', repeats = 3, corpusLimit } = options;
+  const {
+    dataset = 'wix',
+    count,
+    source,
+    runId = 'full',
+    repeats = 3,
+    corpusLimit,
+    judgeModel,
+  } = options;
   if (
     !['wix', 'enterprise'].includes(dataset) ||
     !/^[a-zA-Z0-9_-]{1,64}$/.test(runId) ||
@@ -568,6 +753,11 @@ export async function launchNative(options) {
   execFileSync('git', ['check-ignore', work, runDirectory], { cwd: repository, stdio: 'ignore' });
   await mkdir(work, { recursive: true });
   await mkdir(runDirectory, { recursive: true });
+  const runStartedAt = Date.now();
+  await writeFile(
+    path.join(work, 'benchmark-options.json'),
+    JSON.stringify({ judgeModel: judgeModel ?? null }, null, 2),
+  );
   const scope = `Benchmark-${dataset}-${source ?? 'all'}`;
   const cancellation = new AbortController();
   const cancel = () => cancellation.abort();
@@ -589,7 +779,7 @@ export async function launchNative(options) {
       define: { 'import.meta.url': JSON.stringify(import.meta.url) },
       logLevel: 'silent',
     });
-    const code = `void(async()=>{try{await require(${JSON.stringify(helper)}).nativeBridge(require(${JSON.stringify(path.join(work, 'runtime.cjs'))}),app,${JSON.stringify(work)})}catch{require('node:fs').writeFileSync(${JSON.stringify(path.join(work, 'failed'))},'실패')}})();'네이티브 평가 시작'`;
+    const code = `void(async()=>{try{const helper=require(${JSON.stringify(helper)});await helper.withBenchmarkHost(require('@electron/remote').getCurrentWebContents(),()=>helper.nativeBridge(require(${JSON.stringify(path.join(work, 'runtime.cjs'))}),app,${JSON.stringify(work)}))}catch{require('node:fs').writeFileSync(${JSON.stringify(path.join(work, 'failed'))},'실패')}})();'네이티브 평가 시작'`;
     execFileSync(
       '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli',
       ['eval', `code=${code}`],
@@ -648,9 +838,16 @@ export async function launchNative(options) {
           ),
         ),
       ),
-      judge: 'same-selected-model-v1',
+      judge:
+        judgeModel &&
+        judgeModel.split(':').slice(2).join(':') !==
+          metadata.settings.chat.defaultModel.split(':').slice(2).join(':')
+          ? 'independent-model-v1'
+          : 'same-selected-model-v1',
+      judgeModel: judgeModel ?? metadata.settings.chat.defaultModel,
       scopeProtocol: 'folder-mention-public-boundary',
       indexProtocol: 'isolated-native-product-stores-and-embedding-cache',
+      hostProtocol: 'temporary-background-throttling-disabled',
     };
     const protocol =
       dataset === 'enterprise'
@@ -671,35 +868,29 @@ export async function launchNative(options) {
       )
     )
       for await (const row of jsonLines(rowsFile)) rows.push(row);
-    const seen = new Set();
-    for (const row of rows) {
-      const key = `${row.id}:${row.repeat}`;
-      if (
-        !selected.some((q) => q.id === row.id) ||
-        row.mode !== 'superpower-inside' ||
-        !Number.isInteger(row.repeat) ||
-        row.repeat < 0 ||
-        row.repeat >= repeats ||
-        seen.has(key)
-      )
-        throw new Error('재개 행 오류');
-      seen.add(key);
-    }
-    for (let offset = 0; offset < data.records.length; offset += 25) {
+    validateResumeRows(rows, selected, repeats, ['superpower-inside']);
+    const seen = new Set(rows.map((row) => `${row.id}:${row.repeat}`));
+    const mountStartedAt = Date.now();
+    for (let offset = 0; offset < data.records.length; offset++) {
       await exchange({
         operation: 'native-mount',
         scope,
-        records: data.records.slice(offset, offset + 25),
+        records: data.records.slice(offset, offset + 1),
       });
-      console.log(
-        JSON.stringify({
-          stage: '실제 볼트에 공개 코퍼스 가져오기',
-          documents: Math.min(offset + 25, data.records.length),
-          total: data.records.length,
-        }),
-      );
+      if ((offset + 1) % 25 === 0 || offset + 1 === data.records.length)
+        console.log(
+          JSON.stringify({
+            stage: '실제 볼트에 공개 코퍼스 가져오기',
+            documents: offset + 1,
+            total: data.records.length,
+          }),
+        );
     }
-    const indexDeadline = Date.now() + 30 * 60 * 1000;
+    const mountMs = Date.now() - mountStartedAt;
+    const indexTimeoutMs =
+      options.indexTimeoutMs ??
+      (data.records.length > 100000 ? 8 * 60 * 60 * 1000 : 2 * 60 * 60 * 1000);
+    const indexDeadline = Date.now() + indexTimeoutMs;
     for (;;) {
       const status = (await exchange({ operation: 'native-status' })).result;
       await writeFile(
@@ -722,6 +913,7 @@ export async function launchNative(options) {
       );
       await wait(10000);
     }
+    const indexReadyMs = Date.now() - mountStartedAt;
     let interrupted = false;
     for (let repeat = 0; repeat < repeats && !interrupted; repeat++) {
       for (const question of selected) {
@@ -766,6 +958,7 @@ export async function launchNative(options) {
           }
           if (!row.error && row.terminal === 'answer') {
             const response = await exchange({
+              role: 'judge',
               messages: [
                 {
                   role: 'system',
@@ -801,6 +994,7 @@ export async function launchNative(options) {
                 protocol,
                 async (prompt) => {
                   const judged = await exchange({
+                    role: 'judge',
                     messages: [{ role: 'user', content: prompt }],
                     temperature: 0,
                   });
@@ -832,6 +1026,18 @@ export async function launchNative(options) {
         if (interrupted) break;
       }
     }
+    let leaderboardSnapshot = null;
+    let leaderboardSnapshotError = null;
+    if (dataset === 'enterprise') {
+      try {
+        leaderboardSnapshot = await loadLeaderboardSnapshot();
+      } catch (error) {
+        leaderboardSnapshotError = classifyFailure(error);
+      }
+    }
+    const references = leaderboardSnapshot
+      ? snapshotToReferences(leaderboardSnapshot)
+      : publicReferences;
     const report = {
       dataset,
       sourceScope: source,
@@ -842,6 +1048,13 @@ export async function launchNative(options) {
       repeats,
       model: metadata.settings.chat.defaultModel,
       specification,
+      timing: {
+        mountMs,
+        indexReadyMs,
+        totalMs: Date.now() - runStartedAt,
+      },
+      leaderboardSnapshot,
+      leaderboardSnapshotError,
       summary: summarizeNative(rows, selected.length * repeats),
       officialScore: protocol
         ? aggregateEnterprise(
@@ -867,28 +1080,24 @@ export async function launchNative(options) {
           ),
         ]),
       ),
-      publicClaims: {
-        ready:
-          !source &&
-          corpusLimit === undefined &&
-          selected.length === data.questions.length &&
-          rows.length === selected.length * repeats &&
-          rows.every((r) => r.grade || r.error || r.terminal === 'clarification') &&
-          rows.some((r) => r.grade) &&
-          repeats >= 3,
-        comparativeReady: false,
-        reasons: [
-          '공식 채점법 및 판정 모델과의 동등성 미검증',
-          '생성 모델과 같은 모델의 자동 판정',
-          ...(source || corpusLimit !== undefined || selected.length !== data.questions.length
-            ? ['부분 실행']
-            : []),
-          ...(rows.length < selected.length * repeats ? ['실행 미완료'] : []),
-        ],
-      },
+      publicClaims: assessPublicClaims({
+        dataset,
+        source,
+        corpusLimit,
+        selectedQuestions: selected.length,
+        availableQuestions: data.questions.length,
+        repeats,
+        rows,
+        officialProtocol: protocol,
+        generationModel: metadata.settings.chat.defaultModel,
+        judgeModel,
+      }),
     };
     await writeFile(path.join(runDirectory, 'summary.json'), JSON.stringify(report, null, 2));
-    await writeFile(path.join(runDirectory, 'comparison.md'), renderComparison(report));
+    await writeFile(
+      path.join(runDirectory, 'comparison.md'),
+      renderComparison(report, references, leaderboardSnapshot),
+    );
     for (let repeat = 0; repeat < repeats; repeat++)
       await writeFile(
         path.join(runDirectory, `official-answers-${repeat + 1}.jsonl`),
@@ -936,15 +1145,22 @@ export async function launchNative(options) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2);
+  const judgeModel = args
+    .find((arg) => arg.startsWith('--judge-model='))
+    ?.slice('--judge-model='.length);
+  const positional = args.filter((arg) => !arg.startsWith('--judge-model='));
   const [dataset = 'wix', amount = 'all', runId = 'full', repeat = '3', source, corpusAmount] =
-    process.argv.slice(2);
+    positional;
   launchNative({
     dataset,
     count: amount === 'all' ? undefined : Number(amount),
     runId,
     repeats: Number(repeat),
     source: source === '-' ? undefined : source,
-    corpusLimit: corpusAmount === undefined ? undefined : Number(corpusAmount),
+    corpusLimit:
+      corpusAmount === undefined || corpusAmount === '-' ? undefined : Number(corpusAmount),
+    judgeModel,
   }).catch((error) => {
     console.error(
       `네이티브 벤치마크 실패 (${classifyFailure(error)}): 인증 정보와 비공개 원문은 출력하지 않습니다.`,
