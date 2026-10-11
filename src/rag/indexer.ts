@@ -877,7 +877,8 @@ export class VaultIndexer {
       );
     }
     if (
-      await isRagFileExcluded(this.vault, currentSnapshot.file, this.ragConfig, this.chatConfig)
+      !isCurrentVaultFile(latestFile) ||
+      (await isRagFileExcluded(this.vault, latestFile, this.ragConfig, this.chatConfig))
     ) {
       await this.removeFile(file.path);
       tracker.skipped += 1;
