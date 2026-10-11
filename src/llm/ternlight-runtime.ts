@@ -28,6 +28,7 @@ export interface TernlightWorkerResponse {
   backend?: 'webgpu' | 'wasm';
   threads?: number;
   fallbackReason?: string;
+  gpuAvailable?: boolean;
 }
 
 export interface TernlightWorkerAdapter {

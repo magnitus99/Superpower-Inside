@@ -30,6 +30,7 @@ import { RefreshAction } from './utils/refresh-action';
 import { runActionWithFeedback } from './utils/action-feedback';
 import { confirmWithModal } from './utils/modal-prompts';
 import { buildLocalEmbeddingModelSettings } from './llm/local-embedding-settings';
+import { buildEmbeddingGemmaCaution } from './llm/embeddinggemma-caution';
 import type { LocalEmbeddingModelId } from './llm/local-embedding-models';
 import type { VectorStore } from './rag/store';
 import { isIndexingCancelledError, type IndexingResult } from './rag/indexer';
@@ -1428,6 +1429,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private resumeIndexingButton: HTMLButtonElement | null = null;
   private providerStatusBody: HTMLElement | null = null;
   private disposeLocalModelSettings: (() => void) | null = null;
+  private disposeEmbeddingCaution: (() => void) | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
   private expandedProviderProfileId: string | null = null;
@@ -1596,6 +1598,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private resetRagDomReferences(): void {
     this.disposeLocalModelSettings?.();
     this.disposeLocalModelSettings = null;
+    this.disposeEmbeddingCaution?.();
+    this.disposeEmbeddingCaution = null;
     this.generalStatusBody = null;
     this.chatStatusBody = null;
     this.chatModelDropdownEl = null;
@@ -2740,6 +2744,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     section.after(newAnchor);
     {
       const ragConfig = this.plugin.settings.rag;
+      this.disposeEmbeddingCaution?.();
+      this.disposeEmbeddingCaution = buildEmbeddingGemmaCaution(section, this.app);
       const effectiveModelRef = this.pendingEmbeddingModel ?? ragConfig.embeddingModelRef ?? '';
       const profileModelOptions = buildEmbeddingProfileModelOptions(this.plugin.settings, {
         currentModel: effectiveModelRef,
