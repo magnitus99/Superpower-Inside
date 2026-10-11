@@ -23,6 +23,25 @@ import { getRagCandidateFiles } from '../utils/vault';
 const bm25DbNames = new Set<string>();
 
 describe('인덱싱 제외 정책', () => {
+  it('네이티브 파일 객체가 필요한 YAML 재검사에서도 임베딩 결과를 보존한다', async () => {
+    const contents = new Map([['synthetic.md', '# 합성 문서\n\n요금은 700원입니다.']]);
+    const vault = createVault(contents);
+    const file = vault.getFiles()[0];
+    const originalRead = vault.cachedRead.bind(vault);
+    vi.spyOn(vault, 'cachedRead').mockImplementation((candidate) => {
+      if (candidate !== file) return Promise.reject(new TypeError('합성 네이티브 파일 객체 필요'));
+      return originalRead(candidate);
+    });
+    const store = new MemoryVectorStore();
+    const provider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(vault, store, provider, createRagConfig(), createChatConfig());
+    const result = await indexer.indexFile(file);
+    expect(result.indexed).toBe(1);
+    expect(await store.getIndexedFilePaths()).toEqual(['synthetic.md']);
+  });
   it.each(
     ['vector', 'bm25', 'hybrid', 'ann'].flatMap((mode) =>
       ['true', '"true"', '0', '1', '트루', '""', 'null', '', '[]', '{}'].map((value) => ({

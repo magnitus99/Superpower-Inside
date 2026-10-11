@@ -117,7 +117,7 @@ export function groundedSuccess(row) {
   );
 }
 
-export function validateGrade(raw, row, citations) {
+export function validateGrade(raw, row, citations, displayedRanges) {
   const grade = JSON.parse(
     raw
       .replace(/^```(?:json)?\s*/, '')
@@ -131,7 +131,7 @@ export function validateGrade(raw, row, citations) {
     )
   )
     throw new Error('판정 스키마 오류');
-  const verified = selectVerifiedCitationRanges(row.answer, citations);
+  const verified = displayedRanges ?? selectVerifiedCitationRanges(row.answer, citations);
   const mentioned = [...new Set(row.answer.match(/\[vault:[^\]\n]*\]/g) ?? [])];
   const invalidCitationCount = mentioned.filter(
     (id) => !verified.some((c) => `[${c.id}]` === id),
@@ -514,7 +514,7 @@ export async function prepareWix(root = benchmarkRoot) {
     if (typeof item.contents !== 'string' || item.id === undefined)
       throw new Error('문서 스키마 오류');
     const relative = safeDocumentPath(item.id, 'wix');
-    const text = `# ${item.title ?? ''}\n\n${item.contents}`;
+    const text = item.contents;
     await writeFile(path.join(directory, 'documents', relative), text);
     records.push({
       path: relative,
@@ -1357,7 +1357,13 @@ export { resolveUsableProviderModelRef } from './src/settings';
 `;
 
 // 인증 정보는 Obsidian 안에 두고 메시지·응답만 평가 프로세스와 교환합니다.
-export async function providerBridge(runtime, app, directory, requestTimeoutMs = 240000) {
+export async function providerBridge(
+  runtime,
+  app,
+  directory,
+  requestTimeoutMs = 240000,
+  nativeHandler,
+) {
   const { createEvaluationProvider } = await import('./chat-tool-evaluation.mjs');
   const settings = app.plugins.plugins['superpower-inside']?.settings;
   if (!settings || app.vault.adapter.getBasePath() !== path.dirname(benchmarkRoot))
@@ -1392,6 +1398,24 @@ export async function providerBridge(runtime, app, directory, requestTimeoutMs =
       contextBudget: provider.contextBudget,
       hostPid: process.pid,
       embedding,
+      ...(nativeHandler
+        ? {
+            nativeFingerprint: createHash('sha256')
+              .update(
+                await readFile(
+                  path.join(
+                    app.vault.adapter.getBasePath(),
+                    app.vault.configDir,
+                    'plugins/superpower-inside/main.js',
+                  ),
+                ),
+              )
+              .digest('hex'),
+            configurationFingerprint: createHash('sha256')
+              .update(JSON.stringify({ rag: settings.rag, chat: settings.chat }))
+              .digest('hex'),
+          }
+        : {}),
     }),
   );
   await rename(path.join(directory, 'provider.json.part'), path.join(directory, 'provider.json'));
@@ -1421,38 +1445,43 @@ export async function providerBridge(runtime, app, directory, requestTimeoutMs =
       lastId = request.id;
       const chunks = [];
       let vectors;
+      let result;
       let error = false;
       let timeout;
       try {
         const operation =
-          request.operation === 'embedding'
-            ? (async () => {
-                if (!embedding) throw new Error('선택한 로컬 임베딩 모델이 필요합니다.');
-                localEmbeddingProvider ??=
-                  embedding.model === 'embeddinggemma-300m'
-                    ? new runtime.EmbeddingGemmaProvider({
-                        app,
-                        pluginId: 'superpower-inside',
-                        pluginVersion: app.plugins.plugins['superpower-inside'].manifest.version,
-                      })
-                    : new runtime.TernlightEmbeddingProvider(embedding.model, {
-                        app,
-                        pluginId: 'superpower-inside',
-                        pluginVersion: app.plugins.plugins['superpower-inside'].manifest.version,
-                      });
-                const signal = AbortSignal.timeout(requestTimeoutMs);
-                vectors =
-                  request.kind === 'query'
-                    ? [await localEmbeddingProvider.embed(request.texts[0], { signal })]
-                    : await localEmbeddingProvider.embedBatch(request.texts, { signal });
-              })()
-            : provider.streamChat(
-                request.messages,
-                (chunk) => chunks.push(chunk),
-                request.temperature,
-                request.tools,
-                { signal: AbortSignal.timeout(requestTimeoutMs), toolChoice: request.toolChoice },
-              );
+          request.operation?.startsWith('native-') && nativeHandler
+            ? nativeHandler(request, AbortSignal.timeout(requestTimeoutMs)).then((value) => {
+                result = value;
+              })
+            : request.operation === 'embedding'
+              ? (async () => {
+                  if (!embedding) throw new Error('선택한 로컬 임베딩 모델이 필요합니다.');
+                  localEmbeddingProvider ??=
+                    embedding.model === 'embeddinggemma-300m'
+                      ? new runtime.EmbeddingGemmaProvider({
+                          app,
+                          pluginId: 'superpower-inside',
+                          pluginVersion: app.plugins.plugins['superpower-inside'].manifest.version,
+                        })
+                      : new runtime.TernlightEmbeddingProvider(embedding.model, {
+                          app,
+                          pluginId: 'superpower-inside',
+                          pluginVersion: app.plugins.plugins['superpower-inside'].manifest.version,
+                        });
+                  const signal = AbortSignal.timeout(requestTimeoutMs);
+                  vectors =
+                    request.kind === 'query'
+                      ? [await localEmbeddingProvider.embed(request.texts[0], { signal })]
+                      : await localEmbeddingProvider.embedBatch(request.texts, { signal });
+                })()
+              : provider.streamChat(
+                  request.messages,
+                  (chunk) => chunks.push(chunk),
+                  request.temperature,
+                  request.tools,
+                  { signal: AbortSignal.timeout(requestTimeoutMs), toolChoice: request.toolChoice },
+                );
         await Promise.race([
           operation,
           new Promise((_, reject) => {
@@ -1465,7 +1494,10 @@ export async function providerBridge(runtime, app, directory, requestTimeoutMs =
         clearTimeout(timeout);
       }
       const temporary = path.join(directory, 'response.json.part');
-      await writeFile(temporary, JSON.stringify({ id: request.id, chunks, vectors, error }));
+      await writeFile(
+        temporary,
+        JSON.stringify({ id: request.id, chunks, vectors, result, error }),
+      );
       await rename(temporary, path.join(directory, 'response.json'));
     }
   } finally {
@@ -1510,154 +1542,18 @@ export function createBridgeExchange(directory, metadata) {
   };
 }
 
-async function launchAnswers({
-  dataset,
-  count,
-  source,
-  runId = 'full',
-  repeats = 3,
-  oracle = false,
-  diagnostic = false,
-  includeSynthetic = false,
-}) {
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(runId)) throw new Error('실행 ID 형식 오류');
-  if (count !== undefined && (!Number.isInteger(count) || count < 1))
-    throw new Error('평가 질문 수 오류');
-  if (!Number.isInteger(repeats) || repeats < 1 || repeats > 10)
-    throw new Error('반복 횟수는 1~10 정수여야 합니다.');
-  const { build } = await import('esbuild');
-  const { compileRuntime } = await import('./evaluate-chat-quality.mjs');
-  const work = path.resolve('.test-vault/.benchmark-live-work', `${runId}-${process.pid}`);
-  execFileSync('git', ['check-ignore', work], { stdio: 'ignore' });
-  await mkdir(work, { recursive: true });
-  await mkdir(path.join(benchmarkRoot, 'runs'), { recursive: true });
-  try {
-    await import('fake-indexeddb/auto');
-    globalThis.window = globalThis;
-    const runtime = await compileRuntime(process.cwd(), work, runtimeExports);
-    const helper = path.join(work, 'helper.cjs');
-    await build({
-      entryPoints: [fileURLToPath(import.meta.url)],
-      bundle: true,
-      platform: 'node',
-      format: 'cjs',
-      outfile: helper,
-      packages: 'external',
-      define: { 'import.meta.url': JSON.stringify(import.meta.url) },
-      logLevel: 'silent',
-    });
-    const code = `void(async()=>{try{const runtime=require(${JSON.stringify(path.join(work, 'runtime.cjs'))});const helper=require(${JSON.stringify(helper)});await helper.providerBridge(runtime,app,${JSON.stringify(work)});}catch{require('node:fs').writeFileSync(${JSON.stringify(path.join(work, 'failed'))},'실패');}})();'평가 시작'`;
-    const result = execFileSync(
-      '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli',
-      ['eval', `code=${code}`],
-      { encoding: 'utf8' },
-    );
-    if (!result.includes('평가 시작')) throw new Error('Obsidian 평가 시작 실패');
-    const startupDeadline = Date.now() + 30000;
-    while (
-      !(await stat(path.join(work, 'provider.json')).then(
-        () => true,
-        () => false,
-      ))
-    ) {
-      if (
-        Date.now() > startupDeadline ||
-        (await stat(path.join(work, 'failed')).then(
-          () => true,
-          () => false,
-        ))
-      )
-        throw new Error('Obsidian provider 초기화 실패');
-      await wait(100);
-    }
-    const metadata = JSON.parse(await readFile(path.join(work, 'provider.json'), 'utf8'));
-    if (!metadata.embedding)
-      throw new Error('제품 벤치마크에는 선택한 로컬 임베딩 모델이 필요합니다.');
-    const exchange = createBridgeExchange(work, metadata);
-    const provider = {
-      capability: metadata.capability,
-      contextBudget: metadata.contextBudget,
-      chat: async (messages, temperature, _maxTokens, requestOptions) => {
-        let response = '';
-        await provider.streamChat(
-          messages,
-          (chunk) => {
-            response += chunk.content ?? '';
-          },
-          temperature,
-          undefined,
-          requestOptions,
-        );
-        return response;
-      },
-      streamChat: async (messages, onChunk, temperature, tools, requestOptions = {}) => {
-        const response = await exchange(
-          {
-            messages,
-            temperature,
-            tools,
-            toolChoice: requestOptions.toolChoice,
-          },
-          requestOptions.signal,
-        );
-        for (const chunk of response.chunks) onChunk(chunk);
-      },
-    };
-    const app = {
-      vault: { adapter: { getBasePath: () => path.dirname(benchmarkRoot) } },
-      plugins: {
-        plugins: {
-          'superpower-inside': {
-            settings: metadata.settings,
-            manifest: { version: metadata.version },
-          },
-        },
-      },
-    };
-    const report = await answerBenchmark(runtime, app, {
-      dataset,
-      count,
-      source,
-      provider,
-      runLabel: `-${runId}`,
-      repeats,
-      oracle,
-      diagnostic,
-      includeSynthetic,
-      embeddingProvider: {
-        identity: metadata.embedding,
-        embed: async (text, requestOptions = {}) =>
-          (
-            await exchange(
-              { operation: 'embedding', kind: 'query', texts: [text] },
-              requestOptions.signal,
-            )
-          ).vectors[0],
-        embedBatch: async (texts) =>
-          (
-            await exchange(
-              { operation: 'embedding', kind: 'document', texts },
-              AbortSignal.timeout(300000),
-            )
-          ).vectors,
-      },
-      onProgress: (value) => console.log(JSON.stringify(value)),
-    });
-    console.log(JSON.stringify(report));
-  } finally {
-    await writeFile(path.join(work, 'stop'), '중단').catch(() => {});
-    await wait(300);
-    await rm(work, { recursive: true, force: true });
-  }
-}
-
 async function main() {
   const action = process.argv[2];
   if (action === 'download') await downloadDatasets();
   else if (action === 'prepare-wix') await prepareWix();
   else if (action === 'prepare-enterprise') await prepareEnterprise();
-  else if (action === 'answers') await launchAnswers(parseAnswerOptions(process.argv.slice(3)));
-  else if (action === 'suite') {
+  else if (action === 'answers') {
+    const { launchNative } = await import('./native-product-benchmark.mjs');
+    const options = parseAnswerOptions(process.argv.slice(3));
+    if (options.oracle || options.diagnostic || options.includeSynthetic)
+      throw new Error('제품 평가는 단일 네이티브 모드입니다.');
+    await launchNative(options);
+  } else if (action === 'suite') {
     const options = parseAnswerOptions([
       'wix',
       'all',
@@ -1665,8 +1561,9 @@ async function main() {
       process.argv[3] ?? 'full',
       process.argv[4] ?? '3',
     ]);
-    await launchAnswers(options);
-    await launchAnswers({ ...options, dataset: 'enterprise' });
+    const { launchNative } = await import('./native-product-benchmark.mjs');
+    await launchNative(options);
+    await launchNative({ ...options, dataset: 'enterprise' });
   } else if (action === 'retrieval') {
     await import('fake-indexeddb/auto');
     globalThis.window = globalThis;
@@ -1684,7 +1581,7 @@ async function main() {
     }
   } else
     throw new Error(
-      '사용법: download | prepare-wix | prepare-enterprise | retrieval [wix|enterprise] [출처] | answers [wix|enterprise] [문항 수|all=전체 핵심 질문] [출처|-] [실행 ID] [반복 횟수=3] [standard|oracle|diagnostic] [--include-synthetic] | suite [실행 ID] [반복 횟수=3]',
+      '사용법: download | prepare-wix | prepare-enterprise | retrieval [wix|enterprise] [출처] | answers [wix|enterprise] [문항 수|all=전체 핵심 질문] [출처|-] [실행 ID] [반복 횟수=3] | suite [실행 ID] [반복 횟수=3]',
     );
 }
 
