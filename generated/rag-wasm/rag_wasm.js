@@ -760,6 +760,29 @@ export function embedding_gemma_inputs_json(texts_json, kind) {
 }
 
 /**
+ * 확장자에 맞는 추출기를 실행하고 결과를 JSON으로 반환합니다.
+ * @param {string} extension
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
+export function extract_source_text_json(extension, bytes) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(extension, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.extract_source_text_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * `delta` 객체의 구조화 reasoning 필드를 추출한다.
  * @param {string} delta_json
  * @returns {string}
@@ -908,6 +931,18 @@ export function is_excluded_path(file_path, patterns) {
     const ptr1 = passStringToWasm0(patterns, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.is_excluded_path(ptr0, len0, ptr1, len1);
+    return ret !== 0;
+}
+
+/**
+ * 소문자 확장자가 이 코어에서 추출 가능한 대상인지 확인합니다.
+ * @param {string} extension
+ * @returns {boolean}
+ */
+export function is_extractable_source_extension(extension) {
+    const ptr0 = passStringToWasm0(extension, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.is_extractable_source_extension(ptr0, len0);
     return ret !== 0;
 }
 
