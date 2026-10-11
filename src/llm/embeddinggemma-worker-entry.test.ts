@@ -61,6 +61,7 @@ beforeEach(async () => {
   vi.resetModules();
   vi.resetAllMocks();
   vi.stubGlobal('self', worker);
+  vi.stubGlobal('navigator', { gpu: { requestAdapter: () => Promise.resolve({}) } });
   mocks.tokenize.mockImplementation(() => ({ input_ids: new TestTensor(new BigInt64Array(1)) }));
   mocks.loadTokenizer.mockResolvedValue(mocks.tokenize);
   await import('./embeddinggemma-worker-entry');
@@ -68,6 +69,14 @@ beforeEach(async () => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('EmbeddingGemma 자동 자원 활용', () => {
+  it('GPU가 감지되지 않으면 CPU 상태에 GPU 가용성을 표시하지 않는다', async () => {
+    vi.stubGlobal('navigator', {});
+    mocks.load.mockRejectedValueOnce(new Error('No adapter')).mockResolvedValueOnce({});
+    expect(await request({ id: 1, operation: 'initialize', assets })).toMatchObject({
+      backend: 'wasm',
+      gpuAvailable: false,
+    });
+  });
   it('GPU를 우선 사용하고 여러 입력을 실제 단일 추론으로 처리한다', async () => {
     const embedding = new TestOnnxTensor('float32', new Float32Array(2 * 768));
     const run = vi.fn(() => Promise.resolve({ sentence_embedding: embedding }));
@@ -100,6 +109,7 @@ describe('EmbeddingGemma 자동 자원 활용', () => {
     expect(await request({ id: 1, operation: 'initialize', assets })).toMatchObject({
       backend: 'wasm',
       fallbackReason: 'GPU unavailable',
+      gpuAvailable: true,
     });
     expect(mocks.load).toHaveBeenLastCalledWith(
       assets['onnx/model.onnx'],

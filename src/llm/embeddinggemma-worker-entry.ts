@@ -19,6 +19,7 @@ let modelAssets: Record<string, ArrayBuffer> = {};
 let queue = Promise.resolve();
 let backend: 'webgpu' | 'wasm' = 'webgpu';
 let fallbackReason: string | undefined;
+let gpuAvailable = false;
 
 self.onmessage = (event: MessageEvent<Request>): void => {
   queue = queue.then(async () => {
@@ -61,14 +62,28 @@ self.onmessage = (event: MessageEvent<Request>): void => {
         tokenizer = await AutoTokenizer.from_pretrained('embeddinggemma', {
           local_files_only: true,
         });
+        backend = 'webgpu';
+        fallbackReason = undefined;
+        const gpu = (
+          navigator as Navigator & {
+            gpu?: { requestAdapter(): Promise<unknown> };
+          }
+        ).gpu;
+        gpuAvailable = false;
+        try {
+          gpuAvailable = Boolean(await gpu?.requestAdapter());
+        } catch {
+          // 어댑터 조회 실패만으로 GPU가 있다고 단정하지 않습니다.
+        }
         try {
           model = await loadModel('webgpu');
+          gpuAvailable = true;
         } catch (error) {
           fallbackReason = error instanceof Error ? error.message : String(error);
           backend = 'wasm';
           model = await loadModel('wasm');
         }
-        self.postMessage({ id, backend, threads: wasm.numThreads, fallbackReason });
+        self.postMessage({ id, backend, threads: wasm.numThreads, fallbackReason, gpuAvailable });
         return;
       }
       if (!model || !tokenizer || !texts)
@@ -87,7 +102,15 @@ self.onmessage = (event: MessageEvent<Request>): void => {
         values = await inferTexts(texts);
       }
       self.postMessage(
-        { id, dimensions: 768, rows: texts.length, values: values.buffer, backend, fallbackReason },
+        {
+          id,
+          dimensions: 768,
+          rows: texts.length,
+          values: values.buffer,
+          backend,
+          fallbackReason,
+          gpuAvailable,
+        },
         { transfer: [values.buffer] },
       );
     } catch (error) {
