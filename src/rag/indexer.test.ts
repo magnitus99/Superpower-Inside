@@ -1109,7 +1109,7 @@ function createChatConfig(): ChatConfig {
   };
 }
 
-function createVault(contents: Map<string, string>): Vault {
+function createVault(contents: Map<string, string>, binaries?: Map<string, Uint8Array>): Vault {
   const files = [...contents.keys()].map((path) =>
     createFile(path, 1000, contents.get(path)?.length ?? 0),
   );
@@ -1118,6 +1118,8 @@ function createVault(contents: Map<string, string>): Vault {
     getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),
     getAbstractFileByPath: (path: string) => files.find((file) => file.path === path) ?? null,
     cachedRead: (file: TFile) => Promise.resolve(contents.get(file.path) ?? ''),
+    readBinary: (file: TFile) =>
+      Promise.resolve((binaries?.get(file.path) ?? new Uint8Array()).slice().buffer),
   } as unknown as Vault;
 }
 
@@ -1233,3 +1235,36 @@ function createEntry(path: string): VectorEntry {
     },
   };
 }
+
+describe('압축 문서 인덱싱', () => {
+  it('본문 추출에 실패한 압축 문서는 볼트 전체 재색인을 중단시키지 않는다', async () => {
+    const contents = new Map([
+      ['notes/good.md', 'good body'],
+      ['notes/broken.docx', 'x'],
+    ]);
+    const binaries = new Map([
+      ['notes/broken.docx', new TextEncoder().encode('not-a-zip-container')],
+    ]);
+    const vault = createVault(contents, binaries);
+    const store = new MemoryVectorStore();
+    const provider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      provider,
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    const result = await indexer.indexVault();
+    const indexedPaths = await store.getIndexedFilePaths();
+
+    expect(result.indexed).toBeGreaterThan(0);
+    expect(indexedPaths).toContain('notes/good.md');
+    expect(indexedPaths).not.toContain('notes/broken.docx');
+    expect(indexer.getFailedFilePaths()).toContain('notes/broken.docx');
+  });
+});

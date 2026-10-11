@@ -12,6 +12,7 @@ import {
   readJsonFromVault,
   writeJsonToVault,
 } from './src/utils/vault';
+import { readSourceText } from './src/rag/source-access';
 import {
   TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID,
   toggleDocumentExclusion,
@@ -1606,7 +1607,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const files = await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat);
     const documents: BM25CorpusDocument[] = [];
     for (const file of files) {
-      const content = await this.app.vault.cachedRead(file);
+      const content = (await readSourceText(this.app.vault, file)).text;
       documents.push(...this.buildBM25CorpusDocuments(file, content));
     }
     return documents;

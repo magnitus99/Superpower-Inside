@@ -34,6 +34,7 @@ import type {
 } from './native-vault-tool';
 import { truncateUtf8Text } from '../utils/text-budget';
 import { readSourceFileSnapshot } from '../rag/source-snapshot';
+import { readSourceText } from '../rag/source-access';
 import type { SourceProcessingSummary } from '../rag/source-processing';
 import { appLogger } from '../utils/logger';
 
@@ -181,7 +182,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
     }
     throwIfAborted(signal);
-    const content = await awaitWithAbort(this.app.vault.cachedRead(file), signal);
+    const content = (await awaitWithAbort(readSourceText(this.app.vault, file), signal)).text;
     throwIfAborted(signal);
     const lines = content.split('\n');
     const range = planNativeVaultReadRangeRust(
@@ -238,7 +239,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     if (!file || !(await this.fileScope.isCandidateFile(file))) {
       throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
     }
-    const content = await awaitWithAbort(this.app.vault.cachedRead(file), signal);
+    const content = (await awaitWithAbort(readSourceText(this.app.vault, file), signal)).text;
     const lines = content.split('\n');
     const range = planNativeVaultReadRangeRust(
       lines.length,
@@ -626,7 +627,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
               content:
                 request.field === 'path'
                   ? ''
-                  : await awaitWithAbort(this.app.vault.cachedRead(file), signal),
+                  : (await awaitWithAbort(readSourceText(this.app.vault, file), signal)).text,
             };
           } catch {
             return { path, content: null };

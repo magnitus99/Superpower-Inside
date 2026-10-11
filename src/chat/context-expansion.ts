@@ -1,4 +1,5 @@
 import { TFile, type App } from 'obsidian';
+import { readSourceText } from '../rag/source-access';
 import { t } from '../i18n';
 import {
   extractVaultLinksRust,
@@ -57,7 +58,7 @@ export async function expandReferencedVaultFiles(
       references.push({
         file: candidate.file,
         requestedPath: candidate.requestedPath,
-        content: await app.vault.cachedRead(candidate.file),
+        content: (await readSourceText(app.vault, candidate.file)).text,
       });
     } catch (err) {
       warnings.push(
