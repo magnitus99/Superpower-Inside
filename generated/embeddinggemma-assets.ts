@@ -2,8 +2,8 @@
 export const EMBEDDINGGEMMA_ASSETS = [
   {
     "file": "embeddinggemma-worker.js",
-    "size": 548143,
-    "sha256": "84e0859307f483653b59edd8d5a68c2fcc72808bc67abb59dffa31e898de21f7",
+    "size": 548280,
+    "sha256": "702029d64f471709b97f97b9ca81228f4583f5481ee7a3129508c93ab752d609",
     "url": ""
   },
   {

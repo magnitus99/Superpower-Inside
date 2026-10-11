@@ -415,6 +415,8 @@ export interface I18nKeys {
   localModelsDetail: string;
   localModelTernlightDetail: string;
   localModelGemmaDetail: string;
+  localModelCpuCaution: string;
+  localModelCpuFallback: string;
   localModelMissing: string;
   localModelReady: string;
   localModelChecking: string;
@@ -2063,6 +2065,8 @@ const ko: I18nKeys = {
   localModelGemmaDetail:
     '목적: 다국어 노트 검색 · 언어: 100개 이상 학습(공개 검색 평가: 아랍어·벵골어·핀란드어·일본어·한국어·러시아어·텔루구어) · 다운로드: 약 1.27 GB(FP32) · 권장 최소(추정): 시스템 RAM 8 GB, GPU 불필요.',
   localModelMissing: '다운로드 필요',
+  localModelCpuCaution: 'CPU로 연산 중입니다. 처리 시간이 조금 더 걸릴 수 있습니다.',
+  localModelCpuFallback: 'WebGPU 오류 · CPU fallback',
   localModelReady: '로컬 파일 있음',
   localModelChecking: '로컬 파일 확인 중',
   localModelDownloading: '다운로드 중',
@@ -3858,6 +3862,8 @@ const en: I18nKeys = {
   localModelGemmaDetail:
     'Purpose: search multilingual notes · Languages: trained on over 100; published retrieval evaluations: Arabic, Bengali, Finnish, Japanese, Korean, Russian, Telugu · Download: about 1.27 GB (FP32) · Estimated recommended minimum: 8 GB system RAM; no GPU required.',
   localModelMissing: 'Download required',
+  localModelCpuCaution: 'Running on CPU. Processing may take a little longer.',
+  localModelCpuFallback: 'WebGPU error · CPU fallback',
   localModelReady: 'Local files available',
   localModelChecking: 'Checking local files',
   localModelDownloading: 'Downloading',

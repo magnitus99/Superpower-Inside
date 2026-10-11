@@ -7710,6 +7710,13 @@ button.superpower-inside-prompt-danger-btn:disabled {
   color: var(--text-error);
 }
 
+.superpower-inside-local-model-caution {
+  margin-bottom: var(--superpower-inside-row-padding);
+  color: var(--color-orange, var(--text-warning));
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
 .superpower-inside-local-model-progress {
   display: block;
   appearance: none;
