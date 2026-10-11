@@ -51,6 +51,73 @@ test('기본 워크플로우는 전체 핵심 질문을 3회 평가하며 작은
   assert.throws(() => parseAnswerOptions(['wix', '12', '-', 'run', '0']));
 });
 
+test('전체 답변 실행에서도 독립 판정자 옵션을 전달하고 중복·잘못된 참조는 거부한다', () => {
+  const judge = '--judge-model=profile:judge:synthetic-model';
+  assert.equal(
+    parseAnswerOptions(['wix', 'all', '-', 'full', '3', judge]).judgeModel,
+    'profile:judge:synthetic-model',
+  );
+  assert.equal(parseAnswerOptions([judge]).count, undefined);
+  assert.throws(() => parseAnswerOptions([judge, judge]));
+  assert.throws(() => parseAnswerOptions(['--judge-model=invalid']));
+});
+
+test('독립 채점 요청만 판정 모델로 보내고 사용자가 선택한 생성 모델을 보존한다', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'benchmark-judge-'));
+  const calls = [];
+  const settings = {
+    chat: { defaultModel: 'profile:synthetic:generator' },
+    rag: {},
+    providerProfiles: [
+      {
+        id: 'synthetic',
+        enabled: true,
+        strategy: 'test',
+        models: [{ id: 'generator' }, { id: 'judge' }],
+      },
+    ],
+  };
+  try {
+    await writeFile(
+      path.join(directory, 'request.json'),
+      JSON.stringify({
+        id: 1,
+        role: 'judge',
+        messages: [],
+      }),
+    );
+    await providerBridge(
+      {
+        appLogger: { configure() {} },
+        initializeChatGPTOAuth() {},
+        resolveUsableProviderModelRef: () => null,
+        createProviderForStrategy: (_strategy, _profile, model) => ({
+          async streamChat(_messages, onChunk) {
+            calls.push(model);
+            onChunk({ content: '합성 판정' });
+            await writeFile(path.join(directory, 'stop'), '중단');
+          },
+        }),
+      },
+      {
+        vault: { adapter: { getBasePath: () => path.dirname(benchmarkRoot) } },
+        plugins: { plugins: { 'superpower-inside': { settings, manifest: { version: 'test' } } } },
+      },
+      directory,
+      1000,
+      undefined,
+      'profile:synthetic:judge',
+    );
+    assert.deepEqual(calls, ['judge']);
+    assert.equal(settings.chat.defaultModel, 'profile:synthetic:generator');
+    const response = JSON.parse(await readFile(path.join(directory, 'response.json'), 'utf8'));
+    assert.equal(response.error, false);
+    assert.equal(response.chunks[0].content, '합성 판정');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('실제 모델 연결에서 검색 임계값을 보존하고 인증 설정을 출력하지 않는다', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'benchmark-provider-'));
   try {
