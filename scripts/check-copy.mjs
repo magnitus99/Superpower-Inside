@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
+import { spawnCommand } from './script-process.mjs';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -61,7 +61,7 @@ export function validateRewrite(result, status) {
 }
 
 function command(program, args, options = {}) {
-  const result = spawnSync(program, args, {
+  const result = spawnCommand(program, args, {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
     ...options,
@@ -92,15 +92,19 @@ function latestPatina() {
     throw new Error('Patina 최신 버전 응답이 잘못되었습니다.');
   }
   console.log(`Patina 최신 버전 ${version}으로 갱신 후 실행합니다.`);
+  let codexExecutable;
   const execute = (args, input) => {
     let env = process.env;
     if (args.includes('codex-cli')) {
-      const located = command(process.platform === 'win32' ? 'where' : 'which', ['codex']);
-      if (located.status !== 0)
-        throw new Error('Codex CLI가 필요합니다. codex login 후 다시 실행하세요.');
+      if (!codexExecutable) {
+        const located = command(process.platform === 'win32' ? 'where' : 'which', ['codex']);
+        if (located.status !== 0)
+          throw new Error('Codex CLI가 필요합니다. codex login 후 다시 실행하세요.');
+        codexExecutable = located.stdout.trim().split(/\r?\n/)[0];
+      }
       env = {
         ...process.env,
-        PATINA_CODEX_EXECUTABLE: located.stdout.trim().split(/\r?\n/)[0],
+        PATINA_CODEX_EXECUTABLE: codexExecutable,
         PATH: `${resolve('scripts/patina-bin')}${delimiter}${process.env.PATH}`,
       };
     }

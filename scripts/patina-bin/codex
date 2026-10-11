@@ -4,5 +4,6 @@ const args = process.argv.slice(2);
 if (args[0] === 'exec') args.splice(1, 0, '-c', 'model_reasoning_effort="high"');
 const executable = process.env.PATINA_CODEX_EXECUTABLE;
 if (!executable) { console.error('실제 Codex CLI 경로가 없습니다.'); process.exit(1); }
-const result = spawnSync(executable, args, { stdio: 'inherit' });
+const isScript = /\.[cm]?js$/i.test(executable);
+const result = spawnSync(isScript ? process.execPath : executable, isScript ? [executable, ...args] : args, { stdio: 'inherit', windowsHide: true });
 process.exit(result.status ?? 1);

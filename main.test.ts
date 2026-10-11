@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it, vi } from 'vitest';
 import type { TFile } from 'obsidian';
+import SuperpowerInsidePlugin from './main.ts';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -61,7 +62,6 @@ vi.mock('obsidian', () => {
 
 describe('SuperpowerInsidePlugin RAG runtime', () => {
   it('RAG 런타임 재초기화가 중간에 실패하면 기존 인덱서를 복구한다', async () => {
-    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
     const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
       app: ReturnType<typeof createApp>;

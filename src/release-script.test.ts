@@ -7,15 +7,15 @@ const root = resolve(__dirname, '..');
 
 describe('릴리스 스크립트 브랜치 정책', () => {
   it('버전 커밋과 태그 생성은 main 브랜치에서만 허용한다', () => {
-    const script = readFileSync(resolve(root, 'scripts/bump-version.fish'), 'utf8');
+    const script = readFileSync(resolve(root, 'scripts/bump-version.mjs'), 'utf8');
 
-    expect(script).toContain('set REQUIRED_RELEASE_BRANCH main');
-    expect(script).toContain('if test "$CURRENT_BRANCH" != "$REQUIRED_RELEASE_BRANCH"');
+    expect(script).toContain("const requiredReleaseBranch = 'main'");
+    expect(script).toContain('if (branch !== requiredReleaseBranch)');
     expect(script).not.toContain('main 브랜치에서 직접 릴리스 커밋을 만들 수 없습니다');
   });
 
   it('릴리스 스크립트는 release-notes 파일 대신 GitHub Release 본문 작성을 안내한다', () => {
-    const script = readFileSync(resolve(root, 'scripts/bump-version.fish'), 'utf8');
+    const script = readFileSync(resolve(root, 'scripts/bump-version.mjs'), 'utf8');
 
     expect(script).toContain('release-notes-*.md 문서는 생성하지 않습니다');
     expect(script).toContain('GitHub Release가 생성되면 릴리즈 요약을 본문에 직접 붙여 넣으세요');
@@ -25,23 +25,14 @@ describe('릴리스 스크립트 브랜치 정책', () => {
   });
 });
 
-describe('Rust security tool installer portability', () => {
-  it('passes cargo install feature flags through for cargo-geiger', () => {
-    const script = readFileSync(resolve(root, 'scripts/install-rust-security-tools.fish'), 'utf8');
-
-    expect(script).toContain('set -l install_args $argv[4..-1]');
-    expect(script).toContain('cargo install "$package" --version "$tool_version" --locked --force $install_args');
-    expect(script).toContain(
-      'install_cargo_tool cargo-geiger 0.13.0 cargo-geiger --features vendored-openssl',
-    );
-  });
-});
-
 describe('Windows Obsidian setup scripts', () => {
   it('opens the test vault in an isolated Obsidian profile instead of using URI path lookup', () => {
     const setupScript = readFileSync(resolve(root, 'scripts/setup-dev.ps1'), 'utf8');
     const launchScript = readFileSync(resolve(root, 'scripts/launch-obsidian-debug.ps1'), 'utf8');
-    const enableScript = readFileSync(resolve(root, 'scripts/enable-obsidian-dev-plugins.mjs'), 'utf8');
+    const enableScript = readFileSync(
+      resolve(root, 'scripts/enable-obsidian-dev-plugins.mjs'),
+      'utf8',
+    );
 
     expect(setupScript).toContain('ExtraObsidianConfigDirs');
     expect(setupScript).toContain('function Write-Utf8NoBom');

@@ -136,8 +136,11 @@ if (args[0] === 'view') {
         encoding: 'utf8',
         input,
         env: {
-          ...process.env,
+          ...Object.fromEntries(
+            Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'npm_execpath'),
+          ),
           PATH: `${cwd}${delimiter}${process.env.PATH}`,
+          npm_execpath: npm,
           COPY_LOG: log,
           ...extra,
         },
@@ -278,21 +281,25 @@ if (args[0] === 'view') {
       ).toBe(0);
       expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
       expect(calls().filter((call) => call.args[0] === 'view')).toHaveLength(2);
-      expect(run(['--refresh']).status).toBe(0);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
     }));
 
-  it('문구·최신 버전·정책 변경은 통과 기록을 무효화한다', () =>
-    fixture(({ cwd, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe');
-      expect(run([]).status).toBe(0);
-      writeFileSync(join(cwd, 'README.md'), 'Changed');
-      expect(run([]).status).toBe(0);
-      expect(run([], { COPY_VERSION: '99.0.1' }).status).toBe(0);
-      writeFileSync(join(cwd, '.patina.yaml'), 'star-nudge: false\n');
-      expect(run([], { COPY_VERSION: '99.0.1' }).status).toBe(0);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
-    }));
+  it.each(['copy', 'version', 'policy', 'refresh'])(
+    '통과 기록 변경을 다시 채점한다: %s',
+    (change) =>
+      fixture(({ cwd, run, calls }) => {
+        writeFileSync(join(cwd, 'README.md'), 'Safe');
+        expect(run([]).status).toBe(0);
+        if (change === 'copy') writeFileSync(join(cwd, 'README.md'), 'Changed');
+        if (change === 'policy') writeFileSync(join(cwd, '.patina.yaml'), 'star-nudge: false\n');
+        expect(
+          run(
+            change === 'refresh' ? ['--refresh'] : [],
+            change === 'version' ? { COPY_VERSION: '99.0.1' } : {},
+          ).status,
+        ).toBe(0);
+        expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
+      }),
+  );
 
   it('캐시가 있어도 최신 버전 조회 실패는 차단하고 오프라인 결과는 재사용하지 않는다', () =>
     fixture(({ cwd, run, calls }) => {
@@ -303,23 +310,19 @@ if (args[0] === 'view') {
       expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
     }));
 
-  it('손상·만료·실제 모델 점수가 없는 기록은 다시 채점한다', () =>
+  it.each(['broken', 'expired', 'missing'])('손상된 통과 기록을 다시 채점한다: %s', (change) =>
     fixture(({ cwd, git, run, calls }) => {
       writeFileSync(join(cwd, 'README.md'), 'Safe');
       expect(run([]).status).toBe(0);
       const receipt = join(cwd, git('rev-parse', '--git-path', 'patina-release.json'));
-      writeFileSync(receipt, '{broken');
-      expect(run([]).status).toBe(0);
       const entry = JSON.parse(readFileSync(receipt, 'utf8'));
-      entry.checkedAt = 0;
-      writeFileSync(receipt, JSON.stringify(entry));
+      if (change === 'expired') entry.checkedAt = 0;
+      if (change === 'missing') entry.scores[0].scores.llm = null;
+      writeFileSync(receipt, change === 'broken' ? '{broken' : JSON.stringify(entry));
       expect(run([]).status).toBe(0);
-      const missing = JSON.parse(readFileSync(receipt, 'utf8'));
-      missing.scores[0].scores.llm = null;
-      writeFileSync(receipt, JSON.stringify(missing));
-      expect(run([]).status).toBe(0);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
-    }));
+      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
+    }),
+  );
 
   it('실모델 점수 누락과 기준 초과는 차단하며 검사만으로 재작성하지 않는다', () =>
     fixture(({ cwd, run, calls }) => {
@@ -354,7 +357,7 @@ if (args[0] === 'view') {
   it('Codex wrapper가 사용자가 지정한 모델과 high 설정을 보존한다', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'copy-codex-'));
     try {
-      const executable = join(cwd, 'capture');
+      const executable = join(cwd, 'capture.cjs');
       writeFileSync(
         executable,
         '#!/usr/bin/env node\nconsole.log(JSON.stringify(process.argv.slice(2)));\n',

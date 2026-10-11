@@ -29,7 +29,11 @@ it('렌더러의 숫자 타이머에서도 번들된 MCP stdio 프로세스를 �
       process.stdout.write('closed');
     })().catch(error => { process.stderr.write(String(error)); process.exitCode = 1; });
   `;
-  expect(execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 10000 })).toBe(
-    'closed',
-  );
+  expect(
+    execFileSync(process.execPath, ['--input-type=commonjs', '-'], {
+      input: script,
+      encoding: 'utf8',
+      timeout: 10000,
+    }),
+  ).toBe('closed');
 });

@@ -25,7 +25,11 @@ it('작업 디렉터리와 무관하게 worker를 생성하고 Electron에서도
   try {
     mkdirSync(join(root, 'scripts'));
     copyFileSync(join(repo, 'scripts/build-workers.mjs'), join(root, 'scripts/build-workers.mjs'));
-    symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'));
+    symlinkSync(
+      join(repo, 'node_modules'),
+      join(root, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
     mkdirSync(join(root, 'src/llm'), { recursive: true });
     const gemmaEntry = readFileSync(join(repo, 'src/llm/embeddinggemma-worker-entry.ts'), 'utf8');
     writeFileSync(
@@ -48,7 +52,15 @@ it('작업 디렉터리와 무관하게 worker를 생성하고 Electron에서도
     const gemmaSource = readFileSync(join(root, 'embeddinggemma-worker.js'), 'utf8');
     expect(gemmaSource).toContain('workerKind="GEMMA"');
     // Electron이 worker에 process를 노출해도 브라우저용 ONNX 백엔드를 선택해야 합니다.
-    for (const process of [undefined, { release: { name: 'node' }, versions: { node: '22.0.0' }, platform: 'darwin', arch: 'arm64' }]) {
+    for (const process of [
+      undefined,
+      {
+        release: { name: 'node' },
+        versions: { node: '22.0.0' },
+        platform: 'darwin',
+        arch: 'arm64',
+      },
+    ]) {
       const context = {
         process,
         self: { constructor: { name: 'DedicatedWorkerGlobalScope' } },
