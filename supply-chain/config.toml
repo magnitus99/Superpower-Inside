@@ -4,8 +4,16 @@
 [cargo-vet]
 version = "0.10"
 
+[[exemptions.adler2]]
+version = "2.0.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.aho-corasick]]
 version = "1.1.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.bitflags]]
+version = "2.13.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.bumpalo]]
@@ -16,8 +24,20 @@ criteria = "safe-to-deploy"
 version = "1.0.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.cfg_aliases]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.crc32fast]]
+version = "1.5.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.equivalent]]
 version = "1.0.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.flate2]]
+version = "1.1.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.hashbrown]]
@@ -32,8 +52,20 @@ criteria = "safe-to-deploy"
 version = "1.0.18"
 criteria = "safe-to-deploy"
 
+[[exemptions.libc]]
+version = "0.2.190"
+criteria = "safe-to-deploy"
+
 [[exemptions.memchr]]
 version = "2.8.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.miniz_oxide]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.nix]]
+version = "0.31.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.once_cell]]
@@ -42,6 +74,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.proc-macro2]]
 version = "1.0.106"
+criteria = "safe-to-deploy"
+
+[[exemptions.quick-xml]]
+version = "0.42.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.quote]]
@@ -80,8 +116,16 @@ criteria = "safe-to-deploy"
 version = "1.0.150"
 criteria = "safe-to-deploy"
 
+[[exemptions.simd-adler32]]
+version = "0.3.10"
+criteria = "safe-to-deploy"
+
 [[exemptions.syn]]
 version = "2.0.117"
+criteria = "safe-to-deploy"
+
+[[exemptions.typed-path]]
+version = "0.12.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.unicode-ident]]
@@ -102,6 +146,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-shared]]
 version = "0.2.123"
+criteria = "safe-to-deploy"
+
+[[exemptions.zip]]
+version = "9.0.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.zmij]]
