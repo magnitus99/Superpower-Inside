@@ -1,9 +1,4 @@
 #!/usr/bin/env fish
-
-set script_dir (dirname (status --current-filename))
-set repo_dir (dirname "$script_dir")
-
-cd "$repo_dir"; or exit 1
-
-echo "RAG core benchmark (release, median ns)"
-cargo test --release --workspace bench_rag_core_runtime_medians -- --ignored --nocapture
+# 기존 fish 진입점은 호스트의 Node.js 스크립트에 위임합니다.
+node (dirname (status --current-filename))/bench-rag-core.mjs $argv
+exit $status

@@ -1,80 +1,37 @@
 #!/usr/bin/env node
+import { basename, dirname, join } from 'node:path';
+import { runCommand, scriptMain } from './script-process.mjs';
 
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
-import process from 'node:process';
-
-export function buildFishInvocation({ platform, scriptArgs, wslCwd }) {
-  if (!scriptArgs?.length) {
-    throw new Error('Usage: node scripts/run-fish.mjs <script.fish> [args...]');
-  }
-
-  if (platform === 'win32') {
-    if (!wslCwd) {
-      throw new Error('WSL working directory is required on Windows.');
-    }
-
+export function buildFishInvocation({ platform = process.platform, scriptArgs }) {
+  if (!scriptArgs?.length)
+    throw new Error('사용법: node scripts/run-fish.mjs <script.fish> [args...]');
+  if (platform !== 'win32') return { command: 'fish', args: scriptArgs };
+  const [script, ...args] = scriptArgs;
+  const name = basename(script, '.fish');
+  if (['setup-dev', 'launch-obsidian-debug'].includes(name)) {
     return {
-      command: 'wsl.exe',
-      args: ['--cd', wslCwd, 'fish', ...scriptArgs],
+      command: 'powershell.exe',
+      args: ['-NoProfile', '-File', join(dirname(script), name + '.ps1'), ...args],
     };
   }
-
-  return {
-    command: 'fish',
-    args: scriptArgs,
-  };
-}
-
-export function normalizeWindowsPathForWsl(windowsPath) {
-  return windowsPath.replaceAll('\\', '/');
-}
-
-export function convertWindowsPathToWsl(cwd) {
-  const result = spawnSync('wsl.exe', ['wslpath', '-a', normalizeWindowsPathForWsl(cwd)], {
-    encoding: 'utf8',
-  });
-
-  if (result.error) {
-    throw new Error(`Unable to run wsl.exe: ${result.error.message}`);
+  if (
+    ![
+      'build-rag-wasm',
+      'copy-ternlight-assets',
+      'check-rust-security',
+      'check-rust-local',
+      'check-release',
+      'bench-rag-core',
+      'bump-version',
+      'install-rust-security-tools',
+    ].includes(name)
+  ) {
+    throw new Error('Windows 네이티브 진입점이 없는 fish 스크립트입니다: ' + script);
   }
-
-  if (result.status !== 0) {
-    const details = (result.stderr || result.stdout || '').trim();
-    throw new Error(`Unable to convert Windows path for WSL.${details ? ` ${details}` : ''}`);
-  }
-
-  return result.stdout.trim();
+  return { command: process.execPath, args: [join(dirname(script), name + '.mjs'), ...args] };
 }
 
-function run() {
-  const scriptArgs = process.argv.slice(2);
-  const wslCwd = process.platform === 'win32' ? convertWindowsPathToWsl(process.cwd()) : undefined;
-  const invocation = buildFishInvocation({
-    platform: process.platform,
-    scriptArgs,
-    wslCwd,
-  });
-
-  const result = spawnSync(invocation.command, invocation.args, {
-    stdio: 'inherit',
-  });
-
-  if (result.error) {
-    console.error(result.error.message);
-    process.exit(1);
-  }
-
-  if (result.signal) {
-    console.error(`${invocation.command} exited from signal ${result.signal}`);
-    process.exit(1);
-  }
-
-  process.exit(result.status ?? 1);
-}
-
-const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
-if (entryPath === fileURLToPath(import.meta.url)) {
-  run();
-}
+scriptMain(import.meta.url, () => {
+  const invocation = buildFishInvocation({ scriptArgs: process.argv.slice(2) });
+  runCommand(invocation.command, invocation.args);
+});

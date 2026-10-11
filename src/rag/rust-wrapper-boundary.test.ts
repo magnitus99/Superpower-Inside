@@ -57,20 +57,17 @@ describe('Rust wrapper boundary', () => {
     const scripts = readPackageScripts();
 
     expect(scripts['wasm:build']).toBe(
-      'node scripts/run-fish.mjs scripts/build-rag-wasm.fish && node scripts/build-workers.mjs',
+      'node scripts/build-rag-wasm.mjs && node scripts/build-workers.mjs',
     );
     expect(scripts.build?.startsWith('npm run wasm:build && ')).toBe(true);
     expect(scripts.dev?.startsWith('npm run wasm:build && ')).toBe(true);
   });
 
   it('Rust/WASM release payload를 번들에 넣기 전에 크기 최적화한다', () => {
-    const buildScript = readFileSync(
-      resolve(repositoryRoot, 'scripts/build-rag-wasm.fish'),
-      'utf8',
-    );
+    const buildScript = readFileSync(resolve(repositoryRoot, 'scripts/build-rag-wasm.mjs'), 'utf8');
 
-    expect(buildScript).toContain('node_modules/.bin/wasm-opt');
-    expect(buildScript).toContain('"$WASM_OPT_BIN" -Oz');
+    expect(buildScript).toContain('binaryen/bin/wasm-opt');
+    expect(buildScript).toContain("'-Oz'");
   });
 
   it('릴리즈 검증에서도 main.js 5 MB 예산을 강제한다', () => {

@@ -1,6 +1,4 @@
 #!/usr/bin/env fish
-npm run security:full
-and npm run build
-and npm run review -- --tag (node -p "require('./manifest.json').version") --built
-and npm run copy:check
-or exit $status
+# 기존 fish 진입점은 호스트의 Node.js 스크립트에 위임합니다.
+node (dirname (status --current-filename))/check-release.mjs $argv
+exit $status

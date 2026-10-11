@@ -7,77 +7,100 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 describe('변경 범위에 따른 검사 선택', () => {
-  it('실제 Git 변경 범위에서 문서 검사는 테스트를 호출하지 않고 TS 실패는 후속 검사를 멈춘다', () => {
-    const root = mkdtempSync(join(tmpdir(), 'quality-scope-'));
-    try {
-      const git = (...args) => {
-        const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
-        if (result.status !== 0) throw new Error(result.stderr);
-        return result.stdout.trim();
-      };
-      git('init', '-q');
-      git('config', 'user.name', '검사 범위');
-      git('config', 'user.email', 'fixture@example.test');
-      git('config', 'core.hooksPath', '/dev/null');
-      mkdirSync(join(root, 'bin'));
-      mkdirSync(join(root, 'src'));
-      const npm = join(root, 'bin', 'npm');
-      writeFileSync(
-        npm,
-        `#!/usr/bin/env node
+  it.each(['docs', 'history', 'typescript', 'failure'])(
+    '실제 Git 변경 범위에서 검사와 중단을 검증한다: %s',
+    (scenario) => {
+      const root = mkdtempSync(join(tmpdir(), 'quality-scope-'));
+      try {
+        const git = (...args) => {
+          const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+          if (result.status !== 0) throw new Error(result.stderr);
+          return result.stdout.trim();
+        };
+        git('init', '-q');
+        git('config', 'user.name', '검사 범위');
+        git('config', 'user.email', 'fixture@example.test');
+        git('config', 'core.hooksPath', '/dev/null');
+        mkdirSync(join(root, 'bin'));
+        mkdirSync(join(root, 'src'));
+        const npm = join(root, 'bin', 'npm');
+        writeFileSync(
+          npm,
+          `#!/usr/bin/env node
 const fs=require('node:fs');
 const stage=process.argv[3];
 fs.appendFileSync(process.env.QUALITY_LOG,stage+'\\n');
 process.exitCode=stage===process.env.QUALITY_FAIL ? 1 : 0;
 `,
-      );
-      chmodSync(npm, 0o755);
-      writeFileSync(join(root, 'README.md'), 'before\n');
-      writeFileSync(join(root, 'src', 'file.ts'), 'export const value = 1;\n');
-      writeFileSync(
-        join(root, 'package.json'),
-        JSON.stringify({ version: '1.0.0', description: 'before', scripts: { test: 'unchanged' } }),
-      );
-      git('add', '.');
-      git('commit', '-qm', 'fixture');
-      const base = git('rev-parse', 'HEAD');
-      const log = join(root, 'calls');
-      const run = (args = [], failed = '') => {
-        rmSync(log, { force: true });
-        const result = spawnSync(
-          process.execPath,
-          [fileURLToPath(new URL('./check-quality.mjs', import.meta.url)), ...args],
-          {
-            cwd: root,
-            encoding: 'utf8',
-            env: {
-              ...process.env,
-              PATH: `${join(root, 'bin')}${delimiter}${process.env.PATH}`,
-              QUALITY_LOG: log,
-              QUALITY_FAIL: failed,
-            },
-          },
         );
-        return { result, calls: readFileSync(log, 'utf8').trim().split('\n') };
-      };
-      writeFileSync(join(root, 'README.md'), 'after\n');
-      writeFileSync(
-        join(root, 'package.json'),
-        JSON.stringify({ version: '1.0.1', description: 'after', scripts: { test: 'unchanged' } }),
-      );
-      expect(run().calls).toEqual(['review']);
-      git('add', 'README.md', 'package.json');
-      git('commit', '-qm', 'docs');
-      expect(run(['--base', base]).calls).toEqual(['review']);
-      writeFileSync(join(root, 'src', 'file.ts'), 'export const value = 2;\n');
-      expect(run().calls).toEqual(['lint', 'typecheck', 'test', 'review']);
-      const failed = run([], 'test');
-      expect(failed.result.status).toBe(1);
-      expect(failed.calls).toEqual(['lint', 'typecheck', 'test']);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+        chmodSync(npm, 0o755);
+        writeFileSync(join(root, 'README.md'), 'before\n');
+        writeFileSync(join(root, 'src', 'file.ts'), 'export const value = 1;\n');
+        writeFileSync(
+          join(root, 'package.json'),
+          JSON.stringify({
+            version: '1.0.0',
+            description: 'before',
+            scripts: { test: 'unchanged' },
+          }),
+        );
+        git('add', '.');
+        git('commit', '-qm', 'fixture');
+        const base = git('rev-parse', 'HEAD');
+        const log = join(root, 'calls');
+        const run = (args = [], failed = '') => {
+          rmSync(log, { force: true });
+          const result = spawnSync(
+            process.execPath,
+            [fileURLToPath(new URL('./check-quality.mjs', import.meta.url)), ...args],
+            {
+              cwd: root,
+              encoding: 'utf8',
+              env: {
+                ...Object.fromEntries(
+                  Object.entries(process.env).filter(
+                    ([key]) => key.toLowerCase() !== 'npm_execpath',
+                  ),
+                ),
+                PATH: `${join(root, 'bin')}${delimiter}${process.env.PATH}`,
+                npm_execpath: npm,
+                QUALITY_LOG: log,
+                QUALITY_FAIL: failed,
+              },
+            },
+          );
+          expect(result.status, result.stderr).toBe(failed ? 1 : 0);
+          return { result, calls: readFileSync(log, 'utf8').trim().split('\n') };
+        };
+        writeFileSync(join(root, 'README.md'), 'after\n');
+        writeFileSync(
+          join(root, 'package.json'),
+          JSON.stringify({
+            version: '1.0.1',
+            description: 'after',
+            scripts: { test: 'unchanged' },
+          }),
+        );
+        if (scenario === 'docs') expect(run().calls).toEqual(['review']);
+        else if (scenario === 'history') {
+          git('add', 'README.md', 'package.json');
+          git('commit', '-qm', 'docs');
+          expect(run(['--base', base]).calls).toEqual(['review']);
+        } else {
+          writeFileSync(join(root, 'src', 'file.ts'), 'export const value = 2;\n');
+          if (scenario === 'typescript')
+            expect(run().calls).toEqual(['lint', 'typecheck', 'test', 'review']);
+          else {
+            const failed = run([], 'test');
+            expect(failed.result.status).toBe(1);
+            expect(failed.calls).toEqual(['lint', 'typecheck', 'test']);
+          }
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
   it('문서·홍보·버전만 바꾸면 코드와 Rust 검사를 실행하지 않는다', () => {
     const plan = qualityPlan([
       'README.md',
@@ -119,6 +142,8 @@ process.exitCode=stage===process.env.QUALITY_FAIL ? 1 : 0;
       rust: true,
     });
     expect(qualityPlan(['scripts/build-rag-wasm.fish'])).toMatchObject({ tests: true, rust: true });
+    expect(qualityPlan(['scripts/build-rag-wasm.mjs'])).toMatchObject({ tests: true, rust: true });
+    expect(qualityPlan(['scripts/rust-process.mjs'])).toMatchObject({ tests: true, rust: true });
   });
   it('의존성·보안 정책 변경은 CI 전체 보안 검사 대상으로 선택한다', () => {
     expect(qualityPlan(['Cargo.lock']).security).toBe(true);

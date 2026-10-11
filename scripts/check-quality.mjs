@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnCommand } from './script-process.mjs';
 
 export function metadataOnly(file, before, after) {
   try {
@@ -25,7 +26,7 @@ export function qualityPlan(
 ) {
   const changed = files.filter((file) => !metadata.has(file));
   const rust = changed.some((file) =>
-    /^(crates\/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|scripts\/(build-rag-wasm|check-rust-security|check-rust-local)\.fish$)/.test(
+    /^(crates\/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|scripts\/(build-rag-wasm|check-rust-security|check-rust-local|rust-process|install-rust-security-tools)\.(fish|mjs)$)/.test(
       file,
     ),
   );
@@ -128,7 +129,7 @@ function run() {
   if (!plan.tests && !plan.rust)
     console.log('문서·메타데이터 변경: 코드·Rust·모델 검사를 생략합니다.');
   for (const [program, commandArgs] of commands) {
-    const result = spawnSync(program, commandArgs, { stdio: 'inherit' });
+    const result = spawnCommand(program, commandArgs, { stdio: 'inherit' });
     if (result.error || result.status !== 0)
       throw result.error ?? new Error(`${program} ${commandArgs.join(' ')} 실패`);
   }
