@@ -65,7 +65,12 @@ export class VaultDocumentCorpus {
       const snapshot = await readSourceFileSnapshot(this.vault, file);
       if (!snapshot || !isCurrent()) return;
       this.candidatePaths.add(path);
-      const documents = buildSourceDocuments(snapshot.file, snapshot.content, this.getRagConfig());
+      const documents = buildSourceDocuments(
+        snapshot.file,
+        snapshot.content,
+        this.getRagConfig(),
+        snapshot.segments,
+      );
       if (isCurrent()) await this.store.replaceFileDocuments(path, documents);
       if (isCurrent()) this.failedPaths.delete(path);
     } catch (error) {
