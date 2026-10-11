@@ -25,6 +25,8 @@ import {
   plan_chat_unique_result_indices_json,
   plan_source_chunks_json,
   plan_source_chunk_import_indices_json,
+  extract_source_text_json,
+  is_extractable_source_extension,
   plan_source_processing_json,
   find_reusable_prompt,
   is_local_settings_provider,
@@ -5172,6 +5174,67 @@ export function planSourceProcessingRust(
   } catch {
     return null;
   }
+}
+
+export interface RustSourceTextSegment {
+  label: string;
+  startLine: number;
+  endLine: number;
+}
+
+export interface RustSourceTextExtraction {
+  ok: boolean;
+  format: string;
+  text: string;
+  segments: RustSourceTextSegment[];
+  reason: string | null;
+}
+
+/** 압축 문서 본문 추출을 지원하는 확장자인지 확인합니다. */
+export function isExtractableSourceExtensionRust(extension: string): boolean | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return is_extractable_source_extension(extension.trim().replace(/^\./, '').toLowerCase());
+  } catch {
+    return null;
+  }
+}
+
+/** 압축 문서 바이트에서 본문과 구간 경계를 추출합니다. */
+export function extractSourceTextRust(
+  extension: string,
+  bytes: Uint8Array,
+): RustSourceTextExtraction | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(extract_source_text_json(extension, bytes));
+    return isRustSourceTextExtraction(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRustSourceTextExtraction(value: unknown): value is RustSourceTextExtraction {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<RustSourceTextExtraction>;
+  return (
+    typeof candidate.ok === 'boolean' &&
+    typeof candidate.format === 'string' &&
+    typeof candidate.text === 'string' &&
+    (candidate.reason === null || typeof candidate.reason === 'string') &&
+    Array.isArray(candidate.segments) &&
+    candidate.segments.every(isRustSourceTextSegment)
+  );
+}
+
+function isRustSourceTextSegment(value: unknown): value is RustSourceTextSegment {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<RustSourceTextSegment>;
+  return (
+    typeof candidate.label === 'string' &&
+    Number.isSafeInteger(candidate.startLine) &&
+    Number.isSafeInteger(candidate.endLine)
+  );
 }
 
 export function planSourceChunksRust(

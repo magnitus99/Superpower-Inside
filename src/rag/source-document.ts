@@ -1,5 +1,6 @@
 import type { TFile } from 'obsidian';
 import type { RAGConfig } from '../settings';
+import type { SourceTextSegment } from './source-access';
 import type { BM25CorpusDocument } from './bm25';
 import { createContentHash } from './hash';
 import {
@@ -49,6 +50,31 @@ export function chunkSourceFile(
   return chunks;
 }
 
+/**
+ * 추출 문서의 구간 라벨을 청크에서 가장 가까운 시작 줄 기준으로 붙입니다.
+ *
+ * 라벨은 출처 표시와 검색 힌트에만 쓰고 `id`·`chunkHash`는 원문에서 계산된 값을 그대로
+ * 유지해 재색인 사이의 청크 식별자가 바뀌지 않게 합니다.
+ */
+export function chunkSourceDocument(
+  file: TFile,
+  content: string,
+  config: Pick<RAGConfig, 'chunkSize' | 'overlap'>,
+  segments: readonly SourceTextSegment[] = [],
+): RustSourceChunk[] {
+  const chunks = chunkSourceFile(file, content, config);
+  if (segments.length === 0) return chunks;
+  return chunks.map((chunk) => {
+    const segment = segments.find(
+      (candidate) =>
+        chunk.metadata.startLine >= candidate.startLine &&
+        chunk.metadata.startLine <= candidate.endLine,
+    );
+    if (!segment) return chunk;
+    return { ...chunk, metadata: { ...chunk.metadata, heading: segment.label } };
+  });
+}
+
 export function buildSearchText(file: TFile, chunk: Chunk): string {
   const hints = [`File: ${file.path}`, `Title: ${file.basename}`];
   if (chunk.metadata.heading) hints.push(`Heading: ${chunk.metadata.heading}`);
@@ -59,10 +85,11 @@ export function buildSourceDocuments(
   file: TFile,
   content: string,
   config: Pick<RAGConfig, 'chunkSize' | 'overlap'>,
+  segments: readonly SourceTextSegment[] = [],
 ): SourceDocument[] {
   const indexedAt = Date.now();
   const contentHash = createContentHash(content);
-  return chunkSourceFile(file, content, config).map((chunk) => ({
+  return chunkSourceDocument(file, content, config, segments).map((chunk) => ({
     id: chunk.id,
     chunkHash: chunk.chunkHash,
     text: buildSearchText(file, chunk),
