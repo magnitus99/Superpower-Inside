@@ -12,7 +12,11 @@ import {
   readJsonFromVault,
   writeJsonToVault,
 } from './src/utils/vault';
-import { readSourceText } from './src/rag/source-access';
+import {
+  configureSourceAssets,
+  disposeSourceAssets,
+  readSourceText,
+} from './src/rag/source-access';
 import {
   TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID,
   toggleDocumentExclusion,
@@ -311,6 +315,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
   async onload(): Promise<void> {
     const startedAt = Date.now();
     this.unloaded = false;
+    configureSourceAssets(
+      this.manifest?.id ?? 'superpower-inside',
+      this.getVaultStorageIdentity(),
+      this.generatedArtifacts.forFeature('pdf-sources'),
+    );
     this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
     const chatGPTAuth = initializeChatGPTOAuth(this.app, this.getLogger(), this.manifest.version);
     this.register(() => chatGPTAuth.dispose());
@@ -451,6 +460,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.getLogger().info('Plugin unloading.', { source: 'lifecycle' });
     void this.agentDiagnosticsService?.stop('plugin-unload');
     this.cancelRagIndexing();
+    disposeSourceAssets();
     this.unregisterRAGEvents();
     if (this.statsDebounceTimer) {
       window.clearTimeout(this.statsDebounceTimer);
@@ -2505,6 +2515,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     progress?: RagIndexingSchedulerStatus['progress'],
   ): string {
     if (phase === 'paused') return t('ragPerformancePaused');
+    if (progress?.sourcePageCount)
+      return t('ragSourcePageProgress', {
+        page: String(progress.sourcePage ?? 0),
+        total: String(progress.sourcePageCount),
+      });
     const phaseLabel =
       phase === 'file'
         ? t('ragPhaseFile')
