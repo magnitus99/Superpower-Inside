@@ -87,7 +87,9 @@ function latestPatina() {
     '--prefer-online',
   ]);
   if (result.status !== 0) throw new Error(`Patina 최신 버전 확인 실패: ${result.stderr.trim()}`);
-  const version = JSON.parse(result.stdout);
+  const parsed = JSON.parse(result.stdout);
+  // npm 12는 --json 출력을 단일 값 배열로 감쌉니다.
+  const version = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version)) {
     throw new Error('Patina 최신 버전 응답이 잘못되었습니다.');
   }
