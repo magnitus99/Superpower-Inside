@@ -33,8 +33,8 @@ jobs:
       - name: Node 검사 환경 준비
         if: env.FULL_CHECK == 'true' || steps.plan.outputs.tests == 'true' || steps.plan.outputs.security == 'true'
         run: npm ci --ignore-scripts
-      - name: Rust 검사 환경 준비
-        if: env.FULL_CHECK == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
+      - name: 검사 환경 준비
+        if: env.FULL_CHECK == 'true' || steps.plan.outputs.tests == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y fish
@@ -57,13 +57,14 @@ jobs:
       - name: Rust 변경의 WASM 연동 준비
         if: steps.plan.outputs.rust == 'true' && env.FULL_CHECK != 'true' && steps.plan.outputs.security != 'true'
         run: npm run wasm:build
-      - uses: taiki-e/install-action@v2
-        if: steps.plan.outputs.workflows == 'true'
-        with:
-          tool: actionlint@1.7.12
+      # install-action은 actionlint를 지원하지 않아 공식 릴리스 아티팩트를 체크섬으로 검증해 설치합니다.
       - name: CI 정의 검사
         if: steps.plan.outputs.workflows == 'true'
-        run: actionlint
+        run: |
+          curl -fsSLo actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint
       - name: 변경 범위의 오프라인 코드 검사
         if: env.FULL_CHECK != 'true' && steps.plan.outputs.security != 'true'
         run: npm run quality:local -- --base "$QUALITY_BASE"
