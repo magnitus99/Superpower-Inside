@@ -127,6 +127,8 @@ function validateBuiltAssets() {
     'styles.css',
     'tern_engine_bg.wasm',
     'embeddinggemma-worker.js',
+    'pdf-worker.js',
+    'pdf-ocr-worker.js',
     'embeddinggemma-runtime.wasm',
     'embeddinggemma-runtime.mjs',
     'THIRD_PARTY_NOTICES.md',
