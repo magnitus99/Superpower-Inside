@@ -156,10 +156,17 @@ describe('Obsidian community static review guards', () => {
       [/\bthis\.display\s*\(/, 'deprecated PluginSettingTab.display refresh call'],
     ];
 
+    // pdf.js의 CMapReaderFactory/StandardFontDataFactory는 `fetch` 메서드 이름을 요구합니다.
+    // `src/rag/pdf-render.ts`의 해당 메서드는 내장 자산만 돌려주는 선언이므로 네트워크
+    // 호출로 보지 않습니다. 이름이 `fetch`인 실제 호출은 그대로 검사합니다.
+    const pdfJsFactoryFetch = /^\s*fetch\([^)]*\)\s*:/;
     const offenders = sources.flatMap(({ file, source }) =>
       source
         .split('\n')
         .map((line, index) => ({ file, line, index: index + 1 }))
+        .filter(
+          ({ file, line }) => !(file === 'src/rag/pdf-render.ts' && pdfJsFactoryFetch.test(line)),
+        )
         .flatMap(({ file, line, index }) =>
           forbiddenPatterns
             .filter(([pattern]) => pattern.test(line))
