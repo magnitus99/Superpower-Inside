@@ -41,7 +41,15 @@ import {
 import type { LLMProvider } from './src/llm/providers';
 import { createChatProviderForModel } from './src/llm/provider-resolution';
 import { normalizeProviderCapabilityOverrides } from './src/llm/provider-capabilities';
-import { chatGPTOAuth, initializeChatGPTOAuth } from './src/llm/chatgpt-oauth';
+import { chatGPTOAuth, initializeChatGPTOAuth, migrateChatGPTCredentials } from './src/llm/chatgpt-oauth';
+import {
+  hydrateProviderApiKeys,
+  migrateProviderKeysToKeychain,
+  neutralizeProviderSecrets,
+  persistProviderApiKeys,
+  readSecretStorage,
+  settingsForPersistence,
+} from './src/secrets/provider-secrets';
 import {
   OpenAIEmbeddingProvider,
   OllamaEmbeddingProvider,
@@ -754,8 +762,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         annEnabled: false,
       },
     };
-    saveLocalSettings(this.app, this.settings);
-    await this.saveData(this.settings);
+    await this.persistSettings();
     this.getLogger().warn('Agent diagnostics safe mode flag applied.', {
       source: 'diagnostics',
       data: {
@@ -977,6 +984,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     const resetLanguage = resolveUiLanguage(undefined, getObsidianLanguage());
     for (const profile of this.settings.providerProfiles) chatGPTOAuth.disconnect(profile.id);
+    neutralizeProviderSecrets(this.app, this.settings);
     setLanguage(resetLanguage);
     this.settings = structuredClone(DEFAULT_SETTINGS);
     this.settings.language = resetLanguage;
@@ -985,8 +993,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.settings.chat.activePromptId = resetPromptLibrary.activePromptId;
     this.settings.logging = normalizeLoggerConfig(this.settings.logging);
     this.getLogger().configure(this.settings.logging);
-    saveLocalSettings(this.app, this.settings);
-    await this.saveData(this.settings);
+    await this.persistSettings();
     await this.agentDiagnosticsService?.stop('plugin-reset');
     await this.agentDiagnosticsService?.clearDetailedLogging();
     this.initProvider();
@@ -1307,10 +1314,33 @@ export default class SuperpowerInsidePlugin extends Plugin {
         logMaxEntries: this.settings.logging.maxEntries,
       },
     });
-    if (migratedFromLegacyData) {
-      saveLocalSettings(this.app, this.settings);
-      await this.saveData(this.settings);
+    const secretStorage = readSecretStorage(this.app);
+    const keyMigration = migrateProviderKeysToKeychain(this.app, this.settings);
+    hydrateProviderApiKeys(this.app, this.settings);
+    migrateChatGPTCredentials(
+      this.app,
+      this.settings.providerProfiles.map((profile) => profile.id),
+    );
+    if (!secretStorage) {
+      this.getLogger().error('Obsidian secret storage unavailable; API keys stay in memory only.', {
+        source: 'secrets.storage',
+      });
+      new Notice(t('apiKeySecretStorageUnavailable'));
     }
+    if (migratedFromLegacyData || keyMigration.changed) {
+      await this.persistSettings();
+    }
+    if (keyMigration.migrated > 0) {
+      new Notice(t('apiKeyMigratedToSecretStorage', { count: keyMigration.migrated }));
+    }
+  }
+
+  /** 저장 전에 키 원문을 보안 저장소에 반영하고 저장 사본에서 제거한다. 모든 저장 경로가 이 메서드를 지난다. */
+  private async persistSettings(): Promise<void> {
+    persistProviderApiKeys(this.app, this.settings);
+    const persisted = settingsForPersistence(this.settings);
+    saveLocalSettings(this.app, persisted);
+    await this.saveData(persisted);
   }
 
   async saveSettings(options?: {
@@ -1324,8 +1354,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.settings.agentDiagnostics,
     );
     this.getLogger().configure(this.settings.logging);
-    saveLocalSettings(this.app, this.settings);
-    await this.saveData(this.settings);
+    await this.persistSettings();
     await this.configureAgentDiagnosticsService();
     this.getLogger().debug('Settings saved.', {
       source: 'settings',
@@ -1349,8 +1378,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.settings.agentDiagnostics,
     );
     this.getLogger().configure(this.settings.logging);
-    saveLocalSettings(this.app, this.settings);
-    await this.saveData(this.settings);
+    await this.persistSettings();
     await this.configureAgentDiagnosticsService();
     this.getLogger().debug('Settings saved without runtime reinitialization.', {
       source: 'settings',

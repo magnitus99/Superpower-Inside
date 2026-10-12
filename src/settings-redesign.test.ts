@@ -741,6 +741,23 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toContain('@container superpower-inside-settings (max-width: 520px)');
   });
 
+  it('API 키는 저장 경로에서만 보안 저장소에 기록되고 설정 파일에는 원문이 남지 않는다', () => {
+    expect(mainSource).toContain('persistProviderApiKeys(this.app, this.settings)');
+    expect(mainSource).toContain('await this.saveData(persisted)');
+    expect(mainSource).toContain('migrateProviderKeysToKeychain(this.app, this.settings)');
+    expect(mainSource).toContain('hydrateProviderApiKeys(this.app, this.settings)');
+    expect(mainSource).not.toContain('saveData(this.settings)');
+    expect(mainSource).not.toContain('saveLocalSettings(this.app, this.settings)');
+
+    const connectionStart = settingsSource.indexOf('private buildProviderConnectionSettings(');
+    const connectionEnd = settingsSource.indexOf('\n  private ', connectionStart + 10);
+    const connectionSource = settingsSource.slice(connectionStart, connectionEnd);
+
+    expect(connectionStart).toBeGreaterThanOrEqual(0);
+    expect(connectionSource).toContain("text.inputEl.type = 'password'");
+    expect(connectionSource).toContain('this.appendProviderKeyStateNotice(group, profile)');
+  });
+
   it('Provider 연결 입력은 DOM 전체를 교체하지 않고 상태 표현만 갱신한다', () => {
     const connectionStart = settingsSource.indexOf('private buildProviderConnectionSettings(');
     const connectionEnd = settingsSource.indexOf(

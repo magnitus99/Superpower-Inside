@@ -3,6 +3,7 @@ import { buildRetiredArtifactSettings } from './storage/retired-artifacts-settin
 import type { RetiredArtifactService } from './storage/retired-artifacts';
 import { buildChatGPTLoginSettings } from './llm/chatgpt-login-ui';
 import { DEFAULT_CHUNK_CONTRACT, DEFAULT_SEARCH_QUALITY } from './rag/search-defaults';
+import { providerKeyState, type ProviderSecretConfig } from './secrets/provider-secrets';
 import {
   App,
   Modal,
@@ -145,6 +146,7 @@ function standardToInternal(standard: StandardMcpConfig): MCPServerConfig[] {
 }
 export interface ProviderConfig {
   apiKey: string;
+  apiKeySecret?: string;
   relayApiKey?: string;
   baseUrl?: string;
   models: string[];
@@ -188,6 +190,7 @@ export interface ProviderProfileConfig {
   name: string;
   strategy: ProviderStrategyKey;
   apiKey: string;
+  apiKeySecret?: string;
   relayApiKey?: string;
   baseUrl?: string;
   enabled: boolean;
@@ -748,6 +751,9 @@ function normalizeProviderProfile(
     name: rawName && !isLocalizedValue('providerNewName', rawName) ? rawName : '',
     strategy,
     apiKey: typeof source.apiKey === 'string' ? source.apiKey : '',
+    ...(typeof source.apiKeySecret === 'string' && source.apiKeySecret
+      ? { apiKeySecret: source.apiKeySecret }
+      : {}),
     ...(typeof source.relayApiKey === 'string' ? { relayApiKey: source.relayApiKey } : {}),
     baseUrl: typeof source.baseUrl === 'string' ? source.baseUrl.trim() : undefined,
     enabled: typeof source.enabled === 'boolean' ? source.enabled : false,
@@ -1140,7 +1146,8 @@ function createProviderValidationFingerprint(
   config: ProviderConfig | CustomOpenAIProviderConfig,
 ): string {
   return JSON.stringify({
-    apiKey: config.apiKey,
+    apiKeyDigest: apiKeyDigest(config.apiKey),
+    apiKeySecret: config.apiKeySecret ?? '',
     baseUrl: config.baseUrl ?? '',
     enabled: config.enabled,
     models: [...config.models].sort((a, b) => a.localeCompare(b, 'en')),
@@ -1149,6 +1156,16 @@ function createProviderValidationFingerprint(
         ? config.useRequestUrl
         : undefined,
   });
+}
+
+/** 키 회전을 감지하기 위한 비가역 다이제스트. 키 원문이 data.json에 남지 않게 한다. */
+function apiKeyDigest(value: string): string {
+  if (!value) return '';
+  let hash = 0x811c9dc5;
+  for (const char of value) {
+    hash = Math.imul((hash ^ (char.codePointAt(0) ?? 0)) >>> 0, 0x01000193) >>> 0;
+  }
+  return `${hash.toString(16).padStart(8, '0')}${value.length.toString(16)}`;
 }
 
 function getFreshProviderValidation(
@@ -1952,6 +1969,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     setIcon(icon, options.icon);
     notice.createSpan({ cls: 'superpower-inside-settings-notice-text', text: options.text });
     return notice;
+  }
+
+  /** 이 기기 보안 저장소에 값이 없는 상태를 알리고, 값을 입력하면 숨길 수 있게 요소를 돌려준다. */
+  private appendProviderKeyStateNotice(
+    containerEl: HTMLElement,
+    config: ProviderSecretConfig,
+  ): HTMLElement | null {
+    if (providerKeyState(config) !== 'missing-on-device') return null;
+    return this.createSettingsNotice(containerEl, {
+      text: t('apiKeyMissingOnDevice'),
+      tone: 'warning',
+      icon: 'key-round',
+    });
   }
   private createSettingsDisclosure(
     containerEl: HTMLElement,
@@ -5558,6 +5588,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (shouldShowProviderApiKey(this.getProfileApiKeyVisibilityKey(profile))) {
       const keyLabel = t('apiKey');
       let apiKeyInput: HTMLInputElement | null = null;
+      let keyStateNotice: HTMLElement | null = null;
       new Setting(group)
         .setName(keyLabel)
         .addText((text) => {
@@ -5572,6 +5603,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               const nextApiKey = value.trim();
               if (profile.apiKey === nextApiKey) return;
               profile.apiKey = nextApiKey;
+              if (keyStateNotice) keyStateNotice.hidden = nextApiKey.length > 0;
               this.invalidateProviderProfileVerification(profile);
               this.debouncedProviderSave();
               this.refreshProviderProfilePresentation(profile, disclosureRoot);
@@ -5592,6 +5624,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               .setTooltip(isVisible ? showLabel : hideLabel);
           });
         });
+      keyStateNotice = this.appendProviderKeyStateNotice(group, profile);
     }
     if (profile.strategy !== 'ternlight') {
       new Setting(group).setName(t('providerBaseUrl')).addText((text) => {
@@ -6503,16 +6536,24 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     );
     const apiKeyVisibilityKey = target.kind === 'custom' ? 'customOpenAI' : target.key;
     if (shouldShowProviderApiKey(apiKeyVisibilityKey)) {
-      new Setting(connectionSection).setName(t('apiKey')).addText((text) =>
+      let keyStateNotice: HTMLElement | null = null;
+      new Setting(connectionSection).setName(t('apiKey')).addText((text) => {
+        text.inputEl.type = 'password';
+        text.inputEl.autocomplete = 'off';
+        text.inputEl.setAttribute('aria-label', t('apiKey'));
         text
           .setPlaceholder('sk-...')
           .setValue(config.apiKey)
           .onChange((value) => {
-            config.apiKey = value.trim();
+            const nextApiKey = value.trim();
+            if (config.apiKey === nextApiKey) return;
+            config.apiKey = nextApiKey;
+            if (keyStateNotice) keyStateNotice.hidden = nextApiKey.length > 0;
             renderProviderHeader();
             this.debouncedSave();
-          }),
-      );
+          });
+      });
+      keyStateNotice = this.appendProviderKeyStateNotice(connectionSection, config);
     }
     if (target.kind === 'custom') {
       new Setting(connectionSection).setName(t('settingsAuto244')).addText((text) =>

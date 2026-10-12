@@ -1,12 +1,22 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
-import { requestUrl, type App } from 'obsidian';
+import { requestUrl, type App, type SecretStorage } from 'obsidian';
 import { t } from '../i18n';
 import { planChatGPTRust } from '../rag/rust-core';
+import { readSecretStorage, secretIdSegment } from '../secrets/provider-secrets';
 import type { AppLogger } from '../utils/logger';
 
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const TOKEN_URL = 'https://auth.openai.com/oauth/token';
+
+function chatGPTSecretId(profileId: string): string {
+  return `superpower-inside-chatgpt-oauth-${secretIdSegment(profileId)}`;
+}
+
+/** 보안 저장소 이전 전에 localStorage에 쓰던 키. */
+function legacyStorageKey(profileId: string): string {
+  return `superpower-inside:chatgpt-oauth:${profileId}`;
+}
 
 export interface ChatGPTCredentials {
   accessToken: string;
@@ -33,7 +43,7 @@ export class ChatGPTOAuth {
   ) {}
 
   storageKey(profileId: string): string {
-    return `superpower-inside:chatgpt-oauth:${profileId}`;
+    return chatGPTSecretId(profileId);
   }
 
   private load(profileId: string): ChatGPTCredentials | null {
@@ -282,30 +292,72 @@ export class ChatGPTOAuth {
   }
 }
 
-function createUninitializedAuth(): ChatGPTOAuth {
-  return new ChatGPTOAuth({
-    load: () => null,
-    save: () => {
-      throw new Error(t('chatGPTOAuthUnavailable'));
-    },
-  });
-}
-
-export let chatGPTOAuth = createUninitializedAuth();
-
-export function initializeChatGPTOAuth(
-  app: Pick<App, 'loadLocalStorage' | 'saveLocalStorage'>,
-  logger?: AppLogger,
-  clientVersion = '0.0.0',
-): ChatGPTOAuth {
-  chatGPTOAuth.dispose();
-  chatGPTOAuth = new ChatGPTOAuth(
+function createUninitializedAuth(logger?: AppLogger, clientVersion = '0.0.0'): ChatGPTOAuth {
+  return new ChatGPTOAuth(
     {
-      load: (key) => app.loadLocalStorage(key) as unknown,
-      save: (key, value) => app.saveLocalStorage(key, value),
+      load: () => null,
+      save: () => {
+        throw new Error(t('chatGPTOAuthUnavailable'));
+      },
     },
     logger,
     clientVersion,
   );
+}
+
+function createSecretStorageStore(storage: SecretStorage): CredentialStore {
+  return {
+    load: (id) => {
+      const raw = storage.getSecret(id);
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw) as unknown;
+      } catch {
+        return null;
+      }
+    },
+    // 삭제 API가 없어 빈 값이 연결 해제 표시가 된다.
+    save: (id, value) => {
+      storage.setSecret(id, value === null ? '' : JSON.stringify(value));
+    },
+  };
+}
+
+export let chatGPTOAuth = createUninitializedAuth();
+
+/** 이전 버전이 localStorage에 두었던 자격 증명을 보안 저장소로 옮긴다. */
+export function migrateChatGPTCredentials(app: App, profileIds: string[]): number {
+  const storage = readSecretStorage(app);
+  if (!storage) return 0;
+  let migrated = 0;
+  for (const profileId of profileIds) {
+    const id = chatGPTSecretId(profileId);
+    if (storage.getSecret(id)) continue;
+    const credentials = planChatGPTRust<ChatGPTCredentials>({
+      operation: 'credentials',
+      value: app.loadLocalStorage(legacyStorageKey(profileId)) as unknown,
+    });
+    if (!credentials) continue;
+    try {
+      storage.setSecret(id, JSON.stringify(credentials));
+    } catch {
+      continue;
+    }
+    app.saveLocalStorage(legacyStorageKey(profileId), null);
+    migrated += 1;
+  }
+  return migrated;
+}
+
+export function initializeChatGPTOAuth(
+  app: App,
+  logger?: AppLogger,
+  clientVersion = '0.0.0',
+): ChatGPTOAuth {
+  chatGPTOAuth.dispose();
+  const storage = readSecretStorage(app);
+  chatGPTOAuth = storage
+    ? new ChatGPTOAuth(createSecretStorageStore(storage), logger, clientVersion)
+    : createUninitializedAuth(logger, clientVersion);
   return chatGPTOAuth;
 }
