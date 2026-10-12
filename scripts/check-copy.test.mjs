@@ -106,7 +106,8 @@ if (args[0] === 'exec') text = fs.readFileSync(0, 'utf8');
 fs.appendFileSync(process.env.COPY_LOG, JSON.stringify({args, text}) + '\\n');
 if (args[0] === 'view') {
   if (process.env.COPY_REGISTRY_FAIL) process.exit(1);
-  console.log(JSON.stringify(process.env.COPY_VERSION || '99.0.0'));
+  const version = JSON.stringify(process.env.COPY_VERSION || '99.0.0');
+  console.log(process.env.COPY_BARE_VERSION ? version : '[' + version + ']');
 } else if (args.includes('--verify')) {
   const output = text.replaceAll('BAD', 'Safe');
   console.log(JSON.stringify({output, verification: {verified: true, mps: 100, fidelity: 100, outputHash: crypto.createHash('sha256').update(output).digest('hex')}}));
@@ -289,6 +290,7 @@ if (args[0] === 'view') {
       writeFileSync(join(cwd, 'README.md'), 'Changed');
       expect(run([]).status).toBe(0);
       expect(run([], { COPY_VERSION: '99.0.1' }).status).toBe(0);
+      expect(run([], { COPY_VERSION: '99.0.1', COPY_BARE_VERSION: '1' }).status).toBe(0);
       writeFileSync(join(cwd, '.patina.yaml'), 'star-nudge: false\n');
       expect(run([], { COPY_VERSION: '99.0.1' }).status).toBe(0);
       expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
