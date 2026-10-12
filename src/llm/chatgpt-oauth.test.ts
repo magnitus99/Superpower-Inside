@@ -3,9 +3,15 @@ import { get } from 'node:http';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('obsidian', () => ({ requestUrl: vi.fn() }));
+import type { App } from 'obsidian';
 import { requestUrl } from 'obsidian';
-import { ChatGPTOAuth } from './chatgpt-oauth';
+import {
+  ChatGPTOAuth,
+  initializeChatGPTOAuth,
+  migrateChatGPTCredentials,
+} from './chatgpt-oauth';
 import { requestUrlPromise } from '../test/chatgpt';
+import { createAppWithSecretStorage, createFakeSecretStorage } from '../test/secret-storage';
 
 const requestMock = vi.mocked(requestUrl);
 const accessToken = `header.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'account' } })).toString('base64url')}.signature`;
@@ -186,5 +192,60 @@ describe('ChatGPT 브라우저 OAuth', () => {
     expect((await results).every((result) => result.status === 'rejected')).toBe(true);
     expect(requestMock).toHaveBeenCalledTimes(1);
     expect(auth.isConnected('profile')).toBe(false);
+  });
+});
+
+describe('ChatGPT 보안 저장소 기록', () => {
+  it('자격 증명을 보안 저장소에 JSON으로 보관하고 연결 해제 시 값을 비운다', () => {
+    const storage = createFakeSecretStorage();
+    const auth = initializeChatGPTOAuth(createAppWithSecretStorage(storage));
+    try {
+      expect(auth.storageKey('Profile_1')).toBe('superpower-inside-chatgpt-oauth-profile-1');
+      storage.setSecret(
+        auth.storageKey('profile'),
+        JSON.stringify({
+          accessToken,
+          refreshToken: 'refresh',
+          accountId: 'account',
+          expiresAt: Date.now() + 60_000,
+        }),
+      );
+
+      expect(auth.isConnected('profile')).toBe(true);
+      expect(JSON.parse(storage.getSecret(auth.storageKey('profile')) ?? '')).toMatchObject({
+        refreshToken: 'refresh',
+      });
+
+      auth.disconnect('profile');
+
+      expect(auth.isConnected('profile')).toBe(false);
+      expect(storage.getSecret(auth.storageKey('profile'))).toBe('');
+    } finally {
+      auth.dispose();
+    }
+  });
+
+  it('이전 localStorage 자격 증명을 보안 저장소로 옮기고 남은 항목을 지운다', () => {
+    const storage = createFakeSecretStorage();
+    const local = new Map<string, unknown>([
+      [
+        'superpower-inside:chatgpt-oauth:profile',
+        { accessToken, refreshToken: 'legacy', accountId: 'account', expiresAt: 1 },
+      ],
+    ]);
+    const app = {
+      secretStorage: storage,
+      loadLocalStorage: (key: string) => local.get(key) ?? null,
+      saveLocalStorage: (key: string, value: unknown) => {
+        local.set(key, value);
+      },
+    } as unknown as App;
+
+    expect(migrateChatGPTCredentials(app, ['profile'])).toBe(1);
+    expect(JSON.parse(storage.getSecret('superpower-inside-chatgpt-oauth-profile') ?? '')).toMatchObject(
+      { refreshToken: 'legacy' },
+    );
+    expect(local.get('superpower-inside:chatgpt-oauth:profile')).toBeNull();
+    expect(migrateChatGPTCredentials(app, ['profile'])).toBe(0);
   });
 });

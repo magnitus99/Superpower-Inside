@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it, vi } from 'vitest';
 import type { TFile } from 'obsidian';
+import { createFakeSecretStorage } from './src/test/secret-storage';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -964,9 +965,11 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
       app: ReturnType<typeof createApp>;
       loadData: ReturnType<typeof vi.fn>;
+      saveData: ReturnType<typeof vi.fn>;
       settings: typeof DEFAULT_SETTINGS;
     };
     plugin.app = app;
+    plugin.saveData = vi.fn(() => Promise.resolve());
     plugin.loadData = vi.fn(() =>
       Promise.resolve({
         rag: {
@@ -1093,7 +1096,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.settings.rag.embeddingModel).toBe('ternlight-base');
   });
 
-  it('localStorage 설정이 없으면 data.json에서 복구하고 localStorage에도 다시 저장한다', async () => {
+  it('localStorage 설정이 없으면 data.json의 평문 키를 키체인으로 옮기고 저장본에서는 지운다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
     const app = createApp({ legacyDataExists: true });
@@ -1116,18 +1119,23 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     await plugin.loadSettings();
 
     expect(plugin.loadData).toHaveBeenCalledOnce();
+    expect(app.secretStorage.getSecret('superpower-inside-openai')).toBe('legacy-key');
+    expect(plugin.settings.openai.apiKeySecret).toBe('superpower-inside-openai');
+    expect(plugin.settings.openai.apiKey).toBe('legacy-key');
     expect(app.saveLocalStorage).toHaveBeenCalledWith(
       'superpower-inside:settings',
       expect.objectContaining({
-        openai: expect.objectContaining({ apiKey: 'legacy-key' }),
+        openai: expect.objectContaining({ apiKey: '', apiKeySecret: 'superpower-inside-openai' }),
       }),
     );
-    expect(app.vault.adapter.remove).not.toHaveBeenCalled();
     expect(plugin.saveData).toHaveBeenCalledWith(
       expect.objectContaining({
-        openai: expect.objectContaining({ apiKey: 'legacy-key' }),
+        openai: expect.objectContaining({ apiKey: '', apiKeySecret: 'superpower-inside-openai' }),
       }),
     );
+    expect(JSON.stringify(app.saveLocalStorage.mock.calls.at(-1)?.[1])).not.toContain('legacy-key');
+    expect(JSON.stringify(plugin.saveData.mock.calls.at(-1)?.[0])).not.toContain('legacy-key');
+    expect(app.vault.adapter.remove).not.toHaveBeenCalled();
   });
 
   it('설정 저장 시 localStorage와 data.json에 모두 저장해 재활성화 후에도 복구 가능하게 한다', async () => {
@@ -1156,6 +1164,36 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       DEFAULT_SETTINGS,
     );
     expect(plugin.saveData).toHaveBeenCalledWith(DEFAULT_SETTINGS);
+  });
+
+  it('설정 저장 시 키 원문을 보안 저장소에 넣고 저장본에서는 지운다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const app = createApp();
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: ReturnType<typeof createApp>;
+      settings: typeof DEFAULT_SETTINGS;
+      saveData: ReturnType<typeof vi.fn>;
+      initProvider: ReturnType<typeof vi.fn>;
+      initRAG: ReturnType<typeof vi.fn>;
+      initMCP: ReturnType<typeof vi.fn>;
+    };
+    plugin.app = app;
+    plugin.settings = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      openai: { ...DEFAULT_SETTINGS.openai, enabled: true, apiKey: 'typed-key' },
+    };
+    plugin.saveData = vi.fn(() => Promise.resolve());
+    plugin.initProvider = vi.fn();
+    plugin.initRAG = vi.fn(() => Promise.resolve());
+    plugin.initMCP = vi.fn(() => Promise.resolve([]));
+
+    await plugin.saveSettings();
+
+    expect(app.secretStorage.getSecret('superpower-inside-openai')).toBe('typed-key');
+    expect(plugin.settings.openai.apiKeySecret).toBe('superpower-inside-openai');
+    expect(plugin.settings.openai.apiKey).toBe('typed-key');
+    expect(JSON.stringify(plugin.saveData.mock.calls.at(-1)?.[0])).not.toContain('typed-key');
   });
 
   it('전체 플러그인 데이터 초기화는 설정과 플러그인 소유 저장소만 기본 상태로 되돌린다', async () => {
@@ -1516,6 +1554,7 @@ function createApp(
     pluginDataDirExists?: boolean;
     files?: readonly TFile[];
     contents?: ReadonlyMap<string, string>;
+    secrets?: Record<string, string>;
   } = {},
 ) {
   const refs: unknown[] = [];
@@ -1555,6 +1594,7 @@ function createApp(
   return {
     loadLocalStorage: vi.fn(() => options.localSettings ?? null),
     saveLocalStorage: vi.fn(),
+    secretStorage: createFakeSecretStorage(options.secrets),
     vault: { ...vault, configDir: '.obsidian' },
     workspace: {
       trigger: vi.fn(),
