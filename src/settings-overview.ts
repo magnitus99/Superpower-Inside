@@ -405,8 +405,8 @@ function buildChatMetric(settings: SuperpowerInsideSettings): SettingsOverviewMe
   return {
     id: 'chat',
     label: t('tabChat'),
-    value: defaultModelAvailable ? t('overviewReady') : t('overviewProviderCheckModels'),
-    statusLabel: defaultModelAvailable ? t('overviewReady') : t('overviewProviderCheckModels'),
+    value: defaultModelAvailable ? t('overviewReady') : t('chatReadinessModelMissing'),
+    statusLabel: defaultModelAvailable ? t('overviewReady') : t('chatReadinessModelMissing'),
     detail: defaultModelAvailable
       ? t('overviewChatDefaultModel', { model: getChatModelLabel(settings) })
       : t('overviewChatDefaultUnavailable'),
