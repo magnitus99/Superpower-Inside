@@ -665,6 +665,10 @@ export interface I18nKeys {
   variantCompareTitle: string;
   variantCompareActive: string;
   variantCompareRow: string;
+  variantNavPrev: string;
+  variantNavNext: string;
+  variantNavPosition: string;
+  chatActionWhileStreamingNotice: string;
   chatGenerationStopped: string;
   vaultResearchProgress: string;
   vaultResearchPhaseInventory: string;
@@ -2317,6 +2321,10 @@ const ko: I18nKeys = {
   variantCompareActive: '선택됨',
   variantCompareRow:
     '{provider} · 출처 {citations}개 · 경고 {warnings}개 · 도구 {tools}개 · 컨텍스트 {contexts}개',
+  variantNavPrev: '이전 답변',
+  variantNavNext: '다음 답변',
+  variantNavPosition: '{current} / {total}',
+  chatActionWhileStreamingNotice: '응답 생성이 끝난 뒤에 사용할 수 있습니다.',
   chatGenerationStopped: '응답 생성이 중단되었습니다.',
   vaultResearchProgress: '볼트 조사 중 · {phase} · {completed}/{total}',
   vaultResearchPhaseInventory: '문서 확인',
@@ -4102,6 +4110,10 @@ const en: I18nKeys = {
   variantCompareActive: 'Selected',
   variantCompareRow:
     '{provider} · {citations} sources · {warnings} warnings · {tools} tools · {contexts} contexts',
+  variantNavPrev: 'Previous answer',
+  variantNavNext: 'Next answer',
+  variantNavPosition: '{current} / {total}',
+  chatActionWhileStreamingNotice: 'Available once the current response finishes.',
   chatGenerationStopped: 'Response generation was stopped.',
   vaultResearchProgress: 'Researching vault · {phase} · {completed}/{total}',
   vaultResearchPhaseInventory: 'Checking documents',
