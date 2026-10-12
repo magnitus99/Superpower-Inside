@@ -968,8 +968,7 @@ export class VaultIndexer {
   async reindexAll(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
-    const progressTracker = createProgressTracker(this.vault.getFiles(), this.ragConfig);
-    emitIndexingProgress(options, progressTracker, 'plan');
+    const progressTracker = createProgressTracker([], this.ragConfig);
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
     this.logger.info('Vault full reindex started.', { data: { fileCount: files.length } });
@@ -1042,8 +1041,7 @@ export class VaultIndexer {
   async indexPending(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
-    const progressTracker = createProgressTracker(this.vault.getFiles(), this.ragConfig);
-    emitIndexingProgress(options, progressTracker, 'plan');
+    const progressTracker = createProgressTracker([], this.ragConfig);
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
     await this.removeOrphanedSources(files, options.signal);

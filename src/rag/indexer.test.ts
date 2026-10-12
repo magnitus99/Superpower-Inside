@@ -987,6 +987,48 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(after.updateRequiredDocuments).toEqual([]);
   });
 
+  it('증분 인덱싱의 첫 진행 스냅샷은 볼트 전체가 아니라 실제 대상 수를 보고한다', async () => {
+    const contents = new Map([
+      ['a.md', 'alpha 문서 내용'],
+      ['b.md', 'bravo 문서 내용'],
+      ['c.md', 'charlie 문서 내용'],
+    ]);
+    const vault = createVault(contents);
+    const store = new MemoryVectorStore();
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      {
+        embed: () => Promise.resolve([1, 0]),
+        embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+      },
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    await indexer.indexPending();
+
+    const target = (vault.getFiles() as Array<TFile & { stat: { mtime: number; size: number } }>).find(
+      (file) => file.path === 'b.md',
+    );
+    expect(target).toBeDefined();
+    contents.set('b.md', 'bravo 문서 내용 변경');
+    if (target) {
+      target.stat.mtime = 2000;
+      target.stat.size = 17;
+    }
+
+    const planTotals: number[] = [];
+    await indexer.indexPending({
+      onProgress: (snapshot) => {
+        if (snapshot.event === 'plan') planTotals.push(snapshot.totalFiles);
+      },
+    });
+
+    expect(planTotals).not.toContain(3);
+    expect(planTotals).toContain(1);
+  });
+
   it('증분 인덱싱도 현재 대상이 아닌 벡터와 BM25 문서를 제거한다', async () => {
     const file = createFile('current.md', 1000, 80);
     const vault = createVault(new Map([[file.path, '현재 문서 내용']]));

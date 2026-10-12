@@ -396,6 +396,87 @@ describe('RAGIndexingScheduler', () => {
     vi.useRealTimers();
   });
 
+  it('실행 중인 pending 작업과 겹치는 요청은 처음부터 다시 실행하지 않는다', async () => {
+    let release = (): void => {
+      throw new Error('release가 초기화되지 않았습니다.');
+    };
+    let pendingRuns = 0;
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => {
+        pendingRuns += 1;
+        return new Promise((resolve) => {
+          release = () => resolve(createResult({ indexed: 1, vectors: 1 }));
+        });
+      },
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+
+    const first = scheduler.indexPending();
+    await Promise.resolve();
+
+    await expect(scheduler.indexPending()).resolves.toEqual(expect.objectContaining({ indexed: 0 }));
+    release();
+    await expect(first).resolves.toEqual(expect.objectContaining({ indexed: 1 }));
+    await scheduler.waitForIdle();
+
+    expect(pendingRuns).toBe(1);
+  });
+
+  it('자동 복구 배치 뒤에 온 일반 pending 요청은 별도 실행으로 큐에 남긴다', async () => {
+    const calls: string[] = [];
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: (options) => {
+        calls.push(options.automaticRecovery ? 'recovery' : 'pending');
+        return Promise.resolve(createResult({ indexed: calls.length, vectors: 1 }));
+      },
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+
+    const recovery = scheduler.indexPending({ automaticRecovery: true });
+    const manual = scheduler.indexPending();
+
+    await expect(manual).resolves.toEqual(expect.objectContaining({ indexed: 2 }));
+    await expect(recovery).resolves.toEqual(expect.objectContaining({ indexed: 1 }));
+    await scheduler.waitForIdle();
+
+    expect(calls).toEqual(['recovery', 'pending']);
+  });
+
+  it('전체 재인덱싱이 실행 중이면 중복 전체 재인덱싱 요청은 새 실행을 만들지 않는다', async () => {
+    let release = (): void => {
+      throw new Error('release가 초기화되지 않았습니다.');
+    };
+    let allRuns = 0;
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => Promise.resolve(createResult()),
+      reindexAll: () => {
+        allRuns += 1;
+        return new Promise((resolve) => {
+          release = () => resolve(createResult({ indexed: 5, vectors: 5 }));
+        });
+      },
+    });
+
+    const first = scheduler.reindexAll();
+    await Promise.resolve();
+
+    await expect(scheduler.reindexAll()).resolves.toEqual(expect.objectContaining({ indexed: 0 }));
+    release();
+    await expect(first).resolves.toEqual(expect.objectContaining({ indexed: 5 }));
+    await scheduler.waitForIdle();
+
+    expect(allRuns).toBe(1);
+  });
+
   it('settles queued public jobs on cancel and accepts a fresh generation', async () => {
     let releaseActive = (): void => undefined;
     const scheduler = new RAGIndexingScheduler({

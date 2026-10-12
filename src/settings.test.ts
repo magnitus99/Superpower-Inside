@@ -1452,7 +1452,7 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex · current file 0/1 chunks - 3/10 files, ETA about 18s (calibrated speed from completed files)',
+      'Indexing: Full reindex · current file 0/1 chunks - 3/10 files, ETA about 18s',
     );
   });
 
@@ -1515,7 +1515,59 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex · current file 1/1 chunks - 0/4 files, calculating ETA (recent batch speed only)',
+      'Indexing: Full reindex · current file 1/1 chunks - 0/4 files, calculating ETA',
     );
+  });
+});
+
+describe('RAG indexing progress panel', () => {
+  it('진행 중에는 상태 줄과 바로 아래 숫자 줄을 같은 실행 스냅샷으로 갱신한다', () => {
+    setLanguage('en');
+    const plugin = {
+      getRagRuntimeState: vi.fn(() => ({
+        ragStatus: null,
+        hasIndexer: true,
+        lastAutoUpdateSkippedReason: null,
+        ragIndexingStatus: {
+          running: true,
+          phase: 'all',
+          queuedFiles: 0,
+          lastResult: null,
+          progress: {
+            event: 'batch-complete',
+            startedAtMs: 0,
+            nowMs: 10000,
+            totalFiles: 10,
+            completedFiles: 3,
+            currentFileTotalChunks: 0,
+            currentFileEmbeddedChunks: 0,
+            eta: { remainingMs: 18000, confidence: 'medium' },
+          },
+        },
+      })),
+      isRagIndexing: () => true,
+      getRagPerformanceGuardState: () => null,
+      settings: { rag: { autoUpdateEnabled: false } },
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const texts = new Map<string, string>();
+    const stub = (key: string) => ({
+      setText: (value: string) => texts.set(key, value),
+      setAttribute: () => undefined,
+    });
+    Object.assign(tab as unknown as Record<string, unknown>, {
+      ragStatusGrid: {
+        querySelector: (selector: string) =>
+          selector.includes('overview-detail') ? stub('detail') : stub('status'),
+      },
+      ragStatusTimestamp: stub('timestamp'),
+    });
+
+    (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
+
+    const label = 'Indexing: Full reindex - 3/10 files, ETA about 18s';
+    expect(texts.get('status')).toBe(label);
+    expect(texts.get('detail')).toBe('3/10 documents current · periodic checks Off');
+    expect(texts.get('timestamp')).toBe(`Current status: ${label}`);
   });
 });
