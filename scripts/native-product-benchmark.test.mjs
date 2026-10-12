@@ -16,7 +16,127 @@ import {
   loadNativeCorpus,
   selectNativeCitationRanges,
   withBenchmarkHost,
+  nativeCliInvocation,
+  verifyNativeCorpus,
+  nativeBridge,
 } from './native-product-benchmark.mjs';
+
+test('네이티브 평가도 OAuth 모델이면 제품 검색 초기화 전에 중단한다', async () => {
+  let initialized = false;
+  const app = {
+    plugins: {
+      plugins: {
+        'superpower-inside': {
+          settings: {
+            chat: { defaultModel: 'profile:synthetic:other' },
+            providerProfiles: [],
+          },
+          ensureRagRuntimeInitialized: () => {
+            initialized = true;
+          },
+        },
+      },
+    },
+  };
+  await assert.rejects(nativeBridge({}, app, 'unused'), /벤치마크 모델/);
+  assert.equal(initialized, false);
+});
+
+test('제품 채팅 화면이 다른 모델을 선택하면 전송 전에 중단하고 화면을 정리한다', async () => {
+  let sent = false;
+  let detached = false;
+  const view = {
+    inputArea: { value: '' },
+    messages: [],
+    modelSelectEl: { value: 'profile:synthetic:another-model' },
+    nativeVaultTool: { port: {} },
+    async handleSend() {
+      sent = true;
+    },
+    async onClose() {},
+  };
+  const app = {
+    workspace: {
+      activeLeaf: null,
+      getLeaf: () => ({
+        view,
+        async setViewState() {},
+        detach() {
+          detached = true;
+        },
+      }),
+    },
+  };
+  const product = {
+    settings: {
+      chat: { defaultModel: 'profile:synthetic:deepseek/deepseek-v4.1-flash' },
+      providerProfiles: [
+        {
+          id: 'synthetic',
+          strategy: 'openAICompatible',
+          enabled: true,
+          baseUrl: 'https://api.commandcode.ai/v1',
+          models: [{ id: 'deepseek/deepseek-v4.1-flash', kind: 'general' }],
+        },
+      ],
+    },
+  };
+  await assert.rejects(
+    nativeProductAnswer(app, { scope: 'Benchmark-test', question: '합성 질문' }, product),
+    /벤치마크 모델/,
+  );
+  assert.equal(sent, false);
+  assert.equal(detached, true);
+});
+
+test('네이티브 CLI는 OS별 실행 파일과 전용 볼트를 명시하고 코드를 단일 인수로 보존한다', () => {
+  const code = '"합성 코드"; `value`';
+  assert.deepEqual(nativeCliInvocation(code, 'win32', 'C:\\Users\\Synthetic\\AppData\\Local'), {
+    command: 'C:\\Users\\Synthetic\\AppData\\Local\\Programs\\Obsidian\\Obsidian.com',
+    args: ['vault=.test-vault', 'eval', `code=${code}`],
+  });
+  assert.equal(
+    nativeCliInvocation(code, 'darwin').command,
+    '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli',
+  );
+  assert.equal(nativeCliInvocation(code, 'linux').command, 'obsidian');
+  assert.throws(() => nativeCliInvocation(code, 'win32', ''), /CLI/);
+});
+
+test('고정 볼트의 기존 문서와 인덱스를 사용하며 범위 이탈과 본문 변경을 거부한다', async () => {
+  const documentPath = safeDocumentPath('synthetic', 'wix');
+  const text = '독립 합성 원문';
+  const { createHash } = await import('node:crypto');
+  const record = { path: documentPath, hash: createHash('sha256').update(text).digest('hex') };
+  const file = { path: documentPath };
+  const app = {
+    vault: {
+      getAbstractFileByPath: (filename) => (filename === documentPath ? file : null),
+      cachedRead: async () => text,
+      create: () => {
+        throw new Error('기존 문서 복제 금지');
+      },
+      delete: () => {
+        throw new Error('기존 문서 삭제 금지');
+      },
+    },
+  };
+  const files = await verifyNativeCorpus(app, [record], 'Benchmarks/WixQA/Corpus');
+  assert.deepEqual(files, [file]);
+  await assert.rejects(
+    verifyNativeCorpus(app, [{ ...record, hash: 'changed' }], 'Benchmarks/WixQA/Corpus'),
+    /체크섬/,
+  );
+  await assert.rejects(verifyNativeCorpus(app, [record], 'Benchmarks/MultiHop-RAG/Corpus'), /범위/);
+  await assert.rejects(
+    verifyNativeCorpus(
+      app,
+      [{ ...record, path: documentPath + '.missing' }],
+      'Benchmarks/WixQA/Corpus',
+    ),
+    /문서/,
+  );
+});
 
 test('장시간 평가 중에만 창의 타이머 제한을 해제하고 예외에도 원래 값으로 복구한다', async () => {
   let throttled = true;

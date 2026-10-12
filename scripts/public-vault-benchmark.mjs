@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, readFile, writeFile, rename, stat, appendFile, rm } from 'node:fs/promises';
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  rename,
+  stat,
+  appendFile,
+  rm,
+  copyFile,
+} from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { createInterface } from 'node:readline';
@@ -13,9 +22,37 @@ export const benchmarkRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../.test-vault/.benchmarks',
 );
-const enterpriseRelease =
-  'https://github.com/onyx-dot-app/EnterpriseRAG-Bench/releases/download/v1.0.0';
 const wixSource = 'https://huggingface.co/datasets/Wix/WixQA/resolve';
+export const benchmarkModelId = 'deepseek/deepseek-v4.1-flash';
+
+// 벤치마크 호출은 지정한 서버의 등록 모델로만 제한하며 인증 값은 오류에 넣지 않습니다.
+export function assertBenchmarkModel(settings, modelRef = settings?.chat?.defaultModel) {
+  const parts = typeof modelRef === 'string' ? modelRef.split(':') : [];
+  const profile = settings?.providerProfiles?.find(
+    (item) => parts[0] === 'profile' && item.id === parts[1],
+  );
+  let endpoint;
+  try {
+    endpoint = new URL(profile?.baseUrl);
+  } catch {
+    throw new Error('벤치마크 모델 제한: Command Code DS v4.1 Flash 연결이 필요합니다.');
+  }
+  if (
+    parts.slice(2).join(':') !== benchmarkModelId ||
+    !profile?.enabled ||
+    profile.strategy !== 'openAICompatible' ||
+    endpoint.protocol !== 'https:' ||
+    endpoint.hostname !== 'api.commandcode.ai' ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.port ||
+    endpoint.search ||
+    endpoint.hash ||
+    !profile.models?.some((model) => model.id === benchmarkModelId && model.kind === 'general')
+  )
+    throw new Error('벤치마크 모델 제한: Command Code DS v4.1 Flash만 사용할 수 있습니다.');
+  return modelRef;
+}
 
 export function parseAnswerOptions(args) {
   const judgeOptions = args.filter((arg) => arg.startsWith('--judge-model='));
@@ -30,7 +67,7 @@ export function parseAnswerOptions(args) {
   const count = amount === 'all' ? undefined : Number(amount);
   const repeats = Number(repeat);
   if (
-    !['wix', 'enterprise'].includes(dataset) ||
+    !['wix', 'multihop'].includes(dataset) ||
     (count !== undefined && (!Number.isInteger(count) || count < 1)) ||
     !Number.isInteger(repeats) ||
     repeats < 1 ||
@@ -55,13 +92,23 @@ export function parseAnswerOptions(args) {
 }
 
 export function safeDocumentPath(id, dataset) {
-  if (!['enterprise', 'wix'].includes(dataset)) throw new Error('지원하지 않는 데이터셋');
-  return `${dataset}/${createHash('sha256').update(String(id)).digest('hex')}.md`;
+  const digest = createHash('sha256').update(String(id)).digest('hex');
+  if (dataset === 'enterprise') return `${dataset}/${digest}.md`;
+  return `${corpusScope(dataset)}/${digest.slice(0, 2)}/${digest}.md`;
+}
+
+export function corpusScope(dataset) {
+  const names = { wix: 'WixQA', multihop: 'MultiHop-RAG' };
+  if (!names[dataset]) throw new Error('지원하지 않는 데이터셋');
+  return `Benchmarks/${names[dataset]}/Corpus`;
 }
 
 // 원본 오류에는 인증 정보가 들어갈 수 있으므로 고정된 분류만 보존합니다.
 export function classifyFailure(error) {
   const message = String(error?.message ?? error);
+  if (/벤치마크 모델 제한|benchmark_model/.test(message)) return 'benchmark_model';
+  if (/제품 설정이 실행 중 변경|configuration_changed/.test(message))
+    return 'configuration_changed';
   if (/Obsidian.*종료/i.test(message)) return 'host_closed';
   if (error?.status === 429) return 'usage_limit';
   if (error?.status === 401 || error?.status === 403) return 'authentication';
@@ -424,15 +471,19 @@ export async function* jsonLines(filename) {
   }
 }
 
-async function download(url, filename, expectedSize) {
+export async function downloadDatasetFile(url, filename, expectedSize, expectedDigest) {
   await mkdir(path.dirname(filename), { recursive: true });
   if (
-    await stat(filename).then(
+    expectedDigest &&
+    (await stat(filename).then(
       (s) => expectedSize === undefined || s.size === expectedSize,
       () => false,
-    )
-  )
-    return;
+    ))
+  ) {
+    const digest = createHash('sha256');
+    for await (const chunk of createReadStream(filename)) digest.update(chunk);
+    if (digest.digest('hex') === expectedDigest) return;
+  }
   const response = await fetch(url);
   if (!response.ok) throw new Error(`다운로드 HTTP ${response.status}`);
   const temporary = `${filename}.part`;
@@ -444,48 +495,48 @@ async function download(url, filename, expectedSize) {
 
 export async function downloadDatasets(root = benchmarkRoot) {
   execFileSync('git', ['check-ignore', root], { stdio: 'ignore' });
-  const info = await (await fetch('https://huggingface.co/api/datasets/Wix/WixQA')).json();
-  if (!info.sha) throw new Error('데이터 버전을 확인할 수 없습니다.');
-  const release = await (
-    await fetch(
-      'https://api.github.com/repos/onyx-dot-app/EnterpriseRAG-Bench/releases/tags/v1.0.0',
-    )
-  ).json();
-  const tasks = [
-    ...['all_documents.zip', 'questions.jsonl', 'extra_questions.jsonl'].map((name) => {
-      const asset = release.assets?.find((a) => a.name === name);
-      if (!asset) throw new Error('공식 릴리스 자료 누락');
-      return {
-        dataset: 'enterprise',
-        name,
-        url: `${enterpriseRelease}/${name}`,
-        size: asset.size,
-        upstreamDigest: asset.digest,
-      };
+  const previous = await readFile(path.join(root, 'datasets/manifest.json'), 'utf8').then(
+    JSON.parse,
+    () => ({}),
+  );
+  const [wixInfo, multihopInfo] = await Promise.all(
+    ['Wix/WixQA', 'yixuantt/MultiHopRAG'].map(async (name) => {
+      const response = await fetch(`https://huggingface.co/api/datasets/${name}`);
+      if (!response.ok) throw new Error(`데이터 버전 HTTP ${response.status}`);
+      return response.json();
     }),
+  );
+  const wixRevision = previous.wixRevision ?? wixInfo.sha;
+  const multihopRevision = previous.multihopRevision ?? multihopInfo.sha;
+  if (!wixRevision || !multihopRevision) throw new Error('데이터 버전을 확인할 수 없습니다.');
+  const tasks = [
     ...[
       'README.md',
       'wix_kb_corpus/wix_kb_corpus.jsonl',
       'wixqa_expertwritten/test.jsonl',
       'wixqa_simulated/test.jsonl',
       'wixqa_synthetic/test.jsonl',
-    ].map((name) => ({ dataset: 'wix', name, url: `${wixSource}/${info.sha}/${name}` })),
-    {
-      dataset: 'enterprise',
-      name: 'LICENSE',
-      url: 'https://raw.githubusercontent.com/onyx-dot-app/EnterpriseRAG-Bench/v1.0.0/LICENSE',
-    },
-    {
-      dataset: 'enterprise',
-      name: 'README.md',
-      url: 'https://huggingface.co/datasets/onyx-dot-app/EnterpriseRAG-Bench/raw/main/README.md',
-    },
+    ].map((name) => ({
+      dataset: 'wix',
+      name,
+      url: `${wixSource}/${wixRevision}/${name}`,
+      license: 'MIT',
+    })),
+    ...['README.md', 'corpus.json', 'MultiHopRAG.json'].map((name) => ({
+      dataset: 'multihop',
+      name,
+      license: 'ODC-BY',
+      url: `https://huggingface.co/datasets/yixuantt/MultiHopRAG/resolve/${multihopRevision}/${name}`,
+    })),
   ];
   // 큰 압축 파일과 소형 자료는 서로 독립적으로 내려받습니다.
   await Promise.all(
     tasks.map(async (item) => {
       const filename = path.join(root, 'datasets', item.dataset, 'raw', item.name);
-      await download(item.url, filename, item.size);
+      const cached = previous.files?.find(
+        (file) => file.dataset === item.dataset && file.name === item.name && file.url === item.url,
+      );
+      await downloadDatasetFile(item.url, filename, item.size, cached?.sha256);
       const digest = createHash('sha256');
       for await (const chunk of createReadStream(filename)) digest.update(chunk);
       item.sha256 = digest.digest('hex');
@@ -502,9 +553,12 @@ export async function downloadDatasets(root = benchmarkRoot) {
     JSON.stringify(
       {
         downloadedAt: new Date().toISOString(),
-        wixRevision: info.sha,
-        enterpriseVersion: 'v1.0.0',
-        attribution: 'Wix.com AI Research',
+        wixRevision,
+        multihopRevision,
+        attribution: {
+          wix: 'Wix.com AI Research',
+          multihop: 'Yixuan Tang and Yi Yang, MultiHop-RAG (COLM 2024)',
+        },
         files: tasks,
       },
       null,
@@ -515,7 +569,6 @@ export async function downloadDatasets(root = benchmarkRoot) {
 
 export async function prepareWix(root = benchmarkRoot) {
   const directory = path.join(root, 'datasets/wix');
-  await mkdir(path.join(directory, 'documents/wix'), { recursive: true });
   const records = [];
   for await (const item of jsonLines(
     path.join(directory, 'raw/wix_kb_corpus/wix_kb_corpus.jsonl'),
@@ -524,6 +577,7 @@ export async function prepareWix(root = benchmarkRoot) {
       throw new Error('문서 스키마 오류');
     const relative = safeDocumentPath(item.id, 'wix');
     const text = item.contents;
+    await mkdir(path.dirname(path.join(directory, 'documents', relative)), { recursive: true });
     await writeFile(path.join(directory, 'documents', relative), text);
     records.push({
       path: relative,
@@ -540,21 +594,126 @@ export async function prepareWix(root = benchmarkRoot) {
   console.log(JSON.stringify({ prepared: 'wix', documents: records.length }));
 }
 
+export async function prepareMultiHop(root = benchmarkRoot) {
+  const directory = path.join(root, 'datasets/multihop');
+  const documents = JSON.parse(await readFile(path.join(directory, 'raw/corpus.json'), 'utf8'));
+  const questions = JSON.parse(
+    await readFile(path.join(directory, 'raw/MultiHopRAG.json'), 'utf8'),
+  );
+  if (!Array.isArray(documents) || !Array.isArray(questions)) throw new Error('자료 스키마 오류');
+  const records = [];
+  for (const item of documents) {
+    if (
+      typeof item.url !== 'string' ||
+      typeof item.body !== 'string' ||
+      typeof item.title !== 'string'
+    )
+      throw new Error('문서 스키마 오류');
+    const relative = safeDocumentPath(item.url, 'multihop');
+    const text = [
+      `# ${item.title}`,
+      '',
+      `Author: ${item.author ?? ''}`,
+      `Source: ${item.source ?? ''}`,
+      `Published: ${item.published_at ?? ''}`,
+      `Category: ${item.category ?? ''}`,
+      `URL: ${item.url}`,
+      '',
+      item.body,
+    ].join('\n');
+    await mkdir(path.dirname(path.join(directory, 'documents', relative)), { recursive: true });
+    await writeFile(path.join(directory, 'documents', relative), text);
+    records.push({ path: relative, id: item.url, url: item.url, bytes: Buffer.byteLength(text) });
+  }
+  const ids = new Set(records.map((r) => r.id));
+  if (ids.size !== records.length) throw new Error('문서 ID 중복');
+  const rows = questions.map((item, ordinal) => {
+    if (
+      typeof item.query !== 'string' ||
+      typeof item.answer !== 'string' ||
+      !Array.isArray(item.evidence_list) ||
+      !['inference_query', 'comparison_query', 'temporal_query', 'null_query'].includes(
+        item.question_type,
+      )
+    )
+      throw new Error('질문 스키마 오류');
+    const expected = [...new Set(item.evidence_list.map((evidence) => evidence.url))];
+    if (
+      expected.some((id) => !ids.has(id)) ||
+      (item.question_type !== 'null_query' && !expected.length) ||
+      (item.question_type === 'null_query' && expected.length)
+    )
+      throw new Error('정답 문서 매핑 오류');
+    return {
+      question_id: `multihop/${ordinal}`,
+      question: item.query,
+      gold_answer: item.answer,
+      question_type: item.question_type === 'null_query' ? 'info_not_found' : item.question_type,
+      expected_doc_ids: expected,
+      answer_facts: item.evidence_list.map((evidence) => evidence.fact),
+    };
+  });
+  await writeFile(
+    path.join(directory, 'documents.jsonl'),
+    records.map((r) => JSON.stringify(r)).join('\n') + '\n',
+  );
+  await writeFile(
+    path.join(directory, 'raw/questions.jsonl'),
+    rows.map((r) => JSON.stringify(r)).join('\n') + '\n',
+  );
+  console.log(
+    JSON.stringify({ prepared: 'multihop', documents: records.length, questions: rows.length }),
+  );
+}
+
+export async function materializeCorpus(
+  dataset,
+  root = benchmarkRoot,
+  vaultRoot = path.dirname(root),
+) {
+  const directory = path.join(root, 'datasets', dataset);
+  const scope = corpusScope(dataset);
+  let documents = 0;
+  for await (const record of jsonLines(path.join(directory, 'documents.jsonl'))) {
+    if (!record.path.startsWith(`${scope}/`) || record.path.split('/').includes('..'))
+      throw new Error('공개 문서 경로 오류');
+    const source = path.join(directory, 'documents', record.path);
+    const destination = path.join(vaultRoot, record.path);
+    const bytes = await readFile(source);
+    const current = await readFile(destination).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+      return null;
+    });
+    if (!current?.equals(bytes)) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await copyFile(source, destination);
+    }
+    if (!(await readFile(destination)).equals(bytes)) throw new Error('공개 문서 체크섬 오류');
+    documents++;
+  }
+  console.log(JSON.stringify({ visible: dataset, documents }));
+}
+
+export function parseEnterpriseArchiveEntries(listing) {
+  const entries = listing.trim().split(/\r?\n/);
+  if (entries.some((p) => p.startsWith('/') || p.split('/').includes('..') || /[\\:]/.test(p)))
+    throw new Error('압축 경로 오류');
+  return entries;
+}
+
 export async function prepareEnterprise(root = benchmarkRoot) {
   const directory = path.join(root, 'datasets/enterprise');
   const archive = path.join(directory, 'raw/all_documents.zip');
-  const entries = execFileSync('unzip', ['-Z1', archive], {
-    encoding: 'utf8',
-    maxBuffer: 128 * 1024 * 1024,
-  })
-    .trim()
-    .split('\n');
-  if (entries.some((p) => p.startsWith('/') || p.split('/').includes('..') || p.includes('\\')))
-    throw new Error('압축 경로 오류');
+  const entries = parseEnterpriseArchiveEntries(
+    execFileSync('unzip', ['-Z1', archive], {
+      encoding: 'utf8',
+      maxBuffer: 128 * 1024 * 1024,
+    }),
+  );
   await mkdir(path.join(directory, 'documents'), { recursive: true });
   const result = spawnSync(
     'unzip',
-    ['-n', '-q', archive, '*.txt', '-d', path.join(directory, 'documents')],
+    ['-n', '-q', archive, '-d', path.join(directory, 'documents')],
     { stdio: 'ignore' },
   );
   if (result.status !== 0) throw new Error('전체 문서 압축 해제 실패');
@@ -737,7 +896,9 @@ export async function loadBenchmark(runtime, dataset, root = benchmarkRoot, opti
     const configurations =
       dataset === 'wix'
         ? ['wixqa_expertwritten', 'wixqa_simulated', 'wixqa_synthetic']
-        : ['questions', 'extra_questions'];
+        : dataset === 'multihop'
+          ? ['questions']
+          : ['questions', 'extra_questions'];
     for (const configuration of configurations) {
       const filename = dataset === 'wix' ? `${configuration}/test.jsonl` : `${configuration}.jsonl`;
       let ordinal = 0;
@@ -846,7 +1007,7 @@ export async function answerBenchmark(runtime, app, options = {}) {
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 10)
     throw new Error('반복 횟수는 1~10 정수여야 합니다.');
   if (
-    !['wix', 'enterprise'].includes(options.dataset ?? 'wix') ||
+    !['wix', 'multihop', 'enterprise'].includes(options.dataset ?? 'wix') ||
     (options.source && !/^[a-zA-Z0-9_-]+$/.test(options.source)) ||
     (options.runLabel && !/^-?[a-zA-Z0-9_-]{1,64}$/.test(options.runLabel))
   )
@@ -856,7 +1017,7 @@ export async function answerBenchmark(runtime, app, options = {}) {
   const settings = app.plugins.plugins['superpower-inside']?.settings;
   if (!settings) throw new Error('플러그인이 활성화되어 있지 않습니다.');
   runtime.appLogger.configure({ mirrorToConsole: false, minLevel: 'fatal', maxEntries: 1 });
-  if (!options.provider) runtime.initializeChatGPTOAuth(app);
+  assertBenchmarkModel(settings);
   const provider = options.provider ?? createEvaluationProvider(runtime, settings);
   const dataset = options.dataset ?? 'wix';
   options.onProgress?.({ stage: '문서 읽기와 제품 색인 초기화' });
@@ -1379,11 +1540,13 @@ export async function providerBridge(
   if (!settings || app.vault.adapter.getBasePath() !== path.dirname(benchmarkRoot))
     throw new Error('평가 볼트 오류');
   runtime.appLogger.configure({ mirrorToConsole: false, minLevel: 'fatal', maxEntries: 1 });
-  runtime.initializeChatGPTOAuth(app);
+  const selectedModel = assertBenchmarkModel(settings);
+  const selectedJudge = assertBenchmarkModel(settings, judgeModelRef ?? selectedModel);
   const provider = createEvaluationProvider(runtime, settings);
-  const judgeProvider = judgeModelRef
-    ? createEvaluationProvider(runtime, settings, judgeModelRef)
-    : null;
+  const judgeProvider =
+    selectedJudge === selectedModel
+      ? provider
+      : createEvaluationProvider(runtime, settings, selectedJudge);
   const selectedEmbedding = runtime.resolveUsableProviderModelRef(
     settings,
     settings.rag.embeddingModelRef ?? '',
@@ -1408,7 +1571,7 @@ export async function providerBridge(
       },
       version: app.plugins.plugins['superpower-inside'].manifest.version,
       capability: provider.capability,
-      judgeModel: judgeModelRef ?? null,
+      judgeModel: selectedJudge,
       judgeCapability: judgeProvider?.capability ?? null,
       contextBudget: provider.contextBudget,
       hostPid: process.pid,
@@ -1449,10 +1612,7 @@ export async function providerBridge(
         )
       )
         break;
-      const request = await readFile(path.join(directory, 'request.json'), 'utf8').then(
-        JSON.parse,
-        () => null,
-      );
+      const request = await readBridgeMessage(path.join(directory, 'request.json'));
       if (!request || request.id === lastId) {
         await wait(100);
         continue;
@@ -1464,6 +1624,9 @@ export async function providerBridge(
       let error = false;
       let timeout;
       try {
+        if (assertBenchmarkModel(settings) !== selectedModel)
+          throw new Error('제품 설정이 실행 중 변경되었습니다.');
+        assertBenchmarkModel(settings, selectedJudge);
         const operation =
           request.operation?.startsWith('native-') && nativeHandler
             ? nativeHandler(request, AbortSignal.timeout(requestTimeoutMs)).then((value) => {
@@ -1521,6 +1684,15 @@ export async function providerBridge(
 }
 
 // 단일 파일 통신에서 동시 질의가 앞선 요청을 덮어쓰지 않도록 순서대로 교환합니다.
+async function readBridgeMessage(filename) {
+  try {
+    return JSON.parse(await readFile(filename, 'utf8'));
+  } catch (error) {
+    if (error instanceof SyntaxError || error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 export function createBridgeExchange(directory, metadata) {
   let sequence = 0;
   let pending = Promise.resolve();
@@ -1538,10 +1710,7 @@ export function createBridgeExchange(directory, metadata) {
       } catch {
         throw new Error('Obsidian이 종료되었습니다.');
       }
-      const response = await readFile(path.join(directory, 'response.json'), 'utf8').then(
-        JSON.parse,
-        () => null,
-      );
+      const response = await readBridgeMessage(path.join(directory, 'response.json'));
       if (response?.id === id) {
         if (response.error) throw new Error(`선택 모델 요청 실패: ${response.error}`);
         return response;
@@ -1561,18 +1730,22 @@ async function main() {
   const action = process.argv[2];
   if (action === 'download') await downloadDatasets();
   else if (action === 'prepare-wix') await prepareWix();
-  else if (action === 'prepare-enterprise') await prepareEnterprise();
-  else if (action === 'answers') {
+  else if (action === 'prepare-multihop') await prepareMultiHop();
+  else if (action === 'materialize') {
+    execFileSync('git', ['check-ignore', benchmarkRoot], { stdio: 'ignore' });
+    await materializeCorpus('multihop');
+    await materializeCorpus('wix');
+  } else if (action === 'answers') {
     const { launchNative } = await import('./native-product-benchmark.mjs');
     const options = parseAnswerOptions(process.argv.slice(3));
     if (options.oracle || options.diagnostic || options.includeSynthetic)
       throw new Error('제품 평가는 단일 네이티브 모드입니다.');
     await launchNative(options);
   } else if (action === 'suite') {
-    const options = parseAnswerOptions(['wix', 'all', '-', ...process.argv.slice(3)]);
+    const options = parseAnswerOptions(['multihop', 'all', '-', ...process.argv.slice(3)]);
     const { launchNative } = await import('./native-product-benchmark.mjs');
     await launchNative(options);
-    await launchNative({ ...options, dataset: 'enterprise' });
+    await launchNative({ ...options, dataset: 'wix' });
   } else if (action === 'retrieval') {
     await import('fake-indexeddb/auto');
     globalThis.window = globalThis;
@@ -1590,7 +1763,7 @@ async function main() {
     }
   } else
     throw new Error(
-      '사용법: download | prepare-wix | prepare-enterprise | retrieval [wix|enterprise] [출처] | answers [wix|enterprise] [문항 수|all=전체 핵심 질문] [출처|-] [실행 ID] [반복 횟수=3] | suite [실행 ID] [반복 횟수=3]',
+      '사용법: download | prepare-wix | prepare-multihop | materialize | retrieval [wix|multihop] | answers [wix|multihop] [문항 수|all=전체 질문] [출처|-] [실행 ID] [반복 횟수=3] | suite [실행 ID] [반복 횟수=3]',
     );
 }
 

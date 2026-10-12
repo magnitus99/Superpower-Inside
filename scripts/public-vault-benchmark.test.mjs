@@ -27,7 +27,133 @@ import {
   benchmarkRoot,
   parseAnswerOptions,
   createBridgeExchange,
+  parseEnterpriseArchiveEntries,
+  prepareMultiHop,
+  materializeCorpus,
+  corpusScope,
+  downloadDatasetFile,
+  assertBenchmarkModel,
+  benchmarkModelId,
 } from './public-vault-benchmark.mjs';
+
+function benchmarkSettings(profileId = 'synthetic') {
+  return {
+    chat: { defaultModel: `profile:${profileId}:deepseek/deepseek-v4.1-flash` },
+    rag: {},
+    providerProfiles: [
+      {
+        id: profileId,
+        enabled: true,
+        strategy: 'openAICompatible',
+        baseUrl: 'https://api.commandcode.ai/v1',
+        models: [{ id: 'deepseek/deepseek-v4.1-flash', kind: 'general' }],
+      },
+    ],
+  };
+}
+
+test('벤치마크는 등록된 Command Code DS 모델만 허용하고 다른 서버·OAuth·모델은 거부한다', () => {
+  const settings = benchmarkSettings();
+  assert.equal(assertBenchmarkModel(settings), settings.chat.defaultModel);
+  assert.equal(benchmarkModelId, 'deepseek/deepseek-v4.1-flash');
+  for (const change of [
+    { strategy: 'openAIChatGPT' },
+    { enabled: false },
+    { baseUrl: 'https://example.com/v1' },
+    { baseUrl: 'http://api.commandcode.ai/v1' },
+    { baseUrl: 'https://api.commandcode.ai.example.com/v1' },
+    { baseUrl: 'https://credential@api.commandcode.ai/v1' },
+    { models: [{ id: 'another-model', kind: 'general' }] },
+  ]) {
+    const changed = structuredClone(settings);
+    Object.assign(changed.providerProfiles[0], change);
+    assert.throws(() => assertBenchmarkModel(changed), /벤치마크 모델/);
+  }
+  assert.throws(
+    () => assertBenchmarkModel(settings, 'profile:synthetic:another-model'),
+    /벤치마크 모델/,
+  );
+});
+
+test('허용되지 않는 생성 또는 판정 설정은 OAuth 초기화와 provider 생성 전에 차단한다', async () => {
+  const settings = benchmarkSettings();
+  let calls = 0;
+  const app = {
+    vault: { adapter: { getBasePath: () => path.dirname(benchmarkRoot) } },
+    plugins: { plugins: { 'superpower-inside': { settings } } },
+  };
+  const runtime = {
+    appLogger: { configure() {} },
+    initializeChatGPTOAuth: () => calls++,
+    createProviderForStrategy: () => calls++,
+  };
+  await assert.rejects(
+    providerBridge(runtime, app, 'unused', 1000, undefined, 'profile:synthetic:other'),
+    /벤치마크 모델/,
+  );
+  settings.providerProfiles[0].strategy = 'openAIChatGPT';
+  await assert.rejects(providerBridge(runtime, app, 'unused'), /벤치마크 모델/);
+  assert.equal(calls, 0);
+});
+
+test('공식 압축 목록은 OS별 줄바꿈을 처리하고 볼트 밖 경로를 거부한다', () => {
+  assert.deepEqual(parseEnterpriseArchiveEntries('synthetic/a.txt\r\nsynthetic/b.txt\r\n'), [
+    'synthetic/a.txt',
+    'synthetic/b.txt',
+  ]);
+  for (const entry of [
+    '/outside.txt',
+    '../outside.txt',
+    'a/../outside.txt',
+    'a\\outside.txt',
+    'C:/outside.txt',
+  ]) {
+    assert.throws(() => parseEnterpriseArchiveEntries(entry), /압축 경로/);
+  }
+});
+
+test('전송 중인 응답 JSON이 잠시 불완전해도 재독해 완성된 응답만 받는다', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'benchmark-partial-response-'));
+  try {
+    await writeFile(path.join(directory, 'response.json'), '{');
+    const exchange = createBridgeExchange(directory, { hostPid: process.pid });
+    const request = exchange({ operation: 'native-status' });
+    await wait(150);
+    await writeFile(
+      path.join(directory, 'response.json'),
+      JSON.stringify({ id: 1, result: { ready: false }, error: false }),
+    );
+    assert.deepEqual((await request).result, { ready: false });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('다운로드 캐시는 같은 버전의 체크섬이 일치할 때만 재사용한다', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'benchmark-download-'));
+  const fetch = globalThis.fetch;
+  const { createHash } = await import('node:crypto');
+  const text = '합성 공개 자료';
+  const digest = createHash('sha256').update(text).digest('hex');
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response(text);
+  };
+  try {
+    const filename = path.join(root, 'raw.json');
+    await downloadDatasetFile('https://example.com/pinned', filename, undefined, digest);
+    await downloadDatasetFile('https://example.com/pinned', filename, undefined, digest);
+    assert.equal(calls, 1);
+    await writeFile(filename, '손상된 합성 자료');
+    await downloadDatasetFile('https://example.com/pinned', filename, undefined, digest);
+    assert.equal(calls, 2);
+    assert.equal(await readFile(filename, 'utf8'), text);
+  } finally {
+    globalThis.fetch = fetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('기본 워크플로우는 전체 핵심 질문을 3회 평가하며 작은 표본은 명시적으로 선택한다', () => {
   assert.deepEqual(parseAnswerOptions([]), {
@@ -40,7 +166,8 @@ test('기본 워크플로우는 전체 핵심 질문을 3회 평가하며 작은
     diagnostic: false,
     includeSynthetic: false,
   });
-  assert.equal(parseAnswerOptions(['enterprise']).count, undefined);
+  assert.equal(parseAnswerOptions(['multihop']).count, undefined);
+  assert.throws(() => parseAnswerOptions(['enterprise']));
   assert.equal(parseAnswerOptions(['wix', '12', '-', 'smoke', '1']).count, 12);
   assert.equal(
     parseAnswerOptions(['wix', 'all', '-', 'full', '3', 'diagnostic', '--include-synthetic'])
@@ -62,21 +189,10 @@ test('전체 답변 실행에서도 독립 판정자 옵션을 전달하고 중�
   assert.throws(() => parseAnswerOptions(['--judge-model=invalid']));
 });
 
-test('독립 채점 요청만 판정 모델로 보내고 사용자가 선택한 생성 모델을 보존한다', async () => {
+test('생성과 판정은 같은 Command Code DS 모델을 사용하며 OAuth를 초기화하지 않는다', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'benchmark-judge-'));
   const calls = [];
-  const settings = {
-    chat: { defaultModel: 'profile:synthetic:generator' },
-    rag: {},
-    providerProfiles: [
-      {
-        id: 'synthetic',
-        enabled: true,
-        strategy: 'test',
-        models: [{ id: 'generator' }, { id: 'judge' }],
-      },
-    ],
-  };
+  const settings = benchmarkSettings();
   try {
     await writeFile(
       path.join(directory, 'request.json'),
@@ -89,7 +205,9 @@ test('독립 채점 요청만 판정 모델로 보내고 사용자가 선택한 
     await providerBridge(
       {
         appLogger: { configure() {} },
-        initializeChatGPTOAuth() {},
+        initializeChatGPTOAuth() {
+          throw new Error('벤치마크 OAuth 사용 금지');
+        },
         resolveUsableProviderModelRef: () => null,
         createProviderForStrategy: (_strategy, _profile, model) => ({
           async streamChat(_messages, onChunk) {
@@ -106,10 +224,10 @@ test('독립 채점 요청만 판정 모델로 보내고 사용자가 선택한 
       directory,
       1000,
       undefined,
-      'profile:synthetic:judge',
+      settings.chat.defaultModel,
     );
-    assert.deepEqual(calls, ['judge']);
-    assert.equal(settings.chat.defaultModel, 'profile:synthetic:generator');
+    assert.deepEqual(calls, ['deepseek/deepseek-v4.1-flash']);
+    assert.equal(settings.chat.defaultModel, 'profile:synthetic:deepseek/deepseek-v4.1-flash');
     const response = JSON.parse(await readFile(path.join(directory, 'response.json'), 'utf8'));
     assert.equal(response.error, false);
     assert.equal(response.chunks[0].content, '합성 판정');
@@ -122,19 +240,9 @@ test('실제 모델 연결에서 검색 임계값을 보존하고 인증 설정�
   const directory = await mkdtemp(path.join(tmpdir(), 'benchmark-provider-'));
   try {
     await writeFile(path.join(directory, 'stop'), '중단');
-    const settings = {
-      chat: { defaultModel: 'profile:synthetic:model' },
-      rag: { chunkSize: 1000, overlap: 100, minScore: 0.3 },
-      providerProfiles: [
-        {
-          id: 'synthetic',
-          enabled: true,
-          strategy: 'test',
-          models: [{ id: 'model' }],
-          apiKey: '합성 키',
-        },
-      ],
-    };
+    const settings = benchmarkSettings();
+    settings.rag = { chunkSize: 1000, overlap: 100, minScore: 0.3 };
+    settings.providerProfiles[0].apiKey = '합성 키';
     await providerBridge(
       {
         appLogger: { configure: () => {} },
@@ -177,13 +285,7 @@ test('provider가 취소 신호에 응답하지 않아도 벤치마크 연결은
         plugins: {
           plugins: {
             'superpower-inside': {
-              settings: {
-                chat: { defaultModel: 'profile:synthetic:model' },
-                rag: { chunkSize: 1000, overlap: 100, minScore: 0.3 },
-                providerProfiles: [
-                  { id: 'synthetic', enabled: true, strategy: 'test', models: [{ id: 'model' }] },
-                ],
-              },
+              settings: benchmarkSettings(),
               manifest: { version: 'test' },
             },
           },
@@ -240,13 +342,7 @@ test('동시 검색 임베딩 요청과 답변 요청을 순서대로 전달하�
         plugins: {
           plugins: {
             'superpower-inside': {
-              settings: {
-                chat: { defaultModel: 'profile:test:model' },
-                rag: {},
-                providerProfiles: [
-                  { id: 'test', enabled: true, strategy: 'test', models: [{ id: 'model' }] },
-                ],
-              },
+              settings: benchmarkSettings('test'),
               manifest: { version: 'test' },
             },
           },
@@ -520,12 +616,92 @@ test('인증 정보가 포함될 수 있는 오류 원문을 반환하지 않는
   assert.equal(classifyFailure({ status: 401, message: '합성 오류' }), 'authentication');
   assert.equal(classifyFailure({ status: 503, message: '합성 오류' }), 'http_503');
   assert.equal(classifyFailure(new Error('unknown secret-example')), 'provider_or_runtime');
+  assert.equal(classifyFailure(new Error('벤치마크 모델 제한: 합성 오류')), 'benchmark_model');
+  assert.equal(
+    classifyFailure(new Error('선택 모델 요청 실패: benchmark_model')),
+    'benchmark_model',
+  );
+  assert.equal(
+    classifyFailure(new Error('제품 설정이 실행 중 변경되었습니다.')),
+    'configuration_changed',
+  );
+  assert.equal(
+    classifyFailure(new Error('선택 모델 요청 실패: configuration_changed')),
+    'configuration_changed',
+  );
 });
 
 test('문서 경로에 원본 식별자를 직접 삽입하지 않는다', () => {
-  assert.match(safeDocumentPath('../escape', 'wix'), /^wix\/[a-f0-9]{64}\.md$/);
+  assert.match(
+    safeDocumentPath('../escape', 'wix'),
+    /^Benchmarks\/WixQA\/Corpus\/[a-f0-9]{2}\/[a-f0-9]{64}\.md$/,
+  );
   assert.equal(safeDocumentPath('a', 'wix'), safeDocumentPath('a', 'wix'));
   assert.notEqual(safeDocumentPath('a', 'wix'), safeDocumentPath('b', 'wix'));
+});
+
+test('다중 문서 자료는 메타데이터와 본문만 공개하고 정답 근거는 판정 자료에 분리한다', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'multihop-synthetic-'));
+  try {
+    const raw = path.join(root, 'datasets/multihop/raw');
+    await mkdir(raw, { recursive: true });
+    const documents = ['first', 'second'].map((id) => ({
+      title: `합성 ${id}`,
+      author: '합성 작성자',
+      source: '합성 출처',
+      published_at: '2025-01-01',
+      url: `https://example.com/${id}`,
+      body: `독립 합성 본문 ${id}`,
+    }));
+    await writeFile(path.join(raw, 'corpus.json'), JSON.stringify(documents));
+    await writeFile(
+      path.join(raw, 'MultiHopRAG.json'),
+      JSON.stringify([
+        {
+          query: '합성 비교 질문',
+          answer: '비공개 합성 정답',
+          question_type: 'comparison_query',
+          evidence_list: documents.map((d) => ({ url: d.url, fact: '판정 전용 합성 사실' })),
+        },
+        {
+          query: '합성 정보 부재 질문',
+          answer: '정보 없음',
+          question_type: 'null_query',
+          evidence_list: [],
+        },
+      ]),
+    );
+    await prepareMultiHop(root);
+    const manifest = [];
+    for await (const item of (await import('./public-vault-benchmark.mjs')).jsonLines(
+      path.join(root, 'datasets/multihop/documents.jsonl'),
+    ))
+      manifest.push(item);
+    assert.equal(manifest.length, 2);
+    const text = await readFile(
+      path.join(root, 'datasets/multihop/documents', manifest[0].path),
+      'utf8',
+    );
+    assert.match(text, /합성 작성자/);
+    assert.match(text, /2025-01-01/);
+    assert.match(text, /독립 합성 본문/);
+    assert.doesNotMatch(text, /판정 전용|비공개 합성 정답/);
+    const qa = [];
+    for await (const item of (await import('./public-vault-benchmark.mjs')).jsonLines(
+      path.join(root, 'datasets/multihop/raw/questions.jsonl'),
+    ))
+      qa.push(adaptQuestion(item, 'multihop'));
+    assert.equal(qa[0].expectedPaths.length, 2);
+    assert.equal(qa[1].category, 'info_not_found');
+    assert.deepEqual(qa[1].expectedPaths, []);
+    const vault = path.join(root, 'vault');
+    await materializeCorpus('multihop', root, vault);
+    assert.equal(await readFile(path.join(vault, manifest[0].path), 'utf8'), text);
+    assert.equal(corpusScope('multihop'), 'Benchmarks/MultiHop-RAG/Corpus');
+    assert.equal(parseAnswerOptions(['multihop']).dataset, 'multihop');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('정답 근거와 질문을 분리하고 필수 문서 전체를 유지한다', () => {
@@ -640,10 +816,7 @@ test('실제 제품 색인과 도구로 합성 문서를 검색하고 인용 가
       plugins: {
         plugins: {
           'superpower-inside': {
-            settings: {
-              chat: { defaultModel: 'synthetic:test' },
-              rag: { chunkSize: 2000, overlap: 200 },
-            },
+            settings: { ...benchmarkSettings(), rag: { chunkSize: 2000, overlap: 200 } },
             manifest: { version: '0.0.0-test' },
           },
         },
