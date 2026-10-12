@@ -1279,18 +1279,6 @@ export interface I18nKeys {
   ragIndexingRunningEtaCalculating: string;
   ragIndexingPhaseWithChunks: string;
   ragSourcePageProgress: string;
-  ragIndexingRunningWithEtaReason: string;
-  ragIndexingRunningWithApproxEtaReason: string;
-  ragIndexingRunningEtaCalculatingReason: string;
-  ragEtaReasonComplete: string;
-  ragEtaReasonPlannedStable: string;
-  ragEtaReasonPlannedVariableRate: string;
-  ragEtaReasonPlannedPartial: string;
-  ragEtaReasonInsufficientSamples: string;
-  ragEtaReasonCalibrationVariable: string;
-  ragEtaReasonCalibratedEstimate: string;
-  ragEtaReasonBatchRateOnly: string;
-  ragEtaReasonElapsedRateOnly: string;
   ragIndexingResult: string;
   ragPhaseFile: string;
   ragPhasePending: string;
@@ -2999,21 +2987,6 @@ const ko: I18nKeys = {
   ragIndexingRunningEtaCalculating: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중',
   ragIndexingPhaseWithChunks: '{phase} · 현재 파일 {completed}/{total} 청크',
   ragSourcePageProgress: 'PDF 읽는 중 · {page}/{total}페이지',
-  ragIndexingRunningWithEtaReason:
-    '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta} ({reason})',
-  ragIndexingRunningWithApproxEtaReason:
-    '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta} ({reason})',
-  ragIndexingRunningEtaCalculatingReason:
-    '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중 ({reason})',
-  ragEtaReasonComplete: '완료됨',
-  ragEtaReasonPlannedStable: '계획된 청크와 안정적인 최근 속도 기준',
-  ragEtaReasonPlannedVariableRate: '계획은 끝났지만 최근 속도 변동이 큼',
-  ragEtaReasonPlannedPartial: '계획된 청크와 일부 진행 샘플 기준',
-  ragEtaReasonInsufficientSamples: '아직 진행 샘플이 부족함',
-  ragEtaReasonCalibrationVariable: '이전 파일 예측 오차가 큼',
-  ragEtaReasonCalibratedEstimate: '완료된 파일의 보정된 속도 기준',
-  ragEtaReasonBatchRateOnly: '최근 배치 속도만 기준',
-  ragEtaReasonElapsedRateOnly: '전체 경과 속도만 기준',
   ragIndexingResult: '{documents}개 문서, {vectors}개 벡터',
   ragPhaseFile: '변경 파일',
   ragPhasePending: '필요 문서 업데이트',
@@ -4812,21 +4785,6 @@ const en: I18nKeys = {
     'Indexing: {phase} - {completed}/{total} files, calculating ETA',
   ragIndexingPhaseWithChunks: '{phase} · current file {completed}/{total} chunks',
   ragSourcePageProgress: 'Reading PDF · page {page}/{total}',
-  ragIndexingRunningWithEtaReason:
-    'Indexing: {phase} - {completed}/{total} files, ETA {eta} ({reason})',
-  ragIndexingRunningWithApproxEtaReason:
-    'Indexing: {phase} - {completed}/{total} files, ETA about {eta} ({reason})',
-  ragIndexingRunningEtaCalculatingReason:
-    'Indexing: {phase} - {completed}/{total} files, calculating ETA ({reason})',
-  ragEtaReasonComplete: 'complete',
-  ragEtaReasonPlannedStable: 'planned chunks and stable recent speed',
-  ragEtaReasonPlannedVariableRate: 'planning is complete, but recent speed varies',
-  ragEtaReasonPlannedPartial: 'planned chunks with partial progress samples',
-  ragEtaReasonInsufficientSamples: 'not enough progress samples yet',
-  ragEtaReasonCalibrationVariable: 'previous file estimates varied',
-  ragEtaReasonCalibratedEstimate: 'calibrated speed from completed files',
-  ragEtaReasonBatchRateOnly: 'recent batch speed only',
-  ragEtaReasonElapsedRateOnly: 'overall elapsed speed only',
   ragIndexingResult: '{documents} documents, {vectors} vectors',
   ragPhaseFile: 'Changed file',
   ragPhasePending: 'Update pending documents',

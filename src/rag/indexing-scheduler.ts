@@ -126,6 +126,7 @@ export class RAGIndexingScheduler {
   private idleResolvers: Array<() => void> = [];
   private abortController: AbortController | null = null;
   private cancelled = false;
+  private activeJob: QueueJob | null = null;
   private lastResult: IndexingResult | null = null;
   private progress: RagIndexingSchedulerProgress | null = null;
 
@@ -190,6 +191,9 @@ export class RAGIndexingScheduler {
 
   reindexAll(): Promise<IndexingResult> {
     this.cancelled = false;
+    if (this.activeJob?.kind === 'all' || this.queue.some((job) => job.kind === 'all')) {
+      return Promise.resolve(this.lastResult ?? createEmptyIndexingResult());
+    }
     this.dirtySet.clear();
     this.resolveSupersededIndexJobs();
     return new Promise((resolve, reject) => {
@@ -277,12 +281,20 @@ export class RAGIndexingScheduler {
         this.flushPendingFiles();
         const job = this.queue.shift();
         if (!job) break;
-        if ((await this.runJob(job)) === 'paused') break;
+        this.activeJob = job;
+        let outcome: 'completed' | 'paused' = 'completed';
+        try {
+          outcome = await this.runJob(job);
+        } finally {
+          this.activeJob = null;
+        }
+        if (outcome === 'paused') break;
       }
     } finally {
       this.draining = false;
       if (!this.parkedJob) this.phase = 'idle';
       this.abortController = null;
+      this.activeJob = null;
       this.progress = null;
       this.emitStatus();
       this.resolveIdleIfReady();
@@ -299,6 +311,8 @@ export class RAGIndexingScheduler {
       this.enqueuePending(
         () => undefined,
         () => undefined,
+        {},
+        false,
       );
       return;
     }
@@ -316,12 +330,28 @@ export class RAGIndexingScheduler {
     resolve: (result: IndexingResult) => void,
     reject: (error: unknown) => void,
     options: RagPendingIndexingOptions = {},
+    mergeActive = true,
   ): void {
+    if (mergeActive && this.coversPendingRequest(this.activeJob, options)) {
+      resolve(this.lastResult ?? createEmptyIndexingResult());
+      return;
+    }
     if (this.queue.some((job) => job.kind === 'pending' || job.kind === 'all')) {
       resolve(this.lastResult ?? createEmptyIndexingResult());
       return;
     }
     this.queue.push({ kind: 'pending', options, resolve, reject });
+  }
+
+  /** 실행 중인 작업이 같은 범위를 처음부터 다시 도는 요청인지 판정합니다. */
+  private coversPendingRequest(
+    job: QueueJob | null,
+    options: RagPendingIndexingOptions,
+  ): boolean {
+    if (!job) return false;
+    if (job.kind === 'all') return true;
+    if (job.kind !== 'pending') return false;
+    return !job.options.automaticRecovery || options.automaticRecovery === true;
   }
 
   private resolveSupersededIndexJobs(): void {

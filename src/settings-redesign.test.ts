@@ -611,9 +611,10 @@ describe('설정 화면 리디자인 구조', () => {
 
     expect(subscriptionStart).toBeGreaterThanOrEqual(0);
     expect(subscriptionSource).toContain('this.plugin.isRagIndexing()');
-    expect(subscriptionSource).toContain('this.updateRagIndexingProgress(result.detail)');
+    expect(subscriptionSource).toContain('this.updateRagIndexingProgress()');
     expect(methodStart).toBeGreaterThanOrEqual(0);
     expect(methodSource).toContain('.superpower-inside-rag-overview-status');
+    expect(methodSource).toContain('.superpower-inside-rag-overview-detail');
     expect(methodSource).not.toContain('this.getRagStatus()');
     expect(methodSource).not.toContain('this.updateRagStatsSection()');
     expect(methodSource).not.toContain('this.updateRagUpdateList()');
