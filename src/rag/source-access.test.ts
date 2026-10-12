@@ -1,8 +1,18 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TFile, Vault } from 'obsidian';
 import { chunkSourceDocument } from './source-document';
 import { clearSourceTextCache, readSourceText } from './source-access';
+
+// PDF 본문은 전용 worker가 만들므로, 여기서는 라우팅만 확인하고 worker는 대체합니다.
+vi.mock('./pdf-worker-runtime', () => ({
+  configurePdfWorkerAssets: () => undefined,
+  extractPdfSourceText: (_vault: unknown, file: { path: string }) =>
+    Promise.resolve({
+      text: `pdf body for ${file.path}`,
+      segments: [{ label: 'Page 1', startLine: 0, endLine: 0 }],
+    }),
+}));
 
 /** 저장 방식(무압축) zip 항목을 만들기 위한 최소 헬퍼입니다. */
 const CRC_TABLE = createCrcTable();
@@ -139,6 +149,13 @@ describe('readSourceText', () => {
     const chunks = chunkSourceDocument(file, source.text, { chunkSize: 200, overlap: 0 }, source.segments);
     expect(chunks.length).toBeGreaterThan(0);
     expect(chunks[0]?.metadata.heading).toBe('Chapter One');
+  });
+
+  it('PDF는 캐시 본문이 아니라 전용 worker 본문을 쓴다', async () => {
+    const file = createFile('docs/report.PDF');
+    const source = await readSourceText(createVault(null, 'cached read must not be used'), file);
+    expect(source.text).toBe('pdf body for docs/report.PDF');
+    expect(source.segments.map((segment) => segment.label)).toEqual(['Page 1']);
   });
 
   it('손상된 컨테이너는 파일 단위 오류로 알린다', async () => {

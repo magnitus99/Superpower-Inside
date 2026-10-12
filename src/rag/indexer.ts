@@ -62,6 +62,8 @@ export type RagIndexingProgressEvent =
   | 'file-complete';
 
 export interface RagIndexingProgressSnapshot {
+  sourcePage?: number;
+  sourcePageCount?: number;
   event: RagIndexingProgressEvent;
   startedAtMs: number;
   nowMs: number;
@@ -94,6 +96,8 @@ export interface RagIndexingProgressSnapshot {
 }
 
 interface IndexingProgressTracker {
+  sourcePage?: number;
+  sourcePageCount?: number;
   startedAtMs: number;
   totalFiles: number;
   completedFiles: number;
@@ -429,6 +433,8 @@ function emitIndexingProgress(
 ): void {
   if (!tracker || !options.onProgress) return;
   options.onProgress({
+    sourcePage: tracker.sourcePage,
+    sourcePageCount: tracker.sourcePageCount,
     event,
     startedAtMs: tracker.startedAtMs,
     nowMs: performance.now(),
@@ -645,10 +651,19 @@ export class VaultIndexer {
       throwIfIndexingCancelled(options.signal);
       let plannedChunks = 1;
       try {
-        const source = await readSourceText(this.vault, file);
+        const source = await readSourceText(this.vault, file, {
+          signal: options.signal,
+          onProgress: (page, pageCount) => {
+            tracker.currentFilePath = file.path;
+            tracker.sourcePage = page;
+            tracker.sourcePageCount = pageCount;
+            emitIndexingProgress(options, tracker, 'plan');
+          },
+        });
         throwIfIndexingCancelled(options.signal);
         plannedChunks = countPlannedChunks(file, source.text, this.ragConfig);
       } catch (error) {
+        throwIfIndexingCancelled(options.signal);
         if (
           error instanceof IndexingCancelledError ||
           error instanceof IndexingPerformancePausedError
@@ -659,6 +674,8 @@ export class VaultIndexer {
           error,
         });
       }
+      tracker.sourcePage = undefined;
+      tracker.sourcePageCount = undefined;
       tracker.plannedChunkCountsByPath.set(file.path, plannedChunks);
       totalPlannedChunks += plannedChunks;
     }
@@ -763,7 +780,7 @@ export class VaultIndexer {
     this.logger.debug('File indexing started.', {
       data: { path: file.path, size: file.stat.size },
     });
-    const snapshot = await readSourceFileSnapshot(this.vault, file);
+    const snapshot = await readSourceFileSnapshot(this.vault, file, { signal: options.signal });
     if (!snapshot) {
       tracker.skipped += 1;
       completeProgressFile(tracker, performance.now() - fileStartedAt, 0);

@@ -1,4 +1,5 @@
 import type { TAbstractFile, TFile, Vault } from 'obsidian';
+import type { PdfReadOptions } from './pdf-worker-runtime';
 import { createContentHash } from './hash';
 import { isSourceRevisionCurrentRust, type RustSourceRevision } from './rust-core';
 import { readSourceText, type SourceTextSegment } from './source-access';
@@ -18,12 +19,13 @@ export interface SourceFileSnapshot {
 export async function readSourceFileSnapshot(
   vault: Vault,
   file: TFile,
+  options: PdfReadOptions = {},
 ): Promise<SourceFileSnapshot | null> {
   const snapshot: TFile = {
     ...file,
     stat: { ...file.stat },
   };
-  const source = await readSourceText(vault, snapshot);
+  const source = await readSourceText(vault, snapshot, options);
   const content = source.text;
   const current = vault.getAbstractFileByPath(snapshot.path);
   if (!isSourceFile(current)) return null;
