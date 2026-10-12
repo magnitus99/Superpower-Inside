@@ -20,6 +20,7 @@ export const GENERATED_ARTIFACT_FEATURES: readonly GeneratedArtifactFeature[] = 
   { id: 'rag-vectors', state: 'supported' },
   { id: 'rag-bm25', state: 'supported' },
   { id: 'rag-corpus', state: 'supported' },
+  { id: 'pdf-sources', state: 'supported' },
   { id: 'embedding-cache', state: 'supported' },
   { id: 'agent-diagnostics', state: 'supported' },
   { id: 'local-model:ternlight-base', state: 'supported' },
