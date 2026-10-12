@@ -1621,6 +1621,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private renderSettingsView(): void {
     const { containerEl } = this;
+    containerEl.setAttribute('lang', this.plugin.settings.language);
     this.unregisterRefreshBusSubscriptions();
     this.resetRagDomReferences();
     this.tabButtons.clear();
