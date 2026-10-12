@@ -1278,6 +1278,7 @@ export interface I18nKeys {
   ragIndexingRunningWithApproxEta: string;
   ragIndexingRunningEtaCalculating: string;
   ragIndexingPhaseWithChunks: string;
+  ragSourcePageProgress: string;
   ragIndexingRunningWithEtaReason: string;
   ragIndexingRunningWithApproxEtaReason: string;
   ragIndexingRunningEtaCalculatingReason: string;
@@ -2997,6 +2998,7 @@ const ko: I18nKeys = {
   ragIndexingRunningWithApproxEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta}',
   ragIndexingRunningEtaCalculating: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중',
   ragIndexingPhaseWithChunks: '{phase} · 현재 파일 {completed}/{total} 청크',
+  ragSourcePageProgress: 'PDF 읽는 중 · {page}/{total}페이지',
   ragIndexingRunningWithEtaReason:
     '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta} ({reason})',
   ragIndexingRunningWithApproxEtaReason:
@@ -4809,6 +4811,7 @@ const en: I18nKeys = {
   ragIndexingRunningEtaCalculating:
     'Indexing: {phase} - {completed}/{total} files, calculating ETA',
   ragIndexingPhaseWithChunks: '{phase} · current file {completed}/{total} chunks',
+  ragSourcePageProgress: 'Reading PDF · page {page}/{total}',
   ragIndexingRunningWithEtaReason:
     'Indexing: {phase} - {completed}/{total} files, ETA {eta} ({reason})',
   ragIndexingRunningWithApproxEtaReason:

@@ -622,7 +622,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   providerValidation: {},
   rag: {
     excludePaths: ['.git', 'node_modules', 'attachments'],
-    excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'mp4', 'zip'],
+    excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'mp4', 'zip'],
     excludeChatFolder: true,
     chunkSize: DEFAULT_CHUNK_CONTRACT.chunkSize,
     overlap: DEFAULT_CHUNK_CONTRACT.overlap,
@@ -2659,6 +2659,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     progress?: RagIndexingSchedulerStatus['progress'],
   ): string {
     if (phase === 'paused') return t('ragPerformancePaused');
+    if (progress?.sourcePageCount)
+      return t('ragSourcePageProgress', {
+        page: String(progress.sourcePage ?? 0),
+        total: String(progress.sourcePageCount),
+      });
     const phaseLabel =
       phase === 'file'
         ? t('ragPhaseFile')
@@ -6043,7 +6048,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       button,
       restoreText: false,
       action: async () => {
-        if (!(await confirmWithModal(this.app, t('providerRemoveModelConfirm', { model: modelId })))) {
+        if (
+          !(await confirmWithModal(this.app, t('providerRemoveModelConfirm', { model: modelId })))
+        ) {
           return { status: 'noop', detail: t('actionCancelledNotice') };
         }
         const previousModels = profile.models;
