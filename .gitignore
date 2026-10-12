@@ -28,3 +28,6 @@ simulations/
 
 # 임시 백업 파일
 *.bak
+
+# Command Code 로컬 상태(권한 승인·taste 학습)
+.commandcode/
