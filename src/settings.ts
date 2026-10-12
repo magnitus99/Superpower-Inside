@@ -5053,12 +5053,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     jsonTextArea.value =
       this.mcpDraftJson ?? buildMcpJsonEditorValue(this.plugin.settings.mcpServers);
     jsonTextArea.disabled = this.mcpApplying;
-    const apply = editorPanel.createEl('button', {
+    const apply = advanced.content.createEl('button', {
       cls: 'mod-cta',
       text: t('settingsApplyServers'),
       attr: { type: 'button' },
     });
-    const revert = editorPanel.createEl('button', {
+    const revert = advanced.content.createEl('button', {
       text: t('settingsDiscardChanges'),
       attr: { type: 'button' },
     });
