@@ -1650,6 +1650,11 @@ export function plan_chatgpt_json(input_json) {
 
 /**
  * Extracts bounded JSON tool calls from the compatibility protocol.
+ *
+ * Text tool-call dialects that some models emit instead of the canonical block (for
+ * example the DSML-style `<｜｜DSML｜｜ invoke …>` markup) are normalized first, and a
+ * canonical block truncated before its closing tag is recovered when its body is still
+ * one complete, valid call.
  * @param {string} content
  * @returns {string}
  */
@@ -3842,7 +3847,11 @@ export function split_reasoning_tags_json(content) {
 }
 
 /**
- * Removes only complete compatibility tool-call blocks from visible answer text.
+ * Removes compatibility tool-call markup from visible answer text.
+ *
+ * Complete `<tool_call>` blocks are always removed, an unterminated block is removed
+ * only when it still parses as a valid call, and control markup of the DSML dialect is
+ * removed even when it does not form an executable call.
  * @param {string} content
  * @returns {string}
  */
