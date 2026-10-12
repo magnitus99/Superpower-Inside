@@ -815,26 +815,29 @@ export class ChatView extends ItemView {
     const current = [...this.messages].reverse().find((message) => message.status === 'streaming');
     this.invalidateActiveChatRun(true);
     if (current) {
-      const cancelledToolCalls = current.toolCalls?.map((toolCall) =>
-        toolCall.status === 'running'
-          ? {
-              ...toolCall,
-              status: 'error' as const,
-              result: t('cancelledLabel'),
-              resultSummary: t('cancelledLabel'),
-            }
-          : { ...toolCall },
-      );
       this.updateMessage(
         current.id,
         current.content || t('chatGenerationStopped'),
         true,
         current.reasoning,
-        cancelledToolCalls,
+        this.cancelRunningToolCalls(current.toolCalls),
         { status: 'complete', stopReason: 'cancelled' },
       );
     }
     this.inputArea?.focus({ preventScroll: true });
+  }
+
+  private cancelRunningToolCalls(toolCalls?: ToolCallRecord[]): ToolCallRecord[] | undefined {
+    return toolCalls?.map((toolCall) =>
+      toolCall.status === 'running'
+        ? {
+            ...toolCall,
+            status: 'error' as const,
+            result: t('cancelledLabel'),
+            resultSummary: t('cancelledLabel'),
+          }
+        : { ...toolCall },
+    );
   }
 
   private populateModelSelect(): void {
@@ -3099,6 +3102,7 @@ export class ChatView extends ItemView {
             stopReason: 'complete',
           },
         );
+        setHidden(this.typingIndicator, true);
         return;
       }
       const toolsEnabled = maxToolRounds > 0;
@@ -3707,7 +3711,7 @@ export class ChatView extends ItemView {
             assistantMsg?.content || t('chatGenerationStopped'),
             true,
             assistantMsg?.reasoning,
-            assistantMsg?.toolCalls,
+            this.cancelRunningToolCalls(assistantMsg?.toolCalls),
             {
               providerKey: key,
               providerLabel,
@@ -4861,7 +4865,7 @@ export class ChatView extends ItemView {
           latestMessage?.content || t('chatGenerationStopped'),
           true,
           latestMessage?.reasoning,
-          latestMessage?.toolCalls,
+          this.cancelRunningToolCalls(latestMessage?.toolCalls),
           { status: 'complete', stopReason: 'cancelled' },
         );
         return;
