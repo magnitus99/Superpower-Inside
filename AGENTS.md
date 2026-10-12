@@ -48,7 +48,7 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 - 설정 내부 refresh는 private helper를 사용하고 `this.display()`를 직접 재호출하지 않습니다. 범위 입력은 슬라이더 대신 min/max/step이 있는 숫자 입력을 사용합니다.
 - provider 변경은 키·label·기본값·설정·`createProvider`·validation·메시지/스트림/tool call 테스트를 함께 확인합니다. `saveSettings()`의 provider/RAG 재초기화와 MCP 재연결 부작용을 확인합니다.
 - 런타임 로그는 `src/utils/logger.ts`와 점 표기 source를 사용합니다. trace=반복 상세, debug=전환, info=시작, notice=성공, warn=복구 가능, error=실패, fatal=핵심 중단입니다. 429·재시도·backoff·취소·fallback·skip 이유를 기록하되 키·토큰·쿠키·credential은 기록하지 않습니다. 새 `console.*`를 추가하지 않습니다.
-- `data.json`에는 평문 키가 있습니다. 출력·공유하지 않습니다. 런타임 `.env`/`process.env` 의존은 기존 MCP PATH 예외 외에 추가하지 않습니다. 의존성 변경 시 `package-lock.json`도 갱신합니다.
+- API 키와 ChatGPT 자격 증명은 `app.secretStorage`(Obsidian 보안 저장소)에만 저장하고 `data.json`·localStorage에는 키 원문을 남기지 않습니다(`src/secrets/provider-secrets.ts`). 출력·공유하지 않습니다. 런타임 `.env`/`process.env` 의존은 기존 MCP PATH 예외 외에 추가하지 않습니다. 의존성 변경 시 `package-lock.json`도 갱신합니다.
 - named import/export와 `import type`을 우선합니다. 네이티브 볼트 도구는 읽기 전용이며 MCP stdio의 신뢰·승인·취소 경계를 유지합니다. `isDesktopOnly: true`를 전제로 합니다.
 
 ## 테스트 볼트와 검증 데이터
