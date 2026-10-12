@@ -20,10 +20,30 @@ import {
   createBridgeExchange,
   providerBridge,
   runtimeExports,
+  corpusScope,
   validateResumeRows,
+  assertBenchmarkModel,
+  benchmarkModelId,
 } from './public-vault-benchmark.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+export function nativeCliInvocation(
+  code,
+  platform = process.platform,
+  localAppData = process.env.LOCALAPPDATA,
+) {
+  if (platform === 'win32' && !localAppData) throw new Error('Obsidian CLI 경로를 확인하세요.');
+  return {
+    command:
+      platform === 'win32'
+        ? path.win32.join(localAppData, 'Programs', 'Obsidian', 'Obsidian.com')
+        : platform === 'darwin'
+          ? '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli'
+          : 'obsidian',
+    args: ['vault=.test-vault', 'eval', `code=${code}`],
+  };
+}
 const leaderboard =
   'https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard/resolve/main/data/final_display_data/leaderboard.csv';
 
@@ -342,19 +362,24 @@ export function renderComparison(
     `실행 ${report.summary.executed}/${report.summary.planned}, 오류 ${report.summary.errors}, 판정 미완료 ${report.summary.unjudged}, 추가 질문 ${report.summary.clarifications ?? 0}. 미실행·오류·판정 실패·추가 질문을 성공으로 계산하지 않습니다.`,
     '',
     report.specification?.judge === 'independent-model-v1'
-      ? `생성 모델과 다른 판정 모델(${report.specification.judgeModel})을 사용했습니다. Enterprise는 공식 프롬프트와 산식을 사용하되 원본 정답을 고정하는 no-correction 방식이므로, 리더보드의 정답 보정 조건을 맞추기 전에는 순위를 주장하지 않습니다.`
-      : '생성 모델과 같은 모델의 자동 판정이며 공식 리더보드 채점 결과가 아닙니다. Enterprise는 공식 프롬프트와 산식을 사용하되 원본 정답을 고정하는 no-correction 방식입니다. 리더보드의 시스템별 정답 보정 및 판정 모델과 조건을 맞추기 전에는 순위를 주장하지 않습니다.',
+      ? `생성 모델과 다른 판정 모델(${report.specification.judgeModel})을 사용한 자체 측정입니다. 자료·질문·모델·채점 조건을 맞추기 전에는 외부 공개 점수와 순위를 비교하지 않습니다.`
+      : '생성 모델과 같은 모델의 자동 판정이며 공개 성능 주장의 근거로 사용하지 않습니다.',
     '',
     'README에서는 전체 검증 후 데이터셋별 정확도와 근거 답변 성공률, 질문 수, 모델, 평가일을 함께 제시합니다. 제품 페이지에서는 대표 성공 사례와 실패 사례, 인용 원문, 재현 명령, 전체 비교표를 연결합니다. 서로 다른 조건에서 얻은 수치를 이용한 배수·순위·경쟁 우위 문구는 만들지 않습니다.',
     '',
-    'WixQA 출처: Wix.com AI Research. EnterpriseRAG-Bench 출처: Onyx. 원본 데이터와 로컬 실행 기록은 Git에 포함하지 않습니다.',
+    'WixQA 출처: Wix.com AI Research (MIT). MultiHop-RAG 출처: Yixuan Tang and Yi Yang, COLM 2024 (ODC-BY). 원본 데이터와 로컬 실행 기록은 Git에 포함하지 않습니다.',
     '',
   ].join('\n');
 }
 
 // 새 화면의 도구에 공개 코퍼스 경계만 적용하고 실제 제품 설정과 검색 엔진을 사용합니다.
 export async function nativeProductAnswer(app, { scope, question, timeoutMs = 180000 }, product) {
-  if (!/^Benchmark-[a-zA-Z0-9_-]+$/.test(scope)) throw new Error('평가 범위 오류');
+  if (
+    !/^Benchmark-[a-zA-Z0-9_-]+$/.test(scope) &&
+    !['Benchmarks/WixQA/Corpus', 'Benchmarks/MultiHop-RAG/Corpus'].includes(scope)
+  )
+    throw new Error('평가 범위 오류');
+  const selectedModel = product ? assertBenchmarkModel(product.settings) : null;
   const previousLeaf = app.workspace.activeLeaf;
   const leaf = app.workspace.getLeaf('tab');
   let view;
@@ -373,6 +398,11 @@ export async function nativeProductAnswer(app, { scope, question, timeoutMs = 18
     }
     if (!view.inputArea || typeof view.handleSend !== 'function' || view.messages.length)
       throw new Error('제품 채팅 계약 불일치');
+    if (
+      product &&
+      (view.modelSelectEl?.value ?? product.settings.chat.defaultModel) !== selectedModel
+    )
+      throw new Error('벤치마크 모델 제한: 채팅 화면의 선택 모델이 다릅니다.');
     const original = view.nativeVaultTool?.port?.fileScope;
     if (!original) throw new Error('제품 도구 계약 불일치');
     view.nativeVaultTool.port.fileScope = {
@@ -403,6 +433,8 @@ export async function nativeProductAnswer(app, { scope, question, timeoutMs = 18
     const answers = view.messages.filter((m) => m.role === 'assistant');
     const final = answers.at(-1);
     if (!final) throw new Error('제품 최종 답변 없음');
+    if (product && final.model !== benchmarkModelId)
+      throw new Error('벤치마크 모델 제한: 실제 응답 모델이 다릅니다.');
     if ((final.citations ?? []).some((c) => !under(c.filePath, scope)))
       throw new Error('평가 범위 이탈');
     const clarification = final.assistantQuestion;
@@ -503,155 +535,57 @@ export async function loadNativeCorpus(dataset, source, root = benchmarkRoot, co
   return { records, questions, corpusHash: digest.digest('hex') };
 }
 
+export async function verifyNativeCorpus(app, records, scope) {
+  const files = [];
+  for (const record of records) {
+    if (!under(record.path, scope) || record.path.split('/').includes('..'))
+      throw new Error('코퍼스 범위 오류');
+    const file = app.vault.getAbstractFileByPath(record.path);
+    if (!file || (typeof file.extension !== 'string' && !file.path.endsWith('.md')))
+      throw new Error('기존 볼트 문서 누락');
+    if (hash(await app.vault.cachedRead(file)) !== record.hash)
+      throw new Error('기존 볼트 문서 체크섬 오류');
+    files.push(file);
+  }
+  return files;
+}
+
 export async function nativeBridge(runtime, app, directory) {
-  let plugin = app.plugins.plugins['superpower-inside'];
+  const plugin = app.plugins.plugins['superpower-inside'];
+  assertBenchmarkModel(plugin?.settings);
+  if (!(await plugin.ensureRagRuntimeInitialized()) || !plugin.embeddingProvider)
+    throw new Error('실제 제품 검색 런타임 준비 필요');
   const configuration = hash(
     JSON.stringify({ rag: plugin.settings.rag, chat: plugin.settings.chat }),
   );
   let scope;
-  let product;
-  let suppressedRagEvents = false;
-  const owned = new Set();
-  const mountedHashes = new Map();
-  const suppressRagEvents = () => {
-    if (!suppressedRagEvents && typeof plugin.unregisterRAGEvents === 'function') {
-      plugin.unregisterRAGEvents();
-      suppressedRagEvents = true;
-    }
-  };
-  suppressRagEvents();
-  const initialize = async () => {
+  let records = [];
+  const handle = async (request) => {
+    assertBenchmarkModel(plugin.settings);
     if (
-      !plugin.ragEngine ||
-      !plugin.embeddingProvider ||
-      !plugin.vectorStore ||
-      !plugin.documentCorpus ||
-      !plugin.vaultIndexer ||
-      !plugin.vaultDocumentCorpus ||
-      !plugin.bm25Index
-    )
-      throw new Error('실제 제품 검색 런타임 준비 필요');
-    const namespace = `superpower-inside-benchmark-${scope}-${Date.now()}`;
-    product = Object.create(plugin);
-    // 제품의 같은 임베딩 모델을 쓰되 기존 노트의 캐시를 채우거나 퇴출시키지 않습니다.
-    if (plugin.embeddingProvider.inner)
-      product.embeddingProvider = new plugin.embeddingProvider.constructor(
-        plugin.embeddingProvider.inner,
-        namespace,
-        {
-          dbName: `${namespace}-embeddings`,
-          maxPersistentEntries: plugin.embeddingProvider.maxPersistentEntries,
-          maxPersistentAgeMs: plugin.embeddingProvider.maxPersistentAgeMs,
-          pruneEveryWrites: plugin.embeddingProvider.pruneEveryWrites,
-          pruneBatchSize: plugin.embeddingProvider.pruneBatchSize,
-        },
-      );
-    product.vectorStore = new plugin.vectorStore.constructor(`${namespace}-vectors`);
-    product.documentCorpus = new plugin.documentCorpus.constructor(`${namespace}-corpus`);
-    product.bm25Index = new plugin.bm25Index.constructor(
-      `${namespace}-bm25`,
-      undefined,
-      undefined,
-      { workerFactory: plugin.bm25Index.workerFactory },
-    );
-    await product.bm25Index.load();
-    product.vaultDocumentCorpus = new plugin.vaultDocumentCorpus.constructor(
-      app.vault,
-      product.documentCorpus,
-      () => plugin.settings.rag,
-      () => plugin.settings.chat,
-      plugin.logger,
-    );
-    product.vaultIndexer = new plugin.vaultIndexer.constructor(
-      app.vault,
-      product.vectorStore,
-      product.embeddingProvider,
-      plugin.settings.rag,
-      plugin.settings.chat,
-      product.bm25Index,
-      plugin.logger,
-      product.vaultDocumentCorpus,
-    );
-    const rag = plugin.settings.rag;
-    product.ragEngine = new plugin.ragEngine.constructor(
-      product.vectorStore,
-      product.embeddingProvider,
-      product.bm25Index,
-      rag.bm25Weight,
-      rag.minScore,
-      {
-        corpusStore: product.documentCorpus,
-        getCandidatePaths: async () => new Set(owned),
-        annEnabled: rag.annEnabled,
-        annClusterCount: rag.annClusterCount,
-        annProbeCount: rag.annProbeCount,
-        structuralGraphEnabled: rag.structuralGraphEnabled,
-        structuralMetadataContext: rag.structuralGraphEnabled
-          ? {
-              getFiles: () => app.vault.getFiles().filter((f) => owned.has(f.path)),
-              resolvedLinks: app.metadataCache.resolvedLinks,
-              getAbstractFileByPath: (filename) => app.vault.getAbstractFileByPath(filename),
-              getFileCache: (file) => app.metadataCache.getFileCache(file),
-              getFirstLinkpathDest: (link, source) =>
-                app.metadataCache.getFirstLinkpathDest(link, source),
-            }
-          : undefined,
-        embeddingProvider: rag.embeddingProvider,
-        embeddingModel: rag.embeddingModel,
-      },
-    );
-    product.prepareRagForChat = async () => {
-      await product.bm25Index.recoverClosedWorker();
-      return true;
-    };
-  };
-  const handle = async (request, signal) => {
-    plugin = app.plugins.plugins['superpower-inside'];
-    if (
-      !plugin ||
+      app.plugins.plugins['superpower-inside'] !== plugin ||
       configuration !==
         hash(JSON.stringify({ rag: plugin.settings.rag, chat: plugin.settings.chat }))
     )
       throw new Error('제품 설정이 실행 중 변경되었습니다.');
-    if (request.operation === 'native-mount') {
-      suppressRagEvents();
-      if (!/^Benchmark-[a-zA-Z0-9_-]+$/.test(request.scope)) throw new Error('코퍼스 범위 오류');
-      if (scope && scope !== request.scope) throw new Error('코퍼스 변경 오류');
-      if (!scope) {
-        if (app.vault.getAbstractFileByPath(request.scope)) throw new Error('기존 볼트 경로 보존');
-        scope = request.scope;
-        await app.vault.createFolder(scope);
-        await initialize();
-      }
-      for (const record of request.records) {
-        if (signal.aborted) throw new Error('문서 색인 시간 초과');
-        if (!/^(wix|enterprise)\/[a-f0-9]{64}\.md$/.test(record.path))
-          throw new Error('문서 경로 오류');
-        const source = path.resolve(record.filename);
-        if (!source.startsWith(path.join(benchmarkRoot, 'datasets') + path.sep))
-          throw new Error('원본 문서 경로 오류');
-        const text = await readFile(source, 'utf8');
-        if (hash(text) !== record.hash) throw new Error('문서 체크섬 오류');
-        const folder = `${scope}/${path.dirname(record.path)}`;
-        if (!app.vault.getAbstractFileByPath(folder)) await app.vault.createFolder(folder);
-        const file = await app.vault.create(`${scope}/${record.path}`, text);
-        owned.add(file.path);
-        mountedHashes.set(file.path, record.hash);
-        const result = await product.vaultIndexer.indexFile(file, {
-          signal,
-          maxEmbeddingBatchSize: plugin.settings.rag.maxEmbeddingBatchSize,
-          indexingYieldMs: plugin.settings.rag.indexingYieldMs,
-        });
-        if (result.indexed !== 1) throw new Error('실제 제품 문서 색인 실패');
-      }
-      return { mounted: owned.size };
+    if (request.operation === 'native-attach') {
+      if (!['Benchmarks/WixQA/Corpus', 'Benchmarks/MultiHop-RAG/Corpus'].includes(request.scope))
+        throw new Error('코퍼스 범위 오류');
+      if (scope) throw new Error('코퍼스 중복 연결');
+      await verifyNativeCorpus(app, request.records, request.scope);
+      scope = request.scope;
+      records = request.records;
+      return { attached: records.length };
     }
     if (request.operation === 'native-status') {
-      const files = app.vault.getMarkdownFiles().filter((f) => owned.has(f.path));
-      const readiness = await product.ragEngine.getIndexReadiness(
-        files.map((f) => ({ path: f.path, mtime: f.stat.mtime, size: f.stat.size })),
+      if (!scope) throw new Error('코퍼스 연결 필요');
+      const files = records
+        .map((record) => app.vault.getAbstractFileByPath(record.path))
+        .filter(Boolean);
+      const readiness = await plugin.ragEngine.getIndexReadiness(
+        files.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size })),
       );
-      const processing = await product.getSourceFileProcessingStatus(files, 0);
+      const processing = await plugin.getSourceFileProcessingStatus(files, 0);
       return {
         documents: files.length,
         readiness,
@@ -660,60 +594,47 @@ export async function nativeBridge(runtime, app, directory) {
           totalFiles: processing.totalFiles,
         },
         scheduler: (() => {
-          const s = plugin.ragIndexingScheduler?.getStatus();
-          return s && { running: s.running, phase: s.phase, queuedFiles: s.queuedFiles };
+          const status = plugin.ragIndexingScheduler?.getStatus();
+          const progress = status?.progress;
+          return (
+            status && {
+              running: status.running,
+              phase: status.phase,
+              queuedFiles: status.queuedFiles,
+              progress: progress && {
+                completedFiles: progress.completedFiles,
+                totalFiles: progress.totalFiles,
+                completedChunks: progress.completedPlannedChunks,
+                totalChunks: progress.totalPlannedChunks,
+              },
+            }
+          );
         })(),
       };
     }
     if (request.operation === 'native-answer') {
       if (!scope || request.scope !== scope) throw new Error('평가 범위 오류');
-      const result = await nativeProductAnswer(app, request, product);
+      const result = await nativeProductAnswer(app, request, plugin);
+      const byPath = new Map(records.map((record) => [record.path, record]));
       for (const citation of result.citations) {
-        const file = app.vault.getAbstractFileByPath(citation.filePath);
-        if (
-          !file ||
-          hash(await app.vault.cachedRead(file)) !== mountedHashes.get(citation.filePath)
-        )
-          throw new Error('평가 코퍼스가 실행 중 변경되었습니다.');
+        const record = byPath.get(citation.filePath);
+        if (!record) throw new Error('평가 범위 이탈');
+        await verifyNativeCorpus(app, [record], scope);
       }
       return result;
     }
     throw new Error('알 수 없는 네이티브 요청');
   };
   try {
-    const benchmarkOptions = await readFile(path.join(directory, 'benchmark-options.json'), 'utf8')
-      .then(JSON.parse)
-      .catch(() => ({}));
+    const benchmarkOptions = JSON.parse(
+      await readFile(path.join(directory, 'benchmark-options.json'), 'utf8'),
+    );
     await providerBridge(runtime, app, directory, 240000, handle, benchmarkOptions.judgeModel);
   } finally {
-    plugin = app.plugins.plugins['superpower-inside'] ?? plugin;
-    for (const filename of owned) {
-      const file = app.vault.getAbstractFileByPath(filename);
-      if (file) await app.vault.delete(file);
-      await plugin.vaultIndexer?.removeFile(filename);
-    }
-    const folder = scope && app.vault.getAbstractFileByPath(scope);
-    if (folder && folder.children.every((f) => !f.children || f.children.length === 0))
-      await app.vault.delete(folder, true);
-    if (product) {
-      product.vaultDocumentCorpus?.suspend();
-      await product.bm25Index?.deleteDatabase();
-      await product.vectorStore?.deleteDatabase();
-      product.documentCorpus?.close();
-      await product.documentCorpus?.db.delete();
-      if (product.embeddingProvider !== plugin.embeddingProvider) {
-        product.embeddingProvider.db?.close();
-        await product.embeddingProvider.db?.delete();
-      }
-    }
-    if (suppressedRagEvents && typeof plugin.registerRAGEvents === 'function')
-      plugin.registerRAGEvents();
+    // 고정 코퍼스와 실제 제품 인덱스는 다음 실행에서도 그대로 사용합니다.
     await writeFile(
       path.join(directory, 'cleaned.part'),
-      JSON.stringify({
-        removed: owned.size,
-        remaining: app.vault.getMarkdownFiles().filter((f) => owned.has(f.path)).length,
-      }),
+      JSON.stringify({ removed: 0, remaining: 0, preserved: records.length }),
     );
     await rename(path.join(directory, 'cleaned.part'), path.join(directory, 'cleaned'));
   }
@@ -730,7 +651,7 @@ export async function launchNative(options) {
     judgeModel,
   } = options;
   if (
-    !['wix', 'enterprise'].includes(dataset) ||
+    !['wix', 'multihop'].includes(dataset) ||
     !/^[a-zA-Z0-9_-]{1,64}$/.test(runId) ||
     (source && !/^[a-zA-Z0-9_-]+$/.test(source)) ||
     !Number.isInteger(repeats) ||
@@ -758,7 +679,7 @@ export async function launchNative(options) {
     path.join(work, 'benchmark-options.json'),
     JSON.stringify({ judgeModel: judgeModel ?? null }, null, 2),
   );
-  const scope = `Benchmark-${dataset}-${source ?? 'all'}`;
+  const scope = corpusScope(dataset);
   const cancellation = new AbortController();
   const cancel = () => cancellation.abort();
   process.once('SIGINT', cancel);
@@ -780,11 +701,8 @@ export async function launchNative(options) {
       logLevel: 'silent',
     });
     const code = `void(async()=>{try{const helper=require(${JSON.stringify(helper)});await helper.withBenchmarkHost(require('@electron/remote').getCurrentWebContents(),()=>helper.nativeBridge(require(${JSON.stringify(path.join(work, 'runtime.cjs'))}),app,${JSON.stringify(work)}))}catch{require('node:fs').writeFileSync(${JSON.stringify(path.join(work, 'failed'))},'실패')}})();'네이티브 평가 시작'`;
-    execFileSync(
-      '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli',
-      ['eval', `code=${code}`],
-      { encoding: 'utf8' },
-    );
+    const cli = nativeCliInvocation(code);
+    execFileSync(cli.command, cli.args, { encoding: 'utf8', windowsHide: true });
     started = true;
     const deadline = Date.now() + 30000;
     while (
@@ -807,7 +725,7 @@ export async function launchNative(options) {
     const request = createBridgeExchange(work, metadata);
     const exchange = (payload) => request(payload, cancellation.signal);
     const specification = {
-      schemaVersion: 4,
+      schemaVersion: 6,
       mode: 'superpower-inside',
       environment: 'native-obsidian',
       dataset,
@@ -845,8 +763,9 @@ export async function launchNative(options) {
           ? 'independent-model-v1'
           : 'same-selected-model-v1',
       judgeModel: judgeModel ?? metadata.settings.chat.defaultModel,
+      modelPolicy: 'command-code-ds-v4.1-flash-only',
       scopeProtocol: 'folder-mention-public-boundary',
-      indexProtocol: 'isolated-native-product-stores-and-embedding-cache',
+      indexProtocol: 'persistent-visible-vault-product-index',
       hostProtocol: 'temporary-background-throttling-disabled',
     };
     const protocol =
@@ -871,21 +790,7 @@ export async function launchNative(options) {
     validateResumeRows(rows, selected, repeats, ['superpower-inside']);
     const seen = new Set(rows.map((row) => `${row.id}:${row.repeat}`));
     const mountStartedAt = Date.now();
-    for (let offset = 0; offset < data.records.length; offset++) {
-      await exchange({
-        operation: 'native-mount',
-        scope,
-        records: data.records.slice(offset, offset + 1),
-      });
-      if ((offset + 1) % 25 === 0 || offset + 1 === data.records.length)
-        console.log(
-          JSON.stringify({
-            stage: '실제 볼트에 공개 코퍼스 가져오기',
-            documents: offset + 1,
-            total: data.records.length,
-          }),
-        );
-    }
+    await exchange({ operation: 'native-attach', scope, records: data.records });
     const mountMs = Date.now() - mountStartedAt;
     const indexTimeoutMs =
       options.indexTimeoutMs ??
@@ -934,12 +839,6 @@ export async function launchNative(options) {
             (await exchange({ operation: 'native-answer', scope, question: question.question }))
               .result,
           );
-          row.answer = row.answer.replaceAll(`${scope}/`, '');
-          row.citations = row.citations.map((c) => ({
-            ...c,
-            id: c.id.replaceAll(`${scope}/`, ''),
-            filePath: c.filePath.slice(scope.length + 1),
-          }));
           const cited = selectNativeCitationRanges(row.citations);
           row.documentIds = [
             ...new Set(
@@ -1004,7 +903,15 @@ export async function launchNative(options) {
           }
         } catch (error) {
           row.error = classifyFailure(error);
-          if (['usage_limit', 'authentication', 'host_closed'].includes(row.error))
+          if (
+            [
+              'usage_limit',
+              'authentication',
+              'host_closed',
+              'benchmark_model',
+              'configuration_changed',
+            ].includes(row.error)
+          )
             interrupted = true;
         }
         row.elapsedMs ??= Date.now() - startedAt;
@@ -1012,7 +919,13 @@ export async function launchNative(options) {
         rows.push(row);
         if (
           cancellation.signal.aborted ||
-          ['usage_limit', 'authentication', 'host_closed'].includes(row.error)
+          [
+            'usage_limit',
+            'authentication',
+            'host_closed',
+            'benchmark_model',
+            'configuration_changed',
+          ].includes(row.error)
         )
           interrupted = true;
         console.log(

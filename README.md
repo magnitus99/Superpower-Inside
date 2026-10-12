@@ -59,7 +59,7 @@ Sources show file paths and available heading or line locations. Open the origin
 - Inspect sources and the work log below the answer when you need them.
 - See context limits and omitted references when the selected material exceeds the model's budget.
 
-See the [public benchmark methods and comparison](marketing/benchmarks.md) for how we measure answers and their supporting evidence in Obsidian. Product scores are still being validated.
+See the [public benchmark methods and comparison](marketing/benchmarks.md) for how we measure answers and their supporting evidence in Obsidian. Benchmarks use only Command Code's DS v4.1 Flash for generation and automated grading. Grading uses the same model, and product scores remain unvalidated.
 
 #### 3. Bring the work on your screen into chat
 
@@ -198,7 +198,7 @@ Superpower Inside는 Obsidian 안에서 노트를 찾아 읽고, 비교하고, �
 - 필요할 때 답변 아래의 출처와 작업 기록을 펼치세요.
 - 선택한 자료가 모델 한도를 넘으면 컨텍스트 제한과 빠진 참조를 확인하세요.
 
-[공개 벤치마크와 비교 조건](marketing/benchmarks.md)에서 실제 Obsidian 볼트로 답변과 근거를 측정하는 방법, 다른 제품의 공개 수치와 출처를 확인하세요. 제품 점수는 검증 중입니다.
+[공개 벤치마크와 비교 조건](marketing/benchmarks.md)에서 실제 Obsidian 볼트로 답변과 근거를 측정하는 방법을 확인하세요. 벤치마크 생성과 자동 판정은 Command Code의 DS v4.1 Flash만 사용합니다. 동일 모델의 자체 판정이며 제품 점수는 아직 검증되지 않았습니다.
 
 #### 3. 지금 화면에 열린 작업을 가져오세요
 
