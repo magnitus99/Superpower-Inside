@@ -32,7 +32,7 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 
 ## TS/Rust 경계
 
-- TS는 Obsidian API·DOM·생명주기·vault I/O·provider 네트워크·MCP stdio·IndexedDB/Dexie·WASM 입출력 매핑만 담당합니다. 새 파싱·정규화·검증·선택·랭킹·diff·검색·그래프 계산은 Rust/WASM에 둡니다.
+- TS는 Obsidian API·DOM·생명주기·vault I/O·provider 네트워크·MCP stdio·IndexedDB/Dexie·WASM 입출력 매핑만 담당합니다. 새 파싱·정규화·검증·선택·랭킹·diff·검색·그래프 계산은 Rust/WASM에 둡니다. PDF 본문 추출은 예외로, `pdf-worker.js`의 pdf.js와 `pdf-ocr-worker.js`의 Tesseract WASM이 담당합니다. PDF worker의 렌더 I/O·엔진 신뢰도 게이트·페이지 구간 매핑도 이 예외에 포함하며, 추출 결과 계약은 Rust 추출기와 같게 유지합니다.
 - Rust는 결정적 입출력만 다루며 DOM·키·프로세스·파일 I/O를 소유하지 않습니다. UI는 최신 snapshot/revision 결과만 반영합니다.
 - WASM 초기화·wire-format 실패를 TS 계산으로 대체하지 않습니다. 기존 계약에 맞는 오류·빈 결과·비활성 상태만 반환합니다.
 - generated glue·base64는 수동 수정하지 않습니다. `npm run wasm:build`로 생성하며 `build`·`dev`는 WASM 빌드를 먼저 실행해야 합니다.

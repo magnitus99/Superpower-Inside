@@ -37,7 +37,7 @@ Have you ever thought, “I know I wrote that down”? Start there.
 - A research or reading collection with overlapping claims and different conclusions.
 - A personal knowledge vault with linked ideas you want to use in your next piece of work.
 
-Readable text, useful headings, dates, links, and tags give it more to work with. Markdown, plain text, code, JSON, and CSV are supported; scanned PDFs, images, and audio need a text version first.
+Readable text, useful headings, dates, links, and tags give it more to work with. Markdown, plain text, code, JSON, and CSV are supported, and readers pull the text layer out of PDF, EPUB, DOCX, ODT, PPTX, XLSX, and HWPX files. Scanned PDFs, images, and audio still need a text version first.
 
 ### What you can do
 
@@ -174,6 +174,7 @@ Superpower Inside는 Obsidian 안에서 노트를 찾아 읽고, 비교하고, �
 읽을 수 있는 본문에 제목·날짜·링크·태그가 있으면 비교와 탐색에 도움이 됩니다.
 
 - Markdown·일반 텍스트·코드·JSON·CSV를 지원합니다.
+- PDF·EPUB·DOCX·ODT·PPTX·XLSX·HWPX는 본문 텍스트를 읽어 옵니다.
 - 스캔 PDF·이미지·음성은 먼저 텍스트로 준비하세요.
 
 ### 기능을 이렇게 써보세요
