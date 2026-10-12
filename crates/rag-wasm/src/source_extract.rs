@@ -1,6 +1,7 @@
 //! 압축 텍스트 문서에서 검색 가능한 본문을 결정적으로 추출합니다.
 //!
-//! 지원 대상은 `EPUB`, `DOCX`, `ODT`, `PPTX`, `XLSX`, `HWPX`입니다. 이미지·동영상·
+//! 지원 대상은 `EPUB`, `DOCX`, `ODT`, `PPTX`, `XLSX`, `HWPX`입니다. PDF는 같은
+//! 계약을 따르는 별도 TS worker가 추출하므로 여기서는 다루지 않습니다. 이미지·동영상·
 //! 오디오와 임의 압축 파일은 추출하지 않습니다. 압축 해제 크기와 엔트리 수를 제한해
 //! 신뢰할 수 없는 볼트 파일이 메모리를 고갈시키지 않도록 합니다.
 
@@ -129,13 +130,16 @@ impl ExtractedDocument {
     }
 }
 
-/// 소문자 확장자가 이 코어에서 추출 가능한 대상인지 확인합니다.
+/// 소문자 확장자가 추출 대상인지 확인합니다.
+///
+/// 이 함수는 RAG 색인 후보 판정에 쓰이는 계약입니다. PDF는 본문을 전용 TS worker가
+/// 만들지만 후보 판정은 같은 규칙을 따라야 하므로 여기에 함께 둡니다.
 #[must_use]
 #[wasm_bindgen]
 pub fn is_extractable_source_extension(extension: &str) -> bool {
     matches!(
         extension,
-        "epub" | "docx" | "odt" | "pptx" | "xlsx" | "hwpx"
+        "epub" | "docx" | "odt" | "pptx" | "xlsx" | "hwpx" | "pdf"
     )
 }
 
@@ -144,6 +148,7 @@ pub fn is_extractable_source_extension(extension: &str) -> bool {
 #[wasm_bindgen]
 pub fn extract_source_text_json(extension: &str, bytes: &[u8]) -> String {
     let normalized = normalize_extension(extension);
+    // PDF 본문은 이 코어가 아니라 전용 TS worker가 만듭니다.
     let result = match normalized.as_str() {
         "epub" => extract_epub(bytes),
         "docx" => extract_docx(bytes),
@@ -1022,19 +1027,33 @@ mod tests {
     }
 
     /// 추출 지원 확장자 목록이 호스트 라우팅 계약과 일치합니다.
+    ///
+    /// `pdf`는 RAG 후보 판정에는 포함되지만 본문은 전용 TS worker가 만들기 때문에
+    /// 이 코어의 추출기는 여전히 `unsupported`로 답해야 합니다.
     #[test]
     fn reports_supported_extensions() {
-        for extension in ["epub", "docx", "odt", "pptx", "xlsx", "hwpx"] {
+        for extension in ["epub", "docx", "odt", "pptx", "xlsx", "hwpx", "pdf"] {
             assert!(
                 is_extractable_source_extension(extension),
                 "supported extension"
             );
         }
-        for extension in ["pdf", "zip", "png", "mp3", "md"] {
+        for extension in ["zip", "png", "mp3", "md"] {
             assert!(
                 !is_extractable_source_extension(extension),
                 "unsupported extension"
             );
         }
+        let value = extract_failure("pdf", b"%PDF-1.4");
+        assert_eq!(
+            value.get("ok").and_then(JsonValue::as_bool),
+            Some(false),
+            "pdf body stays out of the wasm core"
+        );
+        assert_eq!(
+            value.get("reason").and_then(JsonValue::as_str),
+            Some("unsupported"),
+            "pdf reason code"
+        );
     }
 }
