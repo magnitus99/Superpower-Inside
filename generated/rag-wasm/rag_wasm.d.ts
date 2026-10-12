@@ -271,7 +271,10 @@ export function is_excluded_ext_json(file_path: string, extension_keys_json: str
 export function is_excluded_path(file_path: string, patterns: string): boolean;
 
 /**
- * 소문자 확장자가 이 코어에서 추출 가능한 대상인지 확인합니다.
+ * 소문자 확장자가 추출 대상인지 확인합니다.
+ *
+ * 이 함수는 RAG 색인 후보 판정에 쓰이는 계약입니다. PDF는 본문을 전용 TS worker가
+ * 만들지만 후보 판정은 같은 규칙을 따라야 하므로 여기에 함께 둡니다.
  */
 export function is_extractable_source_extension(extension: string): boolean;
 

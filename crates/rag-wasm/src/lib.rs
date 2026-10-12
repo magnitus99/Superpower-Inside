@@ -13112,7 +13112,7 @@ mod tests {
         let plan = plan_rag_file_indexability_json(files, "[]", "[]", "[]");
         assert_eq!(
             plan,
-            "{\"candidateIndices\":[1,2],\"summaryInputs\":[{\"filePath\":\"manual.pdf\",\"extension\":\"pdf\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"archive.docx\",\"extension\":\"docx\",\"indexable\":true},{\"filePath\":\"book.epub\",\"extension\":\"epub\",\"indexable\":true},{\"filePath\":\"raw.zip\",\"extension\":\"zip\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"photo.png\",\"extension\":\"png\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"huge.epub\",\"extension\":\"epub\",\"indexable\":false,\"recommendationReason\":\"too-large\"}]}",
+            "{\"candidateIndices\":[0,1,2],\"summaryInputs\":[{\"filePath\":\"manual.pdf\",\"extension\":\"pdf\",\"indexable\":true},{\"filePath\":\"archive.docx\",\"extension\":\"docx\",\"indexable\":true},{\"filePath\":\"book.epub\",\"extension\":\"epub\",\"indexable\":true},{\"filePath\":\"raw.zip\",\"extension\":\"zip\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"photo.png\",\"extension\":\"png\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"huge.epub\",\"extension\":\"epub\",\"indexable\":false,\"recommendationReason\":\"too-large\"}]}",
         );
     }
 
