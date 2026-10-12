@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { t } from '../i18n';
 import { buildProviderConversation } from './provider-conversation';
 import type { ChatMessageWithMeta } from './types';
 
@@ -128,6 +129,58 @@ describe('저장 채팅의 provider 대화 이력', () => {
     );
 
     expect(messages).toEqual([{ role: 'assistant', content: '사용자 승인을 기다립니다.' }]);
+  });
+
+  it('오류 표시 assistant 메시지는 모델 이력에서 제외한다', () => {
+    const messages = buildProviderConversation(
+      [
+        createMessage({ role: 'user', content: 'Alpha를 찾아줘.' }),
+        createMessage({
+          role: 'assistant',
+          content: '요청을 처리하지 못했습니다.',
+          status: 'error',
+          stopReason: 'error',
+        }),
+        createMessage({ role: 'user', content: '다시 시도해줘.' }),
+      ],
+      'native',
+    );
+
+    expect(messages).toEqual([
+      { role: 'user', content: 'Alpha를 찾아줘.' },
+      { role: 'user', content: '다시 시도해줘.' },
+    ]);
+  });
+
+  it('취소 스텁은 제외하고 부분 출력이 남은 취소는 보존한다', () => {
+    const partial = buildProviderConversation(
+      [
+        createMessage({ role: 'user', content: 'Alpha를 찾아줘.' }),
+        createMessage({ role: 'assistant', content: 'Alpha.md에서', stopReason: 'cancelled' }),
+      ],
+      'native',
+    );
+    expect(partial).toEqual([
+      { role: 'user', content: 'Alpha를 찾아줘.' },
+      { role: 'assistant', content: 'Alpha.md에서' },
+    ]);
+
+    const withStub = buildProviderConversation(
+      [
+        createMessage({ role: 'user', content: 'Alpha를 찾아줘.' }),
+        createMessage({
+          role: 'assistant',
+          content: t('chatGenerationStopped'),
+          stopReason: 'cancelled',
+        }),
+        createMessage({ role: 'user', content: '계속해줘.' }),
+      ],
+      'native',
+    );
+    expect(withStub).toEqual([
+      { role: 'user', content: 'Alpha를 찾아줘.' },
+      { role: 'user', content: '계속해줘.' },
+    ]);
   });
 });
 
