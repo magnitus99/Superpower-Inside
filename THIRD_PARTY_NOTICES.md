@@ -549,3 +549,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## pdf.js
+
+`pdf-worker.js` 릴리스 자산에 포함되며, 볼트의 PDF에서 검색 가능한 본문을 추출하는 데 씁니다.
+
+Apache License 2.0 — https://github.com/mozilla/pdf.js
+
+Copyright 2024 Mozilla Foundation
+
+전체 라이선스 전문은 위 `@huggingface/transformers` 항목의 Apache License 2.0과 같습니다.
