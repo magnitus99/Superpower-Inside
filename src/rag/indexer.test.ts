@@ -987,6 +987,48 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(after.updateRequiredDocuments).toEqual([]);
   });
 
+  it('증분 인덱싱의 첫 진행 스냅샷은 볼트 전체가 아니라 실제 대상 수를 보고한다', async () => {
+    const contents = new Map([
+      ['a.md', 'alpha 문서 내용'],
+      ['b.md', 'bravo 문서 내용'],
+      ['c.md', 'charlie 문서 내용'],
+    ]);
+    const vault = createVault(contents);
+    const store = new MemoryVectorStore();
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      {
+        embed: () => Promise.resolve([1, 0]),
+        embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+      },
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    await indexer.indexPending();
+
+    const target = (vault.getFiles() as Array<TFile & { stat: { mtime: number; size: number } }>).find(
+      (file) => file.path === 'b.md',
+    );
+    expect(target).toBeDefined();
+    contents.set('b.md', 'bravo 문서 내용 변경');
+    if (target) {
+      target.stat.mtime = 2000;
+      target.stat.size = 17;
+    }
+
+    const planTotals: number[] = [];
+    await indexer.indexPending({
+      onProgress: (snapshot) => {
+        if (snapshot.event === 'plan') planTotals.push(snapshot.totalFiles);
+      },
+    });
+
+    expect(planTotals).not.toContain(3);
+    expect(planTotals).toContain(1);
+  });
+
   it('증분 인덱싱도 현재 대상이 아닌 벡터와 BM25 문서를 제거한다', async () => {
     const file = createFile('current.md', 1000, 80);
     const vault = createVault(new Map([[file.path, '현재 문서 내용']]));
@@ -1109,7 +1151,7 @@ function createChatConfig(): ChatConfig {
   };
 }
 
-function createVault(contents: Map<string, string>): Vault {
+function createVault(contents: Map<string, string>, binaries?: Map<string, Uint8Array>): Vault {
   const files = [...contents.keys()].map((path) =>
     createFile(path, 1000, contents.get(path)?.length ?? 0),
   );
@@ -1118,6 +1160,8 @@ function createVault(contents: Map<string, string>): Vault {
     getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),
     getAbstractFileByPath: (path: string) => files.find((file) => file.path === path) ?? null,
     cachedRead: (file: TFile) => Promise.resolve(contents.get(file.path) ?? ''),
+    readBinary: (file: TFile) =>
+      Promise.resolve((binaries?.get(file.path) ?? new Uint8Array()).slice().buffer),
   } as unknown as Vault;
 }
 
@@ -1233,3 +1277,36 @@ function createEntry(path: string): VectorEntry {
     },
   };
 }
+
+describe('압축 문서 인덱싱', () => {
+  it('본문 추출에 실패한 압축 문서는 볼트 전체 재색인을 중단시키지 않는다', async () => {
+    const contents = new Map([
+      ['notes/good.md', 'good body'],
+      ['notes/broken.docx', 'x'],
+    ]);
+    const binaries = new Map([
+      ['notes/broken.docx', new TextEncoder().encode('not-a-zip-container')],
+    ]);
+    const vault = createVault(contents, binaries);
+    const store = new MemoryVectorStore();
+    const provider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      provider,
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    const result = await indexer.indexVault();
+    const indexedPaths = await store.getIndexedFilePaths();
+
+    expect(result.indexed).toBeGreaterThan(0);
+    expect(indexedPaths).toContain('notes/good.md');
+    expect(indexedPaths).not.toContain('notes/broken.docx');
+    expect(indexer.getFailedFilePaths()).toContain('notes/broken.docx');
+  });
+});

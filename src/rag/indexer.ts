@@ -22,9 +22,10 @@ import {
 import type { PerformanceGuardState } from './performance-guard';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 import { normalizeRustIndices } from '../utils/rust-index-plan';
-import { chunkSourceFile, buildSearchText } from './source-document';
+import { chunkSourceFile, chunkSourceDocument, buildSearchText } from './source-document';
 import type { VaultDocumentCorpus } from './vault-document-corpus';
 import { readSourceFileSnapshot } from './source-snapshot';
+import { readSourceText } from './source-access';
 export { chunkMarkdown, chunkPlainText, buildSearchText, type Chunk } from './source-document';
 
 export class IndexingCancelledError extends Error {
@@ -61,6 +62,8 @@ export type RagIndexingProgressEvent =
   | 'file-complete';
 
 export interface RagIndexingProgressSnapshot {
+  sourcePage?: number;
+  sourcePageCount?: number;
   event: RagIndexingProgressEvent;
   startedAtMs: number;
   nowMs: number;
@@ -93,6 +96,8 @@ export interface RagIndexingProgressSnapshot {
 }
 
 interface IndexingProgressTracker {
+  sourcePage?: number;
+  sourcePageCount?: number;
   startedAtMs: number;
   totalFiles: number;
   completedFiles: number;
@@ -428,6 +433,8 @@ function emitIndexingProgress(
 ): void {
   if (!tracker || !options.onProgress) return;
   options.onProgress({
+    sourcePage: tracker.sourcePage,
+    sourcePageCount: tracker.sourcePageCount,
     event,
     startedAtMs: tracker.startedAtMs,
     nowMs: performance.now(),
@@ -579,7 +586,26 @@ export class VaultIndexer {
       for (let i = 0; i < files.length; i++) {
         throwIfIndexingCancelled(options.signal);
         const file = files[i];
-        const fileResult = await this.indexFile(file, options, progressTracker, i);
+        let fileResult: IndexingResult;
+        try {
+          fileResult = await this.indexFile(file, options, progressTracker, i);
+        } catch (error) {
+          if (
+            error instanceof IndexingCancelledError ||
+            error instanceof IndexingPerformancePausedError
+          )
+            throw error;
+          // 추출에 실패한 압축 문서 하나가 볼트 전체 재색인을 중단시키지 않게 합니다.
+          batchResult.skipped += 1;
+          batchResult.documents.push(file.path);
+          completeProgressFile(progressTracker, 0, 0);
+          emitIndexingProgress(options, progressTracker, 'file-complete');
+          this.logger.warn('File indexing skipped after a read failure.', {
+            data: { path: file.path },
+            error,
+          });
+          continue;
+        }
         throwIfIndexingCancelled(options.signal);
         batchResult.indexed += fileResult.indexed;
         batchResult.vectors += fileResult.vectors;
@@ -623,9 +649,33 @@ export class VaultIndexer {
     let totalPlannedChunks = 0;
     for (const file of files) {
       throwIfIndexingCancelled(options.signal);
-      const content = await this.vault.cachedRead(file);
-      throwIfIndexingCancelled(options.signal);
-      const plannedChunks = countPlannedChunks(file, content, this.ragConfig);
+      let plannedChunks = 1;
+      try {
+        const source = await readSourceText(this.vault, file, {
+          signal: options.signal,
+          onProgress: (page, pageCount) => {
+            tracker.currentFilePath = file.path;
+            tracker.sourcePage = page;
+            tracker.sourcePageCount = pageCount;
+            emitIndexingProgress(options, tracker, 'plan');
+          },
+        });
+        throwIfIndexingCancelled(options.signal);
+        plannedChunks = countPlannedChunks(file, source.text, this.ragConfig);
+      } catch (error) {
+        throwIfIndexingCancelled(options.signal);
+        if (
+          error instanceof IndexingCancelledError ||
+          error instanceof IndexingPerformancePausedError
+        )
+          throw error;
+        this.logger.debug('Source planning read failed.', {
+          data: { path: file.path },
+          error,
+        });
+      }
+      tracker.sourcePage = undefined;
+      tracker.sourcePageCount = undefined;
       tracker.plannedChunkCountsByPath.set(file.path, plannedChunks);
       totalPlannedChunks += plannedChunks;
     }
@@ -730,7 +780,7 @@ export class VaultIndexer {
     this.logger.debug('File indexing started.', {
       data: { path: file.path, size: file.stat.size },
     });
-    const snapshot = await readSourceFileSnapshot(this.vault, file);
+    const snapshot = await readSourceFileSnapshot(this.vault, file, { signal: options.signal });
     if (!snapshot) {
       tracker.skipped += 1;
       completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
@@ -761,7 +811,7 @@ export class VaultIndexer {
       return skipped;
     }
     const indexedAt = Date.now();
-    const chunks = chunkSourceFile(file, content, this.ragConfig);
+    const chunks = chunkSourceDocument(file, content, this.ragConfig, snapshot.segments);
     throwIfIndexingCancelled(options.signal);
     if (chunks.length === 0) {
       const emptyRecord = planEmptyFileIndexRecordRust(
@@ -918,8 +968,7 @@ export class VaultIndexer {
   async reindexAll(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
-    const progressTracker = createProgressTracker(this.vault.getFiles(), this.ragConfig);
-    emitIndexingProgress(options, progressTracker, 'plan');
+    const progressTracker = createProgressTracker([], this.ragConfig);
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
     this.logger.info('Vault full reindex started.', { data: { fileCount: files.length } });
@@ -992,8 +1041,7 @@ export class VaultIndexer {
   async indexPending(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
     throwIfIndexingCancelled(options.signal);
-    const progressTracker = createProgressTracker(this.vault.getFiles(), this.ragConfig);
-    emitIndexingProgress(options, progressTracker, 'plan');
+    const progressTracker = createProgressTracker([], this.ragConfig);
     const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
     throwIfIndexingCancelled(options.signal);
     await this.removeOrphanedSources(files, options.signal);

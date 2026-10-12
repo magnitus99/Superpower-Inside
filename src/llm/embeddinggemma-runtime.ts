@@ -1,6 +1,7 @@
 import { EMBEDDINGGEMMA_ASSETS } from '../../generated/embeddinggemma-assets';
 import { getLocalEmbeddingModels } from './local-embedding-models';
 import { appLogger } from '../utils/logger';
+import { updateEmbeddingGemmaStatus } from './embeddinggemma-status';
 import {
   TernlightWorkerRuntime,
   type TernlightRuntimeOptions,
@@ -32,6 +33,7 @@ export class EmbeddingGemmaRuntime {
   }
 
   close(): void {
+    updateEmbeddingGemmaStatus(this.options.app, this);
     this.revision++;
     this.runtime?.close();
     this.runtime = null;
@@ -49,6 +51,8 @@ export class EmbeddingGemmaRuntime {
     const runtime = new TernlightWorkerRuntime(
       this.options.createWorker ?? (() => createWorker(assets['embeddinggemma-worker.js'])),
       (response) => {
+        if (revision !== this.revision) return;
+        updateEmbeddingGemmaStatus(this.options.app, this, response);
         if (!response.backend || response.backend === this.backend) return;
         this.backend = response.backend;
         const logger = appLogger.child('embedding.gemma');
@@ -70,6 +74,7 @@ export class EmbeddingGemmaRuntime {
       return runtime;
     } catch (error) {
       runtime.close();
+      if (revision === this.revision) updateEmbeddingGemmaStatus(this.options.app, this);
       throw error;
     }
   }

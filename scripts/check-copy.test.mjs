@@ -90,7 +90,7 @@ describe('홍보 문구 검사 계약', () => {
   });
 });
 
-describe('훅 스냅샷과 최신 버전 강제 실행', () => {
+describe('릴리스 문구 검사와 오프라인 Git 타임라인', () => {
   function fixture(action) {
     const cwd = mkdtempSync(join(tmpdir(), 'copy-gate-'));
     const log = join(cwd, 'calls.jsonl');
@@ -106,7 +106,8 @@ if (args[0] === 'exec') text = fs.readFileSync(0, 'utf8');
 fs.appendFileSync(process.env.COPY_LOG, JSON.stringify({args, text}) + '\\n');
 if (args[0] === 'view') {
   if (process.env.COPY_REGISTRY_FAIL) process.exit(1);
-  console.log(JSON.stringify('99.0.0'));
+  const version = JSON.stringify(process.env.COPY_VERSION || '99.0.0');
+  console.log(process.env.COPY_BARE_VERSION ? version : '[' + version + ']');
 } else if (args.includes('--verify')) {
   const output = text.replaceAll('BAD', 'Safe');
   console.log(JSON.stringify({output, verification: {verified: true, mps: 100, fidelity: 100, outputHash: crypto.createHash('sha256').update(output).digest('hex')}}));
@@ -156,360 +157,203 @@ if (args[0] === 'view') {
     }
   }
 
-  it('최신 조회 실패 시 캐시 실행 없이 차단한다', () =>
+  it('삭제한 스테이징 검사 모드는 온라인 호출이나 파일 수정 없이 거부한다', () =>
     fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
+      writeFileSync(join(cwd, 'README.md'), 'BAD staged copy');
       git('add', 'README.md');
-      expect(run(['--staged'], { COPY_REGISTRY_FAIL: '1' }).status).toBe(1);
-      expect(calls().map((call) => call.args[0])).toEqual(['view']);
+      writeFileSync(join(cwd, 'README.md'), 'Unstaged copy');
+      const result = run(['--staged']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('알 수 없는 실행 모드: --staged');
+      expect(calls()).toEqual([]);
+      expect(git('show', ':README.md')).toBe('BAD staged copy');
+      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('Unstaged copy');
     }));
 
-  it('코드만 스테이징하면 기존 README와 미스테이징 문구를 검사하지 않는다', () =>
+  it('커밋은 레지스트리·모델 호출과 파일 재작성 없이 스테이징 형식만 검사한다', () =>
     fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
+      writeFileSync(join(cwd, 'README.md'), 'BAD copy');
       git('add', 'README.md');
-      git('commit', '-qm', '기존 제품 소개');
-      writeFileSync(join(cwd, 'README.md'), 'BAD unstaged copy');
-      writeFileSync(join(cwd, 'code.ts'), 'export const value = 1;');
-      git('add', 'code.ts');
-      expect(run(['--staged'], { COPY_REGISTRY_FAIL: '1' }).status).toBe(0);
+      expect(run(['--commit-local'], { COPY_REGISTRY_FAIL: '1' }).status).toBe(0);
       expect(calls()).toEqual([]);
-      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('BAD unstaged copy');
+      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('BAD copy');
+      writeFileSync(join(cwd, 'README.md'), 'space \n');
+      git('add', 'README.md');
+      expect(run(['--commit-local']).status).toBe(1);
+      writeFileSync(join(cwd, 'package.json'), JSON.stringify({ description: '' }));
+      git('add', 'package.json');
+      expect(run(['--commit-local']).status).toBe(1);
     }));
 
-  it('개발 문서와 라이선스 수정은 문체 검사를 시작하지 않는다', () =>
+  it('일반 브랜치·비릴리스 태그·삭제는 과거 문구와 무관하게 모델을 호출하지 않는다', () =>
     fixture(({ cwd, git, run, calls }) => {
-      mkdirSync(join(cwd, 'docs'));
-      for (const file of [
-        'AGENTS.md',
-        'design.md',
-        'docs/architecture.md',
-        'THIRD_PARTY_NOTICES.md',
-      ]) {
-        writeFileSync(join(cwd, file), 'BAD technical fixture');
-        git('add', file);
-      }
-      expect(run(['--staged'], { COPY_REGISTRY_FAIL: '1' }).status).toBe(0);
-      expect(calls()).toEqual([]);
-    }));
-
-  it('제품 설명이 같으면 버전과 npm 스크립트 변경을 검사하지 않는다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      const before = { description: 'Safe product copy', version: '1.0.0' };
-      writeFileSync(join(cwd, 'package.json'), JSON.stringify(before));
-      git('add', 'package.json');
-      git('commit', '-qm', '기존 제품 설명');
-      writeFileSync(
-        join(cwd, 'package.json'),
-        JSON.stringify({ ...before, version: '2.0.0', scripts: { test: 'test' } }),
-      );
-      git('add', 'package.json');
-      expect(run(['--staged'], { COPY_REGISTRY_FAIL: '1' }).status).toBe(0);
-      expect(calls()).toEqual([]);
-      writeFileSync(
-        join(cwd, 'package.json'),
-        JSON.stringify({ ...before, description: 'New product copy' }),
-      );
-      git('add', 'package.json');
-      expect(run(['--staged']).status).toBe(0);
-      expect(
-        calls()
-          .filter((call) => call.args.includes('--score'))
-          .map((call) => call.text),
-      ).toEqual(['New product copy', 'New product copy']);
-    }));
-
-  it('변경된 제품 README만 스테이징 원문으로 검사한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      mkdirSync(join(cwd, 'marketing'));
-      writeFileSync(join(cwd, 'README.md'), 'Original copy');
-      writeFileSync(join(cwd, 'marketing/launch.md'), 'Unchanged copy');
+      writeFileSync(join(cwd, 'README.md'), 'BAD copy');
       git('add', '.');
-      git('commit', '-qm', '기존 홍보 문서');
-      writeFileSync(join(cwd, 'README.md'), 'New staged copy');
-      git('add', 'README.md');
-      writeFileSync(join(cwd, 'README.md'), 'BAD unstaged copy');
-      expect(run(['--staged']).status).toBe(0);
-      expect(
-        calls()
-          .filter((call) => call.args.includes('--score'))
-          .map((call) => call.text),
-      ).toEqual(['New staged copy', 'New staged copy']);
-    }));
-
-  it('대상 문서 삭제만 있으면 최신 버전도 조회하지 않는다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Original copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '기존 제품 소개');
-      git('rm', 'README.md');
-      expect(run(['--staged'], { COPY_REGISTRY_FAIL: '1' }).status).toBe(0);
-      expect(calls()).toEqual([]);
-    }));
-
-  it('코드 커밋만 푸시하면 기존 제품 소개를 다시 검사하지 않는다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'BAD existing copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '기존 소개');
-      const before = git('rev-parse', 'HEAD');
-      writeFileSync(join(cwd, 'code.ts'), 'export const value = 1;');
-      git('add', 'code.ts');
-      git('commit', '-qm', '코드 변경');
-      const sha = git('rev-parse', 'HEAD');
+      git('commit', '-qm', 'fixture');
+      const sha = git('rev-parse', 'HEAD'),
+        zero = '0'.repeat(40);
       expect(
         run(
           ['--push'],
           { COPY_REGISTRY_FAIL: '1' },
-          `refs/heads/main ${sha} refs/heads/main ${before}\n`,
+          `refs/heads/main ${sha} refs/heads/main ${zero}\nrefs/tags/dev ${sha} refs/tags/dev ${zero}\nrefs/tags/1.0.0 ${zero} refs/tags/1.0.0 ${sha}\n`,
         ).status,
       ).toBe(0);
       expect(calls()).toEqual([]);
     }));
 
-  it('새 브랜치가 기존 원격 커밋을 가리키면 이미 공개된 문서를 재검사하지 않는다', () =>
+  it('주석 릴리스 태그의 최종 전체 문구를 검사하며 중간 이력과 작업 파일은 제외한다', () =>
     fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'BAD existing copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '원격에 있던 소개');
-      const sha = git('rev-parse', 'HEAD');
-      git('update-ref', 'refs/remotes/origin/main', sha);
-      expect(
-        run(
-          ['--push'],
-          { COPY_REGISTRY_FAIL: '1' },
-          `refs/heads/new ${sha} refs/heads/new ${'0'.repeat(40)}\n`,
-        ).status,
-      ).toBe(0);
-      expect(calls()).toEqual([]);
-    }));
-
-  it('푸시 중간 커밋의 변경된 홍보 문구도 검사한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Original copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '기존 소개');
-      const before = git('rev-parse', 'HEAD');
-      writeFileSync(join(cwd, 'README.md'), 'BAD changed copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '홍보 변경');
-      writeFileSync(join(cwd, 'code.ts'), 'export const value = 1;');
-      git('add', 'code.ts');
-      git('commit', '-qm', '후속 코드');
-      writeFileSync(join(cwd, 'README.md'), 'Safe working copy');
-      const sha = git('rev-parse', 'HEAD');
-      expect(run(['--push'], {}, `refs/heads/main ${sha} refs/heads/main ${before}\n`).status).toBe(
-        1,
+      writeFileSync(join(cwd, 'README.md'), 'BAD intermediate');
+      writeFileSync(
+        join(cwd, 'package.json'),
+        JSON.stringify({ version: '1.0.0', description: 'Safe description' }),
       );
+      writeFileSync(
+        join(cwd, 'manifest.json'),
+        JSON.stringify({ version: '1.0.0', description: 'Safe description' }),
+      );
+      git('add', '.');
+      git('commit', '-qm', 'intermediate');
+      writeFileSync(join(cwd, 'README.md'), 'Final release copy');
+      git('add', '.');
+      git('commit', '-qm', 'final');
+      git('tag', '-a', '1.0.0', '-m', 'release');
+      const tag = git('rev-parse', '1.0.0');
+      writeFileSync(join(cwd, 'README.md'), 'BAD unstaged');
+      expect(
+        run(['--push'], {}, `refs/tags/1.0.0 ${tag} refs/tags/1.0.0 ${'0'.repeat(40)}\n`).status,
+      ).toBe(0);
       expect(
         calls()
           .filter((call) => call.args.includes('--score'))
           .map((call) => call.text),
-      ).toEqual(['BAD changed copy', 'BAD changed copy']);
-      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('Safe working copy');
+      ).toEqual([
+        'Final release copy',
+        'Final release copy',
+        'Safe description',
+        'Safe description',
+      ]);
+      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('BAD unstaged');
     }));
 
-  it('CI 범위 검사도 문서 변경이 없으면 레지스트리를 호출하지 않는다', () =>
+  it('릴리스 태그와 버전이 다르면 온라인 호출 전에 차단한다', () =>
     fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Original copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '기존 소개');
-      const before = git('rev-parse', 'HEAD');
-      writeFileSync(join(cwd, 'code.ts'), 'export const value = 1;');
-      git('add', 'code.ts');
-      git('commit', '-qm', '코드 변경');
-      expect(
-        run(['--range', before, git('rev-parse', 'HEAD'), '--offline'], { COPY_REGISTRY_FAIL: '1' })
-          .status,
-      ).toBe(0);
-      expect(calls()).toEqual([]);
-    }));
-
-  it('CI 범위에서 변경된 문구는 명시한 오프라인 방식으로 한영 검사한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Original copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '기존 소개');
-      const before = git('rev-parse', 'HEAD');
-      writeFileSync(join(cwd, 'README.md'), 'Changed copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '소개 변경');
-      expect(run(['--range', before, git('rev-parse', 'HEAD'), '--offline']).status).toBe(0);
-      const scores = calls().filter((call) => call.args.includes('--score'));
-      expect(scores.map((call) => call.text)).toEqual(['Changed copy', 'Changed copy']);
-      expect(scores.every((call) => call.args.includes('--offline'))).toBe(true);
-    }));
-
-  it('브랜치와 주석 태그의 같은 문구는 중복 검사하지 않고 삭제 참조는 건너뛴다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '소개 추가');
-      const sha = git('rev-parse', 'HEAD');
-      git('tag', '-a', 'release', '-m', '릴리스');
-      const tag = git('rev-parse', 'release');
-      const zero = '0'.repeat(40);
+      writeFileSync(
+        join(cwd, 'manifest.json'),
+        JSON.stringify({ version: '2.0.0', description: 'Safe' }),
+      );
+      writeFileSync(
+        join(cwd, 'package.json'),
+        JSON.stringify({ version: '2.0.0', description: 'Safe' }),
+      );
+      git('add', '.');
+      git('commit', '-qm', 'version');
       expect(
         run(
           ['--push'],
           {},
-          `refs/heads/main ${sha} refs/heads/main ${zero}\nrefs/tags/release ${tag} refs/tags/release ${zero}\nrefs/heads/old ${zero} refs/heads/old ${sha}\n`,
+          `refs/tags/1.0.0 ${git('rev-parse', 'HEAD')} refs/tags/1.0.0 ${'0'.repeat(40)}\n`,
         ).status,
-      ).toBe(0);
-      expect(
-        calls()
-          .filter((call) => call.args.includes('--score'))
-          .map((call) => call.text),
-      ).toEqual(['Safe copy', 'Safe copy']);
+      ).toBe(1);
+      expect(calls()).toEqual([]);
     }));
 
-  it('새 브랜치를 다른 원격에 처음 보내면 그 원격에 없는 문구를 검사한다', () =>
+  it('릴리스 전에 통과한 동일 문구는 태그 푸시에서 다시 모델을 호출하지 않는다', () =>
     fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '소개 추가');
-      const sha = git('rev-parse', 'HEAD');
-      git('update-ref', 'refs/remotes/origin/main', sha);
-      expect(
-        run(['--push', 'backup'], {}, `refs/heads/main ${sha} refs/heads/main ${'0'.repeat(40)}\n`)
-          .status,
-      ).toBe(0);
-      expect(
-        calls()
-          .filter((call) => call.args.includes('--score'))
-          .map((call) => call.text),
-      ).toEqual(['Safe copy', 'Safe copy']);
-    }));
-
-  it('병합 커밋에서 새로 작성한 소개 문구도 검사한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Original copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '기존 소개');
-      const before = git('rev-parse', 'HEAD');
-      git('checkout', '-qb', 'side');
-      writeFileSync(join(cwd, 'side.ts'), 'export const side = 1;');
-      git('add', 'side.ts');
-      git('commit', '-qm', '분기 코드');
-      git('checkout', '-qb', 'target', before);
-      writeFileSync(join(cwd, 'code.ts'), 'export const value = 1;');
-      git('add', 'code.ts');
-      git('commit', '-qm', '주 코드');
-      git('merge', '--no-ff', '--no-commit', 'side');
-      writeFileSync(join(cwd, 'README.md'), 'Merged copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '병합 소개');
-      const sha = git('rev-parse', 'HEAD');
-      expect(run(['--push'], {}, `refs/heads/main ${sha} refs/heads/main ${before}\n`).status).toBe(
-        0,
+      writeFileSync(join(cwd, 'README.md'), 'Safe release');
+      writeFileSync(
+        join(cwd, 'manifest.json'),
+        JSON.stringify({ version: '1.0.0', description: 'Safe' }),
       );
-      expect(
-        calls()
-          .filter((call) => call.args.includes('--score'))
-          .map((call) => call.text),
-      ).toEqual(['Merged copy', 'Merged copy']);
-    }));
-
-  it('수동 검사는 변경 여부와 관계없이 등록된 전체 문구를 검사한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '기존 소개');
+      writeFileSync(
+        join(cwd, 'package.json'),
+        JSON.stringify({ version: '1.0.0', description: 'Safe' }),
+      );
       expect(run([]).status).toBe(0);
+      git('add', '.');
+      git('commit', '-qm', 'release');
+      const sha = git('rev-parse', 'HEAD');
       expect(
-        calls()
-          .filter((call) => call.args.includes('--score'))
-          .map((call) => call.text),
-      ).toEqual(['Safe copy', 'Safe copy']);
+        run(['--push'], {}, `refs/tags/1.0.0 ${sha} refs/tags/1.0.0 ${'0'.repeat(40)}\n`).status,
+      ).toBe(0);
+      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
+      expect(calls().filter((call) => call.args[0] === 'view')).toHaveLength(2);
+      expect(run(['--refresh']).status).toBe(0);
+      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
     }));
 
-  it('온라인 모델 점수가 없으면 오프라인 점수로 통과시키지 않는다', () =>
-    fixture(({ cwd, run }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
-      expect(run(['--online'], { COPY_NO_LLM: '1' }).status).toBe(1);
-      expect(run(['--online']).status).toBe(0);
+  it('문구·최신 버전·정책 변경은 통과 기록을 무효화한다', () =>
+    fixture(({ cwd, run, calls }) => {
+      writeFileSync(join(cwd, 'README.md'), 'Safe');
+      expect(run([]).status).toBe(0);
+      writeFileSync(join(cwd, 'README.md'), 'Changed');
+      expect(run([]).status).toBe(0);
+      expect(run([], { COPY_VERSION: '99.0.1' }).status).toBe(0);
+      expect(run([], { COPY_VERSION: '99.0.1', COPY_BARE_VERSION: '1' }).status).toBe(0);
+      writeFileSync(join(cwd, '.patina.yaml'), 'star-nudge: false\n');
+      expect(run([], { COPY_VERSION: '99.0.1' }).status).toBe(0);
+      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
     }));
 
-  it('커밋 훅의 스테이징 검사는 온라인 모델 응답을 필수로 요구한다', () =>
+  it('캐시가 있어도 최신 버전 조회 실패는 차단하고 오프라인 결과는 재사용하지 않는다', () =>
+    fixture(({ cwd, run, calls }) => {
+      writeFileSync(join(cwd, 'README.md'), 'Safe');
+      expect(run(['--offline']).status).toBe(0);
+      expect(run([]).status).toBe(0);
+      expect(run([], { COPY_REGISTRY_FAIL: '1' }).status).toBe(1);
+      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
+    }));
+
+  it('손상·만료·실제 모델 점수가 없는 기록은 다시 채점한다', () =>
     fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
-      git('add', 'README.md');
-      expect(run(['--staged'], { COPY_NO_LLM: '1' }).status).toBe(1);
-      expect(run(['--staged']).status).toBe(0);
-      const scores = calls().filter((call) => call.args.includes('--score'));
-      expect(
-        scores.every(
-          (call) =>
-            !call.args.includes('--offline') &&
-            call.args.includes('codex-cli') &&
-            call.args.includes('gpt-6.1-sol'),
-        ),
-      ).toBe(true);
+      writeFileSync(join(cwd, 'README.md'), 'Safe');
+      expect(run([]).status).toBe(0);
+      const receipt = join(cwd, git('rev-parse', '--git-path', 'patina-release.json'));
+      writeFileSync(receipt, '{broken');
+      expect(run([]).status).toBe(0);
+      const entry = JSON.parse(readFileSync(receipt, 'utf8'));
+      entry.checkedAt = 0;
+      writeFileSync(receipt, JSON.stringify(entry));
+      expect(run([]).status).toBe(0);
+      const missing = JSON.parse(readFileSync(receipt, 'utf8'));
+      missing.scores[0].scores.llm = null;
+      writeFileSync(receipt, JSON.stringify(missing));
+      expect(run([]).status).toBe(0);
+      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
     }));
 
-  it('스테이징 내용이 실패하면 수정된 작업 파일로 통과시키지 않는다', () =>
-    fixture(({ cwd, git, run, calls }) => {
+  it('실모델 점수 누락과 기준 초과는 차단하며 검사만으로 재작성하지 않는다', () =>
+    fixture(({ cwd, run, calls }) => {
+      writeFileSync(join(cwd, 'README.md'), 'Safe');
+      expect(run([], { COPY_NO_LLM: '1' }).status).toBe(1);
       writeFileSync(join(cwd, 'README.md'), 'BAD copy');
-      git('add', 'README.md');
-      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
-      expect(run(['--staged']).status).toBe(1);
-      expect(git('show', ':README.md')).toBe('BAD copy');
-      const scored = calls().filter((call) => call.args.includes('--score'));
-      expect(scored.map((call) => call.args[call.args.indexOf('--lang') + 1])).toEqual([
-        'en',
-        'ko',
-      ]);
-      expect(
-        scored.every(
-          (call) => call.text === 'BAD copy' && call.args.includes('--package=patina-cli@99.0.0'),
-        ),
-      ).toBe(true);
+      expect(run([]).status).toBe(1);
+      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('BAD copy');
       expect(calls().some((call) => call.args.includes('--verify'))).toBe(false);
     }));
 
-  it('일치하는 작업 파일만 자동 재작성하고 인덱스와 커밋은 보존한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
+  it('명시적 재작성만 의미 보존·양언어 재검사 후 저장하고 인덱스는 보존한다', () =>
+    fixture(({ cwd, git, run }) => {
       writeFileSync(join(cwd, 'README.md'), 'BAD copy');
       git('add', 'README.md');
-      expect(run(['--staged']).status).toBe(1);
+      expect(run(['--fix', 'README.md', 'en']).status).toBe(0);
       expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('Safe copy');
       expect(git('show', ':README.md')).toBe('BAD copy');
-      const rewrites = calls().filter((call) => call.args.includes('--verify'));
-      expect(rewrites.length).toBe(2);
-      expect(
-        rewrites.every(
-          (call) => call.args.includes('gpt-6.1-sol') && call.args.includes('codex-cli'),
-        ),
-      ).toBe(true);
     }));
 
-  it('푸시 검사에서는 실제 커밋을 읽고 작업 파일을 덮어쓰지 않는다', () =>
-    fixture(({ cwd, git, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'BAD committed copy');
-      git('add', 'README.md');
-      git('commit', '-qm', '검사 fixture');
-      const sha = git('rev-parse', 'HEAD');
-      writeFileSync(join(cwd, 'README.md'), 'Safe working copy');
-      const result = spawnSync(process.execPath, [resolve('scripts/check-copy.mjs'), '--push'], {
-        cwd,
-        encoding: 'utf8',
-        input: `refs/heads/main ${sha} refs/heads/main ${'0'.repeat(40)}\n`,
-        env: {
-          ...process.env,
-          PATH: `${cwd}${delimiter}${process.env.PATH}`,
-          COPY_LOG: join(cwd, 'calls.jsonl'),
-        },
-      });
-      expect(result.status).toBe(1);
-      expect(
-        calls()
-          .filter((call) => call.args.includes('--score'))
-          .every((call) => call.text === 'BAD committed copy'),
-      ).toBe(true);
-      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('Safe working copy');
+  it('릴리스 CI는 지정한 커밋의 전체 문구를 명시적 오프라인 방식으로 검사한다', () =>
+    fixture(({ cwd, git, run, calls }) => {
+      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
+      git('add', '.');
+      git('commit', '-qm', 'release');
+      expect(run(['--release-ref', git('rev-parse', 'HEAD'), '--offline']).status).toBe(0);
+      const scores = calls().filter((call) => call.args.includes('--score'));
+      expect(scores).toHaveLength(2);
+      expect(scores.every((call) => call.args.includes('--offline'))).toBe(true);
     }));
 
-  it('Codex 재작성 프로세스에 high 설정을 직접 전달한다', () => {
+  it('Codex wrapper가 사용자가 지정한 모델과 high 설정을 보존한다', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'copy-codex-'));
     try {
       const executable = join(cwd, 'capture');
@@ -518,15 +362,12 @@ if (args[0] === 'view') {
         '#!/usr/bin/env node\nconsole.log(JSON.stringify(process.argv.slice(2)));\n',
       );
       chmodSync(executable, 0o755);
-      const capture = spawnSync(
+      const result = spawnSync(
         process.execPath,
         [resolve('scripts/patina-bin/codex'), 'exec', '--model', 'gpt-6.1-sol'],
-        {
-          encoding: 'utf8',
-          env: { ...process.env, PATINA_CODEX_EXECUTABLE: executable },
-        },
+        { encoding: 'utf8', env: { ...process.env, PATINA_CODEX_EXECUTABLE: executable } },
       );
-      expect(JSON.parse(capture.stdout)).toEqual([
+      expect(JSON.parse(result.stdout)).toEqual([
         'exec',
         '-c',
         'model_reasoning_effort="high"',

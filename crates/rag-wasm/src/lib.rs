@@ -16,9 +16,11 @@ pub use plugin_aware::{plan_plugin_aware_indices_json, select_plugin_context7_li
 /// 기본 임베딩 모델의 입력 형식과 다운로드 응답 검증.
 mod local_embedding;
 mod source_document;
+mod source_extract;
 mod source_metadata;
 pub use local_embedding::{embedding_gemma_inputs_json, local_model_range_matches};
 pub use source_document::{plan_source_chunk_import_indices_json, plan_source_chunks_json};
+pub use source_extract::{extract_source_text_json, is_extractable_source_extension};
 pub use source_metadata::{
     plan_native_vault_source_citation_indices_json, plan_source_metadata_json,
 };
@@ -130,6 +132,8 @@ const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 const FNV_PRIME: u32 = 0x0100_0193;
 /// Unknown formats above this size are not read in full merely to guess whether they are text.
 const MAX_RAG_UNKNOWN_TEXT_PROBE_BYTES: u64 = 512 * 1024;
+/// Extractable document containers above this size are not read in full during indexing.
+const MAX_RAG_EXTRACTABLE_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 /// 기존 `TypeScript BM25` 검색 경로의 `k1` 상수.
 const BM25_K1: f64 = 1.2;
 /// 기존 `TypeScript BM25` 검색 경로의 `b` 상수.
@@ -10290,12 +10294,18 @@ fn classify_rag_file_without_probe(file: &RagFileEligibilityInput) -> RagFilePro
     if file.size == 0 {
         return RagFileProbeDecision::NotIndexable("empty");
     }
-    if is_known_binary_extension(&rag_file_extension(file)) {
+    let extension = rag_file_extension(file);
+    if is_extractable_source_extension(&extension) {
+        return if file.size > MAX_RAG_EXTRACTABLE_SOURCE_BYTES {
+            RagFileProbeDecision::NotIndexable("too-large")
+        } else {
+            RagFileProbeDecision::Indexable
+        };
+    }
+    if is_known_binary_extension(&extension) {
         return RagFileProbeDecision::NotIndexable("binary");
     }
-    if is_known_text_extension(&rag_file_extension(file))
-        || is_known_text_file_name(&file.file_name)
-    {
+    if is_known_text_extension(&extension) || is_known_text_file_name(&file.file_name) {
         return RagFileProbeDecision::Indexable;
     }
     if file.size > MAX_RAG_UNKNOWN_TEXT_PROBE_BYTES {
@@ -10310,11 +10320,8 @@ fn is_known_binary_extension(extension: &str) -> bool {
         extension,
         "pdf"
             | "doc"
-            | "docx"
             | "xls"
-            | "xlsx"
             | "ppt"
-            | "pptx"
             | "zip"
             | "7z"
             | "rar"
@@ -13093,17 +13100,19 @@ mod tests {
         );
     }
 
+    /// 추출 지원 문서는 내용 probe 없이 후보가 되고, 추출하지 않는 컨테이너·미디어는 계속 제외한다.
     #[test]
-    fn rag_file_indexability_rejects_known_binary_formats_without_content_probes() {
-        let files = r#"[{"filePath":"manual.pdf","fileName":"manual.pdf","extension":"pdf","size":8000000},{"filePath":"archive.docx","fileName":"archive.docx","extension":"docx","size":1000}]"#;
+    fn rag_file_indexability_accepts_extractable_documents_without_content_probes() {
+        let files = r#"[{"filePath":"manual.pdf","fileName":"manual.pdf","extension":"pdf","size":8000000},{"filePath":"archive.docx","fileName":"archive.docx","extension":"docx","size":1000},{"filePath":"book.epub","fileName":"book.epub","extension":"epub","size":1000},{"filePath":"raw.zip","fileName":"raw.zip","extension":"zip","size":1000},{"filePath":"photo.png","fileName":"photo.png","extension":"png","size":1000},{"filePath":"huge.epub","fileName":"huge.epub","extension":"epub","size":134217729}]"#;
         assert_eq!(
             plan_rag_file_content_probe_indices_json(files, "[]", "[]"),
-            "[]"
+            "[]",
+            "extractable documents must not require a text probe"
         );
         let plan = plan_rag_file_indexability_json(files, "[]", "[]", "[]");
         assert_eq!(
             plan,
-            "{\"candidateIndices\":[],\"summaryInputs\":[{\"filePath\":\"manual.pdf\",\"extension\":\"pdf\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"archive.docx\",\"extension\":\"docx\",\"indexable\":false,\"recommendationReason\":\"binary\"}]}",
+            "{\"candidateIndices\":[0,1,2],\"summaryInputs\":[{\"filePath\":\"manual.pdf\",\"extension\":\"pdf\",\"indexable\":true},{\"filePath\":\"archive.docx\",\"extension\":\"docx\",\"indexable\":true},{\"filePath\":\"book.epub\",\"extension\":\"epub\",\"indexable\":true},{\"filePath\":\"raw.zip\",\"extension\":\"zip\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"photo.png\",\"extension\":\"png\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"huge.epub\",\"extension\":\"epub\",\"indexable\":false,\"recommendationReason\":\"too-large\"}]}",
         );
     }
 

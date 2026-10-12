@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { delimiter } from 'node:path';
@@ -87,12 +87,14 @@ function latestPatina() {
     '--prefer-online',
   ]);
   if (result.status !== 0) throw new Error(`Patina 최신 버전 확인 실패: ${result.stderr.trim()}`);
-  const version = JSON.parse(result.stdout);
+  const parsed = JSON.parse(result.stdout);
+  // npm 12는 --json 출력을 단일 값 배열로 감쌉니다.
+  const version = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version)) {
     throw new Error('Patina 최신 버전 응답이 잘못되었습니다.');
   }
   console.log(`Patina 최신 버전 ${version}으로 갱신 후 실행합니다.`);
-  return (args, input) => {
+  const execute = (args, input) => {
     let env = process.env;
     if (args.includes('codex-cli')) {
       const located = command(process.platform === 'win32' ? 'where' : 'which', ['codex']);
@@ -122,6 +124,8 @@ function latestPatina() {
     if (execution.stderr.trim()) console.error(execution.stderr.trim());
     return execution;
   };
+  execute.version = version;
+  return execute;
 }
 
 export function scoreArgs(language, online = true) {
@@ -137,7 +141,17 @@ export function scoreArgs(language, online = true) {
   ];
 }
 
-function checkText(patina, file, text, online = true) {
+function validateOnlineScore(score) {
+  validateScore(score, 0, threshold);
+  if (
+    !Number.isFinite(score.scores?.llm?.overall) ||
+    score.scores.llm.overall < 0 ||
+    score.scores.llm.overall > threshold
+  )
+    throw new Error('온라인 모델 점수가 없거나 15점 기준을 초과했습니다.');
+}
+
+function checkText(patina, file, text, online = true, scores = []) {
   const failed = [];
   for (const language of languages) {
     const result = patina(scoreArgs(language, online), languageText(text, language));
@@ -145,14 +159,13 @@ function checkText(patina, file, text, online = true) {
       const score = JSON.parse(result.stdout);
       console.log(`${file} [${language}]: ${score.overall ?? '?'} / ${threshold}`);
       validateScore(score, result.status, threshold);
-      if (
-        online &&
-        (!Number.isFinite(score.scores?.llm?.overall) ||
-          score.scores.llm.overall < 0 ||
-          score.scores.llm.overall > threshold)
-      ) {
-        throw new Error('온라인 모델 점수가 없거나 15점 기준을 초과했습니다.');
-      }
+      if (online) validateOnlineScore(score);
+      scores.push({
+        mode: score.mode,
+        overall: score.overall,
+        gateResult: score.gateResult,
+        scores: { llm: score.scores?.llm ? { overall: score.scores.llm.overall } : null },
+      });
     } catch (error) {
       console.error(`${file} [${language}]: ${error.message}\n${result.stdout}`);
       failed.push(language);
@@ -205,88 +218,40 @@ function copyText(file, content) {
   return content;
 }
 
-function changedSnapshots(before, after, staged = false) {
-  const files = git([
-    'diff',
-    ...(staged ? ['--cached'] : []),
-    '--name-only',
-    '-z',
-    '--no-renames',
-    '--diff-filter=ACMRT',
-    ...(before ? [before] : []),
-    ...(staged ? [] : [after]),
-    '--',
-  ])
-    .split('\0')
-    .filter(isCopyPath);
-  return files.flatMap((file) => {
-    const content = git(['show', `${staged ? '' : after}:${file}`]);
-    const previous = before ? command('git', ['show', `${before}:${file}`]) : null;
-    const text = copyText(file, content);
-    if (previous?.status === 0 && copyText(file, previous.stdout) === text) return [];
-    return [{ file: staged ? file : `${after.slice(0, 8)}:${file}`, content, text }];
-  });
-}
-
 function commitRevision(ref) {
   return git(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]).trim();
 }
 
-function rangeCommits(before, after, remote) {
-  const head = commitRevision(after);
-  return git([
-    'rev-list',
-    '--reverse',
-    head,
-    ...(before && !/^0+$/.test(before) ? [`^${commitRevision(before)}`] : []),
-    ...(remote ? ['--not', `--remotes=${remote}`] : []),
-    '--',
-  ])
-    .trim()
-    .split('\n')
-    .filter(Boolean);
-}
-
-function commitSnapshots(commits) {
-  return [...new Set(commits)].flatMap((commit) => {
-    const parent = git(['rev-list', '--parents', '-n', '1', commit]).trim().split(/\s+/)[1];
-    if (parent) return changedSnapshots(parent, commit);
-    return git(['ls-tree', '-r', '--name-only', '-z', commit])
-      .split('\0')
-      .filter(isCopyPath)
-      .map((file) => {
-        const content = git(['show', `${commit}:${file}`]);
-        return { file: `${commit.slice(0, 8)}:${file}`, content, text: copyText(file, content) };
-      });
-  });
+function committedSnapshots(ref) {
+  const commit = commitRevision(ref);
+  return git(['ls-tree', '-r', '--name-only', '-z', commit])
+    .split('\0')
+    .filter(isCopyPath)
+    .map((file) => {
+      const content = git(['show', `${commit}:${file}`]);
+      return { file, content, text: copyText(file, content) };
+    });
 }
 
 function snapshots(mode, args) {
-  if (mode === '--staged') {
-    const head = command('git', ['rev-parse', '--verify', 'HEAD']);
-    return changedSnapshots(head.status === 0 ? head.stdout.trim() : null, null, true);
-  }
   if (mode === '--push') {
-    const commits = readFileSync(0, 'utf8')
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .flatMap((line) => {
-        const [, after, , before] = line.trim().split(/\s+/);
-        if (!after || !before) throw new Error('잘못된 pre-push 입력입니다.');
-        return /^0+$/.test(after)
-          ? []
-          : rangeCommits(before, after, /^0+$/.test(before) ? args[0] || '*' : null);
-      });
-    return commitSnapshots(commits);
+    const refs = readFileSync(0, 'utf8').trim().split('\n').filter(Boolean);
+    return refs.flatMap((line) => {
+      const [, after, remoteRef, before] = line.trim().split(/\s+/);
+      if (!after || !before) throw new Error('잘못된 pre-push 입력입니다.');
+      if (/^0+$/.test(after) || !/^refs\/tags\/\d+\.\d+\.\d+$/.test(remoteRef)) return [];
+      const commit = commitRevision(after);
+      const version = remoteRef.slice('refs/tags/'.length);
+      for (const file of ['manifest.json', 'package.json']) {
+        if (JSON.parse(git(['show', `${commit}:${file}`])).version !== version)
+          throw new Error(`${file}: 릴리스 태그 ${version}와 버전이 다릅니다.`);
+      }
+      return committedSnapshots(commit);
+    });
   }
-  if (mode === '--range') {
-    const [before, after, offline] = args;
-    if (!before || !after || (offline && offline !== '--offline') || args.length > 3)
-      throw new Error(
-        '사용법: node scripts/check-copy.mjs --range <이전 커밋> <현재 커밋> [--offline]',
-      );
-    return commitSnapshots(rangeCommits(before, after));
+  if (mode === '--release-ref') {
+    if (!args[0]) throw new Error('--release-ref에는 커밋 또는 태그가 필요합니다.');
+    return committedSnapshots(args[0]);
   }
   return git(['ls-files', '--cached', '--others', '--exclude-standard', '-z'])
     .split('\0')
@@ -297,28 +262,79 @@ function snapshots(mode, args) {
     });
 }
 
-function run() {
-  const [mode = '--worktree', ...args] = process.argv.slice(2);
-  if (
-    !['--worktree', '--staged', '--push', '--range', '--fix', '--online', '--offline'].includes(
-      mode,
+function commitLocal() {
+  const diff = command('git', ['diff', '--cached', '--check']);
+  if (diff.status !== 0) throw new Error(diff.stdout + diff.stderr);
+  const files = git(['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRT'])
+    .split('\0')
+    .filter((file) => isCopyPath(file) && file.endsWith('.json'));
+  for (const file of files) copyText(file, git(['show', `:${file}`]));
+  console.log('커밋 형식 검사 통과: Patina는 릴리스 전에 실행합니다.');
+}
+
+function receiptKey(selected, version) {
+  const policy = [
+    fileURLToPath(import.meta.url),
+    resolve('scripts/patina-bin/codex'),
+    resolve('.patina.yaml'),
+  ].map((file) => (existsSync(file) ? readFileSync(file, 'utf8') : ''));
+  const content = [
+    ...new Map(
+      selected.map(({ file, text }) => [JSON.stringify({ file, text }), { file, text }]),
+    ).values(),
+  ].sort((a, b) => a.file.localeCompare(b.file) || a.text.localeCompare(b.text));
+  return createHash('sha256')
+    .update(
+      JSON.stringify({ content, policy, version, threshold, model: 'gpt-6.1-sol', effort: 'high' }),
     )
+    .digest('hex');
+}
+
+function reuseReceipt(file, key, version, count) {
+  try {
+    const receipt = JSON.parse(readFileSync(file, 'utf8'));
+    const age = Date.now() - receipt.checkedAt;
+    if (
+      receipt.key !== key ||
+      receipt.version !== version ||
+      !Number.isFinite(age) ||
+      age < 0 ||
+      age > 7 * 86400000 ||
+      receipt.scores?.length !== count
+    )
+      return false;
+    receipt.scores.forEach(validateOnlineScore);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function run() {
+  const argv = process.argv.slice(2);
+  const refresh = argv.includes('--refresh');
+  const online = !argv.includes('--offline');
+  const [mode = '--worktree', ...args] = argv.filter((arg) => arg !== '--refresh');
+  if (
+    ![
+      '--worktree',
+      '--push',
+      '--release-ref',
+      '--fix',
+      '--online',
+      '--offline',
+      '--commit-local',
+    ].includes(mode)
   )
     throw new Error(`알 수 없는 실행 모드: ${mode}`);
+  if (mode === '--commit-local') {
+    commitLocal();
+    return;
+  }
   if (mode === '--fix') {
     const [file, language, backend = 'codex-cli', model = 'gpt-6.1-sol'] = args;
-    if (
-      !file ||
-      !isCopyPath(file) ||
-      file.endsWith('.json') ||
-      !languages.includes(language) ||
-      !backend ||
-      !model
-    ) {
-      throw new Error(
-        '사용법: npm run copy:fix -- <파일> <en|ko> [백엔드] [모델] (기본: codex-cli / gpt-6.1-sol / high)',
-      );
-    }
+    if (!file || !isCopyPath(file) || file.endsWith('.json') || !languages.includes(language))
+      throw new Error('사용법: npm run copy:fix -- <파일> <en|ko> [백엔드] [모델]');
     const original = readFileSync(file, 'utf8');
     const patina = latestPatina();
     saveRewrite(patina, file, original, rewriteText(patina, original, language, backend, model));
@@ -326,46 +342,39 @@ function run() {
   }
   const selected = snapshots(mode, args);
   if (!selected.length) {
-    console.log('Patina: 검사할 제품 소개·사용 안내·홍보 문구 변경이 없습니다.');
+    console.log('Patina: 검사할 릴리스 문구가 없습니다.');
     return;
   }
   const patina = latestPatina();
+  const unique = [...new Map(selected.map((snapshot) => [snapshot.text, snapshot])).values()];
+  const key = receiptKey(selected, patina.version);
+  const receiptFile = git(['rev-parse', '--git-path', 'patina-release.json']).trim();
+  // 전체 릴리스 문구의 성공만 재사용하며 오프라인 검사는 증명으로 저장하지 않습니다.
+  if (
+    online &&
+    !refresh &&
+    reuseReceipt(receiptFile, key, patina.version, unique.length * languages.length)
+  ) {
+    console.log('Patina: 동일 문구·최신 버전·정책의 온라인 통과 기록을 재사용합니다.');
+    return;
+  }
+  const scores = [];
   let passed = true;
-  const seen = new Set();
-  const online = mode !== '--offline' && !(mode === '--range' && args[2] === '--offline');
-  for (const snapshot of selected) {
-    const text = snapshot.text;
-    const hash = createHash('sha256').update(text).digest('hex');
-    if (seen.has(hash)) continue;
-    seen.add(hash);
-    const failed = checkText(patina, snapshot.file, text, online);
-    if (failed.length) {
-      passed = false;
-      if (mode === '--staged' && !snapshot.file.endsWith('.json')) {
-        try {
-          if (readFileSync(snapshot.file, 'utf8') !== snapshot.content) {
-            console.error(
-              `${snapshot.file}: 스테이징되지 않은 변경을 보존하며 자동 재작성을 건너뜁니다.`,
-            );
-            continue;
-          }
-          let candidate = snapshot.content;
-          for (const language of failed) candidate = rewriteText(patina, candidate, language);
-          saveRewrite(patina, snapshot.file, snapshot.content, candidate);
-        } catch (error) {
-          console.error(`${snapshot.file}: ${error.message}`);
-        }
-      }
-    }
+  for (const snapshot of unique) {
+    if (checkText(patina, snapshot.file, snapshot.text, online, scores).length) passed = false;
   }
   if (!passed) {
     console.error(
-      '홍보 문구를 수정한 뒤 npm run copy:check로 재검사하세요. Codex는 피드백에 따라 재작성합니다.\nCLI 자동 재작성: npm run copy:fix -- <파일> <en|ko> <백엔드> <선택한 모델>',
+      '홍보 문구를 수정한 뒤 npm run copy:check로 재검사하세요. 명시적 재작성: npm run copy:fix -- <파일> <en|ko>',
     );
     process.exitCode = 1;
+  } else if (online) {
+    writeFileSync(
+      receiptFile,
+      JSON.stringify({ key, version: patina.version, checkedAt: Date.now(), scores }),
+    );
   }
 }
-
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     run();

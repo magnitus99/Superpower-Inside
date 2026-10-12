@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
+      - '[0-9]+.[0-9]+.[0-9]+'
 
 permissions:
   contents: write
@@ -11,7 +11,24 @@ permissions:
   id-token: write
 
 jobs:
+  quality:
+    uses: ./.github/workflows/quality.yml
+    permissions:
+      contents: read
+  copy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/check-copy.mjs --release-ref "$GITHUB_SHA" --offline
   publish:
+    needs: [quality, copy]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,34 +37,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Verify committed release assets
         run: node scripts/validate-obsidian-review.mjs --tag "$GITHUB_REF_NAME" --built
-
-      - name: Verify manifest version matches tag
-        run: |
-          TAG_VERSION="$GITHUB_REF_NAME"
-          MANIFEST_VERSION=$(jq -r '.version' manifest.json)
-          PKG_VERSION=$(jq -r '.version' package.json)
-          VERSION_MIN_APP=$(jq -r --arg v "$TAG_VERSION" '.[$v] // empty' versions.json)
-          echo "Tag version: $TAG_VERSION"
-          echo "Manifest version: $MANIFEST_VERSION"
-          echo "Package version: $PKG_VERSION"
-          echo "versions.json minAppVersion: $VERSION_MIN_APP"
-          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
-            echo "ERROR: manifest.json version ($MANIFEST_VERSION) does not match tag ($TAG_VERSION)"
-            exit 1
-          fi
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "ERROR: package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
-            exit 1
-          fi
-          if [ -z "$VERSION_MIN_APP" ]; then
-            echo "ERROR: versions.json does not contain tag version ($TAG_VERSION)"
-            exit 1
-          fi
-          echo "Version check passed."
 
       - name: Attest release assets
         uses: actions/attest-build-provenance@v2
@@ -58,6 +51,8 @@ jobs:
             styles.css
             tern_engine_bg.wasm
             embeddinggemma-worker.js
+            pdf-worker.js
+            pdf-ocr-worker.js
             embeddinggemma-runtime.wasm
             embeddinggemma-runtime.mjs
             THIRD_PARTY_NOTICES.md
@@ -71,6 +66,8 @@ jobs:
             styles.css
             tern_engine_bg.wasm
             embeddinggemma-worker.js
+            pdf-worker.js
+            pdf-ocr-worker.js
             embeddinggemma-runtime.wasm
             embeddinggemma-runtime.mjs
             THIRD_PARTY_NOTICES.md

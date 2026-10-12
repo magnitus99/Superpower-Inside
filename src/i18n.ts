@@ -415,6 +415,8 @@ export interface I18nKeys {
   localModelsDetail: string;
   localModelTernlightDetail: string;
   localModelGemmaDetail: string;
+  localModelCpuCaution: string;
+  localModelCpuFallback: string;
   localModelMissing: string;
   localModelReady: string;
   localModelChecking: string;
@@ -663,6 +665,10 @@ export interface I18nKeys {
   variantCompareTitle: string;
   variantCompareActive: string;
   variantCompareRow: string;
+  variantNavPrev: string;
+  variantNavNext: string;
+  variantNavPosition: string;
+  chatActionWhileStreamingNotice: string;
   chatGenerationStopped: string;
   vaultResearchProgress: string;
   vaultResearchPhaseInventory: string;
@@ -1276,18 +1282,7 @@ export interface I18nKeys {
   ragIndexingRunningWithApproxEta: string;
   ragIndexingRunningEtaCalculating: string;
   ragIndexingPhaseWithChunks: string;
-  ragIndexingRunningWithEtaReason: string;
-  ragIndexingRunningWithApproxEtaReason: string;
-  ragIndexingRunningEtaCalculatingReason: string;
-  ragEtaReasonComplete: string;
-  ragEtaReasonPlannedStable: string;
-  ragEtaReasonPlannedVariableRate: string;
-  ragEtaReasonPlannedPartial: string;
-  ragEtaReasonInsufficientSamples: string;
-  ragEtaReasonCalibrationVariable: string;
-  ragEtaReasonCalibratedEstimate: string;
-  ragEtaReasonBatchRateOnly: string;
-  ragEtaReasonElapsedRateOnly: string;
+  ragSourcePageProgress: string;
   ragIndexingResult: string;
   ragPhaseFile: string;
   ragPhasePending: string;
@@ -2063,6 +2058,8 @@ const ko: I18nKeys = {
   localModelGemmaDetail:
     '목적: 다국어 노트 검색 · 언어: 100개 이상 학습(공개 검색 평가: 아랍어·벵골어·핀란드어·일본어·한국어·러시아어·텔루구어) · 다운로드: 약 1.27 GB(FP32) · 권장 최소(추정): 시스템 RAM 8 GB, GPU 불필요.',
   localModelMissing: '다운로드 필요',
+  localModelCpuCaution: 'CPU로 연산 중입니다. 처리 시간이 조금 더 걸릴 수 있습니다.',
+  localModelCpuFallback: 'WebGPU 오류 · CPU fallback',
   localModelReady: '로컬 파일 있음',
   localModelChecking: '로컬 파일 확인 중',
   localModelDownloading: '다운로드 중',
@@ -2324,6 +2321,10 @@ const ko: I18nKeys = {
   variantCompareActive: '선택됨',
   variantCompareRow:
     '{provider} · 출처 {citations}개 · 경고 {warnings}개 · 도구 {tools}개 · 컨텍스트 {contexts}개',
+  variantNavPrev: '이전 답변',
+  variantNavNext: '다음 답변',
+  variantNavPosition: '{current} / {total}',
+  chatActionWhileStreamingNotice: '응답 생성이 끝난 뒤에 사용할 수 있습니다.',
   chatGenerationStopped: '응답 생성이 중단되었습니다.',
   vaultResearchProgress: '볼트 조사 중 · {phase} · {completed}/{total}',
   vaultResearchPhaseInventory: '문서 확인',
@@ -2856,7 +2857,7 @@ const ko: I18nKeys = {
   providerRemoveModel: '모델 제거',
   providerRemoveModelConfirm: '“{model}” 모델을 목록에서 제거할까요?',
   providerModelRemoved: '“{model}” 모델을 목록에서 제거했습니다.',
-  providerNoModelsAdded: '아직 추가한 모델이 없습니다.',
+  providerNoModelsAdded: '모델 ID를 입력해 추가하세요.',
   providerChatModelId: '채팅 모델 ID',
   providerEmbeddingModelId: '임베딩 모델 ID',
   providerDangerTitle: '프로바이더 제거',
@@ -2993,21 +2994,7 @@ const ko: I18nKeys = {
   ragIndexingRunningWithApproxEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta}',
   ragIndexingRunningEtaCalculating: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중',
   ragIndexingPhaseWithChunks: '{phase} · 현재 파일 {completed}/{total} 청크',
-  ragIndexingRunningWithEtaReason:
-    '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta} ({reason})',
-  ragIndexingRunningWithApproxEtaReason:
-    '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta} ({reason})',
-  ragIndexingRunningEtaCalculatingReason:
-    '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중 ({reason})',
-  ragEtaReasonComplete: '완료됨',
-  ragEtaReasonPlannedStable: '계획된 청크와 안정적인 최근 속도 기준',
-  ragEtaReasonPlannedVariableRate: '계획은 끝났지만 최근 속도 변동이 큼',
-  ragEtaReasonPlannedPartial: '계획된 청크와 일부 진행 샘플 기준',
-  ragEtaReasonInsufficientSamples: '아직 진행 샘플이 부족함',
-  ragEtaReasonCalibrationVariable: '이전 파일 예측 오차가 큼',
-  ragEtaReasonCalibratedEstimate: '완료된 파일의 보정된 속도 기준',
-  ragEtaReasonBatchRateOnly: '최근 배치 속도만 기준',
-  ragEtaReasonElapsedRateOnly: '전체 경과 속도만 기준',
+  ragSourcePageProgress: 'PDF 읽는 중 · {page}/{total}페이지',
   ragIndexingResult: '{documents}개 문서, {vectors}개 벡터',
   ragPhaseFile: '변경 파일',
   ragPhasePending: '필요 문서 업데이트',
@@ -3858,6 +3845,8 @@ const en: I18nKeys = {
   localModelGemmaDetail:
     'Purpose: search multilingual notes · Languages: trained on over 100; published retrieval evaluations: Arabic, Bengali, Finnish, Japanese, Korean, Russian, Telugu · Download: about 1.27 GB (FP32) · Estimated recommended minimum: 8 GB system RAM; no GPU required.',
   localModelMissing: 'Download required',
+  localModelCpuCaution: 'Running on CPU. Processing may take a little longer.',
+  localModelCpuFallback: 'WebGPU error · CPU fallback',
   localModelReady: 'Local files available',
   localModelChecking: 'Checking local files',
   localModelDownloading: 'Downloading',
@@ -4121,6 +4110,10 @@ const en: I18nKeys = {
   variantCompareActive: 'Selected',
   variantCompareRow:
     '{provider} · {citations} sources · {warnings} warnings · {tools} tools · {contexts} contexts',
+  variantNavPrev: 'Previous answer',
+  variantNavNext: 'Next answer',
+  variantNavPosition: '{current} / {total}',
+  chatActionWhileStreamingNotice: 'Available once the current response finishes.',
   chatGenerationStopped: 'Response generation was stopped.',
   vaultResearchProgress: 'Researching vault · {phase} · {completed}/{total}',
   vaultResearchPhaseInventory: 'Checking documents',
@@ -4661,7 +4654,7 @@ const en: I18nKeys = {
   providerRemoveModel: 'Remove model',
   providerRemoveModelConfirm: 'Remove “{model}” from the model list?',
   providerModelRemoved: 'Removed “{model}” from the model list.',
-  providerNoModelsAdded: 'No models added yet.',
+  providerNoModelsAdded: 'Enter a model ID to add one.',
   providerChatModelId: 'Chat model ID',
   providerEmbeddingModelId: 'Embedding model ID',
   providerDangerTitle: 'Remove provider',
@@ -4803,21 +4796,7 @@ const en: I18nKeys = {
   ragIndexingRunningEtaCalculating:
     'Indexing: {phase} - {completed}/{total} files, calculating ETA',
   ragIndexingPhaseWithChunks: '{phase} · current file {completed}/{total} chunks',
-  ragIndexingRunningWithEtaReason:
-    'Indexing: {phase} - {completed}/{total} files, ETA {eta} ({reason})',
-  ragIndexingRunningWithApproxEtaReason:
-    'Indexing: {phase} - {completed}/{total} files, ETA about {eta} ({reason})',
-  ragIndexingRunningEtaCalculatingReason:
-    'Indexing: {phase} - {completed}/{total} files, calculating ETA ({reason})',
-  ragEtaReasonComplete: 'complete',
-  ragEtaReasonPlannedStable: 'planned chunks and stable recent speed',
-  ragEtaReasonPlannedVariableRate: 'planning is complete, but recent speed varies',
-  ragEtaReasonPlannedPartial: 'planned chunks with partial progress samples',
-  ragEtaReasonInsufficientSamples: 'not enough progress samples yet',
-  ragEtaReasonCalibrationVariable: 'previous file estimates varied',
-  ragEtaReasonCalibratedEstimate: 'calibrated speed from completed files',
-  ragEtaReasonBatchRateOnly: 'recent batch speed only',
-  ragEtaReasonElapsedRateOnly: 'overall elapsed speed only',
+  ragSourcePageProgress: 'Reading PDF · page {page}/{total}',
   ragIndexingResult: '{documents} documents, {vectors} vectors',
   ragPhaseFile: 'Changed file',
   ragPhasePending: 'Update pending documents',

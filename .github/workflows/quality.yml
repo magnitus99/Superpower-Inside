@@ -1,0 +1,87 @@
+name: Quality
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) }}
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      FULL_CHECK: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
+      QUALITY_BASE: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 변경 범위 확인
+        id: plan
+        run: |
+          if [ "$QUALITY_BASE" != HEAD ] && ! [[ "$QUALITY_BASE" =~ ^0+$ ]]; then
+            git cat-file -e "$QUALITY_BASE^{commit}" || git fetch --no-tags --depth=1 origin "$QUALITY_BASE"
+          fi
+          node scripts/check-quality.mjs --plan --base "$QUALITY_BASE" >> "$GITHUB_OUTPUT"
+      - name: Node 검사 환경 준비
+        if: env.FULL_CHECK == 'true' || steps.plan.outputs.tests == 'true' || steps.plan.outputs.security == 'true'
+        run: npm ci --ignore-scripts
+      - name: 검사 환경 준비
+        if: env.FULL_CHECK == 'true' || steps.plan.outputs.tests == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fish
+      - uses: dtolnay/rust-toolchain@1.96.0
+        if: env.FULL_CHECK == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
+        with:
+          components: clippy,rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        if: env.FULL_CHECK == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
+        with:
+          workspaces: '. -> target/rustup-1.96.0'
+      - name: Rust 의존성 준비
+        if: env.FULL_CHECK == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
+        run: cargo fetch --locked
+      - uses: taiki-e/install-action@v2
+        if: env.FULL_CHECK == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
+        with:
+          tool: wasm-bindgen-cli@0.2.123
+      - name: Rust 변경의 WASM 연동 준비
+        if: steps.plan.outputs.rust == 'true' && env.FULL_CHECK != 'true' && steps.plan.outputs.security != 'true'
+        run: npm run wasm:build
+      # install-action은 actionlint를 지원하지 않아 공식 릴리스 아티팩트를 체크섬으로 검증해 설치합니다.
+      - name: CI 정의 검사
+        if: steps.plan.outputs.workflows == 'true'
+        run: |
+          curl -fsSLo actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint
+      - name: 변경 범위의 오프라인 코드 검사
+        if: env.FULL_CHECK != 'true' && steps.plan.outputs.security != 'true'
+        run: npm run quality:local -- --base "$QUALITY_BASE"
+      - uses: actions/cache@v4
+        if: env.FULL_CHECK == 'true' || steps.plan.outputs.security == 'true'
+        id: security-tools
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deny
+            ~/.cargo/bin/cargo-audit
+            ~/.cargo/bin/cargo-vet
+            ~/.cargo/bin/cargo-geiger
+          key: security-tools-${{ runner.os }}-${{ runner.arch }}-deny-0.19.8-audit-0.22.2-vet-0.10.2-geiger-0.13.0
+      - uses: taiki-e/install-action@v2
+        if: (env.FULL_CHECK == 'true' || steps.plan.outputs.security == 'true') && steps.security-tools.outputs.cache-hit != 'true'
+        with:
+          tool: cargo-deny@0.19.8,cargo-audit@0.22.2,cargo-vet@0.10.2,cargo-geiger@0.13.0
+      - name: 릴리스·의존성·보안 정책 변경의 전체 검사
+        if: env.FULL_CHECK == 'true' || steps.plan.outputs.security == 'true'
+        run: npm run security:full

@@ -1,6 +1,6 @@
 {
   "name": "superpower-inside",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Find answers in your notes, compare sources, and draft with AI.",
   "main": "main.js",
   "scripts": {
@@ -25,14 +25,19 @@
     "ternlight:assets": "node scripts/run-fish.mjs scripts/copy-ternlight-assets.fish",
     "rust:security": "node scripts/run-fish.mjs scripts/check-rust-security.fish",
     "security:full": "npm run lint && npm run typecheck && npm run test && npm run rag:perf-gate && npm run rust:security",
-    "format": "prettier --write src/ main.ts"
+    "format": "prettier --write src/ main.ts",
+    "rust:check": "node scripts/run-fish.mjs scripts/check-rust-local.fish",
+    "quality:local": "node scripts/check-quality.mjs",
+    "release:check": "node scripts/run-fish.mjs scripts/check-release.fish"
   },
   "dependencies": {
     "@huggingface/transformers": "4.3.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@ternlight/base": "0.1.0",
     "dexie": "^4.0.11",
-    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0"
+    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
+    "pdfjs-dist": "5.4.54",
+    "tesseract.js": "7.0.0"
   },
   "overrides": {
     "obsidian": {
@@ -43,6 +48,8 @@
     }
   },
   "devDependencies": {
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/kor": "1.0.0",
     "@types/node": "^22.15.14",
     "binaryen": "^131.0.0",
     "esbuild": "^0.28.0",

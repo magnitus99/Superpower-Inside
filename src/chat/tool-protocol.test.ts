@@ -191,4 +191,45 @@ describe('모델 중립 도구 프로토콜', () => {
       visibleReasoning: '교정 근거',
     });
   });
+
+  it('DSML 형식 텍스트 도구 호출을 실행 record로 변환하고 원문에서 제거한다', () => {
+    const result = parseCompatibilityToolResponse(
+      [
+        '<｜｜DSML｜｜ calls>',
+        '<｜｜DSML｜｜ invoke name="superpower_inside_search">',
+        '<｜｜DSML｜｜ parameter name="query" string="true">alpha</｜｜DSML｜｜ parameter>',
+        '<｜｜DSML｜｜ parameter name="limit" string="false">5</｜｜DSML｜｜ parameter>',
+        '</｜｜DSML｜｜ invoke>',
+        '</｜｜DSML｜｜ calls>',
+      ].join('\n'),
+      (index) => `compat-${index}`,
+    );
+
+    expect(result.visibleContent).toBe('');
+    expect(result.toolCalls).toEqual([
+      {
+        id: 'compat-0',
+        name: 'superpower_inside_search',
+        arguments: '{"query":"alpha","limit":5}',
+        status: 'running',
+      },
+    ]);
+  });
+
+  it('닫는 태그 없이 잘린 tool_call도 유효한 JSON이면 실행하고 본문에서 숨긴다', () => {
+    const result = parseCompatibilityToolResponse(
+      '조사 결과 <tool_call>{"name":"superpower_inside_read","arguments":{"path":"A.md"}}</｜｜DSML｜｜ invoke>',
+      (index) => `compat-${index}`,
+    );
+
+    expect(result.visibleContent).toBe('조사 결과');
+    expect(result.toolCalls).toEqual([
+      {
+        id: 'compat-0',
+        name: 'superpower_inside_read',
+        arguments: '{"path":"A.md"}',
+        status: 'running',
+      },
+    ]);
+  });
 });

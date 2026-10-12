@@ -130,13 +130,18 @@ import {
   withDataBoundaryProviderUsage,
 } from './context-composer';
 import {
+  createAssistantVariantGroup,
+  createAssistantVariantGroupByRoot,
+  createEditResendPlan,
   createRegenerationDraft,
   createVariantComparisonRows,
   markMessageRegenerated,
+  selectActiveConversationMessages,
   selectPreviousUserQuestions,
   type RegenerationDraft,
 } from './conversation-variants';
 import { enhanceCodeBlocks, renderMarkdownToElement } from './markdown';
+import { renderChatVariantNav } from './chat-variant-nav';
 import { createProviderWaitStatus } from './provider-wait';
 import { SourcePanel } from './source-panel';
 import { ToolCallPanel } from './tool-call-panel';
@@ -298,6 +303,8 @@ export class ChatView extends ItemView {
   private refreshBusUnsubscribers: (() => void)[] = [];
 
   private messageEls: Map<string, HTMLElement>;
+  // shortcut: 재생성 버전 선택은 재로딩 시 마지막 variant로 초기화된다. 선택 영속화가 필요해지면 저장 meta 필드와 round-trip 테스트로 확장한다.
+  private readonly activeVariantByRoot = new Map<string, string>();
 
   constructor(leaf: WorkspaceLeaf, plugin: PluginLike) {
     super(leaf);
@@ -815,26 +822,29 @@ export class ChatView extends ItemView {
     const current = [...this.messages].reverse().find((message) => message.status === 'streaming');
     this.invalidateActiveChatRun(true);
     if (current) {
-      const cancelledToolCalls = current.toolCalls?.map((toolCall) =>
-        toolCall.status === 'running'
-          ? {
-              ...toolCall,
-              status: 'error' as const,
-              result: t('cancelledLabel'),
-              resultSummary: t('cancelledLabel'),
-            }
-          : { ...toolCall },
-      );
       this.updateMessage(
         current.id,
         current.content || t('chatGenerationStopped'),
         true,
         current.reasoning,
-        cancelledToolCalls,
+        this.cancelRunningToolCalls(current.toolCalls),
         { status: 'complete', stopReason: 'cancelled' },
       );
     }
     this.inputArea?.focus({ preventScroll: true });
+  }
+
+  private cancelRunningToolCalls(toolCalls?: ToolCallRecord[]): ToolCallRecord[] | undefined {
+    return toolCalls?.map((toolCall) =>
+      toolCall.status === 'running'
+        ? {
+            ...toolCall,
+            status: 'error' as const,
+            result: t('cancelledLabel'),
+            resultSummary: t('cancelledLabel'),
+          }
+        : { ...toolCall },
+    );
   }
 
   private populateModelSelect(): void {
@@ -2128,6 +2138,29 @@ export class ChatView extends ItemView {
     }
   }
 
+  private renderVariantNavIfNeeded(container: HTMLElement, msg: ChatMessageWithMeta): void {
+    const variantGroup = createAssistantVariantGroup(
+      this.messages,
+      msg.id,
+      this.activeVariantByRoot,
+    );
+    if (!variantGroup || variantGroup.variants.length < 2) return;
+    renderChatVariantNav(container, {
+      total: variantGroup.variants.length,
+      activeIndex: variantGroup.activeIndex,
+      labels: {
+        prev: t('variantNavPrev'),
+        next: t('variantNavNext'),
+        position: t('variantNavPosition', {
+          current: variantGroup.activeIndex + 1,
+          total: variantGroup.variants.length,
+        }),
+      },
+      setIcon,
+      onSwitch: (targetIndex) => this.switchActiveVariant(variantGroup.rootId, targetIndex),
+    });
+  }
+
   private renderMessageActions(container: HTMLElement, msg: ChatMessageWithMeta): void {
     const existing = container.querySelector('.superpower-inside-chat-message-actions');
     const existingActions = isDomInstance(existing, HTMLElement) ? existing : null;
@@ -2202,6 +2235,7 @@ export class ChatView extends ItemView {
           void this.handleChatRecoveryAction(recoveryAction, msg, button);
         });
       }
+      this.renderVariantNavIfNeeded(actions, msg);
       if (msg.errorMessage) {
         const diagnostics = actions.createDiv({
           cls: 'superpower-inside-chat-error-diagnostics',
@@ -2290,6 +2324,8 @@ export class ChatView extends ItemView {
         createChatMessageActionId('regenerate'),
       );
       retryBtn.addEventListener('click', () => void this.regenerateFromAssistant(msg.id));
+
+      this.renderVariantNavIfNeeded(actionButtons, msg);
 
       const moreLabel = t('assistantResponseMoreActions');
       const moreBtn = registerActionButton(
@@ -2454,11 +2490,16 @@ export class ChatView extends ItemView {
   }
 
   private editAndResendUserMessage(msg: ChatMessageWithMeta): void {
+    if (this.isStreaming) {
+      new Notice(t('chatActionWhileStreamingNotice'));
+      return;
+    }
     new EditMessageModal(this.app, msg.content, (edited) => {
-      const index = this.messages.findIndex((m) => m.id === msg.id);
-      if (index >= 0) {
-        this.messages = this.messages.slice(0, index);
-      }
+      const truncated = createEditResendPlan(this.messages, msg.id, edited);
+      if (!truncated) return;
+      this.messages = truncated;
+      this.rebuildMessagesDOM();
+      this.markDirtyAndAutoSave();
       this.inputArea!.value = edited;
       this.autoResizeInput();
       this.renderContextPreview(edited);
@@ -2467,6 +2508,10 @@ export class ChatView extends ItemView {
   }
 
   private async regenerateFromAssistant(messageId: string): Promise<void> {
+    if (this.isStreaming) {
+      new Notice(t('chatActionWhileStreamingNotice'));
+      return;
+    }
     const draft = createRegenerationDraft(this.messages, messageId);
     if (!draft) {
       new Notice(t('regenerationTargetMissingNotice'));
@@ -2483,6 +2528,24 @@ export class ChatView extends ItemView {
     this.autoResizeInput();
     this.renderContextPreview(draft.text);
     await this.handleSend();
+    // 완료된 변형을 턴 자리로 재배치하고 이전 변형을 숨긴다.
+    this.rebuildMessagesDOM();
+  }
+
+  private switchActiveVariant(rootId: string, targetIndex: number): void {
+    if (this.isStreaming) {
+      new Notice(t('chatActionWhileStreamingNotice'));
+      return;
+    }
+    const group = createAssistantVariantGroupByRoot(
+      this.messages,
+      rootId,
+      this.activeVariantByRoot,
+    );
+    const target = group?.variants[targetIndex];
+    if (!group || !target || target.id === group.activeId) return;
+    this.activeVariantByRoot.set(rootId, target.id);
+    this.rebuildMessagesDOM(true);
   }
 
   private async branchFromMessage(messageId: string): Promise<void> {
@@ -2515,6 +2578,7 @@ export class ChatView extends ItemView {
   clearMessages(): void {
     this.invalidateActiveChatRun(false);
     this.messages = [];
+    this.activeVariantByRoot.clear();
     this.sessionSystemPrompt = null;
     this.session = { filePath: null, title: '', isDirty: false };
     this.clearAutoSaveTimer();
@@ -2557,6 +2621,7 @@ export class ChatView extends ItemView {
     this.clearAutoSaveTimer();
     await this.saveCurrentSession(true);
     this.messages = [];
+    this.activeVariantByRoot.clear();
     this.sessionSystemPrompt = null;
     this.messageEls.clear();
     this.session = { filePath: null, title: '', isDirty: false };
@@ -2691,6 +2756,7 @@ export class ChatView extends ItemView {
         now,
         createId: () => `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       });
+      this.activeVariantByRoot.clear();
       this.sessionSystemPrompt = session.systemPrompt ?? null;
       this.session = {
         filePath,
@@ -2706,8 +2772,9 @@ export class ChatView extends ItemView {
     }
   }
 
-  private rebuildMessagesDOM(): void {
+  private rebuildMessagesDOM(preserveScroll = false): void {
     if (!this.messagesArea) return;
+    const scrollTop = this.messagesArea.scrollTop;
     const children = Array.from(this.messagesArea.children);
     for (const child of children) {
       if (!child.hasClass('superpower-inside-typing-indicator')) {
@@ -2715,10 +2782,12 @@ export class ChatView extends ItemView {
       }
     }
     this.messageEls.clear();
-    for (const msg of this.messages) {
+    for (const msg of selectActiveConversationMessages(this.messages, this.activeVariantByRoot)) {
       this.renderExistingMessage(msg);
     }
-    if (this.autoScroll) {
+    if (preserveScroll) {
+      this.messagesArea.scrollTop = scrollTop;
+    } else if (this.autoScroll) {
       this.scrollToBottom();
     }
   }
@@ -3049,7 +3118,10 @@ export class ChatView extends ItemView {
     if (toolProtocol === 'compatibility' && providerCapability.toolCalling) {
       providerCapability = { ...providerCapability, toolCalling: false };
     }
-    const providerConversationSource = [...this.messages];
+    const providerConversationSource = selectActiveConversationMessages(
+      this.messages,
+      this.activeVariantByRoot,
+    );
     const providerConversationMessages = buildProviderConversation(
       providerConversationSource,
       toolProtocol,
@@ -3099,6 +3171,7 @@ export class ChatView extends ItemView {
             stopReason: 'complete',
           },
         );
+        setHidden(this.typingIndicator, true);
         return;
       }
       const toolsEnabled = maxToolRounds > 0;
@@ -3707,7 +3780,7 @@ export class ChatView extends ItemView {
             assistantMsg?.content || t('chatGenerationStopped'),
             true,
             assistantMsg?.reasoning,
-            assistantMsg?.toolCalls,
+            this.cancelRunningToolCalls(assistantMsg?.toolCalls),
             {
               providerKey: key,
               providerLabel,
@@ -4861,7 +4934,7 @@ export class ChatView extends ItemView {
           latestMessage?.content || t('chatGenerationStopped'),
           true,
           latestMessage?.reasoning,
-          latestMessage?.toolCalls,
+          this.cancelRunningToolCalls(latestMessage?.toolCalls),
           { status: 'complete', stopReason: 'cancelled' },
         );
         return;

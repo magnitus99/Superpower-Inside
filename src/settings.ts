@@ -30,6 +30,7 @@ import { RefreshAction } from './utils/refresh-action';
 import { runActionWithFeedback } from './utils/action-feedback';
 import { confirmWithModal } from './utils/modal-prompts';
 import { buildLocalEmbeddingModelSettings } from './llm/local-embedding-settings';
+import { buildEmbeddingGemmaCaution } from './llm/embeddinggemma-caution';
 import type { LocalEmbeddingModelId } from './llm/local-embedding-models';
 import type { VectorStore } from './rag/store';
 import { isIndexingCancelledError, type IndexingResult } from './rag/indexer';
@@ -621,7 +622,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   providerValidation: {},
   rag: {
     excludePaths: ['.git', 'node_modules', 'attachments'],
-    excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'pdf', 'mp4', 'zip'],
+    excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'mp4', 'zip'],
     excludeChatFolder: true,
     chunkSize: DEFAULT_CHUNK_CONTRACT.chunkSize,
     overlap: DEFAULT_CHUNK_CONTRACT.overlap,
@@ -1428,6 +1429,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private resumeIndexingButton: HTMLButtonElement | null = null;
   private providerStatusBody: HTMLElement | null = null;
   private disposeLocalModelSettings: (() => void) | null = null;
+  private disposeEmbeddingCaution: (() => void) | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
   private expandedProviderProfileId: string | null = null;
@@ -1596,6 +1598,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private resetRagDomReferences(): void {
     this.disposeLocalModelSettings?.();
     this.disposeLocalModelSettings = null;
+    this.disposeEmbeddingCaution?.();
+    this.disposeEmbeddingCaution = null;
     this.generalStatusBody = null;
     this.chatStatusBody = null;
     this.chatModelDropdownEl = null;
@@ -1617,6 +1621,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private renderSettingsView(): void {
     const { containerEl } = this;
+    containerEl.setAttribute('lang', this.plugin.settings.language);
     this.unregisterRefreshBusSubscriptions();
     this.resetRagDomReferences();
     this.tabButtons.clear();
@@ -1630,7 +1635,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       this.refreshBusUnsubscribers.push(
         bus.on('rag', (result) => {
           if (this.plugin.isRagIndexing()) {
-            this.updateRagIndexingProgress(result.detail);
+            this.updateRagIndexingProgress();
             return;
           }
           this.updateRagStats(result.detail);
@@ -2617,37 +2622,31 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     const completed = Math.min(progress.completedFiles, progress.totalFiles);
     const eta = progress.eta;
-    const etaReason = this.formatRagEtaConfidenceReason(
-      eta?.etaConfidenceReason ?? eta?.confidenceReason,
-    );
     if (
       !eta ||
       eta.remainingMs === null ||
       eta.confidence === 'calculating' ||
       eta.confidence === 'low'
     ) {
-      return t('ragIndexingRunningEtaCalculatingReason', {
+      return t('ragIndexingRunningEtaCalculating', {
         phase,
         completed: String(completed),
         total: String(progress.totalFiles),
-        reason: etaReason,
       });
     }
     if (eta.confidence === 'medium') {
-      return t('ragIndexingRunningWithApproxEtaReason', {
+      return t('ragIndexingRunningWithApproxEta', {
         phase,
         completed: String(completed),
         total: String(progress.totalFiles),
         eta: this.formatEtaDuration(eta.remainingMs),
-        reason: etaReason,
       });
     }
-    return t('ragIndexingRunningWithEtaReason', {
+    return t('ragIndexingRunningWithEta', {
       phase,
       completed: String(completed),
       total: String(progress.totalFiles),
       eta: this.formatEtaDuration(eta.remainingMs),
-      reason: etaReason,
     });
   }
   private formatRagIndexingPhase(
@@ -2655,6 +2654,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     progress?: RagIndexingSchedulerStatus['progress'],
   ): string {
     if (phase === 'paused') return t('ragPerformancePaused');
+    if (progress?.sourcePageCount)
+      return t('ragSourcePageProgress', {
+        page: String(progress.sourcePage ?? 0),
+        total: String(progress.sourcePageCount),
+      });
     const phaseLabel =
       phase === 'file'
         ? t('ragPhaseFile')
@@ -2683,30 +2687,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
     return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-  private formatRagEtaConfidenceReason(reason: string | undefined): string {
-    switch (reason) {
-      case 'complete':
-        return t('ragEtaReasonComplete');
-      case 'planned-stable':
-        return t('ragEtaReasonPlannedStable');
-      case 'planned-variable-rate':
-        return t('ragEtaReasonPlannedVariableRate');
-      case 'planned-partial':
-        return t('ragEtaReasonPlannedPartial');
-      case 'insufficient-samples':
-        return t('ragEtaReasonInsufficientSamples');
-      case 'calibration-variable':
-        return t('ragEtaReasonCalibrationVariable');
-      case 'calibrated-estimate':
-        return t('ragEtaReasonCalibratedEstimate');
-      case 'batch-rate-only':
-        return t('ragEtaReasonBatchRateOnly');
-      case 'elapsed-rate-only':
-        return t('ragEtaReasonElapsedRateOnly');
-      default:
-        return t('ragEtaReasonInsufficientSamples');
-    }
   }
   private buildEmbeddingProviderSection(containerEl: HTMLElement): void {
     const ANCHOR_CLS = 'si-embedding-anchor';
@@ -2740,6 +2720,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     section.after(newAnchor);
     {
       const ragConfig = this.plugin.settings.rag;
+      this.disposeEmbeddingCaution?.();
+      this.disposeEmbeddingCaution = buildEmbeddingGemmaCaution(section, this.app);
       const effectiveModelRef = this.pendingEmbeddingModel ?? ragConfig.embeddingModelRef ?? '';
       const profileModelOptions = buildEmbeddingProfileModelOptions(this.plugin.settings, {
         currentModel: effectiveModelRef,
@@ -3449,18 +3431,33 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
    * RefreshBus에서 rag 이벤트 수신 시 RAG 상태 패널 일부만 업데이트합니다.
    * (전체 rebuild 대신 statusGrid, timestamp, updateList 등만 갱신)
    */
-  private updateRagIndexingProgress(indexingDetail?: string): void {
+  private updateRagIndexingProgress(): void {
+    const runtime = this.plugin.getRagRuntimeState();
+    const label = this.getIndexingStatusLabel();
     const statusEl = this.ragStatusGrid?.querySelector<HTMLElement>(
       '.superpower-inside-rag-overview-status',
     );
-    if (statusEl && indexingDetail) {
-      statusEl.setText(indexingDetail);
+    if (statusEl) {
+      statusEl.setText(label);
       statusEl.setAttribute('role', 'status');
     }
-    if (this.ragStatusTimestamp && indexingDetail) {
-      this.ragStatusTimestamp.setText(t('settingsAuto115', { v0: String(indexingDetail) }));
+    const progress = runtime.ragIndexingStatus?.progress;
+    const detailEl = this.ragStatusGrid?.querySelector<HTMLElement>(
+      '.superpower-inside-rag-overview-detail',
+    );
+    if (detailEl && progress && progress.totalFiles > 0) {
+      detailEl.setText(
+        t('ragOverviewDetail', {
+          healthy: String(Math.min(progress.completedFiles, progress.totalFiles)),
+          total: String(progress.totalFiles),
+          auto: this.getAutoUpdateLabel(),
+        }),
+      );
     }
-    this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus);
+    if (this.ragStatusTimestamp) {
+      this.ragStatusTimestamp.setText(t('settingsAuto115', { v0: label }));
+    }
+    this.updateRagControlStates(runtime.ragStatus);
   }
 
   private ragStatusRevision = 0;
@@ -5042,12 +5039,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     jsonTextArea.value =
       this.mcpDraftJson ?? buildMcpJsonEditorValue(this.plugin.settings.mcpServers);
     jsonTextArea.disabled = this.mcpApplying;
-    const apply = editorPanel.createEl('button', {
+    const apply = advanced.content.createEl('button', {
       cls: 'mod-cta',
       text: t('settingsApplyServers'),
       attr: { type: 'button' },
     });
-    const revert = editorPanel.createEl('button', {
+    const revert = advanced.content.createEl('button', {
       text: t('settingsDiscardChanges'),
       attr: { type: 'button' },
     });
@@ -6037,7 +6034,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       button,
       restoreText: false,
       action: async () => {
-        if (!(await confirmWithModal(this.app, t('providerRemoveModelConfirm', { model: modelId })))) {
+        if (
+          !(await confirmWithModal(this.app, t('providerRemoveModelConfirm', { model: modelId })))
+        ) {
           return { status: 'noop', detail: t('actionCancelledNotice') };
         }
         const previousModels = profile.models;

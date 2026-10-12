@@ -13,6 +13,11 @@ import {
   writeJsonToVault,
 } from './src/utils/vault';
 import {
+  configureSourceAssets,
+  disposeSourceAssets,
+  readSourceText,
+} from './src/rag/source-access';
+import {
   TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID,
   toggleDocumentExclusion,
 } from './src/utils/document-exclusion';
@@ -310,6 +315,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
   async onload(): Promise<void> {
     const startedAt = Date.now();
     this.unloaded = false;
+    configureSourceAssets(
+      this.manifest?.id ?? 'superpower-inside',
+      this.getVaultStorageIdentity(),
+      this.generatedArtifacts.forFeature('pdf-sources'),
+    );
     this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
     const chatGPTAuth = initializeChatGPTOAuth(this.app, this.getLogger(), this.manifest.version);
     this.register(() => chatGPTAuth.dispose());
@@ -450,6 +460,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.getLogger().info('Plugin unloading.', { source: 'lifecycle' });
     void this.agentDiagnosticsService?.stop('plugin-unload');
     this.cancelRagIndexing();
+    disposeSourceAssets();
     this.unregisterRAGEvents();
     if (this.statsDebounceTimer) {
       window.clearTimeout(this.statsDebounceTimer);
@@ -1606,7 +1617,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const files = await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat);
     const documents: BM25CorpusDocument[] = [];
     for (const file of files) {
-      const content = await this.app.vault.cachedRead(file);
+      const content = (await readSourceText(this.app.vault, file)).text;
       documents.push(...this.buildBM25CorpusDocuments(file, content));
     }
     return documents;
@@ -2425,28 +2436,23 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (progress && progress.totalFiles > 0) {
         const completed = Math.min(progress.completedFiles, progress.totalFiles);
         const phase = this.formatRagIndexingPhase(status.phase, progress);
-        const etaReason = this.formatRagEtaConfidenceReason(
-          progress.eta?.etaConfidenceReason ?? progress.eta?.confidenceReason,
-        );
         if (
           !progress.eta ||
           progress.eta.remainingMs === null ||
           progress.eta.confidence === 'calculating' ||
           progress.eta.confidence === 'low'
         ) {
-          return t('ragIndexingRunningEtaCalculatingReason', {
+          return t('ragIndexingRunningEtaCalculating', {
             phase,
             completed: String(completed),
             total: String(progress.totalFiles),
-            reason: etaReason,
           });
         }
-        return t('ragIndexingRunningWithEtaReason', {
+        return t('ragIndexingRunningWithEta', {
           phase,
           completed: String(completed),
           total: String(progress.totalFiles),
           eta: this.formatRagEtaDuration(progress.eta.remainingMs),
-          reason: etaReason,
         });
       }
       return t('ragIndexingRunning', { phase: this.formatRagIndexingPhase(status.phase) });
@@ -2504,6 +2510,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     progress?: RagIndexingSchedulerStatus['progress'],
   ): string {
     if (phase === 'paused') return t('ragPerformancePaused');
+    if (progress?.sourcePageCount)
+      return t('ragSourcePageProgress', {
+        page: String(progress.sourcePage ?? 0),
+        total: String(progress.sourcePageCount),
+      });
     const phaseLabel =
       phase === 'file'
         ? t('ragPhaseFile')
@@ -2533,31 +2544,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
     return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-
-  private formatRagEtaConfidenceReason(reason: string | undefined): string {
-    switch (reason) {
-      case 'complete':
-        return t('ragEtaReasonComplete');
-      case 'planned-stable':
-        return t('ragEtaReasonPlannedStable');
-      case 'planned-variable-rate':
-        return t('ragEtaReasonPlannedVariableRate');
-      case 'planned-partial':
-        return t('ragEtaReasonPlannedPartial');
-      case 'insufficient-samples':
-        return t('ragEtaReasonInsufficientSamples');
-      case 'calibration-variable':
-        return t('ragEtaReasonCalibrationVariable');
-      case 'calibrated-estimate':
-        return t('ragEtaReasonCalibratedEstimate');
-      case 'batch-rate-only':
-        return t('ragEtaReasonBatchRateOnly');
-      case 'elapsed-rate-only':
-        return t('ragEtaReasonElapsedRateOnly');
-      default:
-        return t('ragEtaReasonInsufficientSamples');
-    }
   }
 
   private logAutomaticRagRecoveryEvent(event: AutomaticRagRecoveryEvent, detail?: unknown): void {

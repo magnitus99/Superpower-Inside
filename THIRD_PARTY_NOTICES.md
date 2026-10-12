@@ -497,3 +497,65 @@ SOFTWARE.
 ## EmbeddingGemma 모델
 
 모델 가중치는 플러그인에 포함하지 않고 필요할 때 내려받습니다. [Google Gemma 이용 조건](https://ai.google.dev/gemma/terms)과 [모델 저장소](https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX)를 참고하세요.
+
+## zip
+
+압축 문서(EPUB·DOCX·ODT·PPTX·XLSX·HWPX) 본문을 읽기 위해 WebAssembly 코어에 포함되는 라이브러리입니다.
+
+The MIT License (MIT)
+
+Copyright (c) 2014 Mathijs van de Nes
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## quick-xml
+
+압축 문서 안의 XML 본문을 읽기 위해 WebAssembly 코어에 포함되는 라이브러리입니다.
+
+The MIT License (MIT)
+
+Copyright (c) 2016 Johann Tuffe
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## pdf.js
+
+`pdf-worker.js` 릴리스 자산에 포함되며, 볼트의 PDF에서 검색 가능한 본문을 추출하는 데 씁니다.
+
+Apache License 2.0 — https://github.com/mozilla/pdf.js
+
+Copyright 2024 Mozilla Foundation
+
+전체 라이선스 전문은 위 `@huggingface/transformers` 항목의 Apache License 2.0과 같습니다.

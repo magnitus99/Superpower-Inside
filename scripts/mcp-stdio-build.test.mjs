@@ -1,5 +1,8 @@
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { build } from 'esbuild';
 import { expect, it } from 'vitest';
 import { mcpStdioNodeTimers } from './mcp-stdio-build.mjs';
@@ -29,7 +32,15 @@ it('렌더러의 숫자 타이머에서도 번들된 MCP stdio 프로세스를 �
       process.stdout.write('closed');
     })().catch(error => { process.stderr.write(String(error)); process.exitCode = 1; });
   `;
-  expect(execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 10000 })).toBe(
-    'closed',
-  );
+  // Linux는 인자 하나를 128KiB로 제한하므로 번들을 -e가 아니라 임시 파일로 실행합니다.
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-stdio-'));
+  try {
+    const probe = join(dir, 'probe.cjs');
+    writeFileSync(probe, script);
+    expect(execFileSync(process.execPath, [probe], { encoding: 'utf8', timeout: 10000 })).toBe(
+      'closed',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -4,6 +4,7 @@ import type { MCPRegistry } from '../mcp/registry';
 import type { QueryResult } from '../rag/query';
 import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
 import { readSourceFileSnapshot } from '../rag/source-snapshot';
+import { readSourceText } from '../rag/source-access';
 import { isSourceRevisionCurrentRust } from '../rag/rust-core';
 import {
   planChatContextMentionsRust,
@@ -479,7 +480,7 @@ async function appendImplicitFolderEvidence(
     await Promise.all(
       indexableFiles.map(async (file) => {
         try {
-          return { file, content: await app.vault.cachedRead(file) };
+          return { file, content: (await readSourceText(app.vault, file)).text };
         } catch {
           return null;
         }
@@ -712,7 +713,7 @@ async function appendFileMention(
   }
 
   try {
-    const content = await app.vault.cachedRead(file);
+    const content = (await readSourceText(app.vault, file)).text;
     const result = appendEvidence(
       { filePath: file.path, text: content },
       'file',
@@ -952,7 +953,10 @@ async function appendFolderMention(
             indexableFiles
               .slice(offset, offset + 8)
               .map(
-                async (file) => `${file.path}\n${await app.vault.cachedRead(file).catch(() => '')}`,
+                async (file) =>
+                  `${file.path}\n${await readSourceText(app.vault, file)
+                    .then((source) => source.text)
+                    .catch(() => '')}`,
               ),
           )),
         );
@@ -972,7 +976,7 @@ async function appendFolderMention(
 
   for (const [index, file] of files.entries()) {
     try {
-      const content = await app.vault.cachedRead(file);
+      const content = (await readSourceText(app.vault, file)).text;
       const result = appendEvidence(
         { filePath: file.path, text: content },
         'folder',
