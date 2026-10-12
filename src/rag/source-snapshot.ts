@@ -21,10 +21,7 @@ export async function readSourceFileSnapshot(
   file: TFile,
   options: PdfReadOptions = {},
 ): Promise<SourceFileSnapshot | null> {
-  const snapshot: TFile = {
-    ...file,
-    stat: { ...file.stat },
-  };
+  const snapshot = createSourceSnapshot(file);
   const source = await readSourceText(vault, snapshot, options);
   const content = source.text;
   const current = vault.getAbstractFileByPath(snapshot.path);
@@ -46,6 +43,18 @@ export async function readSourceFileSnapshot(
   )
     return null;
   return { file: snapshot, content, segments: source.segments, revision };
+}
+
+/**
+ * 읽는 동안 바뀐 `stat`이 본문과 섞이지 않도록 값만 고정한 사본을 만듭니다.
+ *
+ * Obsidian `TFile`의 `cache()` 같은 인스턴스 메서드는 객체 스프레드로 복사되지 않는
+ * 프로토타입 멤버라서, 프로토타입을 유지해야 `vault.cachedRead`가 실패하지 않습니다.
+ */
+function createSourceSnapshot(file: TFile): TFile {
+  const snapshot: TFile = { ...file, stat: { ...file.stat } };
+  Object.setPrototypeOf(snapshot, Object.getPrototypeOf(file) as object | null);
+  return snapshot;
 }
 
 function isSourceFile(file: TAbstractFile | null): file is TFile {
