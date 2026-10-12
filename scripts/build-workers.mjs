@@ -1,8 +1,9 @@
 import { build, transform } from 'esbuild';
-import { mkdir, readFile, writeFile, copyFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, copyFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workers = [
@@ -49,6 +50,42 @@ const gemma = await build({
   minify: true, legalComments: 'none',
 });
 await writeFile(resolve(root, 'embeddinggemma-worker.js'), gemma.outputFiles[0].contents);
+
+// pdf.js는 자체 worker를 전제로 하므로 번들 안에서 fake worker로 실행되도록 묶습니다.
+// main.js로 흡수하지 않고 별도 릴리스 자산으로 배포합니다.
+// OCR 코어는 내장 WASM 빌드, 학습 데이터는 버전 고정 npm 패키지에서 가져옵니다.
+const ocrLanguages = {};
+for (const code of ['kor', 'eng']) {
+  ocrLanguages[code] = gunzipSync(await readFile(resolve(root, `node_modules/@tesseract.js-data/${code}/4.0.0_best_int/${code}.traineddata.gz`))).toString('base64');
+}
+const ocrCore = await readFile(resolve(root, 'node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm.js'), 'utf8');
+const ocr = await build({
+  entryPoints: [resolve(root, 'src/rag/pdf-ocr-worker-entry.ts')],
+  bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2022',
+  define: { ...browserDefines, global: 'globalThis' },
+  banner: { js: `${ocrCore}\nglobalThis.TesseractCore = TesseractCore;\nglobalThis.PDF_OCR_LANGUAGES = ${JSON.stringify(ocrLanguages)};` },
+  minify: true, legalComments: 'none',
+});
+await writeFile(resolve(root, 'pdf-ocr-worker.js'), ocr.outputFiles[0].contents);
+
+const renderAssets = {};
+for (const directory of ['cmaps', 'standard_fonts']) {
+  for (const file of await readdir(resolve(root, `node_modules/pdfjs-dist/${directory}`))) {
+    if (!/\.(bcmap|pfb|ttf)$/.test(file)) continue;
+    renderAssets[`${directory}/${file}`] = (await readFile(resolve(root, `node_modules/pdfjs-dist/${directory}/${file}`))).toString('base64');
+  }
+}
+const pdf = await build({
+  entryPoints: [resolve(root, 'src/rag/pdf-worker-entry.ts')],
+  plugins: [{ name: 'pdf-render-assets', setup(builder) {
+    builder.onResolve({ filter: /^pdf-render-assets$/ }, () => ({ path: 'assets', namespace: 'pdf-assets' }));
+    builder.onLoad({ filter: /.*/, namespace: 'pdf-assets' }, () => ({ contents: `export const renderAssets = ${JSON.stringify(renderAssets)};`, loader: 'js' }));
+  } }],
+  bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2022',
+  define: browserDefines,
+  minify: true, legalComments: 'none',
+});
+await writeFile(resolve(root, 'pdf-worker.js'), pdf.outputFiles[0].contents);
 const runtimeFiles = [
   ['ort-wasm-simd-threaded.asyncify.wasm', 'embeddinggemma-runtime.wasm'],
   ['ort-wasm-simd-threaded.asyncify.mjs', 'embeddinggemma-runtime.mjs'],

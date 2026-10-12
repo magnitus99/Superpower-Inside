@@ -102,7 +102,7 @@ or begin
 end
 
 # 커밋
-git add manifest.json package.json package-lock.json versions.json main.js styles.css tern_engine_bg.wasm THIRD_PARTY_NOTICES.md generated src/rag/rag-wasm-bytes.ts embeddinggemma-worker.js embeddinggemma-runtime.wasm embeddinggemma-runtime.mjs
+git add manifest.json package.json package-lock.json versions.json main.js styles.css tern_engine_bg.wasm THIRD_PARTY_NOTICES.md generated src/rag/rag-wasm-bytes.ts embeddinggemma-worker.js pdf-worker.js pdf-ocr-worker.js embeddinggemma-runtime.wasm embeddinggemma-runtime.mjs
 and git commit -m "chore(release): $NEW_VERSION"
 or begin
     echo "ERROR: git commit 실패"

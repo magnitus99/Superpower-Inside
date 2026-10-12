@@ -37,6 +37,8 @@ it('작업 디렉터리와 무관하게 worker를 생성하고 Electron에서도
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, `globalThis.workerKind = ${JSON.stringify(constant)};`);
     }
+    writeFileSync(join(root, 'src/rag/pdf-worker-entry.ts'), 'globalThis.workerKind = "PDF";');
+    copyFileSync(join(repo, 'src/rag/pdf-ocr-worker-entry.ts'), join(root, 'src/rag/pdf-ocr-worker-entry.ts'));
     execFileSync(process.execPath, [join(root, 'scripts/build-workers.mjs')], { cwd: tmpdir() });
     for (const [, output, constant] of workers) {
       const source = readFileSync(join(root, `generated/${output}-worker-source.ts`), 'utf8');
@@ -47,6 +49,9 @@ it('작업 디렉터리와 무관하게 worker를 생성하고 Electron에서도
     }
     const gemmaSource = readFileSync(join(root, 'embeddinggemma-worker.js'), 'utf8');
     expect(gemmaSource).toContain('workerKind="GEMMA"');
+    // PDF worker는 main.js에 흡수하지 않고 별도 릴리스 자산으로 남아야 합니다.
+    expect(readFileSync(join(root, 'pdf-worker.js'), 'utf8')).toContain('workerKind="PDF"');
+    expect(readFileSync(join(root, 'pdf-ocr-worker.js'), 'utf8')).toContain('PDF_OCR_LANGUAGES');
     // Electron이 worker에 process를 노출해도 브라우저용 ONNX 백엔드를 선택해야 합니다.
     for (const process of [undefined, { release: { name: 'node' }, versions: { node: '22.0.0' }, platform: 'darwin', arch: 'arm64' }]) {
       const context = {
