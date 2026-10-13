@@ -17,7 +17,7 @@ Pick up a project, compare research, or start a draft. Ask for what you need wit
 
 Free and open source for **desktop Obsidian 1.11.4 or later**. No plugin subscription or plugin account is required. Your chosen AI provider may require an account and charge for usage or impose limits. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md).
 
-https://github.com/user-attachments/assets/4d939e64-219b-4a80-a318-8f967639df2e
+https://github.com/user-attachments/assets/b737eff2-d3e1-40a3-8c54-eaf0e714751c
 
 ### Start with the result you need
 
@@ -124,7 +124,7 @@ For queries or templates involving another Obsidian plugin, enable **Answers inf
 
 **Obsidian 1.11.4 이상 데스크톱 버전**에서 사용하는 무료·오픈소스 플러그인입니다. 플러그인 구독료나 별도 플러그인 계정은 필요하지 않습니다. 선택한 AI 제공자의 계정·요금·사용 한도는 별도입니다. [MIT 라이선스](LICENSE) · [서드파티 고지](THIRD_PARTY_NOTICES.md).
 
-https://github.com/user-attachments/assets/161f503d-81d0-4316-8597-e11d153dd29a
+https://github.com/user-attachments/assets/c73dac24-3e09-4ec2-9c82-1d71b8d182a6
 
 ### 필요한 결과로 시작하세요
 
