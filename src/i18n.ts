@@ -711,6 +711,7 @@ export interface I18nKeys {
   nativeVaultLinksDisplay: string;
   nativeVaultStatsDisplay: string;
   nativeVaultFileNotFound: string;
+  nativeVaultFileUnreadable: string;
   nativeVaultReadRangeFailed: string;
   nativeVaultListFailed: string;
   nativeVaultStatsFailed: string;
@@ -1425,6 +1426,7 @@ export interface I18nKeys {
   defaultChatTitle: string;
   chatSaveEmptyAssistantWarning: string;
   fileNotFoundError: string;
+  fileUnreadableError: string;
   toolResultTruncatedLabel: string;
   toolApprovalPendingSuffix: string;
   defaultObsidianSystemPrompt: string;
@@ -1983,7 +1985,8 @@ const ko: I18nKeys = {
   frontmatterExclusionsError: '제외 문서 목록을 불러오지 못했습니다.',
   excludePathsDesc: '임베딩·BM25·내장 볼트 도구에서 함께 제외할 폴더나 경로 패턴을 관리합니다.',
   excludeExts: '제외할 확장자',
-  excludeExtsDesc: '임베딩·BM25·내장 볼트 도구에서 함께 제외할 파일 확장자를 관리합니다.',
+  excludeExtsDesc:
+    '임베딩·BM25와 자동 검색·목록에서 제외할 파일 확장자를 관리합니다. 직접 지정한 파일은 그대로 읽습니다.',
   excludeListAdd: '추가',
   excludeListRemove: '삭제',
   excludeListEmpty: '등록된 항목이 없습니다.',
@@ -2380,6 +2383,8 @@ const ko: I18nKeys = {
   nativeVaultLinksDisplay: '{path} 링크 {count}개',
   nativeVaultStatsDisplay: '볼트 문서 {count}개',
   nativeVaultFileNotFound: '볼트 문서를 찾을 수 없습니다: {path}',
+  nativeVaultFileUnreadable:
+    '이 파일은 읽을 수 없습니다(민감 정보·제외 경로·YAML 제외·크기 제한): {path}',
   nativeVaultReadRangeFailed: '읽을 수 없는 행 범위입니다: {path}',
   nativeVaultListFailed: '볼트 문서 목록을 계산할 수 없습니다.',
   nativeVaultStatsFailed: '볼트 통계를 계산할 수 없습니다.',
@@ -2819,10 +2824,10 @@ const ko: I18nKeys = {
   // Settings Header
   settingsTitle: 'Superpower Inside — 설정',
   securityWarning:
-    'API 키는 Obsidian 보안 저장소(SecretStorage)에 저장되며 플러그인 data.json, 볼트 동기화, 백업에 포함되지 않습니다. 비밀값은 기기별로 저장되므로 다른 기기에서는 다시 입력해야 합니다.',
+    'API 키는 이 기기의 Obsidian 보안 저장소에 보관되어 볼트 동기화·백업에 포함되지 않습니다. 다른 기기에서는 다시 입력해 주세요.',
   apiKeyMissingOnDevice: '이 기기에는 저장된 키 값이 없습니다. 다시 입력해 주세요.',
   apiKeyMigratedToSecretStorage:
-    'API 키 {count}개를 Obsidian 보안 저장소로 옮겼습니다. 이제 data.json과 동기화 대상에 키가 포함되지 않습니다.',
+    'API 키 {count}개를 이 기기의 Obsidian 보안 저장소에 보관했습니다.',
   apiKeySecretStorageUnavailable:
     'Obsidian 보안 저장소를 사용할 수 없어 API 키를 저장하지 못했습니다. Obsidian을 최신 버전으로 업데이트해 주세요.',
 
@@ -3163,6 +3168,7 @@ const ko: I18nKeys = {
   chatSaveEmptyAssistantWarning:
     '[Superpower Inside] 저장 경고: 메시지 {id}의 content가 비어 있습니다.',
   fileNotFoundError: '파일을 찾을 수 없음: {path}',
+  fileUnreadableError: '읽을 수 없는 파일: {path}',
   toolResultTruncatedLabel: '일부 생략됨',
   toolApprovalPendingSuffix: ' (승인 대기)',
   llmEvidenceDataBoundary:
@@ -3777,7 +3783,7 @@ const en: I18nKeys = {
     'Manage folders or path patterns shared by the embedding, BM25, and built-in vault tool exclusions.',
   excludeExts: 'Exclude Extensions',
   excludeExtsDesc:
-    'Manage file extensions shared by the embedding, BM25, and built-in vault tool exclusions.',
+    'Manage file extensions excluded from embedding, BM25, automatic search, and listing. Files you reference directly are still read.',
   excludeListAdd: 'Add',
   excludeListRemove: 'Remove',
   excludeListEmpty: 'No items registered.',
@@ -4175,6 +4181,8 @@ const en: I18nKeys = {
   nativeVaultLinksDisplay: '{count} links for {path}',
   nativeVaultStatsDisplay: '{count} vault documents',
   nativeVaultFileNotFound: 'Vault document not found: {path}',
+  nativeVaultFileUnreadable:
+    'This file cannot be read (sensitive file, excluded path, YAML exclusion, or size limit): {path}',
   nativeVaultReadRangeFailed: 'This line range cannot be read: {path}',
   nativeVaultListFailed: 'The vault document list could not be calculated.',
   nativeVaultStatsFailed: 'Vault statistics could not be calculated.',
@@ -4620,10 +4628,10 @@ const en: I18nKeys = {
   // Settings Header
   settingsTitle: 'Superpower Inside — Settings',
   securityWarning:
-    'API keys are stored in Obsidian’s secret storage, not in plugin data.json, vault sync, or backups. Secrets are stored per device, so enter them again on other devices.',
+    'API keys are kept in Obsidian’s secret storage on this device, so vault sync and backups never include them. Enter them again on other devices.',
   apiKeyMissingOnDevice: 'No key value is stored on this device. Enter it again to use this provider.',
   apiKeyMigratedToSecretStorage:
-    'Moved {count} API key(s) to Obsidian’s secret storage. Keys are no longer included in data.json or vault sync.',
+    'Stored {count} API key(s) in Obsidian’s secret storage on this device.',
   apiKeySecretStorageUnavailable:
     'Obsidian’s secret storage is unavailable, so API keys were not saved. Update Obsidian to the latest version.',
 
@@ -4975,6 +4983,7 @@ const en: I18nKeys = {
   chatSaveEmptyAssistantWarning:
     '[Superpower Inside] Save warning: message {id} has empty content.',
   fileNotFoundError: 'File not found: {path}',
+  fileUnreadableError: 'File cannot be read: {path}',
   toolResultTruncatedLabel: 'truncated',
   toolApprovalPendingSuffix: ' (pending approval)',
   llmEvidenceDataBoundary:

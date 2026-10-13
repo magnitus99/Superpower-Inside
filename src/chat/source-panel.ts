@@ -38,6 +38,8 @@ export interface ContextAttachmentChipView {
   id: string;
   className: string;
   label: string;
+  /** `@` 멘션 목록과 같은 파일·폴더 그래픽. */
+  icon: string;
   title?: string;
 }
 
@@ -126,6 +128,7 @@ export function createContextAttachmentChipViews(
     id: attachment.id,
     className: createContextAttachmentClassName(attachment),
     label: createContextAttachmentLabel(attachment),
+    icon: createContextAttachmentIcon(attachment.type),
     title: normalizeContextAttachmentDetail(attachment),
   }));
 }
@@ -258,6 +261,23 @@ function createContextAttachmentLabel(attachment: ContextAttachment): string {
       return attachment.status === 'attached' || attachment.status === 'partial'
         ? t('contextChipToolReady', { name })
         : t('contextChipToolUnavailable', { name });
+  }
+}
+
+function createContextAttachmentIcon(type: ContextAttachment['type']): string {
+  switch (type) {
+    case 'folder':
+      return 'folder';
+    case 'tag':
+      return 'hash';
+    case 'reference':
+      return 'link';
+    case 'rag':
+      return 'search';
+    case 'mcp-server':
+      return 'plug';
+    case 'file':
+      return 'file-text';
   }
 }
 
@@ -503,10 +523,13 @@ export class SourcePanel {
     }
     section.empty();
     for (const attachment of createContextAttachmentChipViews(attachments)) {
-      const chip = section.createSpan({
-        cls: attachment.className,
-        text: attachment.label,
+      const chip = section.createSpan({ cls: attachment.className });
+      const iconEl = chip.createSpan({
+        cls: 'superpower-inside-chat-context-chip-icon',
+        attr: { 'aria-hidden': 'true' },
       });
+      this.handlers.setIcon(iconEl, attachment.icon);
+      chip.createSpan({ text: attachment.label });
       if (attachment.title) {
         chip.setAttribute('title', attachment.title);
       }

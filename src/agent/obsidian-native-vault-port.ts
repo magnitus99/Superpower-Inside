@@ -16,6 +16,7 @@ import {
   planNativeVaultSearchRrfRust,
   planNativeVaultStatsRust,
   isSourceRevisionCurrentRust,
+  normalizeVaultLinkTargetRust,
   type RustNativeVaultToolRequest,
   type RustNativeVaultFilters,
   type RustNativeVaultLexicalState,
@@ -62,6 +63,8 @@ export interface NativeVaultQueryEngineLike {
 export interface NativeVaultFileScope {
   listCandidateFiles(): Promise<readonly TFile[]>;
   isCandidateFile(file: TFile): Promise<boolean>;
+  /** 명시적으로 지정한 파일 읽기 허용 여부(확장자 제외는 무시, 경로·민감 파일 제외는 유지) */
+  isExplicitReadAllowed(file: TFile): Promise<boolean>;
   isPathVisible(path: string): boolean;
 }
 
@@ -178,8 +181,9 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   ): Promise<NativeVaultReadResult> {
     throwIfAborted(signal);
     const file = this.resolveVaultFile(request.path);
-    if (!file || !(await this.fileScope.isCandidateFile(file))) {
-      throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
+    if (!file) throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
+    if (!(await this.fileScope.isExplicitReadAllowed(file))) {
+      throw new Error(t('nativeVaultFileUnreadable', { path: request.path }));
     }
     throwIfAborted(signal);
     const content = (await awaitWithAbort(readSourceText(this.app.vault, file), signal)).text;
@@ -236,8 +240,9 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     const engine = this.getQueryEngine();
     if (!engine) throw new Error(t('nativeVaultPlanUnavailable'));
     const file = this.resolveVaultFile(request.path);
-    if (!file || !(await this.fileScope.isCandidateFile(file))) {
-      throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
+    if (!file) throw new Error(t('nativeVaultFileNotFound', { path: request.path }));
+    if (!(await this.fileScope.isExplicitReadAllowed(file))) {
+      throw new Error(t('nativeVaultFileUnreadable', { path: request.path }));
     }
     const content = (await awaitWithAbort(readSourceText(this.app.vault, file), signal)).text;
     const lines = content.split('\n');
@@ -764,7 +769,9 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     return resolved ? (filesByPath.get(resolved.path) ?? null) : null;
   }
 
-  private resolveVaultFile(path: string): TFile | null {
+  private resolveVaultFile(rawPath: string): TFile | null {
+    const path = normalizeVaultLinkTargetRust(rawPath);
+    if (!path) return null;
     const candidates = path.endsWith('.md') ? [path] : [path, `${path}.md`];
     for (const candidate of candidates) {
       const file = this.app.vault.getAbstractFileByPath(candidate);

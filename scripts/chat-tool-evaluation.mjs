@@ -92,6 +92,7 @@ function createNative(runtime, vault) {
       vault.scope ?? {
         listCandidateFiles: async () => vault.files,
         isCandidateFile: async (file) => vault.files.includes(file),
+        isExplicitReadAllowed: async (file) => vault.files.includes(file),
         isPathVisible: () => true,
       },
       vault.getQueryEngine ?? (() => null),
@@ -370,6 +371,7 @@ export async function evaluateObsidianVault(runtime, app, settings, options = {}
     scope: {
       listCandidateFiles: async () => files,
       isCandidateFile: async (file) => allowed.has(file.path),
+      isExplicitReadAllowed: async (file) => allowed.has(file.path),
       isPathVisible: (value) =>
         value === '' ||
         files.some((file) => file.path === value || file.path.startsWith(`${value}/`)),

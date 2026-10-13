@@ -1,6 +1,15 @@
 import { setIcon } from 'obsidian';
 import type { ContextPreviewChip } from './chat-composer';
 
+/** `@` 멘션 목록과 같은 파일·폴더 그래픽을 참조 chip에도 사용한다. */
+const PREVIEW_CHIP_ICONS: Readonly<Record<string, string>> = {
+  file: 'file-text',
+  folder: 'folder',
+  tag: 'hash',
+  server: 'plug',
+  workspace: 'panels-top-left',
+};
+
 let previewId = 0;
 
 /** 기본 textarea를 유지하면서 참조 정보를 마우스와 키보드 모두로 확인한다. */
@@ -47,7 +56,7 @@ export function renderComposerReferencePreview(
       cls: 'superpower-inside-reference-icon',
       attr: { 'aria-hidden': 'true' },
     });
-    setIcon(icon, chip.valid ? 'check' : 'circle-alert');
+    setIcon(icon, PREVIEW_CHIP_ICONS[chip.cls] ?? (chip.valid ? 'check' : 'circle-alert'));
     summary.createSpan({ text: chip.label });
     if (!chip.valid)
       summary.createSpan({ cls: 'superpower-inside-reference-state', text: chip.detail });

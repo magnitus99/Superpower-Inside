@@ -84,6 +84,23 @@ export async function isRagIndexableFile(vault: Vault, file: TFile): Promise<boo
   return selectByRustIndices([file], plan.candidateIndices, { dedupe: true }).length === 1;
 }
 
+/**
+ * 사용자가 직접 지정한 파일을 읽을 수 있는지 확인합니다.
+ *
+ * 확장자 제외는 자동 검색·인덱싱 범위를 줄이는 설정이므로 명시 참조에는 적용하지 않습니다.
+ * 경로 제외·민감 파일·YAML 제외·크기·이진 형식 제한은 그대로 유지합니다.
+ */
+export async function isExplicitRagReadAllowed(
+  vault: Vault,
+  file: TFile,
+  ragConfig: RAGConfig,
+  chatConfig: ChatConfig,
+): Promise<boolean> {
+  if (isExcludedPath(file.path, getEffectiveExcludePaths(ragConfig, chatConfig, vault.configDir)))
+    return false;
+  return isRagIndexableFile(vault, file);
+}
+
 /** 개별 작업에서도 경로·확장자·현재 YAML 제외를 다시 확인합니다. */
 export async function isRagFileExcluded(
   vault: Vault,

@@ -102,6 +102,17 @@ export function createLiveContextPreviewChips(
       });
       continue;
     }
+    if (candidate.link) {
+      const resolved = resolver.resolveLink?.(candidate.name) ?? null;
+      chips.push({
+        label: candidate.raw,
+        cls: resolved ? resolved.type : 'missing',
+        valid: resolved !== null,
+        paths: resolved ? [resolved.path] : [],
+        detail: t(resolved ? 'chatReferenceAvailable' : 'chatReferenceMissing'),
+      });
+      continue;
+    }
     const type = resolver.isServer(candidate.name)
       ? 'server'
       : resolver.isFile(candidate.name)
@@ -118,6 +129,33 @@ export function createLiveContextPreviewChips(
     });
   }
   return chips;
+}
+
+export interface ComposerMentionTrigger {
+  mode: 'at' | 'wiki';
+  query: string;
+  startIndex: number;
+}
+
+/**
+ * 커서 앞 텍스트에서 mention 트리거를 찾습니다.
+ *
+ * `[[...]]`는 Obsidian 링크 표기이므로 `]]` 전까지 공백을 포함한 경로를 그대로 찾습니다.
+ */
+export function resolveComposerMentionTrigger(
+  textBeforeCursor: string,
+): ComposerMentionTrigger | null {
+  const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+  const lastWikiStart = textBeforeCursor.lastIndexOf('[[');
+  if (lastWikiStart > lastAtIndex) {
+    const wikiQuery = textBeforeCursor.slice(lastWikiStart + 2);
+    if (wikiQuery.includes(']]') || wikiQuery.includes('\n')) return null;
+    return { mode: 'wiki', query: wikiQuery.toLowerCase(), startIndex: lastWikiStart };
+  }
+  if (lastAtIndex === -1) return null;
+  const atQuery = textBeforeCursor.slice(lastAtIndex + 1);
+  if (atQuery.includes(' ') || atQuery.includes('\n')) return null;
+  return { mode: 'at', query: atQuery.toLowerCase(), startIndex: lastAtIndex };
 }
 
 export function createComposerLoadingState(loading: boolean): ComposerLoadingState {

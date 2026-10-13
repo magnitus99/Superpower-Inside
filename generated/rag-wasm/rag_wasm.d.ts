@@ -349,6 +349,13 @@ export function normalize_mcp_tool_result_json(result_json: string): string;
 export function normalize_reasoning_chunk_json(content: string, reasoning: string): string;
 
 /**
+ * 도구 입력 경로에서 `[[...]]` 표기와 별칭·heading·URL 인코딩을 벗겨낸 `JSON` 문자열을 반환한다.
+ *
+ * 모델과 사용자가 넘기는 경로는 Obsidian 링크 표기, `%20` 인코딩, 별칭이 섞여 들어온다.
+ */
+export function normalize_vault_link_target_json(raw: string): string;
+
+/**
  * MCP tool 실행 인자 문자열을 TypeScript 호스트 경계 계약으로 정규화한다.
  */
 export function parse_mcp_tool_arguments_json(arguments_text: string): string;
@@ -1073,6 +1080,7 @@ export interface InitOutput {
     readonly normalize_exclude_extension_json: (a: number, b: number) => [number, number];
     readonly normalize_mcp_tool_result_json: (a: number, b: number) => [number, number];
     readonly normalize_reasoning_chunk_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly normalize_vault_link_target_json: (a: number, b: number) => [number, number];
     readonly parse_mcp_tool_arguments_json: (a: number, b: number) => [number, number];
     readonly parse_mention_candidates_json: (a: number, b: number) => [number, number];
     readonly parse_settings_number: (a: number, b: number, c: number, d: number, e: number) => number;

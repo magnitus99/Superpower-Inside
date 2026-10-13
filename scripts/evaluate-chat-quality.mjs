@@ -172,6 +172,7 @@ async function evaluate(runtime, settings) {
         {
           listCandidateFiles: async () => files,
           isCandidateFile: async (file) => files.includes(file),
+          isExplicitReadAllowed: async (file) => files.includes(file),
           isPathVisible: () => true,
         },
         () => null,
