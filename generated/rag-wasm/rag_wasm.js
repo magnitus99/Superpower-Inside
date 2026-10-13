@@ -1165,6 +1165,28 @@ export function normalize_reasoning_chunk_json(content, reasoning) {
 }
 
 /**
+ * 도구 입력 경로에서 `[[...]]` 표기와 별칭·heading·URL 인코딩을 벗겨낸 `JSON` 문자열을 반환한다.
+ *
+ * 모델과 사용자가 넘기는 경로는 Obsidian 링크 표기, `%20` 인코딩, 별칭이 섞여 들어온다.
+ * @param {string} raw
+ * @returns {string}
+ */
+export function normalize_vault_link_target_json(raw) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(raw, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.normalize_vault_link_target_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * MCP tool 실행 인자 문자열을 TypeScript 호스트 경계 계약으로 정규화한다.
  * @param {string} arguments_text
  * @returns {string}

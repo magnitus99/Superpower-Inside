@@ -60,6 +60,7 @@ import {
   classify_mcp_tool_error_json,
   normalize_exclude_extension_json,
   normalize_reasoning_chunk_json,
+  normalize_vault_link_target_json,
   parse_mention_candidates_json,
   plan_tag_mentions_json,
   plan_agentic_tool_turn_json,
@@ -1599,6 +1600,8 @@ export interface RustMentionCandidate {
   name: string;
   workspace?: 'current' | 'tabs';
   tag?: string;
+  /** Obsidian `[[...]]` 링크 후보는 host가 실제 경로를 해석합니다. */
+  link?: true;
 }
 
 export interface RustTagMentionPlan {
@@ -5394,6 +5397,16 @@ export function planReferenceFileIndicesRust(
   }
 }
 
+export function normalizeVaultLinkTargetRust(raw: string): string | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(normalize_vault_link_target_json(raw));
+    return typeof parsed === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function parseMentionCandidatesRust(content: string): RustMentionCandidate[] | null {
   if (!ensureRustCore()) return null;
   try {
@@ -6118,6 +6131,7 @@ function isMentionCandidate(value: unknown): value is RustMentionCandidate {
     typeof candidate.raw === 'string' &&
     typeof candidate.name === 'string' &&
     (candidate.tag === undefined || typeof candidate.tag === 'string') &&
+    (candidate.link === undefined || candidate.link === true) &&
     (candidate.workspace === undefined ||
       candidate.workspace === 'current' ||
       candidate.workspace === 'tabs')
