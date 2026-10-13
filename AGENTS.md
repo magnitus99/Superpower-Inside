@@ -21,6 +21,9 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 - 진입점은 `main.ts`, 설정은 `src/settings.ts`, 계산은 `crates/rag-wasm/`, WASM 연결은 `src/rag/rust-core.ts`입니다. 채팅 변경 전 [src/chat/AGENTS.md](src/chat/AGENTS.md)를 읽습니다.
 - 설치·디버깅 명령은 `package.json`과 `scripts/`, 배포 자산은 `.github/workflows/release.yml`에서 확인합니다. 에이전트 규칙은 AGENTS.md에만 두며, 사용자 요청 없이 `docs/`나 README에 계획·설계 일지·검수 기록·에이전트용 가이드를 작성하지 않습니다.
 - 릴리스는 `main`에서 준비하고 `manifest.json`·`package.json`·`versions.json` 버전을 맞춥니다. 태그는 버전과 정확히 같아야 하며 `v`를 붙이지 않습니다. workflow 실행 중 수동 Release 생성과 경합하지 말고 완료 후 자산을 확인합니다. 같은 버전 재출시의 태그 이동도 사용자 요청 범위에서만 수행합니다.
+- GitHub Release 노트는 직전 릴리스 태그와 현재 릴리스 태그 사이(`git log <prev>..<curr>`)의 작업을 근거로 하되, 커밋 제목·본문을 그대로 옮기지 않고 사용자가 체감하는 변경으로 풀이해 요약합니다. 버전 범프·번들 재빌드 같은 내부 커밋은 적지 않습니다. 첫 릴리스는 전체 이력을 범위로 삼습니다.
+- GitHub Release 본문은 `## English` → `---` → `## 한국어` 순서로 같은 내용을 각각 완성합니다. 노트 파일은 저장소에 커밋하지 않고 Release 본문에만 반영합니다.
+- 릴리스 완료를 보고하기 전에 `gh release view <tag> --json body`로 본문이 비어 있지 않고 영어·한국어가 모두 있는지 확인합니다.
 
 ## 제품·화면
 
