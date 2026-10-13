@@ -296,18 +296,21 @@ describe('SourcePanel view model contract', () => {
         id: 'file:Notes/A.md',
         className: 'superpower-inside-chat-context-chip file attached',
         label: 'Notes/A.md',
+        icon: 'file-text',
         title: undefined,
       },
       {
         id: 'rag:auto',
         className: 'superpower-inside-chat-context-chip rag partial',
         label: 'Checked 1 related note',
+        icon: 'search',
         title: 'Found related notes automatically.',
       },
       {
         id: 'mcp:search',
         className: 'superpower-inside-chat-context-chip mcp-server missing',
         label: 'Tool unavailable: search',
+        icon: 'plug',
         title: undefined,
       },
     ]);
@@ -407,18 +410,21 @@ describe('SourcePanel view model contract', () => {
         id: 'rag:auto',
         className: 'superpower-inside-chat-context-chip rag attached',
         label: 'Checked 3 related notes',
+        icon: 'search',
         title: 'Found related notes automatically.',
       },
       {
         id: 'folder:Research',
         className: 'superpower-inside-chat-context-chip folder partial',
         label: 'Research: 1 note used',
+        icon: 'folder',
         title: 'Only the part that fit was included.',
       },
       {
         id: 'rag:skipped',
         className: 'superpower-inside-chat-context-chip rag skipped',
         label: 'Vault search skipped',
+        icon: 'search',
         title: 'Vault search was skipped for this question.',
       },
     ]);
@@ -457,6 +463,7 @@ describe('SourcePanel view model contract', () => {
       id: 'covered',
       className: 'superpower-inside-chat-context-chip rag attached',
       label: 'Related evidence already attached',
+      icon: 'search',
       title: 'Existing evidence covers these ranges.',
     });
     expect(views[1]?.label).toBe('Related note search failed');

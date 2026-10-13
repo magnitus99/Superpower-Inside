@@ -468,6 +468,52 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.content.split('\n')).toHaveLength(400);
   });
 
+  it('read는 Obsidian 링크 표기와 제외 확장자 경로를 명시 참조로 읽는다', async () => {
+    // PDF 본문 추출은 worker 경계이므로 여기서는 같은 조건의 텍스트 확장자로 확인한다.
+    const app = createApp([createFile('monithub 개요.log', '추출 본문')]);
+    const port = new ObsidianNativeVaultToolPort(
+      app,
+      {
+        // 제외 확장자는 후보 목록에 없지만 사용자가 직접 지정하면 읽습니다.
+        listCandidateFiles: () => Promise.resolve([]),
+        isCandidateFile: () => Promise.resolve(false),
+        isExplicitReadAllowed: () => Promise.resolve(true),
+        isPathVisible: () => true,
+      },
+      () => null,
+    );
+
+    const result = await port.read({
+      action: 'read',
+      path: '[[monithub%20개요.log]]',
+      startLine: 1,
+      endLine: null,
+    });
+
+    expect(result).toMatchObject({ path: 'monithub 개요.log', content: '추출 본문' });
+  });
+
+  it('read는 존재하지만 읽을 수 없는 파일을 찾을 수 없음과 구분한다', async () => {
+    const app = createApp([createFile('Secrets/.env', 'TOKEN=secret')]);
+    const port = new ObsidianNativeVaultToolPort(
+      app,
+      {
+        listCandidateFiles: () => Promise.resolve([]),
+        isCandidateFile: () => Promise.resolve(false),
+        isExplicitReadAllowed: () => Promise.resolve(false),
+        isPathVisible: () => true,
+      },
+      () => null,
+    );
+
+    await expect(
+      port.read({ action: 'read', path: 'Secrets/.env', startLine: 1, endLine: null }),
+    ).rejects.toThrow('Secrets/.env');
+    await expect(
+      port.read({ action: 'read', path: 'Secrets/missing.env', startLine: 1, endLine: null }),
+    ).rejects.toThrow();
+  });
+
   it('read는 큰 한 줄을 손실 없이 런타임 경계로 전달한다', async () => {
     const port = createNativeVaultPort(
       createApp([createFile('Projects/Large.md', '한글🙂'.repeat(100_000))]),
@@ -962,6 +1008,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       {
         listCandidateFiles,
         isCandidateFile,
+        isExplicitReadAllowed: () => Promise.resolve(true),
         isPathVisible: () => true,
       },
       () => createReadyQueryEngineDouble(vi.fn(() => Promise.resolve(indexedResults))),
@@ -1430,6 +1477,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       {
         listCandidateFiles,
         isCandidateFile: (file) => Promise.resolve(file.path === visible.path),
+        isExplicitReadAllowed: (file) => Promise.resolve(file.path === visible.path),
         isPathVisible: () => true,
       },
       () => createReadyQueryEngineDouble(query),
@@ -1753,6 +1801,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     const scope = {
       listCandidateFiles: () => Promise.resolve(app.vault.getFiles()),
       isCandidateFile: () => Promise.resolve(true),
+      isExplicitReadAllowed: () => Promise.resolve(true),
       isPathVisible: () => true,
     };
     const port = new ObsidianNativeVaultToolPort(app, scope, () => null, readStatus);
@@ -1863,6 +1912,8 @@ function createNativeVaultPort(
     {
       listCandidateFiles: getCandidateFiles,
       isCandidateFile: async (file) =>
+        (await getCandidateFiles()).some((candidate) => candidate.path === file.path),
+      isExplicitReadAllowed: async (file) =>
         (await getCandidateFiles()).some((candidate) => candidate.path === file.path),
       isPathVisible: () => true,
     },

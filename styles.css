@@ -3661,6 +3661,18 @@ button.superpower-inside-prompt-danger-btn:disabled {
   white-space: nowrap;
 }
 
+.superpower-inside-chat-context-chip-icon {
+  align-items: center;
+  display: inline-flex;
+  margin-inline-end: 4px;
+  vertical-align: -2px;
+}
+
+.superpower-inside-chat-context-chip-icon svg {
+  height: 12px;
+  width: 12px;
+}
+
 .superpower-inside-chat-context-preview {
   position: relative;
 }

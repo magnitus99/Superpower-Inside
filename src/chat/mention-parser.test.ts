@@ -54,6 +54,26 @@ describe('parseMentions', () => {
     ]);
   });
 
+  it('Obsidian [[링크]]는 실제 경로로 해석해 파일·폴더 멘션으로 만든다', () => {
+    const links: Record<string, { type: 'file' | 'folder'; path: string }> = {
+      'Project Plan': { type: 'file', path: 'Project Plan.md' },
+      'Projects/Alpha/': { type: 'folder', path: 'Projects/Alpha' },
+    };
+    expect(
+      parseMentions('[[Project Plan#요약|별칭]] ![[Projects/Alpha/]] [[없는 문서]]', {
+        ...resolver(),
+        resolveLink: (target) => links[target] ?? null,
+      }),
+    ).toEqual([
+      { raw: '[[Project Plan#요약|별칭]]', type: 'file', name: 'Project Plan.md' },
+      { raw: '![[Projects/Alpha/]]', type: 'folder', name: 'Projects/Alpha' },
+    ]);
+  });
+
+  it('링크 해석기가 없으면 [[링크]]는 첨부로 만들지 않는다', () => {
+    expect(parseMentions('[[Project Plan]]', resolver())).toEqual([]);
+  });
+
   it('같은 대상은 표기법이 달라도 한 번만 반환한다', () => {
     expect(parseMentions('@[Project Plan.md] @[Project Plan.md]', resolver())).toEqual([
       { raw: '@[Project Plan.md]', type: 'file', name: 'Project Plan.md' },

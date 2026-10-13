@@ -71,6 +71,8 @@ interface BuildContextOptions {
   app: App;
   workspaceFiles?: WorkspaceMentionFiles;
   candidatePaths?: ReadonlySet<string>;
+  /** 사용자가 직접 지정한 파일을 읽을 수 있는지 확인합니다(확장자 제외는 허용). */
+  isExplicitReadAllowed?: (file: TFile) => Promise<boolean>;
   ragEngine?: RagQueryLike | null;
   mcpRegistry?: MCPRegistry | null;
   maxFolderFiles?: number;
@@ -202,6 +204,7 @@ export async function buildChatContext(
       attachments,
       options.candidatePaths,
       explicitFiles.length - index + explicitFolders.length + explicitTags.length,
+      options.isExplicitReadAllowed,
     );
     if (!fileResult) continue;
     fileResults.push(fileResult);
@@ -564,6 +567,16 @@ export function createAppMentionResolver(
       registry ? registry.getEnabledServers().some((server) => server.name === name) : false,
     isFile: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFile,
     isFolder: (name: string) => app.vault.getAbstractFileByPath(name) instanceof TFolder,
+    resolveLink: (target: string) => {
+      // Obsidian 링크는 파일만 해석하므로 폴더는 `[[폴더/]]` 꼬리 슬래시로 구분합니다.
+      const folderPath = target.replace(/\/+$/, '');
+      if (folderPath !== target) {
+        const folder = app.vault.getAbstractFileByPath(folderPath);
+        return folder instanceof TFolder ? { type: 'folder', path: folder.path } : null;
+      }
+      const file = app.metadataCache.getFirstLinkpathDest(target, '');
+      return file instanceof TFile ? { type: 'file', path: file.path } : null;
+    },
   };
 }
 
@@ -691,6 +704,11 @@ async function verifyQueryResult(result: QueryResult, app: App): Promise<QueryRe
 
 type QueryResultVerification = RustContextSourceVerification;
 
+/** 파일 mention을 붙이지 못한 이유를 남기는 chip을 만든다. */
+function createMissingFileAttachment(path: string, detail: string): ContextAttachment {
+  return { id: `file:${path}`, type: 'file', name: path, label: path, status: 'missing', detail };
+}
+
 async function appendFileMention(
   path: string,
   app: App,
@@ -698,17 +716,19 @@ async function appendFileMention(
   attachments: ContextAttachment[],
   candidatePaths?: ReadonlySet<string>,
   remainingSources = 1,
+  isExplicitReadAllowed?: (file: TFile) => Promise<boolean>,
 ): Promise<{ file: TFile; content: string } | null> {
   const file = app.vault.getAbstractFileByPath(path);
-  if (!(file instanceof TFile) || (candidatePaths && !candidatePaths.has(file.path))) {
-    attachments.push({
-      id: `file:${path}`,
-      type: 'file',
-      name: path,
-      label: path,
-      status: 'missing',
-      detail: t('fileNotFoundError', { path }),
-    });
+  if (!(file instanceof TFile)) {
+    attachments.push(createMissingFileAttachment(path, t('fileNotFoundError', { path })));
+    return null;
+  }
+  const outsideCandidateScope = candidatePaths !== undefined && !candidatePaths.has(file.path);
+  if (
+    outsideCandidateScope &&
+    !(isExplicitReadAllowed !== undefined && (await isExplicitReadAllowed(file)))
+  ) {
+    attachments.push(createMissingFileAttachment(path, t('fileUnreadableError', { path })));
     return null;
   }
 
@@ -828,6 +848,7 @@ async function appendTagMention(
       fileAttachments,
       options.candidatePaths,
       selected.length - index + remainingTags,
+      options.isExplicitReadAllowed,
     );
   }
   sourceIds.push(...fileAttachments.flatMap((attachment) => attachment.sourceIds ?? []));
