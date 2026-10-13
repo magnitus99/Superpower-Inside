@@ -8,273 +8,244 @@
 
 ## English
 
-> **You already did the reading. Put those notes to work.**
+> **Your next draft starts with what you already know.**
 
-Superpower Inside brings AI research and writing into Obsidian. Ask it to find a past decision, compare your research, or turn scattered notes into a draft—with vault sources you can open and check.
+A decision from last month's meeting may be in one note, while the article that challenges it sits in another folder. Finding both takes time when you return to the project.
 
-- **Get the decision back.** Ask what changed, why, and where it was recorded.
-- **Use what you've learned.** Pull reading notes into an outline, comparison, or study session.
-- **Stay with your work.** Reference the current note, open tabs, a folder, or a tag from the chat.
+Superpower Inside brings AI research and writing into Obsidian. Ask a question, bring in the notes and documents that matter, and work toward an answer with sources you can open and check.
 
-The superpower is inside: your observations, your research, your decisions. Give them a question, and get something you can use next.
+**Find past decisions and compare the evidence before writing from your own material.**
 
-**[Install in Obsidian](https://obsidian.md/plugins?id=superpower-inside)** · **[Download a release](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
+**[Install in Obsidian](https://obsidian.md/plugins?id=superpower-inside)** · **[Download the latest release](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
-**Free, open source, desktop only.** The plugin has no subscription or signup; your AI provider may charge or require an account. [Third-party notices](THIRD_PARTY_NOTICES.md).
+Free and open source. Desktop Obsidian **1.11.4 or later**. The plugin has no subscription or signup; your AI provider's account requirements, fees, and usage limits still apply. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md).
 
-### Who is it for?
+### From “I wrote that somewhere” to something you can use
 
-- **Already paying for ChatGPT?** Connect with browser sign-in and use models available to your account through the Codex backend. Account access and usage limits apply.
-- **Researchers and students:** compare sources, examine disagreements, and make questions from your study notes.
-- **Project leads and builders:** ask for decisions, blockers, recorded owners, and next actions across meeting and project notes.
-- **Writers and knowledge workers:** reuse your reading, examples, and arguments without copying every note into another app.
-
-### The vault where it earns its place
-
-Have you ever thought, “I know I wrote that down”? Start there.
-
-- A project with planning notes, meeting minutes, and decisions recorded over time.
-- A research or reading collection with overlapping claims and different conclusions.
-- A personal knowledge vault with linked ideas you want to use in your next piece of work.
-
-Readable text, useful headings, dates, links, and tags give it more to work with. Markdown, plain text, code, JSON, and CSV are supported, and readers pull the text layer out of PDF, EPUB, DOCX, ODT, PPTX, XLSX, and HWPX files. Scanned PDFs, images, and audio still need a text version first.
-
-### What you can do
-
-#### 1. Ask a question across your notes
-
-Keyword and meaning-based search help find relevant material even when you don't remember the filename. Vault tools can read passages, follow note links, and compare the evidence they find.
-
-> Compare the original plan with the meeting decisions in @[Projects/Launch]. What changed? Show the sources and next actions.
-
-- Narrow the task by folder or tag, or ask it to search across eligible vault files.
-- Keep headings, code boundaries, JSON keys, and CSV headers with retrieved passages.
-- Check the stated coverage: bounded research is not a promise that every note was read.
-
-#### 2. Open the evidence behind the answer
-
-Sources show file paths and available heading or line locations. Open the original, copy its link, or insert a cited passage into your active note.
-
-- See which passages were checked against the current file and which need review.
-- Inspect sources and the work log below the answer when you need them.
-- See context limits and omitted references when the selected material exceeds the model's budget.
-
-#### 3. Bring the work on your screen into chat
-
-Type `@` and choose a reference. The composer previews references before you send.
-
-| Reference | Use it for |
+| When you need to… | Ask your vault to… |
 | --- | --- |
-| `@current` | The active note. |
+| Pick up a project after a break | Find recorded decisions, open questions, and next actions. |
+| Make sense of conflicting research | Compare claims and point to the passages behind them. |
+| Start a draft | Build an outline from your reading notes and open documents. |
+| Study what you've collected | Explain a topic or make revision questions from selected material. |
+
+You choose the question and review the result. Built-in vault tools read your material; they do not rewrite your notes on their own.
+
+### Bring the right material into the conversation
+
+Use the links you already know. Type `[[` in chat to choose a file or folder, including supported documents such as PDFs. Paste `[[...]]` or `![[...]]` references, or use `@` to bring in your current workspace. The composer previews references and flags missing or unreadable files before you send.
+
+| Reference | What it brings in |
+| --- | --- |
+| `[[Reading/Article.pdf]]` | A specific document. |
+| `[[Projects/Launch/]]` | A folder as the research scope. |
+| `@current` | Your active note. |
 | `@tabs` | Files open in Obsidian tabs. |
-| `@note.md` | One specific file. |
-| `@[Projects/Launch]` | A folder's eligible files. |
-| `@#research` | Notes matching an Obsidian tag, including nested tags. |
+| `@note.md` or `@[Projects/Launch]` | A file or folder. |
+| `@#research` | Notes with that tag, including nested tags. |
 | `@server` | A connected external tool server. |
 
-Mentioning only an external server skips automatic vault search for that turn. Add a vault reference when you want both.
+> Compare the proposal in [[Projects/Launch/Proposal.pdf]] with the decisions in [[Projects/Launch/]]. What changed, and what still needs a decision? Cite the sources.
 
-#### 4. Turn notes into the result you need
+No filename in mind? Ask it to search. Keyword and meaning-based retrieval help find relevant passages, while vault tools can read more context and follow note links. Folder and tag references keep the task focused.
 
-Choose a prompt preset, then say what you want. Save recurring preferences in the prompt library, with a global default or a prompt for the current conversation.
+### Use the documents beside your notes
 
-- **Reading and research:** compare arguments, summarize sources, or test your recall.
-- **Meetings and projects:** collect decisions, unresolved questions, and next actions.
-- **Writing and reflection:** draft from your notes, review your week, or check a story's consistency.
-- **Organization and technical work:** propose a map of content or investigate a problem using recorded evidence.
+Your research doesn't have to be all Markdown. Read and compare text from **PDF, EPUB, DOCX, ODT, PPTX, XLSX, and HWPX**, alongside plain text, code, JSON, and CSV.
 
-These are requests you can make, not automatic edits to your vault. The built-in vault tools are read-only; review drafts and proposed changes before using them.
+PDFs use their text layer when available. For scanned pages, **local Korean and English OCR** extracts the text and shows page progress. Missing or outdated PDF processing files are downloaded and verified automatically for your plugin version. Extracted passages retain page labels so you can return to the relevant part of the document.
 
-#### 5. Choose your AI. Keep search local.
+OCR quality depends on the scan, and extraction can fail for password-protected, oversized, damaged, or low-confidence documents. To use standalone images or audio, provide a text version first.
 
-Connect ChatGPT browser sign-in, OpenAI API, Claude, Ollama, OpenRouter, or an OpenAI-compatible endpoint. Test and select the model you want; available features depend on the model and connection.
+### Check the answer where it came from
 
-- Choose **Ternlight** for short English notes (about 10 MB), or **EmbeddingGemma 300M** for multilingual notes (about 1.27 GB). Download and manage their files in settings; switching models rebuilds the index.
-- Search indexes and built-in embeddings stay on your device. Meaning-based search needs the model files and indexing to be ready.
-- Chat and optional remote embeddings can send content to your selected provider. Use a local chat provider as well when that content must stay on your machine.
+Open a source, copy its link, or insert a cited passage into your active note. Available source locations include file paths, headings, lines, and PDF page labels.
 
-#### 6. Connect tools and look up plugin syntax
+- Inspect the source panel and work log beneath the answer.
+- See which passages were checked against the current file and which need review.
+- Check research coverage and context limits, including references left out of the model's input.
 
-Add local MCP tools when a task needs information beyond your notes. Trusted tools can run automatically; tools requiring approval wait for you.
+Source links make claims easier to check. They do not guarantee correctness or mean every file was read.
 
-With **Answers informed by installed plugins** enabled and **Context7 MCP** connected, name an active plugin in your question to retrieve its documentation before generation. Use this for plugin-specific queries or templates; the lookup does not verify your settings, installed-version compatibility, or code execution.
+### Keep working after the first answer
 
-### Start with one question you actually care about
+Turn a comparison into an outline, or ask for the unresolved questions behind a summary. Prompt presets cover research, study, meetings, writing, reflection, and technical work. Save recurring instructions in the prompt library and apply them globally or to one conversation.
+
+Need a different direction? **Edit and resend a question** to continue from that point, replacing the later conversation. **Regenerate an answer** and move between its saved versions. When the result is ready, copy it, insert it into your active note, or save it as a new note using the message actions.
+
+### Choose your AI and where your data goes
+
+Connect **ChatGPT browser sign-in, OpenAI API, Claude, Ollama, Ollama Cloud, OpenRouter, or an OpenAI-compatible endpoint**. Test a model and select it in chat. ChatGPT sign-in uses the Codex backend; model access and usage limits depend on your account.
+
+Local meaning-based search offers **Ternlight** for short English notes and **EmbeddingGemma 300M** for multilingual material. Before using it, prepare the model files in settings and wait for indexing to finish; changing models rebuilds that index. Keyword search and built-in vault tools are also available without embeddings.
+
+**Local search and local PDF OCR run on your device.** Remote chat and optional remote embeddings can send material to the provider you choose. If chat content must also stay on your machine, use a local chat provider and check any external tools you enable.
+
+API keys and ChatGPT credentials are held in **Obsidian's secret storage on this device**, separately from vault-synced plugin settings. Set them up on each device where you use the plugin.
+
+### Reach beyond the vault when the task calls for it
+
+Connect **local MCP tools** for outside information and workflows. Trusted tools can run automatically; tools that require approval wait for you. Mentioning only an external server skips automatic vault search for that turn. Add a vault reference when you want both.
+
+Writing a query or template for another Obsidian plugin? Enable **Answers informed by installed plugins**, connect **Context7 MCP**, and name an active plugin in your question. Its documentation can inform the answer. Check your installed version, settings, and execution results separately.
+
+### Start with one real question
 
 1. Install and enable **Superpower Inside** in Obsidian's **Community plugins**.
-2. Add an AI connection in the plugin settings, test a model, and select it in chat.
-3. Open the chat sidebar and try one of these:
+2. Add an AI connection in settings, test a model, and select it in chat.
+3. Open the chat sidebar, choose a note or document, and ask for a result you need.
 
-> **Project:** “In @[Projects/Launch], what is still blocking launch? Give me a table of evidence, recorded owners, and next actions.”
+> **Project:** “Use @current to list the decisions and unresolved questions. Show the evidence for each.”
 >
-> **Reading:** “Compare the claims in @#research. Where do they agree, and where does the evidence differ?”
+> **Research:** “Compare the arguments in @#research. Where do the sources agree, and where do they disagree?”
 >
-> **Writing:** “Use @tabs to draft an outline. Keep my arguments and cite the notes behind them.”
+> **Writing:** “Turn @tabs into an outline for a short article. Cite the notes behind each section.”
 
-Keyword search and built-in vault tools do not require an embedding index. Let meaning-based indexing finish in the background while you start.
+The examples above are illustrative. Use your own files, folders, and tags.
 
 <details>
-<summary><strong>ChatGPT sign-in, manual install, and external tools</strong></summary>
+<summary><strong>Connection and installation details</strong></summary>
 
-- **ChatGPT:** add an **OpenAI ChatGPT (OAuth)** connection and click **Sign in with ChatGPT**. Complete browser sign-in, fetch or add an available model, and run its generation test. Embeddings use a separate connection, such as a built-in local model.
-- **API key:** choose **OpenAI API** instead of the ChatGPT connection.
-- **Manual install:** download the plugin files from a GitHub Release into `.obsidian/plugins/superpower-inside/`, then reload and enable the plugin. Include every shipped runtime asset, not just `main.js`, `manifest.json`, and `styles.css`.
-- **MCP:** open **External tools → Server setup → Advanced JSON editor**. Use a top-level `mcpServers` object with named entries containing `command`, optional `args`, and optional string-valued `env`. Local stdio servers are supported; remote HTTP/SSE configurations are not. Applying the editor replaces the configured server list, so keep existing entries.
+- **ChatGPT:** add an **OpenAI ChatGPT (OAuth)** connection and choose **Sign in with ChatGPT**. Finish browser sign-in, fetch or add an available model, and run its generation test. Embeddings use a separate connection, such as a built-in local model.
+- **API key:** choose **OpenAI API** for an OpenAI API key, or the matching provider for another service.
+- **Manual installation:** download the runtime assets from the [latest GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest) into `.obsidian/plugins/superpower-inside/`, then reload and enable the plugin. Include `main.js`, `manifest.json`, `styles.css`, and the shipped WASM and embedding worker/runtime files. PDF processing files are prepared automatically when needed; the first download requires network access.
+- **MCP:** open **External tools → Server setup → Advanced JSON editor**. Use a top-level `mcpServers` object with named entries containing `command`, optional `args`, and optional string-valued `env`. Local stdio servers are supported; remote HTTP/SSE configurations are not. Applying the editor replaces the server list, so preserve existing entries.
 
 </details>
 
 <details>
-<summary><strong>Your data and the limits to know</strong></summary>
+<summary><strong>Data controls and practical limits</strong></summary>
 
-- Exclude notes with `superpower-inside-exclude: true` in top-level YAML, or use the document exclusion command. Path and extension exclusions also apply to search, indexing, and built-in vault tools.
-- Chat messages, selected passages, and tool results may go to the AI provider or tools you configure. Local search does not make remote chat private.
-- API keys and ChatGPT OAuth credentials are kept in Obsidian's secret storage on this device, so vault sync and backups never include them. Enter them again on each device where you use the plugin.
-- Local model downloads contain no note content. Indexes stay in local browser storage for this vault.
-- AI can miss evidence or make mistakes. A source link helps you check a claim; it does not guarantee the claim is correct. General knowledge and new drafts may have no vault source.
-- Responses are buffered rather than shown token by token. Stopping a run may not cancel inference already running at the provider.
+- Exclude a note with `superpower-inside-exclude: true` in top-level YAML or the document exclusion command. Path exclusions and sensitive-file safeguards also apply. Extension exclusions govern search and indexing; explicitly referencing a supported file can still read it, subject to the other safeguards and size limits.
+- Search indexes and the PDF OCR cache remain in this vault's local browser storage. Chat messages, selected passages, and tool results may be sent to the providers or tools you configure.
+- Meaning-based search requires ready model files and an index. Document extraction reads text; it does not promise to preserve the original layout, every table, or every visual.
+- AI can miss evidence or make mistakes. General knowledge and new drafts may have no vault source. Review important claims against the originals.
+- Responses are buffered rather than displayed token by token. Stopping a run may not cancel inference already running at the provider.
 - Mobile Obsidian is not supported.
 
 </details>
 
-**Pick a question you've been putting off. [Ask your vault.](https://obsidian.md/plugins?id=superpower-inside)**
+**You already have the material. [Bring your next question to it.](https://obsidian.md/plugins?id=superpower-inside)**
 
 ---
 
 ## 한국어
 
-> **읽고, 적고, 저장까지 했잖아요. 이제 써먹으세요.**
+> **다음 글의 시작은, 이미 쌓아 둔 기록 안에 있습니다.**
 
-Superpower Inside는 Obsidian 안에서 노트를 찾아 읽고, 비교하고, 글로 만드는 AI 플러그인입니다. 지난 결정·흩어진 연구 자료·초안에 필요한 근거를 질문으로 찾고, 볼트 출처를 열어 직접 확인하세요.
+지난달 회의에서 내린 결정은 노트 하나에 있고, 그 결정에 의문을 던지는 기사는 다른 폴더에 있습니다. 프로젝트로 돌아와 두 자료를 함께 찾으려면 시간이 걸립니다.
 
-- **그때 내린 결정, 다시 찾으세요.** 무엇이 바뀌었고 어디에 기록됐는지 물어보세요.
-- **읽은 만큼 써먹으세요.** 독서 노트를 개요·비교표·학습 질문으로 꺼내세요.
-- **지금 하던 일을 이어가세요.** 현재 노트·열린 탭·폴더·태그를 채팅에 바로 연결하세요.
+Superpower Inside는 Obsidian 안에서 노트를 찾아 읽고, 비교하고, 글로 만드는 AI 플러그인입니다. 질문에 필요한 노트와 문서를 연결하고, 답변의 근거를 원문에서 직접 확인하며 다음 작업을 이어가세요.
 
-초능력은 내가 남긴 관찰, 자료, 결정 안에 있습니다. Superpower Inside는 그 기록을 다음 작업에 쓸 수 있게 꺼내줍니다.
+**지난 결정과 그 근거를 비교하며 내 자료로 글을 쓰세요.**
 
-**[Obsidian에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
+**[Obsidian에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[최신 릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
-**무료·오픈소스·데스크톱 전용입니다.** 플러그인 구독료나 회원가입은 없으며, 선택한 AI 제공자의 계정·요금은 별도입니다. [서드파티 고지](THIRD_PARTY_NOTICES.md).
+무료·오픈소스이며, **Obsidian 1.11.4 이상 데스크톱 버전**에서 사용할 수 있습니다. 플러그인 구독료나 회원가입은 없으며, 선택한 AI 제공자의 계정·요금·사용 한도는 별도입니다. [MIT 라이선스](LICENSE) · [서드파티 고지](THIRD_PARTY_NOTICES.md).
 
-### 이런 분께 잘 맞습니다
+### “어딘가에 적었는데”에서, 바로 쓸 수 있는 결과물로
 
-- **이미 ChatGPT를 구독하는 분:** 브라우저 로그인으로 연결하고 Codex 서버를 통해 계정에서 지원하는 모델을 사용하세요. 계정별 접근 권한과 사용 한도는 적용됩니다.
-- **연구자·학생:** 자료의 주장을 비교하고, 서로 다른 결론을 살펴보고, 공부한 내용으로 복습 질문을 만드세요.
-- **프로젝트 담당자·개발자:** 회의록과 기획 노트에서 결정·장애 요인·기록된 담당자·다음 행동을 모으세요.
-- **작가·지식 노동자:** 노트를 다른 앱에 하나씩 복사하지 않고, 읽어 둔 자료와 논거로 글을 쓰세요.
-
-### 이런 볼트에서 먼저 써보세요
-
-“분명 어딘가에 적었는데.” 이 말이 나오는 볼트라면 시작하기 좋습니다.
-
-- 기획·회의록·의사결정이 시간순으로 쌓인 **프로젝트 볼트**.
-- 같은 주제를 다루지만 주장과 결론이 다른 **연구·독서 볼트**.
-- 서로 연결된 생각을 다음 글이나 업무에 쓰고 싶은 **개인 지식 볼트**.
-
-읽을 수 있는 본문에 제목·날짜·링크·태그가 있으면 비교와 탐색에 도움이 됩니다.
-
-- Markdown·일반 텍스트·코드·JSON·CSV를 지원합니다.
-- PDF·EPUB·DOCX·ODT·PPTX·XLSX·HWPX는 본문 텍스트를 읽어 옵니다.
-- 스캔 PDF·이미지·음성은 먼저 텍스트로 준비하세요.
-
-### 기능을 이렇게 써보세요
-
-#### 1. 노트를 넘나들며 질문하세요
-
-파일명을 몰라도 키워드·의미 검색으로 관련 자료를 찾습니다. 볼트 도구는 필요한 구간을 읽고, 노트 링크를 따라가며, 찾은 근거를 비교할 수 있습니다.
-
-> @[Projects/Launch]의 최초 기획과 회의 결정을 비교해줘. 무엇이 바뀌었는지 출처와 다음 행동을 함께 보여줘.
-
-- 폴더·태그로 범위를 좁히거나, 검색 대상 볼트 파일에서 찾아달라고 요청하세요.
-- 검색 구간에는 제목·코드 경계·JSON 키·CSV 헤더가 함께 보존됩니다.
-- 답변의 조사 범위를 확인하세요. 제한된 조사를 모든 노트를 읽은 결과로 받아들이지는 마세요.
-
-#### 2. 답변의 근거를 바로 여세요
-
-출처에는 파일 경로와 확인 가능한 제목·줄 위치가 표시됩니다. 원문을 열고, 링크를 복사하고, 출처 구간을 활성 노트에 삽입할 수 있습니다.
-
-- 현재 파일과 대조한 근거와 추가 확인이 필요한 자료를 구분해 보세요.
-- 필요할 때 답변 아래의 출처와 작업 기록을 펼치세요.
-- 선택한 자료가 모델 한도를 넘으면 컨텍스트 제한과 빠진 참조를 확인하세요.
-
-#### 3. 지금 화면에 열린 작업을 가져오세요
-
-`@`를 입력하고 참조를 고르세요. 보내기 전에 입력창에서 참조를 미리 확인할 수 있습니다.
-
-| 참조 | 가져오는 범위 |
+| 이런 순간에 | 볼트에 이렇게 물어보세요 |
 | --- | --- |
+| 한동안 멈춘 프로젝트를 다시 맡았을 때 | 기록된 결정·미해결 질문·다음 행동을 찾아줘. |
+| 자료마다 주장과 결론이 다를 때 | 주장을 비교하고 각각의 근거 구간을 보여줘. |
+| 초안을 어디서 시작할지 막막할 때 | 독서 노트와 열린 문서로 개요를 만들어줘. |
+| 모아 둔 자료로 공부하고 싶을 때 | 선택한 자료로 개념을 설명하거나 복습 질문을 만들어줘. |
+
+질문을 고르고 결과를 검토하는 사람은 사용자입니다. 내장 볼트 도구는 자료를 읽으며, 스스로 노트를 고쳐 쓰지 않습니다.
+
+### 필요한 자료를 대화에 바로 연결하세요
+
+익숙한 링크 문법을 그대로 쓰세요. 채팅에서 `[[`를 입력하면 PDF 등 지원 문서를 포함한 파일·폴더를 선택할 수 있습니다. `[[...]]`·`![[...]]` 참조를 붙여 넣거나, `@`로 현재 작업을 가져오세요. 입력창은 참조를 미리 보여주고, 없거나 읽을 수 없는 파일을 전송 전에 표시합니다.
+
+| 참조 | 가져오는 자료 |
+| --- | --- |
+| `[[Reading/Article.pdf]]` | 지정한 문서 하나. |
+| `[[Projects/Launch/]]` | 조사 범위로 지정한 폴더. |
 | `@current` | 현재 활성 노트. |
 | `@tabs` | Obsidian 탭에 열린 파일. |
-| `@note.md` | 지정한 파일 하나. |
-| `@[Projects/Launch]` | 해당 폴더의 검색 대상 파일. |
-| `@#research` | 해당 Obsidian 태그와 하위 태그가 붙은 노트. |
+| `@note.md` 또는 `@[Projects/Launch]` | 지정한 파일이나 폴더. |
+| `@#research` | 해당 태그와 하위 태그가 붙은 노트. |
 | `@server` | 연결한 외부 도구 서버. |
 
-외부 서버만 멘션하면 그 질문의 볼트 자동 검색은 건너뜁니다. 볼트 근거도 필요하면 노트·폴더 등의 참조를 함께 넣으세요.
+> [[Projects/Launch/Proposal.pdf]]의 제안과 [[Projects/Launch/]]에 기록된 결정을 비교해줘. 무엇이 바뀌었고, 어떤 결정이 아직 필요해? 출처도 달아줘.
 
-#### 4. 모아 둔 노트를 결과물로 바꾸세요
+파일명이 생각나지 않아도 질문하세요. 키워드·의미 검색으로 관련 구간을 찾고, 볼트 도구로 앞뒤 내용을 읽거나 노트 링크를 따라갈 수 있습니다. 폴더·태그를 지정하면 원하는 범위에 집중할 수 있습니다.
 
-프리셋을 고르고 원하는 결과를 말하세요. 반복해서 쓰는 요구는 프롬프트 보관함에 저장하고, 전체 기본값이나 현재 대화에 적용할 수 있습니다.
+### 노트 옆에 모아 둔 문서도 활용하세요
 
-- **독서·연구:** 논거 비교, 자료 요약, 이해도 점검.
-- **회의·프로젝트:** 결정 정리, 미해결 질문, 다음 행동.
-- **글쓰기·회고:** 노트 기반 초안, 주간 회고, 이야기 설정의 일관성 점검.
-- **정리·기술 기록:** 목차 제안, 기록된 근거로 문제 조사.
+자료를 모두 Markdown으로 옮길 필요는 없습니다. **PDF·EPUB·DOCX·ODT·PPTX·XLSX·HWPX**의 본문을 읽고, 일반 텍스트·코드·JSON·CSV와 함께 비교할 수 있습니다.
 
-내장 볼트 도구는 읽기 전용이므로, 위 작업은 AI에게 결과물이나 제안을 요청하는 방식입니다. 초안과 변경 제안은 검토한 뒤 사용하세요.
+PDF는 텍스트가 있으면 그 본문을 읽습니다. 스캔한 페이지는 **기기 안에서 실행하는 한국어·영어 OCR**로 읽으며 페이지 진행 상황을 표시합니다. PDF 처리 파일이 없거나 버전이 맞지 않으면 현재 플러그인 버전에 맞춰 자동으로 내려받아 검증합니다. 추출한 구간에는 페이지 라벨이 남아 문서의 해당 부분으로 돌아가 확인할 수 있습니다.
 
-#### 5. AI는 고르고, 검색은 로컬로 쓰세요
+OCR 품질은 스캔 상태에 따라 달라지며, 암호화·크기 초과·손상·낮은 인식 신뢰도 등의 이유로 본문 추출이 실패할 수 있습니다. 별도 이미지 파일이나 음성을 활용하려면 먼저 텍스트로 준비하세요.
 
-ChatGPT 브라우저 로그인·OpenAI API·Claude·Ollama·OpenRouter·OpenAI 호환 서버를 연결하고 원하는 모델을 테스트해 선택하세요. 사용 가능한 기능은 모델과 연결 방식에 따라 다릅니다.
+### 답변이 나온 자리에 돌아가 확인하세요
 
-- 짧은 영어 노트에는 **Ternlight**(약 10 MB), 한국어 등 다국어 노트에는 **EmbeddingGemma 300M**(약 1.27 GB)을 선택하세요. 설정에서 파일을 관리할 수 있으며, 모델을 바꾸면 인덱스를 다시 만듭니다.
-- 검색 인덱스와 내장 임베딩은 기기 안에 남습니다. 의미 검색은 모델 준비와 인덱싱이 끝난 뒤 사용할 수 있습니다.
-- 채팅과 선택한 원격 임베딩은 제공자에게 내용을 보낼 수 있습니다. 채팅 내용도 기기 안에 두려면 로컬 채팅 제공자를 함께 사용하세요.
+답변을 읽다가 근거가 궁금해지면 출처를 여세요. 링크를 복사하거나, 출처 구간을 활성 노트에 삽입할 수도 있습니다. 자료에 따라 파일 경로·제목·줄 위치·PDF 페이지 라벨을 확인할 수 있습니다.
 
-#### 6. 외부 도구와 플러그인 문서를 연결하세요
+- 답변 아래의 출처 패널과 작업 기록을 펼쳐보세요.
+- 현재 파일과 대조한 구간과 추가 확인이 필요한 자료를 구분하세요.
+- 조사 범위와 컨텍스트 한도, 모델 입력에서 빠진 참조를 확인하세요.
 
-노트 밖의 정보가 필요하면 로컬 MCP 도구를 연결하세요. 신뢰한 도구는 자동 실행할 수 있고, 승인이 필요한 도구는 기다립니다.
+출처 링크는 주장을 확인하는 데 도움을 줍니다. 답변의 정확성을 보장하거나 모든 파일을 읽었다는 뜻은 아닙니다.
 
-**설치된 플러그인에 맞춘 답변**을 켜고 **Context7 MCP**를 연결하세요.
+### 첫 답변에서 다음 작업으로 이어가세요
 
-- 질문에 활성 플러그인 이름을 적으면 해당 문서를 먼저 조회해 전용 쿼리나 템플릿 작성에 활용합니다.
-- 내 설정·설치 버전과의 호환성·코드 실행 결과는 별도로 확인해야 합니다.
+비교 결과로 글의 개요를 만들고, 요약에서 빠진 질문을 찾아보세요. 연구·학습·회의·글쓰기·회고·기술 작업용 프롬프트 프리셋을 사용할 수 있습니다. 반복하는 요구는 프롬프트 보관함에 저장해 전체 기본값이나 대화 하나에 적용하세요.
 
-### 계속 미뤄 둔 질문 하나로 시작하세요
+방향을 바꾸고 싶다면 **질문을 수정해 다시 보내세요.** 해당 지점 이후의 대화를 교체하고 이어갑니다. **답변을 다시 생성한 뒤 저장된 버전 사이를 이동**할 수도 있습니다. 결과가 준비되면 메시지 메뉴에서 복사하거나, 활성 노트에 삽입하거나, 새 노트로 저장하세요.
+
+### AI와 데이터가 오갈 곳을 선택하세요
+
+**ChatGPT 브라우저 로그인·OpenAI API·Claude·Ollama·Ollama Cloud·OpenRouter·OpenAI 호환 서버**를 연결할 수 있습니다. 모델을 테스트하고 채팅에서 선택하세요. ChatGPT 로그인은 Codex 서버를 사용하며, 모델 접근 권한과 사용 한도는 계정에 따라 달라집니다.
+
+로컬 의미 검색에는 짧은 영어 노트용 **Ternlight**, 다국어 자료용 **EmbeddingGemma 300M**을 선택할 수 있습니다. 설정에서 모델 파일을 준비하고 인덱싱을 마치세요. 임베딩 모델을 바꾸면 인덱스를 다시 만듭니다. 키워드 검색과 내장 볼트 도구는 임베딩 인덱스 없이 사용할 수 있습니다.
+
+**로컬 검색과 PDF OCR은 내 기기에서 실행됩니다.** 원격 채팅과 선택한 원격 임베딩은 자료를 제공자에게 보낼 수 있습니다. 채팅 내용도 기기 안에 두려면 로컬 채팅 제공자를 사용하고, 활성화한 외부 도구도 확인하세요.
+
+API 키와 ChatGPT 자격 증명은 볼트와 동기화되는 플러그인 설정과 분리해 **이 기기의 Obsidian 보안 저장소**에 보관합니다. 플러그인을 사용하는 기기마다 설정하세요.
+
+### 노트 밖의 정보가 필요할 때는 도구를 연결하세요
+
+**로컬 MCP 도구**로 외부 정보와 작업 흐름을 연결할 수 있습니다. 신뢰한 도구는 자동 실행할 수 있고, 승인이 필요한 도구는 기다립니다. 외부 서버만 멘션하면 그 질문의 볼트 자동 검색을 건너뜁니다. 볼트 근거도 필요하면 노트 등의 참조를 함께 넣으세요.
+
+다른 Obsidian 플러그인의 쿼리나 템플릿을 작성하나요? **설치된 플러그인에 맞춘 답변**을 켜고 **Context7 MCP**를 연결한 뒤, 질문에 활성 플러그인 이름을 적으세요. 해당 문서를 답변에 활용할 수 있습니다. 설치 버전·내 설정·실행 결과는 별도로 확인하세요.
+
+### 지금 필요한 질문 하나로 시작하세요
 
 1. Obsidian **커뮤니티 플러그인**에서 **Superpower Inside**를 설치하고 활성화하세요.
-2. 플러그인 설정에서 AI를 연결하고 모델을 테스트한 뒤 채팅에서 선택하세요.
-3. 채팅 사이드바를 열고 질문하세요.
+2. 설정에서 AI를 연결하고 모델을 테스트한 뒤 채팅에서 선택하세요.
+3. 채팅 사이드바를 열고 노트나 문서를 골라 필요한 결과를 요청하세요.
 
-> **프로젝트:** “@[Projects/Launch]에서 출시를 막는 일이 뭐야? 근거·기록된 담당자·다음 행동을 표로 정리해줘.”
+> **프로젝트:** “@current의 결정과 미해결 질문을 정리해줘. 항목마다 근거를 보여줘.”
 >
-> **독서:** “@#research의 주장을 비교해줘. 어디서 동의하고, 어떤 근거에서 갈려?”
+> **연구:** “@#research의 논거를 비교해줘. 자료들이 어디서 동의하고 어디서 갈려?”
 >
-> **글쓰기:** “@tabs로 글의 개요를 만들어줘. 내 논거를 유지하고 근거 노트를 달아줘.”
+> **글쓰기:** “@tabs로 짧은 글의 개요를 만들어줘. 각 절의 근거 노트를 달아줘.”
 
-키워드 검색과 내장 볼트 도구에는 임베딩 인덱스가 필요하지 않습니다. 먼저 질문하고, 의미 검색용 인덱싱은 백그라운드에서 마치세요.
+위 예시는 사용법을 보여주기 위한 가상 예시입니다. 내 볼트의 파일·폴더·태그로 바꿔 사용하세요.
 
 <details>
-<summary><strong>ChatGPT 로그인·수동 설치·외부 도구 설정</strong></summary>
+<summary><strong>연결·설치 세부 안내</strong></summary>
 
 - **ChatGPT:** **OpenAI ChatGPT (OAuth)** 연결을 추가하고 **ChatGPT로 로그인**을 누르세요. 브라우저 로그인을 마친 뒤 사용 가능한 모델을 가져오거나 추가하고 생성 테스트를 실행하세요. 임베딩에는 내장 로컬 모델 등 별도 연결을 사용합니다.
-- **API 키:** ChatGPT 연결 대신 **OpenAI API**를 선택하세요.
-- **수동 설치:** GitHub Release의 플러그인 파일을 `.obsidian/plugins/superpower-inside/`에 넣고 플러그인을 다시 불러와 활성화하세요. `main.js`·`manifest.json`·`styles.css` 외에 릴리스에 포함된 런타임 자산도 모두 필요합니다.
+- **API 키:** OpenAI API 키는 **OpenAI API**를, 다른 서비스의 키는 해당 제공자를 선택하세요.
+- **수동 설치:** [최신 GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest)의 런타임 자산을 `.obsidian/plugins/superpower-inside/`에 넣은 뒤 플러그인을 다시 불러와 활성화하세요. `main.js`·`manifest.json`·`styles.css`와 배포된 WASM·임베딩 worker·런타임 파일을 넣으세요. PDF 처리 파일은 필요할 때 자동으로 준비하며, 첫 다운로드에는 네트워크 연결이 필요합니다.
 - **MCP:** **외부 도구 → 서버 설정 → 고급 JSON 편집**에서 최상위 `mcpServers` 안에 서버별 `command`, 선택 항목 `args`, 문자열 값의 `env`를 넣으세요. 로컬 stdio 서버를 지원하며 원격 HTTP/SSE 설정은 지원하지 않습니다. 적용하면 서버 목록 전체가 교체되므로 기존 항목을 유지하세요.
 
 </details>
 
 <details>
-<summary><strong>데이터와 사용 한계</strong></summary>
+<summary><strong>데이터 제어와 사용 한계</strong></summary>
 
-- 노트 맨 위 YAML에 `superpower-inside-exclude: true`를 넣거나 문서 제외 명령으로 검색 대상에서 빼세요. 경로·확장자 제외도 검색·인덱싱·내장 볼트 도구에 함께 적용됩니다.
-- 채팅 메시지·선택한 구간·도구 결과는 설정한 AI 제공자나 도구로 전송될 수 있습니다. 검색이 로컬이어도 원격 채팅 내용은 전송됩니다.
-- API 키와 ChatGPT OAuth 자격 증명은 이 기기의 Obsidian 보안 저장소에 보관되어 볼트 동기화·백업에 포함되지 않습니다. 플러그인을 사용하는 기기마다 한 번씩 입력하세요.
-- 로컬 모델 다운로드에 노트 내용은 포함되지 않습니다. 인덱스는 해당 볼트의 로컬 브라우저 저장소에 남습니다.
-- AI는 근거를 놓치거나 틀릴 수 있습니다. 출처는 주장을 확인하는 수단이며 정답 보장은 아닙니다. 일반 지식과 새 초안에는 볼트 출처가 없을 수 있습니다.
+- 노트 맨 위 YAML에 `superpower-inside-exclude: true`를 넣거나 문서 제외 명령을 사용하세요. 경로 제외와 민감 파일 보호도 적용됩니다. 확장자 제외는 검색·인덱싱에 적용되며, 지원 파일을 직접 참조하면 다른 보호 규칙과 크기 제한을 지키는 범위에서 읽을 수 있습니다.
+- 검색 인덱스와 PDF OCR 캐시는 해당 볼트의 로컬 브라우저 저장소에 남습니다. 채팅 메시지·선택한 구간·도구 결과는 설정한 제공자나 도구로 전송될 수 있습니다.
+- 의미 검색은 모델 파일과 인덱스가 준비되어야 합니다. 문서 추출은 본문 텍스트를 읽으며, 원래 배치·모든 표·모든 시각 자료의 보존을 보장하지 않습니다.
+- AI는 근거를 놓치거나 틀릴 수 있습니다. 일반 지식과 새 초안에는 볼트 출처가 없을 수 있습니다. 중요한 주장은 원문과 대조하세요.
 - 응답은 토큰별 실시간 표시가 아니라 모아서 수신합니다. 중단해도 제공자에서 이미 실행 중인 추론은 계속될 수 있습니다.
 - 모바일 Obsidian은 지원하지 않습니다.
 
 </details>
 
-**쌓아 둔 기록에, 오늘 필요한 질문을 던지세요. [볼트에서 시작하세요.](https://obsidian.md/plugins?id=superpower-inside)**
+**자료는 이미 쌓여 있습니다. [오늘 필요한 질문을 던져보세요.](https://obsidian.md/plugins?id=superpower-inside)**

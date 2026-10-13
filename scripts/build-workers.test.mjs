@@ -25,6 +25,8 @@ it('작업 디렉터리와 무관하게 worker를 생성하고 Electron에서도
   try {
     mkdirSync(join(root, 'scripts'));
     copyFileSync(join(repo, 'scripts/build-workers.mjs'), join(root, 'scripts/build-workers.mjs'));
+    copyFileSync(join(repo, 'scripts/pdf-mask-build.mjs'), join(root, 'scripts/pdf-mask-build.mjs'));
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify({ version: '1.2.3' }));
     symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'));
     mkdirSync(join(root, 'src/llm'), { recursive: true });
     const gemmaEntry = readFileSync(join(repo, 'src/llm/embeddinggemma-worker-entry.ts'), 'utf8');
@@ -52,6 +54,9 @@ it('작업 디렉터리와 무관하게 worker를 생성하고 Electron에서도
     // PDF worker는 main.js에 흡수하지 않고 별도 릴리스 자산으로 남아야 합니다.
     expect(readFileSync(join(root, 'pdf-worker.js'), 'utf8')).toContain('workerKind="PDF"');
     expect(readFileSync(join(root, 'pdf-ocr-worker.js'), 'utf8')).toContain('PDF_OCR_LANGUAGES');
+    const pdfManifest = readFileSync(join(root, 'generated/pdf-worker-assets.ts'), 'utf8');
+    expect(pdfManifest).toContain('/releases/download/1.2.3/pdf-worker.js');
+    expect(pdfManifest).toContain('/releases/download/1.2.3/pdf-ocr-worker.js');
     // Electron이 worker에 process를 노출해도 브라우저용 ONNX 백엔드를 선택해야 합니다.
     for (const process of [undefined, { release: { name: 'node' }, versions: { node: '22.0.0' }, platform: 'darwin', arch: 'arm64' }]) {
       const context = {
