@@ -128,7 +128,7 @@ Keyword search and built-in vault tools do not require an embedding index. Let m
 
 - Exclude notes with `superpower-inside-exclude: true` in top-level YAML, or use the document exclusion command. Path and extension exclusions also apply to search, indexing, and built-in vault tools.
 - Chat messages, selected passages, and tool results may go to the AI provider or tools you configure. Local search does not make remote chat private.
-- API keys and ChatGPT OAuth credentials are stored in Obsidian's secret storage on this device, not in plugin settings or `data.json`, so vault sync and backups do not include them. Secrets are per device: enter them again on each device, and remove entries you no longer use from Obsidian's API keys list.
+- API keys and ChatGPT OAuth credentials are kept in Obsidian's secret storage on this device, so vault sync and backups never include them. Enter them again on each device where you use the plugin.
 - Local model downloads contain no note content. Indexes stay in local browser storage for this vault.
 - AI can miss evidence or make mistakes. A source link helps you check a claim; it does not guarantee the claim is correct. General knowledge and new drafts may have no vault source.
 - Responses are buffered rather than shown token by token. Stopping a run may not cancel inference already running at the provider.
@@ -269,7 +269,7 @@ ChatGPT 브라우저 로그인·OpenAI API·Claude·Ollama·OpenRouter·OpenAI �
 
 - 노트 맨 위 YAML에 `superpower-inside-exclude: true`를 넣거나 문서 제외 명령으로 검색 대상에서 빼세요. 경로·확장자 제외도 검색·인덱싱·내장 볼트 도구에 함께 적용됩니다.
 - 채팅 메시지·선택한 구간·도구 결과는 설정한 AI 제공자나 도구로 전송될 수 있습니다. 검색이 로컬이어도 원격 채팅 내용은 전송됩니다.
-- API 키와 ChatGPT OAuth 자격 증명은 이 기기의 Obsidian 보안 저장소에 저장되며 플러그인 설정과 `data.json`에 남지 않으므로 볼트 동기화·백업에 포함되지 않습니다. 비밀값은 기기별로 저장되므로 다른 기기에서는 다시 입력하고, 더 이상 쓰지 않는 항목은 Obsidian의 API 키 목록에서 삭제하세요.
+- API 키와 ChatGPT OAuth 자격 증명은 이 기기의 Obsidian 보안 저장소에 보관되어 볼트 동기화·백업에 포함되지 않습니다. 플러그인을 사용하는 기기마다 한 번씩 입력하세요.
 - 로컬 모델 다운로드에 노트 내용은 포함되지 않습니다. 인덱스는 해당 볼트의 로컬 브라우저 저장소에 남습니다.
 - AI는 근거를 놓치거나 틀릴 수 있습니다. 출처는 주장을 확인하는 수단이며 정답 보장은 아닙니다. 일반 지식과 새 초안에는 볼트 출처가 없을 수 있습니다.
 - 응답은 토큰별 실시간 표시가 아니라 모아서 수신합니다. 중단해도 제공자에서 이미 실행 중인 추론은 계속될 수 있습니다.
