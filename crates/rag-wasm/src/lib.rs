@@ -2689,6 +2689,16 @@ pub fn extract_vault_links_json(content: &str) -> String {
     serialize_string_array_json(&links)
 }
 
+/// 도구 입력 경로에서 `[[...]]` 표기와 별칭·heading·URL 인코딩을 벗겨낸 `JSON` 문자열을 반환한다.
+///
+/// 모델과 사용자가 넘기는 경로는 Obsidian 링크 표기, `%20` 인코딩, 별칭이 섞여 들어온다.
+#[must_use]
+#[wasm_bindgen]
+pub fn normalize_vault_link_target_json(raw: &str) -> String {
+    let target = normalize_vault_link_target_input(raw);
+    format!("\"{}\"", escape_json_string(&target))
+}
+
 /// vault link target의 path candidate와 basename fallback을 `JSON` 문자열로 반환한다.
 #[must_use]
 #[wasm_bindgen]
@@ -7245,6 +7255,8 @@ struct MentionCandidate {
     workspace: Option<&'static str>,
     /// 명시적인 태그 문법은 실제 경로와 구분한다.
     tag: Option<String>,
+    /// Obsidian `[[...]]` 링크는 실제 경로 해석을 host에 맡긴다.
+    link: bool,
 }
 
 /// `u32` index를 `usize`로 바꾸고 범위를 확인한다.
@@ -10516,6 +10528,9 @@ fn parse_mention_candidates(content: &str) -> Vec<MentionCandidate> {
 }
 
 /// bracket mention 후보를 추출하고, 해당 구간을 공백으로 치환한 텍스트를 반환한다.
+///
+/// `@[경로]`, `[[링크]]`, `![[임베드]]`는 모두 경로를 직접 지정하는 표기이므로
+/// 단어 mention보다 먼저, 문서 순서대로 수집한다.
 fn collect_bracket_mention_candidates(
     content: &str,
     candidates: &mut Vec<MentionCandidate>,
@@ -10525,22 +10540,26 @@ fn collect_bracket_mention_candidates(
     let mut offset = 0_usize;
 
     while offset < content.len() {
-        if content
-            .get(offset..)
-            .is_some_and(|tail| tail.starts_with("@["))
-        {
-            let name_start = offset.saturating_add(2);
-            if let Some(name_tail) = content.get(name_start..)
-                && let Some(close_offset) = name_tail.find(']')
-            {
-                let close_index = name_start.saturating_add(close_offset);
-                if let (Some(raw), Some(name)) = (
-                    content.get(offset..=close_index),
-                    content.get(name_start..close_index),
-                ) {
-                    push_mention_candidate(raw, name.trim(), candidates, seen);
+        if let Some(span) = match_bracket_mention_span(content, offset) {
+            let name_start = span.name_start;
+            let name_end = span.name_end;
+            if let (Some(raw), Some(name)) = (
+                content.get(offset..span.end_index),
+                content.get(name_start..name_end),
+            ) {
+                let pushed = if span.is_link {
+                    let target = normalize_vault_link_target(name);
+                    !target.is_empty() && {
+                        push_mention_candidate(raw, &target, true, candidates, seen);
+                        true
+                    }
+                } else {
+                    push_mention_candidate(raw, name.trim(), false, candidates, seen);
+                    true
+                };
+                if pushed {
                     output.push(' ');
-                    offset = close_index.saturating_add(1);
+                    offset = span.end_index;
                     continue;
                 }
             }
@@ -10554,6 +10573,49 @@ fn collect_bracket_mention_candidates(
     }
 
     output
+}
+
+/// bracket 표기 mention 구간.
+struct BracketMentionSpan {
+    /// 이름 시작 index.
+    name_start: usize,
+    /// 이름 종료 index.
+    name_end: usize,
+    /// 구간 종료 index(닫는 괄호 포함, exclusive).
+    end_index: usize,
+    /// `[[...]]`·`![[...]]` 링크 여부.
+    is_link: bool,
+}
+
+/// `offset`에서 시작하는 bracket 표기 mention 구간을 찾는다.
+fn match_bracket_mention_span(content: &str, offset: usize) -> Option<BracketMentionSpan> {
+    let tail = content.get(offset..)?;
+    if tail.starts_with("@[") {
+        let name_start = offset.saturating_add(2);
+        let close_offset = content.get(name_start..)?.find(']')?;
+        let name_end = name_start.saturating_add(close_offset);
+        return Some(BracketMentionSpan {
+            name_start,
+            name_end,
+            end_index: name_end.saturating_add(1),
+            is_link: false,
+        });
+    }
+    let (name_start, bracket_len) = if tail.starts_with("[[") {
+        (offset.saturating_add(2), 2)
+    } else if tail.starts_with("![[") {
+        (offset.saturating_add(3), 2)
+    } else {
+        return None;
+    };
+    let close_offset = content.get(name_start..)?.find("]]")?;
+    let name_end = name_start.saturating_add(close_offset);
+    Some(BracketMentionSpan {
+        name_start,
+        name_end,
+        end_index: name_end.saturating_add(bracket_len),
+        is_link: true,
+    })
 }
 
 /// word mention 후보를 추출한다.
@@ -10603,7 +10665,7 @@ fn collect_word_mention_candidates(
             content.get(raw_start..offset),
             content.get(name_start..offset),
         ) {
-            push_mention_candidate(raw, name.trim(), candidates, seen);
+            push_mention_candidate(raw, name.trim(), false, candidates, seen);
         }
     }
 }
@@ -10612,6 +10674,7 @@ fn collect_word_mention_candidates(
 fn push_mention_candidate(
     raw: &str,
     name: &str,
+    link: bool,
     candidates: &mut Vec<MentionCandidate>,
     seen: &mut Vec<String>,
 ) {
@@ -10630,7 +10693,9 @@ fn push_mention_candidate(
     };
     let key = tag.as_ref().map_or_else(
         || {
-            if workspace.is_some() {
+            if link {
+                format!("link:{}", name.to_lowercase())
+            } else if workspace.is_some() {
                 format!("@{}", name.to_lowercase())
             } else {
                 name.to_lowercase()
@@ -10647,6 +10712,7 @@ fn push_mention_candidate(
         name: name.to_owned(),
         workspace,
         tag,
+        link,
     });
 }
 
@@ -10869,6 +10935,17 @@ fn normalize_vault_link_target(raw: &str) -> String {
     let without_block = without_heading.split('^').next().unwrap_or_default();
     let trimmed = without_block.trim();
     decode_uri_component(trimmed).unwrap_or_else(|| trimmed.to_owned())
+}
+
+/// `[[...]]`·`![[...]]` 표기를 벗겨낸 뒤 vault link target 규칙으로 정규화한다.
+fn normalize_vault_link_target_input(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let without_embed = trimmed.strip_prefix('!').unwrap_or(trimmed);
+    let unwrapped = without_embed
+        .strip_prefix("[[")
+        .and_then(|inner| inner.strip_suffix("]]"))
+        .unwrap_or(without_embed);
+    normalize_vault_link_target(unwrapped)
 }
 
 /// vault 내부 링크로 처리하지 않을 target인지 확인한다.
@@ -12274,8 +12351,9 @@ fn serialize_mention_candidates_json(candidates: &[MentionCandidate]) -> String 
             let tag = candidate.tag.as_ref().map_or_else(String::new, |tag| {
                 format!(",\"tag\":\"{}\"", escape_json_string(tag))
             });
+            let link = if candidate.link { ",\"link\":true" } else { "" };
             format!(
-                "{{\"raw\":\"{}\",\"name\":\"{}\"{workspace}{tag}}}",
+                "{{\"raw\":\"{}\",\"name\":\"{}\"{workspace}{tag}{link}}}",
                 escape_json_string(&candidate.raw),
                 escape_json_string(&candidate.name),
             )
@@ -13515,6 +13593,42 @@ mod tests {
             candidates,
             "[{\"raw\":\"@[Project Plan.md]\",\"name\":\"Project Plan.md\"},{\"raw\":\"@[entity: Paul]\",\"name\":\"entity: Paul\"},{\"raw\":\"@browser\",\"name\":\"browser\"},{\"raw\":\"@Notes/today.md\",\"name\":\"Notes/today.md\"},{\"raw\":\"@missing\",\"name\":\"missing\"}]",
         );
+    }
+
+    /// Obsidian `[[...]]` 링크는 별칭·heading·URL 인코딩을 정규화한 target으로 수집한다.
+    #[test]
+    fn parse_mention_candidates_json_collects_wiki_links_in_document_order() {
+        assert_eq!(
+            parse_mention_candidates_json(
+                "[[monithub%20개요.pdf]] 요약해줘, ![[브로슈어/1차#요약|별칭]] 그리고 @[Project Plan.md] [[Projects/Alpha/]]",
+            ),
+            concat!(
+                "[{\"raw\":\"[[monithub%20개요.pdf]]\",\"name\":\"monithub 개요.pdf\",\"link\":true}",
+                ",{\"raw\":\"![[브로슈어/1차#요약|별칭]]\",\"name\":\"브로슈어/1차\",\"link\":true}",
+                ",{\"raw\":\"@[Project Plan.md]\",\"name\":\"Project Plan.md\"}",
+                ",{\"raw\":\"[[Projects/Alpha/]]\",\"name\":\"Projects/Alpha/\",\"link\":true}]",
+            ),
+        );
+        assert_eq!(parse_mention_candidates_json("[[Note"), "[]");
+        assert_eq!(parse_mention_candidates_json("[[]]"), "[]");
+    }
+
+    /// 도구 입력 경로는 링크 표기·별칭·heading·URL 인코딩을 한 번에 벗겨낸다.
+    #[test]
+    fn normalize_vault_link_target_json_unwraps_links() {
+        assert_eq!(
+            normalize_vault_link_target_json("[[monithub%20개요.pdf]]"),
+            "\"monithub 개요.pdf\"",
+        );
+        assert_eq!(
+            normalize_vault_link_target_json("![[Note#H|A]]"),
+            "\"Note\""
+        );
+        assert_eq!(
+            normalize_vault_link_target_json("  Folder/Note.md  "),
+            "\"Folder/Note.md\""
+        );
+        assert_eq!(normalize_vault_link_target_json("[[]]"), "\"\"");
     }
 
     /// 작업공간 키워드는 실제 경로와 별도로 구분하고 브래킷 경로를 보존한다.
