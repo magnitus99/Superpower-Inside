@@ -10,11 +10,11 @@
 
 > **Your next draft starts with what you already know.**
 
-You saved the article. Took the meeting notes. Collected the references. When it's time to write or make a decision, those pieces are still scattered across your vault.
+A decision from last month's meeting may be in one note, while the article that challenges it sits in another folder. Finding both takes time when you return to the project.
 
 Superpower Inside brings AI research and writing into Obsidian. Ask a question, bring in the notes and documents that matter, and work toward an answer with sources you can open and check.
 
-**Find the decision. Compare the evidence. Write from your own material.**
+**Find past decisions and compare the evidence before writing from your own material.**
 
 **[Install in Obsidian](https://obsidian.md/plugins?id=superpower-inside)** · **[Download the latest release](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
@@ -53,9 +53,9 @@ No filename in mind? Ask it to search. Keyword and meaning-based retrieval help 
 
 Your research doesn't have to be all Markdown. Read and compare text from **PDF, EPUB, DOCX, ODT, PPTX, XLSX, and HWPX**, alongside plain text, code, JSON, and CSV.
 
-PDFs use their text layer when available. Pages that need text recognition can use **local Korean and English OCR**, with page progress shown during extraction. Extracted PDF passages retain page labels so you can return to the relevant part of the document.
+PDFs use their text layer when available. For scanned pages, **local Korean and English OCR** extracts the text and shows page progress. Missing or outdated PDF processing files are downloaded and verified automatically for your plugin version. Extracted passages retain page labels so you can return to the relevant part of the document.
 
-OCR quality depends on the scan. Password-protected, oversized, damaged, or low-confidence documents can fail extraction. Standalone images and audio need a text version first.
+OCR quality depends on the scan, and extraction can fail for password-protected, oversized, damaged, or low-confidence documents. To use standalone images or audio, provide a text version first.
 
 ### Check the answer where it came from
 
@@ -77,7 +77,7 @@ Need a different direction? **Edit and resend a question** to continue from that
 
 Connect **ChatGPT browser sign-in, OpenAI API, Claude, Ollama, Ollama Cloud, OpenRouter, or an OpenAI-compatible endpoint**. Test a model and select it in chat. ChatGPT sign-in uses the Codex backend; model access and usage limits depend on your account.
 
-For local meaning-based search, choose **Ternlight** for short English notes or **EmbeddingGemma 300M** for multilingual material. Prepare the model files in settings and let indexing finish. Changing the embedding model rebuilds the index. Keyword search and built-in vault tools can be used without an embedding index.
+Local meaning-based search offers **Ternlight** for short English notes and **EmbeddingGemma 300M** for multilingual material. Before using it, prepare the model files in settings and wait for indexing to finish; changing models rebuilds that index. Keyword search and built-in vault tools are also available without embeddings.
 
 **Local search and local PDF OCR run on your device.** Remote chat and optional remote embeddings can send material to the provider you choose. If chat content must also stay on your machine, use a local chat provider and check any external tools you enable.
 
@@ -108,7 +108,7 @@ The examples above are illustrative. Use your own files, folders, and tags.
 
 - **ChatGPT:** add an **OpenAI ChatGPT (OAuth)** connection and choose **Sign in with ChatGPT**. Finish browser sign-in, fetch or add an available model, and run its generation test. Embeddings use a separate connection, such as a built-in local model.
 - **API key:** choose **OpenAI API** for an OpenAI API key, or the matching provider for another service.
-- **Manual installation:** download all shipped runtime assets from the [latest GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest) into `.obsidian/plugins/superpower-inside/`, then reload and enable the plugin. In addition to `main.js`, `manifest.json`, and `styles.css`, include the shipped WASM and worker/runtime files; document extraction and local embeddings need them.
+- **Manual installation:** download the runtime assets from the [latest GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest) into `.obsidian/plugins/superpower-inside/`, then reload and enable the plugin. Include `main.js`, `manifest.json`, `styles.css`, and the shipped WASM and embedding worker/runtime files. PDF processing files are prepared automatically when needed; the first download requires network access.
 - **MCP:** open **External tools → Server setup → Advanced JSON editor**. Use a top-level `mcpServers` object with named entries containing `command`, optional `args`, and optional string-valued `env`. Local stdio servers are supported; remote HTTP/SSE configurations are not. Applying the editor replaces the server list, so preserve existing entries.
 
 </details>
@@ -133,11 +133,11 @@ The examples above are illustrative. Use your own files, folders, and tags.
 
 > **다음 글의 시작은, 이미 쌓아 둔 기록 안에 있습니다.**
 
-읽을 자료를 저장하고, 회의 내용을 적고, 참고 문헌을 모았습니다. 그런데 글을 쓰거나 결정을 내려야 할 때면 필요한 내용은 여전히 볼트 여기저기에 흩어져 있습니다.
+지난달 회의에서 내린 결정은 노트 하나에 있고, 그 결정에 의문을 던지는 기사는 다른 폴더에 있습니다. 프로젝트로 돌아와 두 자료를 함께 찾으려면 시간이 걸립니다.
 
 Superpower Inside는 Obsidian 안에서 노트를 찾아 읽고, 비교하고, 글로 만드는 AI 플러그인입니다. 질문에 필요한 노트와 문서를 연결하고, 답변의 근거를 원문에서 직접 확인하며 다음 작업을 이어가세요.
 
-**지난 결정을 찾고. 근거를 비교하고. 내 자료로 글을 쓰세요.**
+**지난 결정과 그 근거를 비교하며 내 자료로 글을 쓰세요.**
 
 **[Obsidian에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[최신 릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
@@ -176,9 +176,9 @@ Superpower Inside는 Obsidian 안에서 노트를 찾아 읽고, 비교하고, �
 
 자료를 모두 Markdown으로 옮길 필요는 없습니다. **PDF·EPUB·DOCX·ODT·PPTX·XLSX·HWPX**의 본문을 읽고, 일반 텍스트·코드·JSON·CSV와 함께 비교할 수 있습니다.
 
-PDF는 텍스트가 있으면 그 본문을 읽습니다. 문자 인식이 필요한 페이지에는 **기기 안에서 실행하는 한국어·영어 OCR**을 사용할 수 있으며, 추출 중에는 페이지 진행 상황이 표시됩니다. 추출한 PDF 구간에는 페이지 라벨이 남아 문서의 해당 부분으로 돌아가 확인할 수 있습니다.
+PDF는 텍스트가 있으면 그 본문을 읽습니다. 스캔한 페이지는 **기기 안에서 실행하는 한국어·영어 OCR**로 읽으며 페이지 진행 상황을 표시합니다. PDF 처리 파일이 없거나 버전이 맞지 않으면 현재 플러그인 버전에 맞춰 자동으로 내려받아 검증합니다. 추출한 구간에는 페이지 라벨이 남아 문서의 해당 부분으로 돌아가 확인할 수 있습니다.
 
-OCR 품질은 스캔 상태에 따라 달라집니다. 암호화·크기 초과·손상·낮은 인식 신뢰도 등의 이유로 본문 추출이 실패할 수 있습니다. 별도 이미지 파일과 음성은 먼저 텍스트로 준비하세요.
+OCR 품질은 스캔 상태에 따라 달라지며, 암호화·크기 초과·손상·낮은 인식 신뢰도 등의 이유로 본문 추출이 실패할 수 있습니다. 별도 이미지 파일이나 음성을 활용하려면 먼저 텍스트로 준비하세요.
 
 ### 답변이 나온 자리에 돌아가 확인하세요
 
@@ -231,7 +231,7 @@ API 키와 ChatGPT 자격 증명은 볼트와 동기화되는 플러그인 설�
 
 - **ChatGPT:** **OpenAI ChatGPT (OAuth)** 연결을 추가하고 **ChatGPT로 로그인**을 누르세요. 브라우저 로그인을 마친 뒤 사용 가능한 모델을 가져오거나 추가하고 생성 테스트를 실행하세요. 임베딩에는 내장 로컬 모델 등 별도 연결을 사용합니다.
 - **API 키:** OpenAI API 키는 **OpenAI API**를, 다른 서비스의 키는 해당 제공자를 선택하세요.
-- **수동 설치:** [최신 GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest)의 런타임 자산 전체를 `.obsidian/plugins/superpower-inside/`에 넣은 뒤 플러그인을 다시 불러와 활성화하세요. `main.js`·`manifest.json`·`styles.css` 외에 배포된 WASM·worker·런타임 파일도 필요합니다. 문서 추출과 로컬 임베딩에서 사용합니다.
+- **수동 설치:** [최신 GitHub Release](https://github.com/magnitus99/Superpower-Inside/releases/latest)의 런타임 자산을 `.obsidian/plugins/superpower-inside/`에 넣은 뒤 플러그인을 다시 불러와 활성화하세요. `main.js`·`manifest.json`·`styles.css`와 배포된 WASM·임베딩 worker·런타임 파일을 넣으세요. PDF 처리 파일은 필요할 때 자동으로 준비하며, 첫 다운로드에는 네트워크 연결이 필요합니다.
 - **MCP:** **외부 도구 → 서버 설정 → 고급 JSON 편집**에서 최상위 `mcpServers` 안에 서버별 `command`, 선택 항목 `args`, 문자열 값의 `env`를 넣으세요. 로컬 stdio 서버를 지원하며 원격 HTTP/SSE 설정은 지원하지 않습니다. 적용하면 서버 목록 전체가 교체되므로 기존 항목을 유지하세요.
 
 </details>
