@@ -31,3 +31,6 @@ simulations/
 
 # Command Code 로컬 상태(권한 승인·taste 학습)
 .commandcode/
+
+# 마케팅 작업물(로컬 전용)
+/marketing/
