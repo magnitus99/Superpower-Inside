@@ -8,6 +8,7 @@
 import { getDocument, OPS } from 'pdfjs-dist';
 import { createWorker, OEM, PSM, type Worker as OcrWorker } from 'tesseract.js';
 import { PdfCanvasFactory, PdfCMapFactory, PdfFontFactory } from './pdf-render';
+import { recognizePdfPage } from './pdf-page-ocr';
 import * as pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs';
 
 /** 한 번에 처리하는 최대 페이지 수입니다. */
@@ -130,7 +131,7 @@ async function extract(bytes: Uint8Array, id: number): Promise<Omit<PdfWorkerRes
             const image = new Uint8Array(
               await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer(),
             );
-            const { data } = await ocr.recognize(new Blob([image], { type: 'image/png' }));
+            const data = await recognizePdfPage(ocr, new Blob([image], { type: 'image/png' }));
             body = data.text.trim();
             if (body.length > 0 && (!Number.isFinite(data.confidence) || data.confidence < 50)) {
               return { ok: false, reason: 'ocr-low-confidence' };

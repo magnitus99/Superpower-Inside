@@ -1,5 +1,7 @@
 import { normalizePath, type TFile, type Vault } from 'obsidian';
 import { appLogger } from '../utils/logger';
+import { ensureReleaseAsset } from '../utils/release-asset';
+import { PDF_WORKER_ASSETS } from '../../generated/pdf-worker-assets';
 
 /** 줄 번호는 0부터 세며 Rust 원문 추출기의 구간 계약과 같습니다. */
 export interface PdfSourceSegment {
@@ -131,10 +133,15 @@ function ensureWorker(vault: Vault): Promise<Worker> {
   return workerPromise;
 }
 
-async function assetUrl(vault: Vault, file: string): Promise<string> {
+async function assetUrl(
+  vault: Vault,
+  file: 'pdf-worker.js' | 'pdf-ocr-worker.js',
+): Promise<string> {
   const currentGeneration = generation;
   const path = normalizePath(`${vault.configDir}/plugins/${pluginId}/${file}`);
-  const source = await vault.adapter.readBinary(path);
+  const asset = PDF_WORKER_ASSETS.find((item) => item.file === file);
+  if (!asset) throw new Error('PDF asset metadata is unavailable.');
+  const source = await ensureReleaseAsset({ adapter: vault.adapter, path, ...asset });
   if (generation !== currentGeneration) throw new Error('PDF asset loading was cancelled.');
   const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
   assetUrls.add(url);
@@ -154,7 +161,10 @@ async function createWorker(vault: Vault): Promise<Worker> {
     // 활성 파일의 처리가 진행 중이면 직렬 대기 중인 요청도 타임아웃시키지 않습니다.
     for (const queued of pending.values()) touch(queued);
     if (response.kind === 'ocr-assets') {
-      ocrAssetPromise ??= assetUrl(vault, 'pdf-ocr-worker.js');
+      ocrAssetPromise ??= assetUrl(vault, 'pdf-ocr-worker.js').catch((error: unknown) => {
+        ocrAssetPromise = null;
+        throw error;
+      });
       void ocrAssetPromise.then(
         (url) => worker.postMessage({ id: response.id, kind: 'ocr-assets', url }),
         () =>
