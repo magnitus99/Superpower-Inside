@@ -1,6 +1,6 @@
 {
   "name": "superpower-inside",
-  "version": "3.2.1",
+  "version": "3.2.2",
   "description": "Find answers in your notes, compare sources, and draft with AI.",
   "main": "main.js",
   "scripts": {
