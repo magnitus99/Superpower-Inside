@@ -13,6 +13,8 @@ export interface MentionResolver {
   isServer(name: string): boolean;
   isFile(name: string): boolean;
   isFolder(name: string): boolean;
+  /** Obsidian `[[...]]` 링크 target을 실제 파일·폴더 경로로 해석합니다. */
+  resolveLink?(target: string): { type: 'file' | 'folder'; path: string } | null;
 }
 
 export function parseMentions(text: string, resolver: MentionResolver): ParsedMention[] {
@@ -37,6 +39,13 @@ export function parseMentions(text: string, resolver: MentionResolver): ParsedMe
     if (candidate.workspace) {
       for (const path of resolver.workspaceFiles?.[candidate.workspace] ?? []) {
         mentions.push({ raw: candidate.raw, type: 'file', name: path });
+      }
+      continue;
+    }
+    if (candidate.link) {
+      const resolved = resolver.resolveLink?.(candidate.name);
+      if (resolved) {
+        mentions.push({ raw: candidate.raw, type: resolved.type, name: resolved.path });
       }
       continue;
     }

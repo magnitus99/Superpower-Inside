@@ -84,6 +84,24 @@ describe('RAG 기반 네이티브 Vault 파일 범위', () => {
     await expect(scope.listCandidateFiles()).resolves.toEqual([note]);
     await expect(scope.isCandidateFile(source)).resolves.toBe(false);
   });
+  it('명시적으로 지정한 파일은 확장자·경로 제외를 건너뛰지 않는다', async () => {
+    const note = createFile('Notes/Overview.md');
+    const excludedExtension = createFile('Logs/debug.log');
+    const excludedPath = createFile('Archive/old.txt');
+    const sensitive = createFile('secrets.json');
+    const app = createApp([note, excludedExtension, excludedPath, sensitive]);
+    const scope = new RagNativeVaultFileScope(
+      app,
+      () => baseRagConfig,
+      () => chatConfig,
+    );
+
+    await expect(scope.isCandidateFile(excludedExtension)).resolves.toBe(false);
+    await expect(scope.isExplicitReadAllowed(excludedExtension)).resolves.toBe(true);
+    await expect(scope.isExplicitReadAllowed(note)).resolves.toBe(true);
+    await expect(scope.isExplicitReadAllowed(excludedPath)).resolves.toBe(false);
+    await expect(scope.isExplicitReadAllowed(sensitive)).resolves.toBe(false);
+  });
 });
 
 function createFile(path: string): TFile {

@@ -6,9 +6,66 @@ import {
   createComposerDraftSnapshot,
   createComposerLoadingState,
   resolveComposerKeyAction,
+  resolveComposerMentionTrigger,
 } from './chat-composer';
 
 describe('ChatComposer state contract', () => {
+  it('@는 공백에서 멈추고 [[링크]]는 닫는 괄호까지 경로를 찾는다', () => {
+    expect(resolveComposerMentionTrigger('요약해줘 @Note')).toEqual({
+      mode: 'at',
+      query: 'note',
+      startIndex: 5,
+    });
+    expect(resolveComposerMentionTrigger('요약해줘 @Project Plan')).toBeNull();
+    expect(resolveComposerMentionTrigger('요약해줘 [[monithub 개요.pdf')).toEqual({
+      mode: 'wiki',
+      query: 'monithub 개요.pdf',
+      startIndex: 5,
+    });
+    expect(resolveComposerMentionTrigger('요약해줘 [[monithub 개요.pdf]] ')).toBeNull();
+    expect(resolveComposerMentionTrigger('요약해줘 [[폴더 이름')).toEqual({
+      mode: 'wiki',
+      query: '폴더 이름',
+      startIndex: 5,
+    });
+  });
+
+  it('[[링크]] 미리보기는 실제 경로와 폴더·누락 상태를 함께 보여준다', () => {
+    const resolver = {
+      isFile: () => false,
+      isFolder: () => false,
+      isServer: () => false,
+      resolveLink: (target: string) => {
+        if (target === 'monithub 개요.pdf') return { type: 'file' as const, path: target };
+        if (target === 'Projects/Alpha/') return { type: 'folder' as const, path: 'Projects/Alpha' };
+        return null;
+      },
+    };
+    const chips = createLiveContextPreviewChips(
+      '[[monithub 개요.pdf]] ![[Projects/Alpha/]] [[없는 문서]]',
+      resolver,
+    );
+    expect(chips).toContainEqual(
+      expect.objectContaining({
+        label: '[[monithub 개요.pdf]]',
+        cls: 'file',
+        paths: ['monithub 개요.pdf'],
+        valid: true,
+      }),
+    );
+    expect(chips).toContainEqual(
+      expect.objectContaining({
+        label: '![[Projects/Alpha/]]',
+        cls: 'folder',
+        paths: ['Projects/Alpha'],
+        valid: true,
+      }),
+    );
+    expect(chips).toContainEqual(
+      expect.objectContaining({ label: '[[없는 문서]]', cls: 'missing', valid: false }),
+    );
+  });
+
   it('태그 참조는 일치 문서 수·경로와 빈 범위를 미리 보여준다', () => {
     const chips = createLiveContextPreviewChips('@#연구 @#missing', {
       isFile: () => true,

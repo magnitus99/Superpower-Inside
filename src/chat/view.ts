@@ -98,6 +98,7 @@ import {
   createComposerDraftSnapshot,
   createComposerLoadingState,
   resolveComposerKeyAction,
+  resolveComposerMentionTrigger,
   type ComposerDraftSnapshot,
 } from './chat-composer';
 import { evaluateToolTrace } from './quality-evaluation';
@@ -278,6 +279,7 @@ export class ChatView extends ItemView {
     type: 'workspace' | 'server' | 'file' | 'folder' | 'tag';
   }[];
   private mentionStartIndex: number;
+  private mentionMode: 'at' | 'wiki';
   private readonly mentionDropdownId: string;
   private abortController: AbortController | null;
   private activeRun: ChatRunHandle<AbortController> | null;
@@ -338,6 +340,7 @@ export class ChatView extends ItemView {
     this.mentionSelectedIndex = -1;
     this.mentionItems = [];
     this.mentionStartIndex = -1;
+    this.mentionMode = 'at';
     this.mentionDropdownId = `superpower-inside-mention-dropdown-${Math.random()
       .toString(36)
       .slice(2, 8)}`;
@@ -1054,24 +1057,15 @@ export class ChatView extends ItemView {
 
   private handleMentionInput(): void {
     if (!this.inputArea) return;
-    const value = this.inputArea.value;
     const cursorPos = this.inputArea.selectionStart || 0;
-    const textBeforeCursor = value.slice(0, cursorPos);
-
-    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-    if (lastAtIndex === -1) {
+    const trigger = resolveComposerMentionTrigger(this.inputArea.value.slice(0, cursorPos));
+    if (!trigger) {
       this.hideMentionDropdown();
       return;
     }
-
-    const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1);
-    if (textAfterAt.includes(' ') || textAfterAt.includes('\n')) {
-      this.hideMentionDropdown();
-      return;
-    }
-
-    this.mentionQuery = textAfterAt.toLowerCase();
-    this.mentionStartIndex = lastAtIndex;
+    this.mentionMode = trigger.mode;
+    this.mentionQuery = trigger.query;
+    this.mentionStartIndex = trigger.startIndex;
     this.buildMentionItems();
     this.showMentionDropdown();
   }
@@ -1079,33 +1073,39 @@ export class ChatView extends ItemView {
   private buildMentionItems(): void {
     this.mentionItems = [];
     const query = this.mentionQuery;
-    for (const value of ['current', 'tabs']) {
-      if (value.includes(query)) {
-        this.mentionItems.push({
-          label:
-            value === 'current'
-              ? t('chatCurrentMention')
-              : t('chatTabsMention', { count: captureWorkspaceMentionFiles(this.app).tabs.length }),
-          value,
-          type: 'workspace',
-        });
-      }
-    }
-
-    const registry = this.plugin.mcpRegistry;
-    if (registry) {
-      for (const server of registry.getEnabledServers()) {
-        if (server.name.toLowerCase().includes(query)) {
+    // `[[...]]`는 vault 경로만 가리키므로 작업공간·서버·태그 후보는 제외합니다.
+    if (this.mentionMode === 'at') {
+      for (const value of ['current', 'tabs']) {
+        if (value.includes(query)) {
           this.mentionItems.push({
-            label: server.name,
-            value: server.name,
-            type: 'server',
+            label:
+              value === 'current'
+                ? t('chatCurrentMention')
+                : t('chatTabsMention', {
+                    count: captureWorkspaceMentionFiles(this.app).tabs.length,
+                  }),
+            value,
+            type: 'workspace',
           });
+        }
+      }
+
+      const registry = this.plugin.mcpRegistry;
+      if (registry) {
+        for (const server of registry.getEnabledServers()) {
+          if (server.name.toLowerCase().includes(query)) {
+            this.mentionItems.push({
+              label: server.name,
+              value: server.name,
+              type: 'server',
+            });
+          }
         }
       }
     }
 
-    const files = this.app.vault.getMarkdownFiles();
+    // 첨부(PDF 등)도 직접 지정할 수 있도록 markdown 외 파일도 후보에 포함합니다.
+    const files = this.app.vault.getFiles();
     const maxFiles = 20;
     let fileCount = 0;
     for (const file of files) {
@@ -1143,9 +1143,11 @@ export class ChatView extends ItemView {
       }
     }
 
-    const tagSnapshot = collectTagMentionFiles(this.app);
-    for (const tag of planTagMentionsRust(tagSnapshot.tags, query)?.tags ?? []) {
-      this.mentionItems.push({ label: `@${tag}`, value: tag, type: 'tag' });
+    if (this.mentionMode === 'at') {
+      const tagSnapshot = collectTagMentionFiles(this.app);
+      for (const tag of planTagMentionsRust(tagSnapshot.tags, query)?.tags ?? []) {
+        this.mentionItems.push({ label: `@${tag}`, value: tag, type: 'tag' });
+      }
     }
     this.mentionSelectedIndex = this.mentionItems.length > 0 ? 0 : -1;
   }
@@ -1260,7 +1262,12 @@ export class ChatView extends ItemView {
     const after = value.slice(this.inputArea.selectionStart || 0);
     // 경로에 공백이 포함된 경우 브래킷으로 감싸서 parseMentions가 올바르게 파싱하도록 함
     const needsBrackets = item.type !== 'server' && item.value.includes(' ');
-    const insertText = needsBrackets ? `@[${item.value}] ` : `@${item.value} `;
+    const insertText =
+      this.mentionMode === 'wiki'
+        ? `[[${item.type === 'folder' ? `${item.value}/` : item.value}]]`
+        : needsBrackets
+          ? `@[${item.value}] `
+          : `@${item.value} `;
     this.inputArea.value = before + insertText + after;
     const newCursorPos = before.length + insertText.length;
     this.inputArea.setSelectionRange(newCursorPos, newCursorPos);
@@ -1279,6 +1286,7 @@ export class ChatView extends ItemView {
     this.mentionSelectedIndex = -1;
     this.mentionItems = [];
     this.mentionStartIndex = -1;
+    this.mentionMode = 'at';
   }
 
   private markdownRenderTimer: number | null = null;
@@ -5033,7 +5041,7 @@ export class ChatView extends ItemView {
       () => this.plugin.prepareRagForChat(),
       () => this.plugin.ragEngine,
     );
-    const { getRagCandidateFiles } = await import('../utils/vault');
+    const { getRagCandidateFiles, isExplicitRagReadAllowed } = await import('../utils/vault');
     const candidateFiles = await getRagCandidateFiles(
       this.app.vault,
       this.plugin.settings.rag,
@@ -5043,6 +5051,13 @@ export class ChatView extends ItemView {
       app: this.app,
       workspaceFiles,
       candidatePaths: new Set(candidateFiles.map((file) => file.path)),
+      isExplicitReadAllowed: (file) =>
+        isExplicitRagReadAllowed(
+          this.app.vault,
+          file,
+          this.plugin.settings.rag,
+          this.plugin.settings.chat,
+        ),
       ragEngine,
       mcpRegistry: this.plugin.mcpRegistry,
       ragMinScore: this.plugin.settings.rag.minScore,

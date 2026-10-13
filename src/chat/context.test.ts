@@ -25,6 +25,35 @@ vi.mock('obsidian', () => {
 });
 
 describe('buildChatContext RAG 출처 검증', () => {
+  it('제외된 확장자를 직접 지정하면 명시 읽기로 첨부하고 읽을 수 없는 파일과 구분한다', async () => {
+    const log = createFile('monithub 개요.log', '합성 추출 본문', 1000, 'log');
+    const secret = createFile('Secrets/.env', 'TOKEN=secret', 1000, 'env');
+    const app = createApp(
+      new Map([
+        [log.path, log],
+        [secret.path, secret],
+      ]),
+    );
+
+    const context = await buildChatContext('[[monithub%20개요.log]] 요약해줘 @[Secrets/.env]', {
+      app,
+      candidatePaths: new Set<string>(),
+      isExplicitReadAllowed: (file) => Promise.resolve(file.path === log.path),
+    });
+
+    expect(context.systemPrompt).toContain('합성 추출 본문');
+    expect(context.attachments).toContainEqual(
+      expect.objectContaining({ id: 'file:monithub 개요.log', status: 'attached' }),
+    );
+    expect(context.attachments).toContainEqual(
+      expect.objectContaining({
+        id: 'file:Secrets/.env',
+        status: 'missing',
+        detail: '읽을 수 없는 파일: Secrets/.env',
+      }),
+    );
+  });
+
   it('플러그인 코드 질문은 명시한 자료만 읽고 자동 검색과 질의 확장을 건너뛴다', async () => {
     const explicit = createFile('Example.md', '명시적으로 제공한 합성 자료 [[archive/Other]]', 1000);
     const unrelated = createFile('archive/Other.md', '자동 첨부되면 안 되는 합성 자료', 1000);
