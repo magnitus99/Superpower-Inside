@@ -16,6 +16,10 @@ Superpower Inside brings AI research and writing into Obsidian. Ask a question, 
 
 **Find past decisions and compare the evidence before writing from your own material.**
 
+https://github.com/user-attachments/assets/4d939e64-219b-4a80-a318-8f967639df2e
+
+41-second demo · No audio · Fictional documents. [Download the video](media/superpower-inside-en.mp4).
+
 **[Install in Obsidian](https://obsidian.md/plugins?id=superpower-inside)** · **[Download the latest release](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
 Free and open source. Desktop Obsidian **1.11.4 or later**. The plugin has no subscription or signup; your AI provider's account requirements, fees, and usage limits still apply. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md).
@@ -138,6 +142,10 @@ The examples above are illustrative. Use your own files, folders, and tags.
 Superpower Inside는 Obsidian 안에서 노트를 찾아 읽고, 비교하고, 글로 만드는 AI 플러그인입니다. 질문에 필요한 노트와 문서를 연결하고, 답변의 근거를 원문에서 직접 확인하며 다음 작업을 이어가세요.
 
 **지난 결정과 그 근거를 비교하며 내 자료로 글을 쓰세요.**
+
+https://github.com/user-attachments/assets/161f503d-81d0-4316-8597-e11d153dd29a
+
+41초 데모 · 무음 · 가상 문서로 구성했습니다. [영상 다운로드](media/superpower-inside-ko.mp4).
 
 **[Obsidian에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[최신 릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
