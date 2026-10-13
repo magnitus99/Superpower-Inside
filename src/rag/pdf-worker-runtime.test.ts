@@ -8,6 +8,12 @@ import {
   extractPdfSourceText,
 } from './pdf-worker-runtime';
 
+const { downloadAsset } = vi.hoisted(() => ({ downloadAsset: vi.fn() }));
+vi.mock('obsidian', () => ({
+  normalizePath: (path: string) => path,
+  requestUrl: downloadAsset,
+}));
+
 /** 2페이지 합성 PDF입니다. 실제 볼트 문서가 아니라 추출 계약 검증용 바이트입니다. */
 const SAMPLE_PDF_BASE64 =
   'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUg' +
@@ -24,11 +30,14 @@ const SAMPLE_PDF_BASE64 =
   'MDAwMDU3NiAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDggL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjY3MwolJUVPRgo=';
 
 const WORKER_SOURCE = readFileSync(new URL('../../pdf-worker.js', import.meta.url), 'utf8');
+const OCR_SOURCE = readFileSync(new URL('../../pdf-ocr-worker.js', import.meta.url), 'utf8');
+const assetBytes = (source: string): ArrayBuffer => new TextEncoder().encode(source).buffer;
 
 afterEach(() => {
   disposePdfWorker();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  downloadAsset.mockReset();
 });
 
 describe('PDF worker bundle', () => {
@@ -59,6 +68,65 @@ describe('PDF worker bundle', () => {
 });
 
 describe('PDF worker client', () => {
+  it('기본 설치에 PDF 자산이 없어도 자동 확보 후 같은 읽기를 계속하며 OCR은 필요할 때만 확보한다', async () => {
+    const workers: FakeWorker[] = [];
+    vi.stubGlobal(
+      'Worker',
+      class extends FakeWorker {
+        constructor(url: string) {
+          super(url);
+          workers.push(this);
+        }
+      },
+    );
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:automatic');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    configurePdfWorkerAssets('automatic');
+    const vault = createVault(new ArrayBuffer(2));
+    const files = new Map<string, ArrayBuffer>();
+    vault.adapter.exists = vi.fn((path: string) => Promise.resolve(files.has(path)));
+    vault.adapter.readBinary = vi.fn((path: string) => {
+      const bytes = files.get(path);
+      return bytes ? Promise.resolve(bytes) : Promise.reject(new Error('ENOENT'));
+    });
+    vault.adapter.writeBinary = vi.fn((path: string, bytes: ArrayBuffer) => {
+      files.set(path, bytes);
+      return Promise.resolve();
+    });
+    vault.adapter.remove = vi.fn((path: string) => {
+      files.delete(path);
+      return Promise.resolve();
+    });
+    vault.adapter.rename = vi.fn((from: string, to: string) => {
+      const bytes = files.get(from);
+      if (!bytes) return Promise.reject(new Error('ENOENT'));
+      files.set(to, bytes);
+      files.delete(from);
+      return Promise.resolve();
+    });
+    downloadAsset.mockImplementation(({ url }: { url: string }) =>
+      Promise.resolve({
+        status: 200,
+        arrayBuffer: assetBytes(url.endsWith('/pdf-worker.js') ? WORKER_SOURCE : OCR_SOURCE),
+      }),
+    );
+    const result = extractPdfSourceText(vault, {
+      path: 'synthetic.pdf',
+      stat: { size: 2 },
+    } as TFile);
+    await vi.waitFor(() => expect(workers[0]?.posted).toHaveLength(1));
+    expect(downloadAsset).toHaveBeenCalledTimes(1);
+    expect(files.has('.obsidian/plugins/automatic/pdf-worker.js')).toBe(true);
+    const worker = workers[0];
+    const id = worker.posted[0].id;
+    worker.deliver?.({ id, kind: 'ocr-assets' });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
+    expect(downloadAsset).toHaveBeenCalledTimes(2);
+    expect(files.has('.obsidian/plugins/automatic/pdf-ocr-worker.js')).toBe(true);
+    expect([...files.keys()].some((path) => path.endsWith('.tmp'))).toBe(false);
+    worker.deliver?.({ id, ok: true, text: 'extracted body', segments: [] });
+    await expect(result).resolves.toEqual({ text: 'extracted body', segments: [] });
+  });
   it('OCR 자산을 필요할 때만 읽고 진행 응답을 결과로 오인하지 않으며 취소 시 자원을 해제한다', async () => {
     const workers: FakeWorker[] = [];
     vi.stubGlobal(
@@ -144,7 +212,13 @@ function createVault(bytes: ArrayBuffer): Vault {
   return {
     configDir: '.obsidian',
     readBinary: () => Promise.resolve(bytes.slice(0)),
-    adapter: { readBinary: () => Promise.resolve(new TextEncoder().encode('//worker').buffer) },
+    adapter: {
+      exists: () => Promise.resolve(true),
+      readBinary: (path: string) =>
+        Promise.resolve(
+          assetBytes(path.endsWith('/pdf-ocr-worker.js') ? OCR_SOURCE : WORKER_SOURCE),
+        ),
+    },
   } as unknown as Vault;
 }
 

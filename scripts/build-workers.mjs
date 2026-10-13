@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { pdfMaskBuildPlugin } from './pdf-mask-build.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workers = [
@@ -77,7 +78,7 @@ for (const directory of ['cmaps', 'standard_fonts']) {
 }
 const pdf = await build({
   entryPoints: [resolve(root, 'src/rag/pdf-worker-entry.ts')],
-  plugins: [{ name: 'pdf-render-assets', setup(builder) {
+  plugins: [pdfMaskBuildPlugin(resolve(root, 'src/rag/pdf-mask.ts')), { name: 'pdf-render-assets', setup(builder) {
     builder.onResolve({ filter: /^pdf-render-assets$/ }, () => ({ path: 'assets', namespace: 'pdf-assets' }));
     builder.onLoad({ filter: /.*/, namespace: 'pdf-assets' }, () => ({ contents: `export const renderAssets = ${JSON.stringify(renderAssets)};`, loader: 'js' }));
   } }],
@@ -86,6 +87,21 @@ const pdf = await build({
   minify: true, legalComments: 'none',
 });
 await writeFile(resolve(root, 'pdf-worker.js'), pdf.outputFiles[0].contents);
+const { version } = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
+const pdfAssets = [];
+for (const file of ['pdf-worker.js', 'pdf-ocr-worker.js']) {
+  const bytes = await readFile(resolve(root, file));
+  pdfAssets.push({
+    file,
+    size: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    url: `https://github.com/magnitus99/Superpower-Inside/releases/download/${encodeURIComponent(version)}/${file}`,
+  });
+}
+await writeFile(
+  resolve(root, 'generated/pdf-worker-assets.ts'),
+  `// 이 파일은 scripts/build-workers.mjs가 생성합니다. 직접 수정하지 마세요.\nexport const PDF_WORKER_ASSETS = ${JSON.stringify(pdfAssets, null, 2)} as const;\n`,
+);
 const runtimeFiles = [
   ['ort-wasm-simd-threaded.asyncify.wasm', 'embeddinggemma-runtime.wasm'],
   ['ort-wasm-simd-threaded.asyncify.mjs', 'embeddinggemma-runtime.mjs'],
