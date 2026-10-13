@@ -117,3 +117,14 @@ describe('assistant 단일 캔버스 디자인 계약', () => {
     );
   });
 });
+
+describe('chat 마크다운 계약', () => {
+  it('질문과 답변은 Obsidian 마크다운 뷰와 같은 클래스를 공유한다', () => {
+    const markdownSource = readFileSync(resolve(chatRoot, 'markdown.ts'), 'utf8');
+
+    expect(markdownSource).toContain("el.addClass('markdown-rendered')");
+    expect(styles).toMatch(
+      /\.superpower-inside-chat-bubble\.markdown-rendered\s*\{[^}]*white-space:\s*normal;/s,
+    );
+  });
+});

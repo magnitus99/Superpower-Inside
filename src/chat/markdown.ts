@@ -13,6 +13,7 @@ export async function renderMarkdownToElement(
   component: Component,
 ): Promise<void> {
   el.empty();
+  el.addClass('markdown-rendered');
   await MarkdownRenderer.render(app, content, el, sourcePath, component);
 }
 

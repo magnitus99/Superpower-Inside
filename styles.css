@@ -3411,6 +3411,10 @@ button.superpower-inside-prompt-danger-btn:disabled {
   white-space: pre-wrap;
 }
 
+.superpower-inside-chat-bubble.markdown-rendered {
+  white-space: normal;
+}
+
 .superpower-inside-chat-bubble.user {
   padding: 13px 15px;
   border: 1px solid var(--background-modifier-border);
