@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatOptions, ToolDefinition } from '../llm/providers';
+import type { ChatMessage, ChatOptions, ToolDefinition, LLMProvider } from '../llm/providers';
 import {
   isScopedVaultResearchIntentRust,
   deriveResearchCoverageReceiptRust,
@@ -35,6 +35,7 @@ const SEGMENT_PLAN_BUDGET = {
 } as const;
 
 export interface VaultResearchModel {
+  streamChat?: LLMProvider['streamChat'];
   readonly contextBudget?: import('../rag/rust-core').ModelContextBudget;
   chat(
     messages: ChatMessage[],
@@ -62,6 +63,7 @@ export interface VaultResearchRunOptions {
   previousUserQuestions?: readonly string[];
   signal?: AbortSignal;
   onProgress?: (progress: VaultResearchProgress) => void;
+  onAnswer?: (content: string) => void;
 }
 
 export interface VaultResearchProviderTransfer {
@@ -292,6 +294,7 @@ export class VaultResearchAgent {
             ]
               .filter(Boolean)
               .join('\n\n') || undefined,
+            options.onAnswer,
           );
     const processedFiles = inventory.files.length - localScreen.failedFiles.length;
     const scope = options.scopePath
@@ -698,6 +701,7 @@ export class VaultResearchAgent {
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
     systemPrompt?: string,
+    onAnswer?: (content: string) => void,
   ): Promise<string> {
     const summaryTransferPlan = planContextBudgetAppendRust(
       this.batchMaxChars,
@@ -733,12 +737,20 @@ export class VaultResearchAgent {
         requestLedger,
         signal,
         systemPrompt,
+        onAnswer,
       );
     } catch (error) {
       if (!(error instanceof VaultResearchProviderBudgetExhaustedError)) throw error;
       return t('vaultResearchAnswerContractFallback');
     }
-    return this.enforceAnswerContract(generated, coverage, requestLedger, signal, systemPrompt);
+    return this.enforceAnswerContract(
+      generated,
+      coverage,
+      requestLedger,
+      signal,
+      systemPrompt,
+      onAnswer,
+    );
   }
 
   private async enforceAnswerContract(
@@ -747,6 +759,7 @@ export class VaultResearchAgent {
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
     systemPrompt?: string,
+    onAnswer?: (content: string) => void,
   ): Promise<string> {
     const language = getLanguage();
     const firstPlan = planResearchAnswerContractRust({ answer, language, receipt: coverage });
@@ -768,6 +781,7 @@ export class VaultResearchAgent {
         requestLedger,
         signal,
         systemPrompt,
+        onAnswer,
       );
     } catch (error) {
       if (!(error instanceof VaultResearchProviderBudgetExhaustedError)) throw error;
@@ -805,6 +819,7 @@ export class VaultResearchAgent {
     requestLedger: ProviderRequestLedger,
     signal?: AbortSignal,
     systemPrompt?: string,
+    onAnswer?: (content: string) => void,
   ): Promise<string> {
     for (let failedAttempt = 0; ; failedAttempt++) {
       throwIfAborted(signal);
@@ -813,24 +828,36 @@ export class VaultResearchAgent {
         retryDelayMs: 0,
       });
       try {
-        const content = await this.model.chat(
-          [
-            {
-              role: 'system',
-              content: [
-                systemPrompt,
-                'You are the internal research engine for an Obsidian vault. Use only supplied evidence, preserve source IDs, and never invent coverage.',
-                t('llmEvidenceDataBoundary'),
-              ]
-                .filter(Boolean)
-                .join('\n'),
+        const messages: ChatMessage[] = [
+          {
+            role: 'system',
+            content: [
+              systemPrompt,
+              'You are the internal research engine for an Obsidian vault. Use only supplied evidence, preserve source IDs, and never invent coverage.',
+              t('llmEvidenceDataBoundary'),
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          },
+          { role: 'user', content: prompt },
+        ];
+        let content = '';
+        if (onAnswer && this.model.streamChat) {
+          onAnswer('');
+          await this.model.streamChat(
+            messages,
+            (chunk) => {
+              throwIfAborted(signal);
+              content += chunk.content;
+              if (chunk.content) onAnswer(content);
             },
-            { role: 'user', content: prompt },
-          ],
-          0.2,
-          undefined,
-          { signal },
-        );
+            0.2,
+            undefined,
+            { signal },
+          );
+        } else {
+          content = await this.model.chat(messages, 0.2, undefined, { signal });
+        }
         if (!content.trim()) throw new Error(t('vaultResearchEmptySummary'));
         return content.trim();
       } catch (error) {

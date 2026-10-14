@@ -64,6 +64,30 @@ fn plan(input: &Value) -> Option<Value> {
         }
         "request" => request(input),
         "response" => response(text(input, "text")?),
+        "stream-event" => {
+            let event: Value = serde_json::from_str(text(input, "data")?).ok()?;
+            let kind = text(&event, "type")?;
+            match kind {
+                "response.output_text.delta" | "response.refusal.delta" => {
+                    Some(json!({"content": event.get("delta")?.as_str()?, "done": false}))
+                }
+                "response.reasoning_summary_text.delta" => Some(
+                    json!({"content": "", "reasoning": event.get("delta")?.as_str()?, "done": false}),
+                ),
+                "response.failed" | "response.incomplete" | "error" => Some(json!({"error": true})),
+                "response.completed" => Some(json!({"content": "", "done": true})),
+                _ => Some(json!({"content": "", "done": false})),
+            }
+        }
+        "stream-tail" => {
+            let mut result = response(text(input, "text")?)?;
+            for key in ["content", "reasoning"] {
+                let emitted = input.get(key)?.as_str()?;
+                let remaining = result.get(key)?.as_str()?.strip_prefix(emitted)?.to_owned();
+                *result.get_mut(key)? = json!(remaining);
+            }
+            Some(result)
+        }
         "models" => {
             let models = input.get("value")?.get("models")?.as_array()?;
             let mut ids = models
@@ -220,6 +244,47 @@ fn response(body: &str) -> Option<Value> {
 mod tests {
     use super::plan;
     use serde_json::json;
+
+    #[test]
+    fn live_events_and_terminal_reconciliation_do_not_duplicate_text() {
+        for (kind, field) in [
+            ("response.output_text.delta", "content"),
+            ("response.refusal.delta", "content"),
+            ("response.reasoning_summary_text.delta", "reasoning"),
+        ] {
+            let event = json!({"type":kind, "delta":"한글 😀"});
+            let chunk = plan(&json!({"operation":"stream-event", "data":event.to_string()}));
+            assert_eq!(
+                chunk.as_ref().and_then(|value| value.get(field)),
+                Some(&json!("한글 😀"))
+            );
+            assert_eq!(
+                chunk.as_ref().and_then(|value| value.get("done")),
+                Some(&json!(false))
+            );
+        }
+        for kind in ["response.failed", "response.incomplete", "error"] {
+            let chunk =
+                plan(&json!({"operation":"stream-event", "data":json!({"type":kind}).to_string()}));
+            assert_eq!(
+                chunk.as_ref().and_then(|value| value.get("error")),
+                Some(&json!(true))
+            );
+        }
+        let body = format!(
+            "data: {}\n\n",
+            json!({"type":"response.completed", "response":{"status":"completed", "model":"synthetic", "output":[{"type":"message","content":[{"type":"output_text","text":"first second"}]}]}})
+        );
+        let result = plan(
+            &json!({"operation":"stream-tail", "text":body, "content":"first", "reasoning":""}),
+        );
+        assert_eq!(
+            result.as_ref().and_then(|value| value.get("content")),
+            Some(&json!(" second"))
+        );
+        assert!(plan(&json!({"operation":"stream-tail", "text":body, "content":"different", "reasoning":""})).is_none());
+        assert!(plan(&json!({"operation":"stream-event", "data":"invalid"})).is_none());
+    }
 
     #[test]
     fn completed_response_recovers_finalized_items_when_terminal_output_is_empty() {

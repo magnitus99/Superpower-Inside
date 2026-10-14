@@ -15,7 +15,7 @@ export function isContext7McpServer(
 ): boolean {
   if (server.name.trim().toLowerCase() === CONTEXT7_MCP_SERVER_NAME) return true;
 
-  const command = server.command.trim().toLowerCase();
+  const command = (server.command ?? '').trim().toLowerCase();
   if (command === 'ctx7' || command.includes('context7')) return true;
 
   return (server.args ?? []).some((arg) => {

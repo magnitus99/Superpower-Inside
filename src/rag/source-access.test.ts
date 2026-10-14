@@ -1,8 +1,11 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TFile, Vault } from 'obsidian';
 import { chunkSourceDocument } from './source-document';
 import { clearSourceTextCache, readSourceText } from './source-access';
+import { planRagFileIndexabilityRust } from './rust-core';
+import { XlsxTestWorker, disposeXlsxTestWorkers } from '../test/xlsx-worker-fixture';
+import { disposeXlsxWorker } from './xlsx-worker-runtime';
 
 // PDF 본문은 전용 worker가 만들므로, 여기서는 라우팅만 확인하고 worker는 대체합니다.
 vi.mock('./pdf-worker-runtime', () => ({
@@ -113,7 +116,10 @@ function createVault(binary: Uint8Array | null, text = ''): Vault {
 }
 
 const EPUB_ENTRIES = [
-  ['META-INF/container.xml', '<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>'],
+  [
+    'META-INF/container.xml',
+    '<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+  ],
   [
     'OEBPS/content.opf',
     '<package><manifest><item id="chapter" href="chapter.xhtml"/></manifest><spine><itemref idref="chapter"/></spine></package>',
@@ -124,10 +130,208 @@ const EPUB_ENTRIES = [
   ],
 ] as const;
 
+// 공개 예시나 테스트 볼트에 의존하지 않는 최소 형식별 문서입니다.
+const DOCUMENT_CASES: readonly {
+  extension: string;
+  entries: readonly (readonly [string, string])[];
+}[] = [
+  { extension: 'epub', entries: EPUB_ENTRIES },
+  {
+    extension: 'docx',
+    entries: [
+      [
+        'word/document.xml',
+        '<w:document><w:p><w:r><w:t>합성 문서 Alpha</w:t></w:r></w:p></w:document>',
+      ],
+    ],
+  },
+  {
+    extension: 'odt',
+    entries: [
+      ['content.xml', '<office:document><text:p>합성 문서 Alpha</text:p></office:document>'],
+    ],
+  },
+  {
+    extension: 'pptx',
+    entries: [
+      ['ppt/slides/slide1.xml', '<p:sld><a:p><a:r><a:t>합성 문서 Alpha</a:t></a:r></a:p></p:sld>'],
+    ],
+  },
+  {
+    extension: 'xlsx',
+    entries: [
+      [
+        'xl/worksheets/sheet1.xml',
+        '<worksheet><sheetData><row><c t="inlineStr"><is><t>합성 문서 Alpha</t></is></c><c><v>42</v></c></row></sheetData></worksheet>',
+      ],
+    ],
+  },
+  {
+    extension: 'hwpx',
+    entries: [
+      [
+        'Contents/section0.xml',
+        '<hs:sec><hp:p><hp:run><hp:t>합성 문서 Alpha</hp:t></hp:run></hp:p></hs:sec>',
+      ],
+    ],
+  },
+];
+
 describe('readSourceText', () => {
   beforeEach(() => {
     clearSourceTextCache();
+    vi.stubGlobal('Worker', XlsxTestWorker);
   });
+
+  afterEach(async () => {
+    disposeXlsxWorker();
+    await disposeXlsxTestWorkers();
+    vi.unstubAllGlobals();
+  });
+
+  it.each(DOCUMENT_CASES)(
+    '$extension의 후보 판정·바이트 읽기·추출·청킹·구간 라벨을 연결한다',
+    async ({ extension, entries }) => {
+      const bytes = buildStoredZip(entries);
+      const file = createFile(`synthetic/source.${extension.toUpperCase()}`, 1, bytes.length);
+      const vault = createVault(bytes, '사용하면 안 되는 압축 원문');
+      const readBinary = vi.spyOn(vault, 'readBinary');
+      const cachedRead = vi.spyOn(vault, 'cachedRead');
+      expect(
+        planRagFileIndexabilityRust(
+          [
+            {
+              filePath: file.path,
+              fileName: file.name,
+              extension: file.extension,
+              size: bytes.length,
+            },
+          ],
+          [],
+          [],
+          [],
+        )?.candidateIndices,
+      ).toEqual([0]);
+      const source = await readSourceText(vault, file);
+      expect(source.text.trim().length).toBeGreaterThan(0);
+      expect(source.segments.length).toBeGreaterThan(0);
+      const chunks = chunkSourceDocument(
+        file,
+        source.text,
+        { chunkSize: 200, overlap: 20 },
+        source.segments,
+      );
+      expect(chunks.length).toBeGreaterThan(0);
+      expect(chunks[0]?.metadata.heading).toBe(source.segments[0]?.label);
+      expect(chunks.every((chunk) => chunk.metadata.filePath === file.path)).toBe(true);
+      expect(readBinary).toHaveBeenCalledOnce();
+      expect(cachedRead).not.toHaveBeenCalled();
+      expect(await readSourceText(vault, file)).toEqual(source);
+      expect(readBinary).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(['md', 'txt', 'csv', 'json', 'ts', 'js', 'rs', 'html', 'xml', 'yaml'])(
+    '%s 원문은 텍스트 읽기와 청킹을 연결한다',
+    async (extension) => {
+      const body = '합성 문서 Alpha\nSecond line 42';
+      const file = createFile(
+        `synthetic/source.${extension}`,
+        1,
+        new TextEncoder().encode(body).length,
+      );
+      const vault = createVault(null, body);
+      const readBinary = vi.spyOn(vault, 'readBinary');
+      expect(
+        planRagFileIndexabilityRust(
+          [{ filePath: file.path, fileName: file.name, extension, size: file.stat.size }],
+          [],
+          [],
+          [],
+        )?.candidateIndices,
+      ).toEqual([0]);
+      const source = await readSourceText(vault, file);
+      expect(source).toEqual({ text: body, segments: [] });
+      expect(
+        chunkSourceDocument(file, body, { chunkSize: 200, overlap: 0 }).length,
+      ).toBeGreaterThan(0);
+      expect(readBinary).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(DOCUMENT_CASES)(
+    '$extension의 손상된 컨테이너는 텍스트 읽기로 대체하지 않는다',
+    async ({ extension }) => {
+      const vault = createVault(new TextEncoder().encode('not-a-zip'), '대체 본문');
+      const cachedRead = vi.spyOn(vault, 'cachedRead');
+      await expect(
+        readSourceText(vault, createFile(`synthetic/broken.${extension}`)),
+      ).rejects.toThrow('corrupt');
+      expect(cachedRead).not.toHaveBeenCalled();
+    },
+  );
+
+  it('약 5MiB XLSX는 후보에 포함되고 본문 외 항목의 크기 때문에 거부되지 않는다', async () => {
+    const entries = DOCUMENT_CASES.find((entry) => entry.extension === 'xlsx')?.entries ?? [];
+    const bytes = buildStoredZip([
+      ...entries,
+      ['xl/media/padding.bin', 'x'.repeat(5 * 1024 * 1024)],
+    ]);
+    const file = createFile('synthetic/large.xlsx', 1, bytes.length);
+    expect(
+      planRagFileIndexabilityRust(
+        [{ filePath: file.path, fileName: file.name, extension: 'xlsx', size: bytes.length }],
+        [],
+        [],
+        [],
+      )?.candidateIndices,
+    ).toEqual([0]);
+    expect((await readSourceText(createVault(bytes), file)).text).toContain('42');
+  });
+
+  it('XLSX 원본 크기는 후보 필터가 아니라 워커의 작업 예산에서 판정한다', () => {
+    const files = [0, 5 * 1024 * 1024, 128 * 1024 * 1024 + 1].map((size, index) => ({
+      filePath: `synthetic/${index}.xlsx`,
+      fileName: `${index}.xlsx`,
+      extension: 'XLSX',
+      size,
+    }));
+    const plan = planRagFileIndexabilityRust(files, [], [], []);
+    expect(plan?.candidateIndices).toEqual([1, 2]);
+    expect(plan?.summaryInputs[0]?.recommendationReason).toBe('empty');
+  });
+
+  it('큰 XLSX 본문은 최근 읽기 캐시에 남기지 않는다', async () => {
+    const row = `<row><c t="inlineStr"><is><t>${'a'.repeat(1024)}</t></is></c></row>`;
+    const bytes = buildStoredZip([
+      ['xl/worksheets/sheet1.xml', `<worksheet>${row.repeat(8193)}</worksheet>`],
+    ]);
+    const source = createVault(bytes);
+    const readBinary = vi.spyOn(source, 'readBinary');
+    const file = createFile('synthetic/large.xlsx', 1, bytes.length);
+    const first = await readSourceText(source, file);
+    const second = await readSourceText(source, file);
+    expect(first.text.length).toBeGreaterThan(8 * 1024 * 1024);
+    expect(second.text).toBe(first.text);
+    expect(readBinary).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['pdf', 'epub', 'docx', 'odt', 'pptx', 'hwpx'])(
+    '%s 파일 크기 128MiB 경계와 빈 파일을 구분한다',
+    (extension) => {
+      const sizes = [0, 5 * 1024 * 1024, 128 * 1024 * 1024, 128 * 1024 * 1024 + 1];
+      const files = sizes.map((size, index) => ({
+        filePath: `synthetic/${index}.${extension}`,
+        fileName: `${index}.${extension}`,
+        extension,
+        size,
+      }));
+      const plan = planRagFileIndexabilityRust(files, [], [], []);
+      expect(plan?.candidateIndices).toEqual([1, 2]);
+      expect(plan?.summaryInputs[0]?.recommendationReason).toBe('empty');
+      expect(plan?.summaryInputs[3]?.recommendationReason).toBe('too-large');
+    },
+  );
 
   it('일반 텍스트 파일은 원문을 그대로 돌려준다', async () => {
     const file = createFile('notes/plain.md');
@@ -146,7 +350,12 @@ describe('readSourceText', () => {
   it('추출 본문의 구간 라벨을 청크 heading으로 승격한다', async () => {
     const file = createFile('books/sample.epub');
     const source = await readSourceText(createVault(buildStoredZip(EPUB_ENTRIES)), file);
-    const chunks = chunkSourceDocument(file, source.text, { chunkSize: 200, overlap: 0 }, source.segments);
+    const chunks = chunkSourceDocument(
+      file,
+      source.text,
+      { chunkSize: 200, overlap: 0 },
+      source.segments,
+    );
     expect(chunks.length).toBeGreaterThan(0);
     expect(chunks[0]?.metadata.heading).toBe('Chapter One');
   });

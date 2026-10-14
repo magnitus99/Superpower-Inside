@@ -366,6 +366,77 @@ export class VectorRuntimeIndex {
 if (Symbol.dispose) VectorRuntimeIndex.prototype[Symbol.dispose] = VectorRuntimeIndex.prototype.free;
 
 /**
+ * JSON 본문 복사 없이 UTF-8 버퍼를 워커에 전달하는 XLSX 추출 결과입니다.
+ */
+export class XlsxSourceText {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        XlsxSourceTextFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_xlsxsourcetext_free(ptr, 0);
+    }
+    /**
+     * ZIP XML을 순차적으로 읽어 전체 본문을 만들거나 명시적인 실패를 반환합니다.
+     * @param {Uint8Array} bytes
+     */
+    constructor(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.xlsxsourcetext_new(ptr0, len0);
+        this.__wbg_ptr = ret;
+        XlsxSourceTextFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * 빈 문자열은 전체 추출 성공이며 나머지는 안정적인 실패 코드입니다.
+     * @returns {string}
+     */
+    reason() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.xlsxsourcetext_reason(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * 작은 구간 메타데이터만 JSON으로 전달합니다.
+     * @returns {string}
+     */
+    segments_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.xlsxsourcetext_segments_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * UTF-8 본문을 한 번만 이동하며 WASM 내부에 복사본을 남기지 않습니다.
+     * @returns {Uint8Array}
+     */
+    take_text_bytes() {
+        const ret = wasm.xlsxsourcetext_take_text_bytes(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+}
+if (Symbol.dispose) XlsxSourceText.prototype[Symbol.dispose] = XlsxSourceText.prototype.free;
+
+/**
  * retrieval source score/rank를 source-aware RAG relevance 계산 입력으로 요약한다.
  * @param {Uint8Array} source_codes
  * @param {Float64Array} source_scores
@@ -1102,6 +1173,26 @@ export function local_model_range_matches(start, end, total, status, length, con
 }
 
 /**
+ * 저장된 MCP 설정을 로컬·원격 공통 내부 형식으로 마이그레이션한다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function migrate_stored_mcp_servers_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.migrate_stored_mcp_servers_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 확장자 문자열을 RAG 제외 설정 계약에 맞게 정규화한다.
  * @param {string} extension
  * @returns {string}
@@ -1161,6 +1252,33 @@ export function normalize_reasoning_chunk_json(content, reasoning) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 스트림 간 미완성 태그만 보관하며 공백과 Unicode를 그대로 전달한다.
+ * @param {string} state
+ * @param {string} content
+ * @param {string} reasoning
+ * @param {boolean} done
+ * @returns {string}
+ */
+export function normalize_reasoning_stream_json(state, content, reasoning, done) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(state, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(reasoning, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.normalize_reasoning_stream_json(ptr0, len0, ptr1, len1, ptr2, len2, done);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 
@@ -4056,10 +4174,18 @@ const IvfRuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefined'
 const VectorRuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_vectorruntimeindex_free(ptr, 1));
+const XlsxSourceTextFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_xlsxsourcetext_free(ptr, 1));
 
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
 }
 
 let cachedFloat32ArrayMemory0 = null;

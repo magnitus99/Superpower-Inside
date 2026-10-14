@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('obsidian', () => ({ requestUrl: vi.fn() }));
+vi.mock('../utils/desktop-stream', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/desktop-stream')>();
+  const { providerStreamFixture } = await import('../test/provider-stream-fixture');
+  return { ...actual, desktopFetch: providerStreamFixture };
+});
 
 import { requestUrl } from 'obsidian';
 import { connectTestChatGPT, completedChatGPTResponse } from '../test/chatgpt';
@@ -73,14 +78,14 @@ function responseText(strategy: ProviderStrategyKey, text: string) {
     );
   } else if (strategy === 'claude') {
     respond(
-      `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text } })}\n\ndata: {"type":"message_stop"}\n`,
+      `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text } })}\n\n\ndata: {"type":"message_stop"}\n\n`,
     );
   } else if (strategy === 'ollama' || strategy === 'ollamaCloud') {
     const json = { message: { content: text }, done: true };
     respond(JSON.stringify(json), 200, json);
   } else {
     respond(
-      `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\ndata: [DONE]\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n\ndata: [DONE]\n\n`,
     );
   }
 }
@@ -103,7 +108,7 @@ function responseCall(strategy: ProviderStrategyKey) {
         'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-1","name":"read_plan"}}',
         'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"project\\":\\"alpha\\"}"}}',
         'data: {"type":"message_stop"}',
-      ].join('\n'),
+      ].join('\n\n') + '\n\n',
     );
   } else if (strategy === 'ollama' || strategy === 'ollamaCloud') {
     const json = {
@@ -115,7 +120,7 @@ function responseCall(strategy: ProviderStrategyKey) {
     respond(JSON.stringify(json), 200, json);
   } else {
     respond(
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_plan","arguments":"{\\"project\\":\\"alpha\\"}"}}]}}]}\ndata: [DONE]\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_plan","arguments":"{\\"project\\":\\"alpha\\"}"}}]}}]}\n\ndata: [DONE]\n\n',
     );
   }
 }
@@ -303,11 +308,11 @@ describe.each(strategies)('도구 계약 점수: %s', (strategy) => {
   it('10 provider 오류를 정상 완료로 삼키지 않고 복구 계층에 전달한다', async () => {
     if (strategy === 'openAIChatGPT') {
       respond(
-        'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"failed"}}}\n',
+        'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"failed"}}}\n\n',
       );
     } else if (strategy === 'claude') {
       respond(
-        'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n',
+        'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',
       );
     } else if (strategy === 'ollama') {
       respond('{"error":"failed"}\n');
@@ -325,7 +330,7 @@ describe.each(strategies)('도구 계약 점수: %s', (strategy) => {
         }) as ReturnType<typeof requestUrl>;
       });
     } else {
-      respond('data: {"error":{"code":400,"message":"This model does not support tools"}}\n');
+      respond('data: {"error":{"code":400,"message":"This model does not support tools"}}\n\n');
     }
     const result = provider(strategy).streamChat([], () => {}, 0.7, [tool]);
     if (strategy === 'ollamaCloud') {

@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('obsidian', () => ({ requestUrl: vi.fn() }));
+vi.mock('../utils/desktop-stream', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/desktop-stream')>();
+  const { providerStreamFixture } = await import('../test/provider-stream-fixture');
+  return { ...actual, desktopFetch: providerStreamFixture };
+});
 
 import { requestUrl } from 'obsidian';
 import { connectTestChatGPT, completedChatGPTResponse, requestUrlPromise } from '../test/chatgpt';
@@ -224,8 +229,8 @@ describe('ChatGPT 브라우저 OAuth 연결', () => {
       store: false,
     });
     expect(provider.capability).toMatchObject({
-      streaming: false,
-      abort: 'best-effort',
+      streaming: true,
+      abort: 'native',
       toolCalling: true,
     });
     expect(provider.getObservedModel?.()).toBe('selected-model');
@@ -623,11 +628,11 @@ describe('provider capability matrix', () => {
     ).toMatchObject({
       providerKey: 'openai',
       model: 'gpt-test',
-      streaming: false,
-      transport: 'request-url-buffered',
+      streaming: true,
+      transport: 'desktop-stream',
       toolCalling: true,
       reasoning: true,
-      abort: 'best-effort',
+      abort: 'native',
       fileReference: true,
       maxToolRounds: 10,
     });
@@ -640,17 +645,17 @@ describe('provider capability matrix', () => {
     ).toMatchObject({
       providerKey: 'ollamaCloud',
       model: 'deepseek-v4-pro',
-      streaming: false,
-      transport: 'request-url-buffered',
+      streaming: true,
+      transport: 'desktop-stream',
       toolCalling: true,
       reasoning: true,
-      abort: 'best-effort',
+      abort: 'native',
       fileReference: true,
       maxToolRounds: 10,
     });
   });
 
-  it('custom OpenAI-compatible 기본값은 보수적으로 tools/reasoning/live streaming을 비활성화한다', async () => {
+  it('custom OpenAI-compatible 기본값은 보수적으로 tools/reasoning을 보수적으로 비활성화하고 실시간 스트리밍을 지원한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       text: 'ok',
@@ -676,11 +681,11 @@ describe('provider capability matrix', () => {
     expect(provider.capability).toMatchObject({
       providerKey: 'customOpenAI:custom',
       model: 'custom-test',
-      streaming: false,
-      transport: 'request-url-buffered',
+      streaming: true,
+      transport: 'desktop-stream',
       toolCalling: false,
       reasoning: false,
-      abort: 'best-effort',
+      abort: 'native',
       fileReference: true,
       maxToolRounds: 10,
     });
@@ -723,7 +728,7 @@ describe('provider capability matrix', () => {
       providerKey: 'customOpenAI:custom',
       model: 'custom-test',
       streaming: true,
-      transport: 'request-url-buffered',
+      transport: 'desktop-stream',
       toolCalling: true,
       reasoning: true,
       abort: 'native',
@@ -770,7 +775,7 @@ describe('provider별 toolChoice request mapping', () => {
   it('Claude streamChat도 같은 required→any 매핑을 사용한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
-      text: 'data: {"type":"message_stop"}',
+      text: 'data: {"type":"message_stop"}\n\n',
       json: {},
       headers: {},
       arrayBuffer: new ArrayBuffer(0),
@@ -841,11 +846,12 @@ describe('provider reasoning stream normalization', () => {
   it('OpenAI 호환 SSE의 reasoning_content와 content 내부 think 태그를 분리한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
-      text: [
-        'data: {"choices":[{"delta":{"reasoning_content":"구조화 생각"}}]}',
-        'data: {"choices":[{"delta":{"content":"<think>태그 생각</think>최종"}}]}',
-        'data: [DONE]',
-      ].join('\n'),
+      text:
+        [
+          'data: {"choices":[{"delta":{"reasoning_content":"구조화 생각"}}]}',
+          'data: {"choices":[{"delta":{"content":"<think>태그 생각</think>최종"}}]}',
+          'data: [DONE]',
+        ].join('\n\n') + '\n\n',
       json: {},
       headers: {},
       arrayBuffer: new ArrayBuffer(0),
@@ -874,10 +880,11 @@ describe('provider reasoning stream normalization', () => {
   it('OpenRouter SSE의 reasoning 필드를 reasoning chunk로 분리한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
-      text: [
-        'data: {"choices":[{"delta":{"reasoning":"openrouter 생각","content":"답변"}}]}',
-        'data: [DONE]',
-      ].join('\n'),
+      text:
+        [
+          'data: {"choices":[{"delta":{"reasoning":"openrouter 생각","content":"답변"}}]}',
+          'data: [DONE]',
+        ].join('\n\n') + '\n\n',
       json: {},
       headers: {},
       arrayBuffer: new ArrayBuffer(0),
@@ -901,11 +908,12 @@ describe('provider reasoning stream normalization', () => {
   it('Claude thinking_delta는 reasoning으로, text_delta는 content로 전달한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
-      text: [
-        'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"claude 생각"}}',
-        'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"claude 답변"}}',
-        'data: {"type":"message_stop"}',
-      ].join('\n'),
+      text:
+        [
+          'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"claude 생각"}}',
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"claude 답변"}}',
+          'data: {"type":"message_stop"}',
+        ].join('\n\n') + '\n\n',
       json: {},
       headers: {},
       arrayBuffer: new ArrayBuffer(0),
@@ -930,7 +938,7 @@ describe('provider reasoning stream normalization', () => {
 });
 
 describe('Ollama streamChat transport', () => {
-  it('Ollama Cloud 스트리밍은 브라우저 fetch 대신 requestUrl 비스트리밍 요청을 사용한다', async () => {
+  it('Ollama Cloud 스트리밍은 데스크톱 스트림으로 NDJSON 응답을 전달한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       text: '{"message":{"content":"cloud answer"},"done":true}',
@@ -956,14 +964,14 @@ describe('Ollama streamChat transport', () => {
     }
     expect(call.url).toBe('https://ollama.com/api/chat');
     expect(call.headers).toMatchObject({
-      'Content-Type': 'application/json',
-      Authorization: 'Bearer test-key',
+      'content-type': 'application/json',
+      authorization: 'Bearer test-key',
     });
     const body = parseRequestUrlBody();
     expect(body).toMatchObject({
       model: 'deepseek-v4-pro',
       options: { temperature: 0.3 },
-      stream: false,
+      stream: true,
       think: true,
       tools: [createTool()],
     });
@@ -972,7 +980,7 @@ describe('Ollama streamChat transport', () => {
     expect(onChunk).toHaveBeenNthCalledWith(2, { content: '', done: true });
   });
 
-  it('Ollama Local 스트리밍은 requestUrl NDJSON 텍스트를 순서대로 처리한다', async () => {
+  it('Ollama Local 스트리밍은 데스크톱 NDJSON fixture를 순서대로 처리한다', async () => {
     requestUrlMock.mockResolvedValueOnce({
       status: 200,
       text: [

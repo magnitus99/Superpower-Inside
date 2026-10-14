@@ -1,4 +1,4 @@
-export type ProviderTransport = 'request-url-buffered';
+export type ProviderTransport = 'request-url-buffered' | 'desktop-stream';
 
 export type ProviderAbortCapability = 'native' | 'best-effort';
 
@@ -81,16 +81,15 @@ function getDefaultProviderCapability(
     return {
       providerKey,
       model,
-      streaming: false,
-      transport: 'request-url-buffered',
+      streaming: true,
+      transport: 'desktop-stream',
       toolCalling: false,
       reasoning: false,
-      abort: 'best-effort',
+      abort: 'native',
       fileReference: true,
       maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
       knownLimitations: [
         'Custom OpenAI-compatible native function calling is conservative until explicitly enabled.',
-        'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
       ],
     };
   }
@@ -101,76 +100,66 @@ function getDefaultProviderCapability(
       return {
         providerKey,
         model,
-        streaming: false,
-        transport: 'request-url-buffered',
+        streaming: true,
+        transport: 'desktop-stream',
         toolCalling: true,
         reasoning: true,
-        abort: 'best-effort',
+        abort: 'native',
         fileReference: true,
         maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
-        knownLimitations: [
-          'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
-        ],
+        knownLimitations: [],
       };
     case 'claude':
       return {
         providerKey,
         model,
-        streaming: false,
-        transport: 'request-url-buffered',
+        streaming: true,
+        transport: 'desktop-stream',
         toolCalling: true,
         reasoning: true,
-        abort: 'best-effort',
+        abort: 'native',
         fileReference: true,
         maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
-        knownLimitations: [
-          'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
-        ],
+        knownLimitations: [],
       };
     case 'ollama':
       return {
         providerKey,
         model,
-        streaming: false,
-        transport: 'request-url-buffered',
+        streaming: true,
+        transport: 'desktop-stream',
         toolCalling: true,
         reasoning: true,
-        abort: 'best-effort',
+        abort: 'native',
         fileReference: true,
         maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
-        knownLimitations: [
-          'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
-        ],
+        knownLimitations: [],
       };
     case 'ollamaCloud':
       return {
         providerKey,
         model,
-        streaming: false,
-        transport: 'request-url-buffered',
+        streaming: true,
+        transport: 'desktop-stream',
         toolCalling: true,
         reasoning: true,
-        abort: 'best-effort',
+        abort: 'native',
         fileReference: true,
         maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
-        knownLimitations: [
-          'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
-        ],
+        knownLimitations: [],
       };
     case 'openRouter':
       return {
         providerKey,
         model,
-        streaming: false,
-        transport: 'request-url-buffered',
+        streaming: true,
+        transport: 'desktop-stream',
         toolCalling: true,
         reasoning: true,
-        abort: 'best-effort',
+        abort: 'native',
         fileReference: true,
         maxToolRounds: DEFAULT_PROVIDER_TOOL_ROUNDS,
-        knownLimitations: [
-          'Obsidian requestUrl buffers responses, so live token streaming is unavailable.',
-        ],
+        knownLimitations: [],
       };
     default:
       return {

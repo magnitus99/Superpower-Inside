@@ -20,7 +20,9 @@ mod source_extract;
 mod source_metadata;
 pub use local_embedding::{embedding_gemma_inputs_json, local_model_range_matches};
 pub use source_document::{plan_source_chunk_import_indices_json, plan_source_chunks_json};
-pub use source_extract::{extract_source_text_json, is_extractable_source_extension};
+pub use source_extract::{
+    XlsxSourceText, extract_source_text_json, is_extractable_source_extension,
+};
 pub use source_metadata::{
     plan_native_vault_source_citation_indices_json, plan_source_metadata_json,
 };
@@ -3422,6 +3424,81 @@ pub fn normalize_reasoning_chunk_json(content: &str, reasoning: &str) -> String 
     serialize_reasoning_chunk_content(split.content, reasoning_text)
 }
 
+/// 스트림 간 미완성 태그만 보관하며 공백과 Unicode를 그대로 전달한다.
+#[must_use]
+#[wasm_bindgen]
+pub fn normalize_reasoning_stream_json(
+    state: &str,
+    content: &str,
+    reasoning: &str,
+    done: bool,
+) -> String {
+    let Ok(state) = serde_json::from_str::<JsonValue>(state) else {
+        return String::new();
+    };
+    let Some(pending) = state.get("pending").and_then(JsonValue::as_str) else {
+        return String::new();
+    };
+    let Some(mut thinking) = state.get("thinking").and_then(JsonValue::as_bool) else {
+        return String::new();
+    };
+    let mut pending = pending.to_owned();
+    let mut answer = String::new();
+    let mut thoughts = String::new();
+    for character in content.chars() {
+        if pending.is_empty() && character != '<' {
+            if thinking {
+                thoughts.push(character);
+            } else {
+                answer.push(character);
+            }
+            continue;
+        }
+        pending.push(character);
+        let lower = pending.to_ascii_lowercase();
+        let mut matched = false;
+        let mut partial = false;
+        for name in ["think", "thinking", "reasoning", "thought"] {
+            for closing in [false, true] {
+                let root = format!("<{}{name}", if closing { "/" } else { "" });
+                let tag = format!("{root}>");
+                if lower == tag || (lower.starts_with(&format!("{root} ")) && lower.ends_with('>'))
+                {
+                    thinking = !closing;
+                    matched = true;
+                }
+                partial |= tag.starts_with(&lower) || lower.starts_with(&format!("{root} "));
+            }
+        }
+        if matched {
+            pending.clear();
+        } else if !partial || pending.len() > 256 {
+            if thinking {
+                thoughts.push_str(&pending);
+            } else {
+                answer.push_str(&pending);
+            }
+            pending.clear();
+        }
+    }
+    if done {
+        if thinking {
+            thoughts.push_str(&pending);
+        } else {
+            answer.push_str(&pending);
+        }
+        pending.clear();
+    }
+    let thoughts = if reasoning.is_empty() {
+        thoughts
+    } else if thoughts.is_empty() {
+        reasoning.to_owned()
+    } else {
+        format!("{reasoning}\n\n{thoughts}")
+    };
+    serde_json::json!({"content":answer, "reasoning":thoughts, "state":{"pending":pending, "thinking":thinking}}).to_string()
+}
+
 /// reasoning 태그를 분할한 결과.
 #[derive(Debug)]
 struct ReasoningChunk {
@@ -3667,28 +3744,28 @@ fn analyze_mcp_json(mcp_json_text: &str) -> McpJsonValidationPlan {
 
     for (name, server) in mcp_servers {
         let Some(server_obj) = server.as_object() else {
-            return McpJsonValidationPlan {
-                valid: false,
-                data: None,
-                error_code: Some("invalid-server-value".to_owned()),
-                server_name: Some(name.clone()),
-                parse_error: None,
-            };
+            return mcp_server_validation_error(name, "invalid-server-value");
         };
 
-        if name.trim().is_empty()
+        let remote = server_obj.contains_key("url");
+        let transport = server_obj.get("transport").and_then(JsonValue::as_str);
+        if remote {
+            if invalid_remote_mcp_config(server_obj, name) {
+                return mcp_server_validation_error(name, "invalid-remote-server");
+            }
+            continue;
+        }
+        if server_obj
+            .get("transport")
+            .is_some_and(|value| !value.is_string())
+            || !matches!(transport, None | Some("stdio"))
+            || name.trim().is_empty()
             || server_obj
                 .get("command")
                 .and_then(JsonValue::as_str)
                 .is_none_or(|command| command.trim().is_empty())
         {
-            return McpJsonValidationPlan {
-                valid: false,
-                data: None,
-                error_code: Some("server-needs-command".to_owned()),
-                server_name: Some(name.clone()),
-                parse_error: None,
-            };
+            return mcp_server_validation_error(name, "server-needs-command");
         }
 
         if let Some(args) = server_obj.get("args")
@@ -3696,13 +3773,7 @@ fn analyze_mcp_json(mcp_json_text: &str) -> McpJsonValidationPlan {
                 .as_array()
                 .is_none_or(|args| args.iter().any(|arg| !arg.is_string()))
         {
-            return McpJsonValidationPlan {
-                valid: false,
-                data: None,
-                error_code: Some("invalid-args".to_owned()),
-                server_name: Some(name.clone()),
-                parse_error: None,
-            };
+            return mcp_server_validation_error(name, "invalid-args");
         }
 
         if let Some(env) = server_obj.get("env")
@@ -3710,13 +3781,7 @@ fn analyze_mcp_json(mcp_json_text: &str) -> McpJsonValidationPlan {
                 .as_object()
                 .is_none_or(|env| env.values().any(|value| !value.is_string()))
         {
-            return McpJsonValidationPlan {
-                valid: false,
-                data: None,
-                error_code: Some("invalid-env".to_owned()),
-                server_name: Some(name.clone()),
-                parse_error: None,
-            };
+            return mcp_server_validation_error(name, "invalid-env");
         }
     }
 
@@ -3725,6 +3790,52 @@ fn analyze_mcp_json(mcp_json_text: &str) -> McpJsonValidationPlan {
         data: Some(parsed),
         error_code: None,
         server_name: None,
+        parse_error: None,
+    }
+}
+
+/// MCP JSON 검증 계획을 외부 바인딩이 소비할 수 있는 JSON 문자열로 직렬화한다.
+/// 원격 MCP의 주소·연결 방식·비밀값 참조 계약을 검사한다.
+fn invalid_remote_mcp_config(server_obj: &JsonMap<String, JsonValue>, name: &str) -> bool {
+    let transport = server_obj.get("transport").and_then(JsonValue::as_str);
+    let valid_url = server_obj
+        .get("url")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|url| {
+            let authority = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"))
+                .and_then(|rest| rest.split(['/', '?', '#']).next());
+            authority.is_some_and(|host| !host.is_empty() && !host.contains('@'))
+                && !url.chars().any(char::is_whitespace)
+        });
+    let valid_secret = server_obj.get("authTokenSecret").is_none_or(|value| {
+        value.as_str().is_some_and(|id| {
+            !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+    });
+    !valid_url
+        || !valid_secret
+        || name.trim().is_empty()
+        || server_obj
+            .get("transport")
+            .is_some_and(|value| !value.is_string())
+        || !matches!(transport, None | Some("http" | "sse"))
+        || ["command", "args", "env", "headers", "apiKey", "token"]
+            .iter()
+            .any(|key| server_obj.contains_key(*key))
+}
+
+/// 서버별 실패를 공통 wire 계약으로 반환한다.
+fn mcp_server_validation_error(name: &str, code: &str) -> McpJsonValidationPlan {
+    McpJsonValidationPlan {
+        valid: false,
+        data: None,
+        error_code: Some(code.to_owned()),
+        server_name: Some(name.to_owned()),
         parse_error: None,
     }
 }
@@ -10307,6 +10418,10 @@ fn classify_rag_file_without_probe(file: &RagFileEligibilityInput) -> RagFilePro
         return RagFileProbeDecision::NotIndexable("empty");
     }
     let extension = rag_file_extension(file);
+    // XLSX의 원본 크기는 워커의 전체 메모리 예산 안에서 판정합니다.
+    if extension == "xlsx" {
+        return RagFileProbeDecision::Indexable;
+    }
     if is_extractable_source_extension(&extension) {
         return if file.size > MAX_RAG_EXTRACTABLE_SOURCE_BYTES {
             RagFileProbeDecision::NotIndexable("too-large")

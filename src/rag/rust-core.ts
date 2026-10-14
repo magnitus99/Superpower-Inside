@@ -4,6 +4,7 @@ import type {
   RetiredArtifactPlan,
 } from '../storage/retired-artifacts';
 import type { GeneratedArtifactRecord } from '../storage/generated-artifacts';
+import type { MCPServerConfig } from '../settings';
 import {
   update_generated_artifact_registry_json,
   plan_retired_artifacts_json,
@@ -32,6 +33,7 @@ import {
   is_local_settings_provider,
   is_valid_settings_folder,
   parse_settings_number,
+  migrate_stored_mcp_servers_json,
   Bm25RuntimeIndex,
   chunk_markdown_json,
   collect_candidate_reasons as collect_candidate_reasons_json,
@@ -60,6 +62,7 @@ import {
   classify_mcp_tool_error_json,
   normalize_exclude_extension_json,
   normalize_reasoning_chunk_json,
+  normalize_reasoning_stream_json,
   normalize_vault_link_target_json,
   parse_mention_candidates_json,
   plan_tag_mentions_json,
@@ -3488,6 +3491,81 @@ export function normalizeReasoningChunkRust(input: {
     }
     const parsed: unknown = JSON.parse(raw);
     return isRustReasoningChunk(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeReasoningStreamRust(
+  state: string,
+  content: string,
+  reasoning: string,
+  done: boolean,
+): { content: string; reasoning: string; state: { pending: string; thinking: boolean } } | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const result: unknown = JSON.parse(
+      normalize_reasoning_stream_json(state, content, reasoning, done),
+    );
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      !('content' in result) ||
+      typeof result.content !== 'string' ||
+      !('reasoning' in result) ||
+      typeof result.reasoning !== 'string' ||
+      !('state' in result)
+    )
+      return null;
+    const next = result.state;
+    if (
+      !next ||
+      typeof next !== 'object' ||
+      !('pending' in next) ||
+      typeof next.pending !== 'string' ||
+      !('thinking' in next) ||
+      typeof next.thinking !== 'boolean'
+    )
+      return null;
+    return {
+      content: result.content,
+      reasoning: result.reasoning,
+      state: { pending: next.pending, thinking: next.thinking },
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function migrateStoredMcpServersRust(value: unknown): MCPServerConfig[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(migrate_stored_mcp_servers_json(JSON.stringify(value)));
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((server: unknown): server is MCPServerConfig => {
+        if (
+          !isStringRecordValueMap(server) ||
+          typeof server.name !== 'string' ||
+          typeof server.command !== 'string'
+        )
+          return false;
+        return (
+          (server.url === undefined || typeof server.url === 'string') &&
+          (server.transport === undefined ||
+            server.transport === 'stdio' ||
+            server.transport === 'http' ||
+            server.transport === 'sse') &&
+          (server.authTokenSecret === undefined || typeof server.authTokenSecret === 'string') &&
+          (server.args === undefined ||
+            (Array.isArray(server.args) &&
+              server.args.every((arg: unknown) => typeof arg === 'string'))) &&
+          (server.env === undefined || isStringStringRecord(server.env))
+        );
+      })
+    )
+      return null;
+    return parsed;
   } catch {
     return null;
   }

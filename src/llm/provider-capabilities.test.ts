@@ -6,6 +6,26 @@ import {
 } from './provider-capabilities';
 
 describe('provider 도구 라운드 안전 한도', () => {
+  it.each([
+    'openai',
+    'openAIChatGPT',
+    'claude',
+    'ollama',
+    'ollamaCloud',
+    'openRouter',
+    'customOpenAI:synthetic',
+  ])('%s는 별도 옵션 없이 스트리밍을 표준으로 사용한다', (providerKey) => {
+    expect(resolveProviderCapability({ providerKey, model: 'synthetic' })).toMatchObject({
+      streaming: true,
+      transport: 'desktop-stream',
+      abort: 'native',
+    });
+  });
+  it('알 수 없는 provider의 스트리밍과 취소 capability는 보수적으로 유지한다', () => {
+    expect(resolveProviderCapability({ providerKey: 'unknown', model: 'synthetic' })).toMatchObject(
+      { streaming: false, transport: 'request-url-buffered', abort: 'best-effort' },
+    );
+  });
   it('native function calling을 지원하지 않아도 compatibility 도구 라운드를 허용한다', () => {
     expect(
       resolveProviderCapability({

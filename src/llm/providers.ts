@@ -1,10 +1,11 @@
 import { requestUrl } from 'obsidian';
+import { desktopFetch, consumeDesktopStream, streamHeaders } from '../utils/desktop-stream';
 import { ChatGPTProvider } from './chatgpt-provider';
 import { prepareProviderRequest } from './request-budget';
 import type { CustomOpenAIProviderConfig, ProviderConfig, ProviderStrategyKey } from '../settings';
 import {
   REASONING_EXTRACTORS,
-  normalizeReasoningChunk,
+  createStreamingReasoningSink,
   type ReasoningExtractor,
 } from './reasoning';
 import {
@@ -102,6 +103,28 @@ function createProviderHttpError(
     response.status,
     retryAfterMs,
   );
+}
+
+async function requestProviderStream(
+  url: string,
+  headers: Record<string, string>,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const response = await desktopFetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok) {
+    throw createProviderHttpError('LLM stream failed', {
+      status: response.status,
+      text: await response.text(),
+      headers: streamHeaders(response.headers),
+    });
+  }
+  return response;
 }
 
 /* ---------- Message Normalizers ---------- */
@@ -336,25 +359,19 @@ class OpenAICompatibleProvider implements LLMProvider {
   ): Promise<void> {
     throwIfChatAborted(options?.signal);
     const body = this.buildChatBody(messages, temperature, true, tools, options);
-    const res = await requestUrl({
-      url: this.endpoint,
-      method: 'POST',
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      throw: false,
-    });
-    if (res.status >= 400) {
-      throw createProviderHttpError('LLM stream failed', res);
-    }
-    const lines = res.text.split('\n');
-    for (const line of lines) {
-      if (options?.signal?.aborted) {
-        onChunk({ content: '', done: true });
-        return;
-      }
-      if (this.processSSELine(line, onChunk)) return;
-    }
-    onChunk({ content: '', done: true });
+    onChunk = createStreamingReasoningSink(onChunk);
+    const res = await requestProviderStream(
+      this.endpoint,
+      this.buildHeaders(),
+      body,
+      options?.signal,
+    );
+    await consumeDesktopStream(
+      res,
+      'sse',
+      (data) => this.processSSELine(`data: ${data}`, onChunk),
+      options?.signal,
+    );
   }
 
   protected buildHeaders(): Record<string, string> {
@@ -375,57 +392,54 @@ class OpenAICompatibleProvider implements LLMProvider {
       return true;
     }
     if (!data) return false;
-    try {
-      const chunk = JSON.parse(data) as {
-        error?: { message?: string; code?: number; status?: number };
-        choices?: Array<{
-          delta?: {
-            content?: string;
-            reasoning_content?: string;
-            tool_calls?: Array<{
-              index: number;
-              id?: string;
-              type?: string;
-              function?: { name?: string; arguments?: string };
-            }>;
-          };
-        }>;
-      };
-      if (chunk.error) {
-        throw new LLMProviderHttpError(
-          chunk.error.message ?? 'LLM stream failed',
-          chunk.error.status ?? chunk.error.code ?? 502,
-        );
-      }
-      const delta = chunk.choices?.[0]?.delta;
-      const normalized = normalizeReasoningChunk({
-        content: delta?.content ?? '',
-        reasoning: this.reasoningExtractor.extract(delta ?? {}),
-      });
-      const content = normalized.content;
-      const reasoning = normalized.reasoning;
-      const toolCalls = delta?.tool_calls?.map(
-        (tc): ToolCallDelta => ({
-          index: tc.index,
-          id: tc.id,
-          type: tc.type as 'function' | undefined,
-          function: tc.function
-            ? { name: tc.function.name, arguments: tc.function.arguments }
-            : undefined,
-        }),
+
+    const chunk = JSON.parse(data) as {
+      error?: { message?: string; code?: number; status?: number };
+      choices?: Array<{
+        delta?: {
+          content?: string;
+          reasoning_content?: string;
+          tool_calls?: Array<{
+            index: number;
+            id?: string;
+            type?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+      }>;
+    };
+    if (chunk.error) {
+      throw new LLMProviderHttpError(
+        chunk.error.message ?? 'LLM stream failed',
+        chunk.error.status ?? chunk.error.code ?? 502,
       );
-      if (content || reasoning || (toolCalls && toolCalls.length > 0)) {
-        onChunk({
-          content,
-          done: false,
-          ...(reasoning ? { reasoning } : {}),
-          ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
-        });
-      }
-    } catch (error) {
-      // JSON 구문 오류만 건너뛰며 provider 오류와 소비자 오류는 호출부에 전달합니다.
-      if (!(error instanceof SyntaxError)) throw error;
     }
+    const delta = chunk.choices?.[0]?.delta;
+    const normalized = {
+      content: delta?.content ?? '',
+      reasoning: this.reasoningExtractor.extract(delta ?? {}),
+    };
+    const content = normalized.content;
+    const reasoning = normalized.reasoning;
+    const toolCalls = delta?.tool_calls?.map(
+      (tc): ToolCallDelta => ({
+        index: tc.index,
+        id: tc.id,
+        type: tc.type as 'function' | undefined,
+        function: tc.function
+          ? { name: tc.function.name, arguments: tc.function.arguments }
+          : undefined,
+      }),
+    );
+    if (content || reasoning || (toolCalls && toolCalls.length > 0)) {
+      onChunk({
+        content,
+        done: false,
+        ...(reasoning ? { reasoning } : {}),
+        ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+      });
+    }
+
     return false;
   }
 }
@@ -552,31 +566,22 @@ class ClaudeProvider implements LLMProvider {
         body.tool_choice = mapClaudeToolChoice(options.toolChoice);
       }
     }
-    const res = await requestUrl({
-      url: ANTHROPIC_MESSAGES_URL,
-      method: 'POST',
-      headers: {
+    const res = await requestProviderStream(
+      ANTHROPIC_MESSAGES_URL,
+      {
         'Content-Type': 'application/json',
         'x-api-key': this.config.apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify(body),
-      throw: false,
-    });
-    if (res.status >= 400) {
-      throw createProviderHttpError('Claude stream failed', res);
-    }
-    const lines = res.text.split('\n');
+      body,
+      options?.signal,
+    );
+    await consumeDesktopStream(
+      res,
+      'sse',
+      (data) => {
+        if (!data) return false;
 
-    for (const line of lines) {
-      if (options?.signal?.aborted) {
-        onChunk({ content: '', done: true });
-        return;
-      }
-      if (!line.startsWith('data: ')) continue;
-      const data = line.slice(6).trim();
-      if (!data) continue;
-      try {
         const event = JSON.parse(data) as {
           type: string;
           error?: { type?: string; message?: string };
@@ -620,14 +625,13 @@ class ClaudeProvider implements LLMProvider {
           onChunk({ content: event.delta?.text ?? '', done: false });
         } else if (event.type === 'message_stop') {
           onChunk({ content: '', done: true });
-          return;
+          return true;
         }
-      } catch (error) {
-        // JSON 구문 오류만 건너뛰며 오류 이벤트를 성공 종료로 바꾸지 않습니다.
-        if (!(error instanceof SyntaxError)) throw error;
-      }
-    }
-    onChunk({ content: '', done: true });
+
+        return false;
+      },
+      options?.signal,
+    );
   }
 }
 
@@ -648,7 +652,6 @@ class OllamaProvider implements LLMProvider {
   }
   private config: ProviderConfig;
   private modelOverride?: string;
-  private useRequestUrlForStreaming: boolean;
 
   constructor(
     config: ProviderConfig,
@@ -658,7 +661,6 @@ class OllamaProvider implements LLMProvider {
   ) {
     this.config = config;
     this.modelOverride = modelOverride;
-    this.useRequestUrlForStreaming = useRequestUrlForStreaming;
     this.capability =
       capability ??
       resolveProviderCapability({
@@ -749,57 +751,21 @@ class OllamaProvider implements LLMProvider {
         ...(options?.contextTokens ? { num_ctx: options.contextTokens } : {}),
         ...(options?.maxOutputTokens ? { num_predict: options.maxOutputTokens } : {}),
       },
-      stream: !this.useRequestUrlForStreaming,
+      stream: true,
       think: true,
     };
+    onChunk = createStreamingReasoningSink(onChunk);
     if (this.capability.toolCalling && tools && tools.length > 0) {
       body.tools = tools;
     }
-    if (this.useRequestUrlForStreaming) {
-      const res = await requestUrl({
-        url: targetUrl,
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify(body),
-        throw: false,
-      });
-      if (res.status >= 400) {
-        throw createProviderHttpError('Ollama stream failed', res);
-      }
-      if (options?.signal?.aborted) {
-        onChunk({ content: '', done: true });
-        return;
-      }
-      const data = res.json as OllamaChatResponse;
-      if (data.error) {
-        throw new Error(`Ollama chat failed: ${data.error}`);
-      }
-      const chunk = toOllamaStreamChunk(data);
-      if (chunk) {
-        onChunk(chunk);
-      }
-      onChunk({ content: '', done: true });
-      return;
-    }
-    const res = await requestUrl({
-      url: targetUrl,
-      method: 'POST',
-      headers: this.buildHeaders(),
-      body: JSON.stringify(body),
-      throw: false,
-    });
-    if (res.status >= 400) {
-      throw createProviderHttpError('Ollama stream failed', res);
-    }
+    const res = await requestProviderStream(targetUrl, this.buildHeaders(), body, options?.signal);
+    await consumeDesktopStream(
+      res,
+      'ndjson',
+      (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return false;
 
-    for (const line of res.text.split('\n')) {
-      if (options?.signal?.aborted) {
-        onChunk({ content: '', done: true });
-        return;
-      }
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
         const data = JSON.parse(trimmed) as OllamaChatResponse;
         if (data.error) {
           throw new Error(`Ollama chat failed: ${data.error}`);
@@ -810,14 +776,13 @@ class OllamaProvider implements LLMProvider {
         }
         if (data.done) {
           onChunk({ content: '', done: true });
-          return;
+          return true;
         }
-      } catch (e) {
-        if (e instanceof SyntaxError) continue;
-        throw e;
-      }
-    }
-    onChunk({ content: '', done: true });
+
+        return false;
+      },
+      options?.signal,
+    );
   }
 }
 
@@ -835,10 +800,10 @@ interface OllamaChatResponse {
 }
 
 function toOllamaStreamChunk(data: OllamaChatResponse): StreamChunk | null {
-  const normalized = normalizeReasoningChunk({
+  const normalized = {
     content: data.message?.content ?? '',
     reasoning: data.message?.thinking,
-  });
+  };
   const content = normalized.content;
   const thinking = normalized.reasoning;
   const toolCalls = data.message?.tool_calls?.map(

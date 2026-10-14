@@ -207,22 +207,22 @@ if (args[0] === 'view') {
       writeFileSync(join(cwd, 'README.md'), 'BAD intermediate');
       writeFileSync(
         join(cwd, 'package.json'),
-        JSON.stringify({ version: '1.0.0', description: 'Safe description' }),
+        JSON.stringify({ version: '2026.10.14', description: 'Safe description' }),
       );
       writeFileSync(
         join(cwd, 'manifest.json'),
-        JSON.stringify({ version: '1.0.0', description: 'Safe description' }),
+        JSON.stringify({ version: '2026.10.14', description: 'Safe description' }),
       );
       git('add', '.');
       git('commit', '-qm', 'intermediate');
       writeFileSync(join(cwd, 'README.md'), 'Final release copy');
       git('add', '.');
       git('commit', '-qm', 'final');
-      git('tag', '-a', '1.0.0', '-m', 'release');
-      const tag = git('rev-parse', '1.0.0');
+      git('tag', '-a', '2026.10.14', '-m', 'release');
+      const tag = git('rev-parse', '2026.10.14');
       writeFileSync(join(cwd, 'README.md'), 'BAD unstaged');
       expect(
-        run(['--push'], {}, `refs/tags/1.0.0 ${tag} refs/tags/1.0.0 ${'0'.repeat(40)}\n`).status,
+        run(['--push'], {}, `refs/tags/2026.10.14 ${tag} refs/tags/2026.10.14 ${'0'.repeat(40)}\n`).status,
       ).toBe(0);
       expect(
         calls()
@@ -241,11 +241,11 @@ if (args[0] === 'view') {
     fixture(({ cwd, git, run, calls }) => {
       writeFileSync(
         join(cwd, 'manifest.json'),
-        JSON.stringify({ version: '2.0.0', description: 'Safe' }),
+        JSON.stringify({ version: '2026.10.15', description: 'Safe' }),
       );
       writeFileSync(
         join(cwd, 'package.json'),
-        JSON.stringify({ version: '2.0.0', description: 'Safe' }),
+        JSON.stringify({ version: '2026.10.15', description: 'Safe' }),
       );
       git('add', '.');
       git('commit', '-qm', 'version');
@@ -253,7 +253,7 @@ if (args[0] === 'view') {
         run(
           ['--push'],
           {},
-          `refs/tags/1.0.0 ${git('rev-parse', 'HEAD')} refs/tags/1.0.0 ${'0'.repeat(40)}\n`,
+          `refs/tags/2026.10.14 ${git('rev-parse', 'HEAD')} refs/tags/2026.10.14 ${'0'.repeat(40)}\n`,
         ).status,
       ).toBe(1);
       expect(calls()).toEqual([]);
@@ -264,18 +264,18 @@ if (args[0] === 'view') {
       writeFileSync(join(cwd, 'README.md'), 'Safe release');
       writeFileSync(
         join(cwd, 'manifest.json'),
-        JSON.stringify({ version: '1.0.0', description: 'Safe' }),
+        JSON.stringify({ version: '2026.10.14', description: 'Safe' }),
       );
       writeFileSync(
         join(cwd, 'package.json'),
-        JSON.stringify({ version: '1.0.0', description: 'Safe' }),
+        JSON.stringify({ version: '2026.10.14', description: 'Safe' }),
       );
       expect(run([]).status).toBe(0);
       git('add', '.');
       git('commit', '-qm', 'release');
       const sha = git('rev-parse', 'HEAD');
       expect(
-        run(['--push'], {}, `refs/tags/1.0.0 ${sha} refs/tags/1.0.0 ${'0'.repeat(40)}\n`).status,
+        run(['--push'], {}, `refs/tags/2026.10.14 ${sha} refs/tags/2026.10.14 ${'0'.repeat(40)}\n`).status,
       ).toBe(0);
       expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
       expect(calls().filter((call) => call.args[0] === 'view')).toHaveLength(2);

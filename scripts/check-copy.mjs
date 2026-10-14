@@ -239,7 +239,7 @@ function snapshots(mode, args) {
     return refs.flatMap((line) => {
       const [, after, remoteRef, before] = line.trim().split(/\s+/);
       if (!after || !before) throw new Error('잘못된 pre-push 입력입니다.');
-      if (/^0+$/.test(after) || !/^refs\/tags\/\d+\.\d+\.\d+$/.test(remoteRef)) return [];
+      if (/^0+$/.test(after) || !/^refs\/tags\/\d{4}\.\d{2}\.\d{2}(?:\.\d+)?$/.test(remoteRef)) return [];
       const commit = commitRevision(after);
       const version = remoteRef.slice('refs/tags/'.length);
       for (const file of ['manifest.json', 'package.json']) {

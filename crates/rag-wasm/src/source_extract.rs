@@ -8,7 +8,7 @@
 use crate::JsonValue;
 use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
-use std::io::{Cursor, Read};
+use std::io::{BufReader, Cursor, Read};
 use wasm_bindgen::prelude::wasm_bindgen;
 use zip::ZipArchive;
 
@@ -38,6 +38,10 @@ enum ExtractFailure {
     Empty,
     /// 암호화된 엔트리가 있습니다.
     Encrypted,
+    /// 추출 결과와 작업 자료의 메모리 예산을 초과했습니다.
+    MemoryBudget,
+    /// 하나의 XML 이벤트가 파싱 버퍼 예산을 초과했습니다.
+    XmlTokenBudget,
 }
 
 impl ExtractFailure {
@@ -49,6 +53,8 @@ impl ExtractFailure {
             Self::TooLarge => "too-large",
             Self::Empty => "empty",
             Self::Encrypted => "encrypted",
+            Self::MemoryBudget => "memory-budget",
+            Self::XmlTokenBudget => "xml-token-budget",
         }
     }
 }
@@ -208,9 +214,11 @@ fn read_entry(
     let Some(index) = index else {
         return Ok(None);
     };
-    let file = archive
-        .by_index(index)
-        .map_err(|_| ExtractFailure::Corrupt)?;
+    let file = archive.by_index(index).map_err(|error| match error {
+        zip::result::ZipError::UnsupportedArchive(zip::result::ZipError::PASSWORD_REQUIRED)
+        | zip::result::ZipError::InvalidPassword => ExtractFailure::Encrypted,
+        _ => ExtractFailure::Corrupt,
+    })?;
     if file.encrypted() {
         return Err(ExtractFailure::Encrypted);
     }
@@ -596,41 +604,268 @@ fn extract_pptx(bytes: &[u8]) -> Result<ExtractedDocument, ExtractFailure> {
     finish_document(document)
 }
 
-/// `XLSX` 시트 값을 추출합니다.
-fn extract_xlsx(bytes: &[u8]) -> Result<ExtractedDocument, ExtractFailure> {
-    let mut archive = open_archive(bytes)?;
-    let mut budget = 0u64;
-    let shared = read_entry(&mut archive, "xl/sharedStrings.xml", &mut budget)?
-        .map(|xml| collect_shared_strings(&xml))
-        .unwrap_or_default();
-    let names = sorted_entry_names(&archive, "xl/worksheets/sheet", ".xml");
-    let mut document = ExtractedDocument::new();
-    for (number, name) in names {
-        if document.conflicted() {
-            break;
-        }
-        let Some(sheet) = read_entry(&mut archive, &name, &mut budget)? else {
-            continue;
-        };
-        let rows = collect_sheet_rows(&sheet, &shared);
-        document.push_segment(&format!("Sheet {number}"), &rows.join("\n"));
-    }
-    finish_document(document)
+/// 작업 자료·입력 복사·결과 전달 공간을 계산하는 메모리 예산입니다.
+const XLSX_MEMORY_BYTES: usize = 512 * 1024 * 1024;
+/// 원본은 JS와 WASM에 동시에 있으므로 작업 예산의 절반보다 작게 유지합니다.
+const XLSX_SOURCE_BYTES: usize = 128 * 1024 * 1024;
+/// 정상 Excel 셀의 최대 UTF-8 크기보다 여유 있는 단일 이벤트 버퍼 예산입니다.
+const XLSX_EVENT_BYTES: usize = 1024 * 1024;
+/// 정상 시트 구조보다 충분한 여유를 두고 XML 태그 스택도 제한합니다.
+const XLSX_XML_DEPTH: usize = 128;
+/// WASM 초기 메모리와 압축·파싱 엔진을 위한 여유 공간입니다.
+const XLSX_ENGINE_BYTES: usize = 32 * 1024 * 1024;
+
+/// JSON 본문 복사 없이 UTF-8 버퍼를 워커에 전달하는 XLSX 추출 결과입니다.
+#[wasm_bindgen]
+pub struct XlsxSourceText {
+    /// 실패에는 부분 본문을 보관하지 않습니다.
+    result: Result<ExtractedDocument, ExtractFailure>,
 }
 
-/// `XLSX` 공유 문자열 테이블을 읽습니다.
-fn collect_shared_strings(xml: &str) -> Vec<String> {
-    let mut reader = Reader::from_reader(Cursor::new(xml.as_bytes()));
-    reader.config_mut().trim_text(false);
+#[wasm_bindgen]
+impl XlsxSourceText {
+    /// ZIP XML을 순차적으로 읽어 전체 본문을 만들거나 명시적인 실패를 반환합니다.
+    #[wasm_bindgen(constructor)]
+    #[must_use]
+    pub fn new(bytes: &[u8]) -> Self {
+        Self {
+            result: extract_xlsx(bytes),
+        }
+    }
+
+    /// 빈 문자열은 전체 추출 성공이며 나머지는 안정적인 실패 코드입니다.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        self.result
+            .as_ref()
+            .err()
+            .map_or_else(String::new, |reason| reason.code().to_owned())
+    }
+
+    /// UTF-8 본문을 한 번만 이동하며 WASM 내부에 복사본을 남기지 않습니다.
+    pub fn take_text_bytes(&mut self) -> Vec<u8> {
+        self.result.as_mut().map_or_else(
+            |_| Vec::new(),
+            |document| core::mem::take(&mut document.text).into_bytes(),
+        )
+    }
+
+    /// 작은 구간 메타데이터만 JSON으로 전달합니다.
+    #[must_use]
+    pub fn segments_json(&self) -> String {
+        self.result.as_ref().map_or_else(
+            |_| "[]".to_owned(),
+            |document| JsonValue::Array(document.segments_json()).to_string(),
+        )
+    }
+}
+
+/// 한 이벤트를 읽는 동안의 버퍼 증가를 실제 읽기 단계에서 제한합니다.
+struct XlsxEventReader<R> {
+    /// 스트리밍 압축 해제 입력입니다.
+    inner: R,
+    /// 현재 이벤트를 읽으며 새로 확보한 바이트 수입니다.
+    event_bytes: usize,
+}
+
+impl<R: Read> Read for XlsxEventReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.event_bytes >= XLSX_EVENT_BYTES {
+            return Err(std::io::Error::other("xml-token-budget"));
+        }
+        let length = buffer
+            .len()
+            .min(XLSX_EVENT_BYTES.saturating_sub(self.event_bytes));
+        let target = buffer
+            .get_mut(..length)
+            .ok_or_else(|| std::io::Error::other("corrupt"))?;
+        let count = self.inner.read(target)?;
+        self.event_bytes = self.event_bytes.saturating_add(count);
+        Ok(count)
+    }
+}
+
+/// 살아 있는 작업 자료의 크기만 계산하며 누적 XML 크기를 메모리로 취급하지 않습니다.
+struct XlsxBudget {
+    /// JS·WASM 입력 복사와 기본 엔진 공간입니다.
+    base_bytes: usize,
+    /// 공유 문자열과 벡터의 실제 보관 공간입니다.
+    shared_bytes: usize,
+    /// 테스트에서 작은 작업 예산의 실패도 재현할 수 있게 합니다.
+    limit: usize,
+}
+
+impl XlsxBudget {
+    /// 다음 할당 전 결과 전달 복사까지 포함한 공간을 확인합니다.
+    const fn check(&self, output_capacity: usize, extra: usize) -> Result<(), ExtractFailure> {
+        let required = self
+            .base_bytes
+            .saturating_add(self.shared_bytes)
+            .saturating_add(output_capacity.saturating_mul(4))
+            .saturating_add(extra);
+        if required > self.limit {
+            return Err(ExtractFailure::MemoryBudget);
+        }
+        Ok(())
+    }
+
+    /// 결과 버퍼는 기하급수적으로 확장하되 예산을 넘기는 할당은 시작하지 않습니다.
+    fn append(&self, output: &mut String, value: &str) -> Result<(), ExtractFailure> {
+        let required = output
+            .len()
+            .checked_add(value.len())
+            .ok_or(ExtractFailure::MemoryBudget)?;
+        if required > output.capacity() {
+            let capacity = required
+                .max(output.capacity().saturating_add(output.capacity() >> 1))
+                .max(64 * 1024);
+            self.check(capacity, 4 * XLSX_EVENT_BYTES)?;
+            output
+                .try_reserve_exact(capacity.saturating_sub(output.len()))
+                .map_err(|_| ExtractFailure::MemoryBudget)?;
+        }
+        output.push_str(value);
+        Ok(())
+    }
+}
+
+/// ZIP 항목을 본문 문자열로 만들지 않고 바로 XML 리더에 연결합니다.
+type XlsxZipReader<'a, 'b> =
+    Reader<BufReader<XlsxEventReader<zip::read::ZipFile<'a, Cursor<&'b [u8]>>>>>;
+
+/// ZIP 항목을 본문 문자열로 만들지 않고 바로 XML 리더에 연결합니다.
+fn xlsx_reader<'a, 'b>(
+    archive: &'a mut ZipArchive<Cursor<&'b [u8]>>,
+    name: &str,
+) -> Result<Option<XlsxZipReader<'a, 'b>>, ExtractFailure> {
+    let Some(index) = archive
+        .file_names()
+        .filter_map(Result::ok)
+        .position(|candidate| candidate.eq_ignore_ascii_case(name))
+    else {
+        return Ok(None);
+    };
+    let file = archive.by_index(index).map_err(|error| match error {
+        zip::result::ZipError::UnsupportedArchive(zip::result::ZipError::PASSWORD_REQUIRED)
+        | zip::result::ZipError::InvalidPassword => ExtractFailure::Encrypted,
+        _ => ExtractFailure::Corrupt,
+    })?;
+    if file.encrypted() {
+        return Err(ExtractFailure::Encrypted);
+    }
+    Ok(Some(Reader::from_reader(BufReader::new(XlsxEventReader {
+        inner: file,
+        event_bytes: 0,
+    }))))
+}
+
+/// 읽기 실패를 부분 성공으로 바꾸지 않고 파싱 버퍼 초과와 구분합니다.
+fn xlsx_event<'a, R: Read>(
+    reader: &mut Reader<BufReader<XlsxEventReader<R>>>,
+    buffer: &'a mut Vec<u8>,
+    depth: &mut usize,
+) -> Result<Event<'a>, ExtractFailure> {
+    buffer.clear();
+    reader.get_mut().get_mut().event_bytes = 0;
+    let event = reader.read_event_into(buffer).map_err(|_| {
+        if reader.get_ref().get_ref().event_bytes >= XLSX_EVENT_BYTES {
+            ExtractFailure::XmlTokenBudget
+        } else {
+            ExtractFailure::Corrupt
+        }
+    })?;
+    match event {
+        Event::Start(_) => {
+            *depth = depth.saturating_add(1);
+            if *depth > XLSX_XML_DEPTH {
+                return Err(ExtractFailure::XmlTokenBudget);
+            }
+        }
+        Event::End(_) => *depth = depth.checked_sub(1).ok_or(ExtractFailure::Corrupt)?,
+        Event::Eof if *depth != 0 => return Err(ExtractFailure::Corrupt),
+        Event::DocType(_) => return Err(ExtractFailure::Corrupt),
+        _ => {}
+    }
+    Ok(event)
+}
+
+/// 텍스트·CDATA·XML 엔티티를 손실 없이 현재 셀에 추가합니다.
+fn append_xlsx_event(current: &mut String, event: &Event<'_>) -> Result<(), ExtractFailure> {
+    let value = match event {
+        Event::Text(text) => text.xml_content(XmlVersion::Implicit1_0),
+        Event::CData(text) => text.xml_content(XmlVersion::Implicit1_0),
+        Event::GeneralRef(reference) => {
+            if let Some(character) = reference
+                .resolve_char_ref()
+                .map_err(|_| ExtractFailure::Corrupt)?
+            {
+                if current.len().saturating_add(character.len_utf8()) > XLSX_EVENT_BYTES {
+                    return Err(ExtractFailure::XmlTokenBudget);
+                }
+                current.push(character);
+                return Ok(());
+            }
+            match reference.as_ref() {
+                "amp" => "&".into(),
+                "lt" => "<".into(),
+                "gt" => ">".into(),
+                "quot" => "\"".into(),
+                "apos" => "'".into(),
+                _ => return Err(ExtractFailure::Corrupt),
+            }
+        }
+        _ => return Ok(()),
+    };
+    if current.len().saturating_add(value.len()) > XLSX_EVENT_BYTES {
+        return Err(ExtractFailure::XmlTokenBudget);
+    }
+    current.push_str(&value);
+    Ok(())
+}
+
+/// 필요한 공유 문자열만 보관하고 XML 자체는 순차적으로 읽습니다.
+fn push_xlsx_string(
+    strings: &mut Vec<String>,
+    budget: &mut XlsxBudget,
+    text_bytes: &mut usize,
+    value: String,
+) -> Result<(), ExtractFailure> {
+    let capacity = if strings.len() == strings.capacity() {
+        strings.capacity().saturating_mul(2).max(4)
+    } else {
+        strings.capacity()
+    };
+    *text_bytes = text_bytes.saturating_add(value.capacity());
+    budget.shared_bytes =
+        text_bytes.saturating_add(capacity.saturating_mul(core::mem::size_of::<String>()));
+    budget.check(0, 4 * XLSX_EVENT_BYTES)?;
+    if capacity > strings.capacity() {
+        strings
+            .try_reserve_exact(capacity.saturating_sub(strings.len()))
+            .map_err(|_| ExtractFailure::MemoryBudget)?;
+    }
+    strings.push(value);
+    Ok(())
+}
+
+/// 필요한 공유 문자열만 보관하고 XML 자체는 순차적으로 읽습니다.
+fn read_xlsx_strings(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    budget: &mut XlsxBudget,
+) -> Result<Vec<String>, ExtractFailure> {
+    let Some(mut reader) = xlsx_reader(archive, "xl/sharedStrings.xml")? else {
+        return Ok(Vec::new());
+    };
     let mut buffer = Vec::new();
     let mut strings = Vec::new();
     let mut current = String::new();
     let mut in_item = false;
     let mut in_text = false;
+    let mut depth = 0;
+    let mut text_bytes = 0usize;
     loop {
-        buffer.clear();
-        match reader.read_event_into(&mut buffer) {
-            Ok(Event::Start(event) | Event::Empty(event)) => match event.name().as_ref() {
+        match xlsx_event(&mut reader, &mut buffer, &mut depth)? {
+            Event::Start(event) => match event.name().as_ref() {
                 "si" => {
                     in_item = true;
                     current.clear();
@@ -638,102 +873,165 @@ fn collect_shared_strings(xml: &str) -> Vec<String> {
                 "t" => in_text = true,
                 _ => {}
             },
-            Ok(Event::End(event)) => match event.name().as_ref() {
+            Event::Empty(event) if event.name().as_ref() == "si" => {
+                push_xlsx_string(&mut strings, budget, &mut text_bytes, String::new())?;
+            }
+            Event::End(event) => match event.name().as_ref() {
                 "si" => {
                     in_item = false;
-                    strings.push(current.trim().to_owned());
+                    let value = current.trim().to_owned();
+                    push_xlsx_string(&mut strings, budget, &mut text_bytes, value)?;
                 }
                 "t" => in_text = false,
                 _ => {}
             },
-            Ok(event) if is_text_event(&event) => {
-                if in_item && in_text && current.chars().count() < MAX_PARAGRAPH_CHARS {
-                    current.push_str(&event_text(&event).unwrap_or_default());
-                }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            Ok(_) => {}
+            Event::Eof => break,
+            event if in_item && in_text => append_xlsx_event(&mut current, &event)?,
+            _ => {}
         }
+        budget.shared_bytes = text_bytes.saturating_add(
+            strings
+                .capacity()
+                .saturating_mul(core::mem::size_of::<String>()),
+        );
+        budget.check(0, 4 * XLSX_EVENT_BYTES)?;
     }
-    strings
+    Ok(strings)
 }
 
-/// `XLSX` 워크시트의 행별 값을 읽습니다.
-fn collect_sheet_rows(xml: &str, shared: &[String]) -> Vec<String> {
-    let mut reader = Reader::from_reader(Cursor::new(xml.as_bytes()));
-    reader.config_mut().trim_text(false);
+/// 행 목록을 쌓지 않고 각 셀을 최종 본문에 바로 붙입니다.
+fn read_xlsx_sheet<R: Read>(
+    reader: &mut Reader<BufReader<XlsxEventReader<R>>>,
+    shared: &[String],
+    budget: &XlsxBudget,
+    document: &mut ExtractedDocument,
+    label: &str,
+    line: &mut usize,
+) -> Result<(), ExtractFailure> {
     let mut buffer = Vec::new();
-    let mut rows = Vec::new();
-    let mut row: Vec<String> = Vec::new();
     let mut current = String::new();
-    let mut cell_is_shared = false;
+    let mut depth = 0;
+    let mut in_cell = false;
     let mut in_value = false;
     let mut in_text = false;
-    let mut in_cell = false;
+    let mut cell_is_shared = false;
+    let mut row_started = false;
+    let mut sheet_started = false;
+    let mut start_line = 0;
     loop {
-        buffer.clear();
-        match reader.read_event_into(&mut buffer) {
-            Ok(Event::Start(event) | Event::Empty(event)) => match event.name().as_ref() {
-                "row" => row.clear(),
+        match xlsx_event(reader, &mut buffer, &mut depth)? {
+            Event::Start(event) => match event.name().as_ref() {
+                "row" => row_started = false,
                 "c" => {
                     in_cell = true;
                     current.clear();
-                    cell_is_shared = false;
-                    for attribute in event.attributes().flatten() {
-                        if attribute.key.as_ref() == "t" && attribute.value.as_ref() == "s" {
-                            cell_is_shared = true;
-                        }
-                    }
+                    cell_is_shared = event.attributes().any(|attribute| {
+                        attribute.is_ok_and(|attribute| {
+                            attribute.key.as_ref() == "t" && attribute.value.as_ref() == "s"
+                        })
+                    });
                 }
                 "v" => in_value = true,
                 "t" => in_text = true,
                 _ => {}
             },
-            Ok(Event::End(event)) => match event.name().as_ref() {
-                "row" => {
-                    if !row.is_empty() {
-                        rows.push(row.join("\t"));
-                    }
-                    row.clear();
-                }
+            Event::End(event) => match event.name().as_ref() {
                 "c" => {
                     in_cell = false;
-                    let value = current.trim();
+                    let value = if cell_is_shared {
+                        current
+                            .trim()
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|index| shared.get(index))
+                            .map_or("", String::as_str)
+                    } else {
+                        current.trim()
+                    };
                     if !value.is_empty() {
-                        let resolved = if cell_is_shared {
-                            value
-                                .parse::<usize>()
-                                .ok()
-                                .and_then(|index| shared.get(index))
-                                .cloned()
-                        } else {
-                            Some(value.to_owned())
-                        };
-                        if let Some(resolved) = resolved {
-                            row.push(resolved);
+                        if !sheet_started {
+                            if !document.text.is_empty() {
+                                budget.append(&mut document.text, "\n\n")?;
+                                *line = line.saturating_add(2);
+                            }
+                            start_line = *line;
+                            sheet_started = true;
+                        } else if !row_started {
+                            budget.append(&mut document.text, "\n")?;
+                            *line = line.saturating_add(1);
                         }
+                        if row_started {
+                            budget.append(&mut document.text, "\t")?;
+                        }
+                        budget.append(&mut document.text, value)?;
+                        *line = line
+                            .saturating_add(value.bytes().filter(|byte| *byte == b'\n').count());
+                        row_started = true;
                     }
                 }
                 "v" => in_value = false,
                 "t" => in_text = false,
                 _ => {}
             },
-            Ok(event) if is_text_event(&event) => {
-                if !in_cell {
-                    continue;
-                }
-                if in_text || in_value {
-                    current.push_str(&event_text(&event).unwrap_or_default());
-                }
-            }
-            Ok(Event::Eof) | Err(_) => break,
-            Ok(_) => {}
+            Event::Eof => break,
+            event if in_cell && (in_text || in_value) => append_xlsx_event(&mut current, &event)?,
+            _ => {}
         }
     }
-    if !row.is_empty() {
-        rows.push(row.join("\t"));
+    if sheet_started {
+        document.segments.push(ExtractedSegment {
+            label: label.to_owned(),
+            start_line,
+            end_line: *line,
+        });
     }
-    rows
+    Ok(())
+}
+
+/// XLSX의 원본·공유 문자열·최종 본문이 작업 예산 안에 있는지 확인합니다.
+fn extract_xlsx(bytes: &[u8]) -> Result<ExtractedDocument, ExtractFailure> {
+    extract_xlsx_with_budget(bytes, XLSX_MEMORY_BYTES)
+}
+
+/// 낮은 예산의 실패를 합성 데이터로 검증하는 공통 추출 경로입니다.
+fn extract_xlsx_with_budget(
+    bytes: &[u8],
+    memory_bytes: usize,
+) -> Result<ExtractedDocument, ExtractFailure> {
+    if bytes.len() > XLSX_SOURCE_BYTES {
+        return Err(ExtractFailure::MemoryBudget);
+    }
+    let mut archive = open_archive(bytes)?;
+    let mut budget = XlsxBudget {
+        base_bytes: bytes
+            .len()
+            .saturating_mul(2)
+            .saturating_add(XLSX_ENGINE_BYTES),
+        shared_bytes: 0,
+        limit: memory_bytes,
+    };
+    budget.check(0, 4 * XLSX_EVENT_BYTES)?;
+    let shared = read_xlsx_strings(&mut archive, &mut budget)?;
+    let names = sorted_entry_names(&archive, "xl/worksheets/sheet", ".xml");
+    let mut document = ExtractedDocument::new();
+    let mut line = 0;
+    for (number, name) in names {
+        let Some(mut reader) = xlsx_reader(&mut archive, &name)? else {
+            continue;
+        };
+        read_xlsx_sheet(
+            &mut reader,
+            &shared,
+            &budget,
+            &mut document,
+            &format!("Sheet {number}"),
+            &mut line,
+        )?;
+    }
+    if document.text.is_empty() {
+        return Err(ExtractFailure::Empty);
+    }
+    Ok(document)
 }
 
 /// 단일 세그먼트 문서로 마무리합니다.
@@ -975,6 +1273,319 @@ mod tests {
             "deflated docx extraction succeeded"
         );
         assert_eq!(text_of(&value), "Deflated body", "deflated docx text");
+    }
+
+    /// 압축 파일 크기가 작아도 내부 XML 상한을 넘으면 안전하게 거부합니다.
+    #[test]
+    fn rejects_unbounded_xlsx_xml_token() {
+        let limit = usize::try_from(MAX_ENTRY_BYTES).unwrap_or_default();
+        let sheet = " ".repeat(limit.saturating_add(1));
+        let bytes = build_deflated_zip(&[("xl/worksheets/sheet1.xml", &sheet)]);
+        assert!(
+            bytes.len() < 5 * 1024 * 1024,
+            "압축 파일은 5MiB보다 작아야 합니다"
+        );
+        let value = extract_failure("xlsx", &bytes);
+        assert_eq!(
+            value.get("reason").and_then(JsonValue::as_str),
+            Some("xml-token-budget"),
+            "단일 XML 이벤트가 처리 버퍼 예산을 넘으면 거부합니다"
+        );
+        assert_eq!(
+            text_of(&value),
+            "",
+            "거부한 문서의 일부 본문을 반환하지 않습니다"
+        );
+    }
+
+    /// 단일 항목 상한의 포함 경계와 전체 누적 예산을 각각 확인합니다.
+    #[test]
+    fn enforces_entry_and_total_inflated_byte_boundaries() {
+        let limit = usize::try_from(MAX_ENTRY_BYTES).unwrap_or_default();
+        let content = " ".repeat(limit);
+        let bytes = build_deflated_zip(&[("entry.xml", &content)]);
+        let opened = open_archive(&bytes);
+        assert!(opened.is_ok(), "합성 컨테이너를 열 수 있어야 합니다");
+        if let Ok(mut archive) = opened {
+            let mut budget = MAX_TOTAL_BYTES.saturating_sub(MAX_ENTRY_BYTES);
+            assert!(
+                read_entry(&mut archive, "entry.xml", &mut budget).is_ok(),
+                "32MiB 항목과 64MiB 누적 경계는 허용합니다"
+            );
+            assert_eq!(budget, MAX_TOTAL_BYTES, "실제 읽은 바이트를 누적합니다");
+            assert!(
+                matches!(
+                    read_entry(&mut archive, "entry.xml", &mut budget),
+                    Err(ExtractFailure::TooLarge)
+                ),
+                "누적 상한 초과는 거부합니다"
+            );
+        }
+    }
+
+    /// 과도한 항목 수는 내용 읽기 전에 차단합니다.
+    #[test]
+    fn enforces_archive_entry_count_boundary() {
+        let names: Vec<String> = (0..=MAX_ARCHIVE_ENTRIES)
+            .map(|index| format!("{index}.xml"))
+            .collect();
+        let entries: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "")).collect();
+        let allowed = build_zip(entries.get(..MAX_ARCHIVE_ENTRIES).unwrap_or_default());
+        assert!(open_archive(&allowed).is_ok(), "항목 수 경계는 허용합니다");
+        let rejected = build_zip(&entries);
+        assert!(
+            matches!(open_archive(&rejected), Err(ExtractFailure::TooLarge)),
+            "항목 수 초과는 거부합니다"
+        );
+    }
+
+    /// 비정상적으로 긴 셀은 일부 본문을 성공으로 반환하지 않습니다.
+    #[test]
+    fn rejects_oversized_xlsx_cell_token() {
+        let cell = "a".repeat(MAX_TEXT_CHARS);
+        let sheet = format!(
+            "<worksheet><row><c t=\"inlineStr\"><is><t>{cell}</t></is></c></row></worksheet>"
+        );
+        let bytes = build_deflated_zip(&[("xl/worksheets/sheet1.xml", &sheet)]);
+        let value = extract_failure("xlsx", &bytes);
+        assert_eq!(
+            value.get("reason").and_then(JsonValue::as_str),
+            Some("xml-token-budget"),
+            "긴 셀은 파싱 버퍼 예산으로 거부합니다"
+        );
+    }
+
+    /// 시트 하나 또는 읽는 XML 총량이 과거 상한을 넘어도 작은 버퍼로 처리합니다.
+    #[test]
+    fn streams_xlsx_above_previous_inflated_limits() {
+        let padding = format!("<ignored value=\"{}\"/>", "x".repeat(1024));
+        let sheet = format!(
+            "<worksheet>{}<row><c><v>42</v></c></row></worksheet>",
+            padding.repeat(33 * 1024)
+        );
+        let bytes = build_deflated_zip(&[
+            ("xl/worksheets/sheet1.xml", &sheet),
+            ("xl/worksheets/sheet2.xml", &sheet),
+        ]);
+        let value = extract_failure("xlsx", &bytes);
+        assert_eq!(
+            text_of(&value),
+            "42\n\n42",
+            "크기만으로 정상 시트를 거부하지 않습니다"
+        );
+        assert_eq!(
+            value.get("ok").and_then(JsonValue::as_bool),
+            Some(true),
+            "전체 추출 성공"
+        );
+    }
+
+    /// 일반 셀들의 본문이 과거 문자 상한을 넘어도 끝까지 읽습니다.
+    #[test]
+    fn streams_xlsx_above_previous_text_limit() {
+        let row = format!(
+            "<row><c t=\"inlineStr\"><is><t>{}</t></is></c></row>",
+            "a".repeat(1024)
+        );
+        let sheet = format!("<worksheet>{}</worksheet>", row.repeat(8193));
+        let bytes = build_deflated_zip(&[("xl/worksheets/sheet1.xml", &sheet)]);
+        let value = extract_failure("xlsx", &bytes);
+        assert_eq!(
+            value.get("ok").and_then(JsonValue::as_bool),
+            Some(true),
+            "과거 본문 상한을 넘는 정상 셀도 읽습니다"
+        );
+        assert!(
+            text_of(&value).len() > MAX_TEXT_CHARS,
+            "회귀 데이터가 과거 상한을 넘어야 합니다"
+        );
+    }
+
+    /// XML 손상과 빈 셀의 상태가 다음 셀의 내용으로 섞이지 않습니다.
+    #[test]
+    fn xlsx_stream_rejects_partial_xml_and_preserves_entities() {
+        let broken = extract(
+            "xlsx",
+            &[(
+                "xl/worksheets/sheet1.xml",
+                "<worksheet><row><c><v>42</v></c>",
+            )],
+        );
+        assert_eq!(
+            broken.get("reason").and_then(JsonValue::as_str),
+            Some("corrupt"),
+            "미완성 XML은 부분 성공이 아닙니다"
+        );
+        let valid = extract(
+            "xlsx",
+            &[(
+                "xl/worksheets/sheet1.xml",
+                "<worksheet><row><c/><c t=\"inlineStr\"><is><t>A &amp; B &#xD55C;</t></is></c></row></worksheet>",
+            )],
+        );
+        assert_eq!(
+            text_of(&valid),
+            "A & B 한",
+            "빈 셀과 XML 참조를 정확히 처리합니다"
+        );
+    }
+
+    /// 작은 작업 예산에서는 결과가 잘리거나 부분 성공으로 바뀌지 않습니다.
+    #[test]
+    fn xlsx_memory_budget_rejects_whole_document() {
+        let row = format!(
+            "<row><c t=\"inlineStr\"><is><t>{}</t></is></c></row>",
+            "a".repeat(1024)
+        );
+        let sheet = format!("<worksheet>{}</worksheet>", row.repeat(200));
+        let bytes = build_deflated_zip(&[("xl/worksheets/sheet1.xml", &sheet)]);
+        let limit = XLSX_ENGINE_BYTES + bytes.len() * 2 + XLSX_EVENT_BYTES * 4 + 256 * 1024;
+        let result = extract_xlsx_with_budget(&bytes, limit);
+        assert!(
+            matches!(result, Err(ExtractFailure::MemoryBudget)),
+            "예산 초과는 전체 실패입니다"
+        );
+        let mut value = XlsxSourceText { result };
+        assert_eq!(value.reason(), "memory-budget", "실패 원인을 보존합니다");
+        assert!(
+            value.take_text_bytes().is_empty(),
+            "부분 본문은 전달하지 않습니다"
+        );
+        assert_eq!(value.segments_json(), "[]", "부분 구간도 전달하지 않습니다");
+    }
+
+    /// 빈 문자열 항목도 공유 문자열 인덱스의 위치를 유지합니다.
+    #[test]
+    fn xlsx_stream_preserves_empty_shared_string_indices() {
+        let shared = "<sst><si/><si><t>Alpha</t></si></sst>";
+        let sheet = "<worksheet><row><c t=\"s\"><v>1</v></c></row></worksheet>";
+        let value = extract(
+            "xlsx",
+            &[
+                ("xl/sharedStrings.xml", shared),
+                ("xl/worksheets/sheet1.xml", sheet),
+            ],
+        );
+        assert_eq!(
+            text_of(&value),
+            "Alpha",
+            "빈 항목 때문에 인덱스가 이동하지 않습니다"
+        );
+    }
+
+    /// 작은 태그가 반복되어도 파서의 태그 스택이 무제한으로 자라지 않습니다.
+    #[test]
+    fn xlsx_stream_bounds_nested_xml_stack() {
+        let sheet = format!(
+            "{}{}",
+            "<node>".repeat(XLSX_XML_DEPTH + 1),
+            "</node>".repeat(XLSX_XML_DEPTH + 1)
+        );
+        let value = extract("xlsx", &[("xl/worksheets/sheet1.xml", &sheet)]);
+        assert_eq!(
+            value.get("reason").and_then(JsonValue::as_str),
+            Some("xml-token-budget"),
+            "XML 스택 예산 초과"
+        );
+        assert!(
+            text_of(&value).is_empty(),
+            "일부 본문을 성공으로 반환하지 않습니다"
+        );
+    }
+
+    /// 워커의 UTF-8 버퍼는 한 번만 이동하고 줄 구간을 정확히 유지합니다.
+    #[test]
+    fn xlsx_worker_result_moves_text_and_preserves_line_segments() {
+        let sheet = "<worksheet><row><c><v>42</v></c></row></worksheet>";
+        let bytes = build_zip(&[
+            ("xl/worksheets/sheet1.xml", sheet),
+            ("xl/worksheets/sheet2.xml", sheet),
+        ]);
+        let mut value = XlsxSourceText::new(&bytes);
+        assert!(value.reason().is_empty(), "전체 추출 성공");
+        assert_eq!(value.take_text_bytes(), b"42\n\n42", "본문 버퍼 이동");
+        assert!(
+            value.take_text_bytes().is_empty(),
+            "이동 후 복사본을 남기지 않습니다"
+        );
+        let segments: JsonValue =
+            serde_json::from_str(&value.segments_json()).unwrap_or(JsonValue::Null);
+        assert_eq!(
+            segments
+                .get(1)
+                .and_then(|value| value.get("startLine"))
+                .and_then(JsonValue::as_u64),
+            Some(2),
+            "두 번째 시트의 실제 시작 줄"
+        );
+        assert_eq!(
+            segments
+                .get(1)
+                .and_then(|value| value.get("endLine"))
+                .and_then(JsonValue::as_u64),
+            Some(2),
+            "두 번째 시트의 실제 끝 줄"
+        );
+    }
+
+    /// 모든 압축 문서 형식에서 손상과 본문 부재를 구분합니다.
+    #[test]
+    fn distinguishes_missing_parts_and_corrupt_archives_for_all_formats() {
+        for (extension, empty_reason) in [
+            ("epub", "corrupt"),
+            ("docx", "corrupt"),
+            ("odt", "corrupt"),
+            ("pptx", "empty"),
+            ("xlsx", "empty"),
+            ("hwpx", "empty"),
+        ] {
+            let corrupt = extract_failure(extension, b"not-a-zip");
+            assert_eq!(
+                corrupt.get("reason").and_then(JsonValue::as_str),
+                Some("corrupt"),
+                "손상 실패 계약: {extension}"
+            );
+            let empty = extract(extension, &[("unrelated.xml", "<root/>")]);
+            assert_eq!(
+                empty.get("reason").and_then(JsonValue::as_str),
+                Some(empty_reason),
+                "필수 본문 부재 계약: {extension}"
+            );
+            assert_eq!(text_of(&empty), "", "본문 부재는 부분 성공이 아닙니다");
+        }
+    }
+
+    /// 숫자 순서로 여러 시트를 읽고 문자열·수식 캐시·다국어 값을 보존합니다.
+    #[test]
+    fn extracts_xlsx_cell_types_and_numeric_sheet_order() {
+        let first = r#"<worksheet><row><c t="inlineStr"><is><t>한글 Alpha</t></is></c><c><f>20+22</f><v>42</v></c><c t="b"><v>1</v></c></row></worksheet>"#;
+        let second =
+            r#"<worksheet><row><c t="s"><v>0</v></c><c t="s"><v>999</v></c></row></worksheet>"#;
+        let shared = r"<sst><si><r><t>Beta </t></r><r><t>世界</t></r></si></sst>";
+        let value = extract(
+            ".XLSX",
+            &[
+                ("xl/worksheets/sheet10.xml", second),
+                ("xl/sharedStrings.xml", shared),
+                ("xl/worksheets/sheet2.xml", first),
+            ],
+        );
+        assert_eq!(
+            text_of(&value),
+            "한글 Alpha\t42\t1\n\nBeta 世界",
+            "셀 유형과 시트 숫자 순서를 유지합니다"
+        );
+        for (index, label) in ["Sheet 2", "Sheet 10"].iter().enumerate() {
+            assert_eq!(
+                value
+                    .get("segments")
+                    .and_then(|segments| segments.get(index))
+                    .and_then(|segment| segment.get("label"))
+                    .and_then(JsonValue::as_str),
+                Some(*label),
+                "시트 구간 라벨"
+            );
+        }
     }
 
     /// 지원하지 않는 확장자는 추출하지 않습니다.
