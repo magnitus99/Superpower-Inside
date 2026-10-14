@@ -38,7 +38,7 @@ https://github.com/user-attachments/assets/b737eff2-d3e1-40a3-8c54-eaf0e714751c
 
 Keyword and meaning-based search help find relevant passages. Built-in vault tools can read surrounding text and follow note links, so you can ask a follow-up without copying each passage into chat yourself. These tools read your vault; saving or inserting a result is an action you choose.
 
-When the scope matters, name a file, folder, or tag. Type `[[` to choose a reference, paste an existing `[[...]]` or `![[...]]` link, or use `@` to bring in your workspace. The input previews references and flags missing or unreadable files before you send.
+Name a file, folder, or tag when scope matters. Type `[[` to choose one, paste an existing link, or use `@` to bring in your workspace. Before you send, the input checks for missing or unreadable references.
 
 <details>
 <summary><strong>Ways to reference your material</strong></summary>
@@ -59,13 +59,13 @@ Your material can include **PDF, EPUB, DOCX, ODT, PPTX, XLSX, and HWPX**, alongs
 
 Large XLSX spreadsheets are read in the background, one file at a time. If a document exceeds the processing budget or cannot be read completely, you see an error and its partial text is not used.
 
-PDFs use their text layer when available. Scanned pages use **Korean and English OCR on your device**. Source passages include page labels so you can check the original.
+PDFs use their text layer when available. For scans, on-device OCR reads Korean and English; citations keep page labels so you can open the original.
 
-Document extraction reads text, with limits: it does not preserve every layout, table, or visual. Scan quality affects OCR, and protected, oversized, damaged, or low-confidence documents can fail. Provide a text version of standalone images or audio before using them.
+Extraction keeps document text, not the full layout, tables, or visuals. Scan quality matters. Encrypted, oversized, damaged, or low-confidence documents can fail; convert standalone images or audio to text first.
 
 ### Check a source when it matters
 
-Open a source from an answer to inspect the original. Depending on the material, the source includes a file path, heading, line location, or PDF page label. You can copy its link or insert a cited passage into your active note.
+Open a citation to check the source. It may point to a path, heading, line, or PDF page. Copy the link or insert the cited passage into your note.
 
 Expand the source panel or work log to see checked passages, sources needing review, and material left out by processing limits. AI can miss evidence or make mistakes; check important claims against the originals.
 
@@ -73,13 +73,13 @@ Expand the source panel or work log to see checked passages, sources needing rev
 
 Turn a comparison into an outline, or a project summary into next steps, with a follow-up question.
 
-Copy a useful answer, insert it into the active note, or save it as a new note from the message menu. If the direction changes, edit and resend your question to replace the later conversation. You can also regenerate an answer and move between its saved versions.
+Copy a useful answer or save it to a note. Edit and resend a question to replace the later conversation. You can also regenerate responses or switch between saved versions.
 
 For recurring work, use presets for research, study, meetings, writing, reflection, and technical tasks. Save your own instructions in the prompt library and apply them as a global default or to one conversation.
 
 ### Choose the connection that fits your work
 
-Connect **ChatGPT browser sign-in, OpenAI API, Claude, Ollama, Ollama Cloud, OpenRouter, or an OpenAI-compatible server**. Choose the provider and model you want to use. ChatGPT sign-in uses the Codex backend; available models and usage limits depend on your account.
+Connect **ChatGPT browser sign-in, OpenAI API, Claude, Ollama, Ollama Cloud, OpenRouter, or an OpenAI-compatible server**, then pick a model. ChatGPT sign-in uses the Codex backend. Access and limits depend on your account.
 
 Search and chat have separate data choices. **Local search and PDF OCR run on your device.** Remote chat and remote embeddings can send material to the chosen provider. To keep chat content on your device too, use a local chat provider and check the external tools you enable.
 
@@ -108,9 +108,9 @@ API keys and ChatGPT credentials are stored in **Obsidian's secret storage on th
 <details>
 <summary><strong>External tools and other Obsidian plugins</strong></summary>
 
-Connect local **MCP** servers when you need outside information or tools. Trusted tools can run automatically; tools that require approval wait for you. A question that mentions only an external server skips automatic vault search; include a vault reference when you need both.
+Need outside information or tools? Connect an **MCP** server. Trusted tools can run automatically; others may wait for approval. Mentioning an external server alone skips vault search. Add a vault reference to search both.
 
-In **External tools → Server setup → Advanced JSON editor**, use a top-level `mcpServers` object. Local stdio entries use Claude Desktop's `command`, optional `args`, and optional string-valued `env` format. This plugin also supports remote Streamable HTTP and legacy SSE entries: use `url` and `transport: "http"` or `"sse"` instead of process fields. These remote fields extend the local JSON format; Claude Desktop configures remote servers through connectors. For bearer authentication, store the token in Obsidian Secret Storage and reference its name with `authTokenSecret`. Applying the editor replaces the server list, so retain existing entries you need.
+In **External tools → Server setup → Advanced JSON editor**, put entries under `mcpServers`. Local stdio uses Claude Desktop's `command`, optional `args`, and string `env` fields. Remote servers use `url` and `transport: "http"` or `"sse"`; Claude Desktop configures its remote servers through connectors. Store bearer tokens in Obsidian Secret Storage and reference the name with `authTokenSecret`. Applying the editor replaces the list, so keep entries you still need.
 
 For queries or templates involving another Obsidian plugin, enable **Answers informed by installed plugins**, connect **Context7 MCP**, and name an active plugin in your question. Its documentation can inform the answer. Check your installed version, settings, and execution results separately.
 
@@ -147,7 +147,7 @@ https://github.com/user-attachments/assets/c73dac24-3e09-4ec2-9c82-1d71b8d182a6
 
 키워드·의미 검색으로 관련 구간을 찾고, 내장 볼트 도구로 앞뒤 내용을 읽거나 노트 링크를 따라갈 수 있습니다. 구간마다 직접 복사해 붙이지 않고 후속 질문을 이어 가세요. 내장 도구는 볼트를 읽으며, 결과를 저장하거나 삽입하는 작업은 사용자가 선택합니다.
 
-범위가 중요하면 파일·폴더·태그를 지정하세요. `[[`를 입력해 참조를 고르거나, 기존 `[[...]]`·`![[...]]` 링크를 붙여 넣거나, `@`로 현재 작업을 가져올 수 있습니다. 입력창에서 참조를 미리 보여 주고, 없거나 읽을 수 없는 파일을 전송 전에 표시합니다.
+범위가 중요하면 파일·폴더·태그를 지정하세요. `[[`를 입력해 참조를 고르거나 기존 링크를 붙여 넣어도 됩니다. `@`는 현재 작업을 가져옵니다. 전송 전에 입력창에서 참조를 확인하세요.
 
 <details>
 <summary><strong>자료를 참조하는 방법</strong></summary>
@@ -168,13 +168,13 @@ Markdown뿐 아니라 **PDF·EPUB·DOCX·ODT·PPTX·XLSX·HWPX**, 일반 텍스�
 
 큰 XLSX 문서는 백그라운드에서 한 파일씩 읽습니다. 처리 예산을 초과하거나 문서 전체를 읽지 못하면 오류를 표시하고 일부 본문을 사용하지 않습니다.
 
-PDF에 텍스트가 있으면 그 본문을 읽습니다. 스캔한 페이지는 **기기 안에서 실행하는 한국어·영어 OCR**로 읽습니다. 근거 구간의 페이지 라벨로 원문을 확인할 수 있습니다.
+PDF 본문이 있으면 그것을 사용합니다. 스캔은 내 기기에서 한국어·영어 OCR로 읽습니다. 근거에 페이지가 표시되므로 원문을 찾을 수 있습니다.
 
-문서 추출은 본문 텍스트를 읽으며, 모든 배치·표·시각 자료를 보존하지는 않습니다. OCR 품질은 스캔 상태에 따라 달라지고, 암호화·크기 초과·손상·낮은 인식 신뢰도 등으로 추출이 실패할 수 있습니다. 별도 이미지 파일이나 음성은 먼저 텍스트로 준비하세요.
+문서 추출은 텍스트 중심입니다. 표·배치·이미지를 그대로 보존하지 않습니다. OCR은 스캔 상태에 따라 달라집니다. 암호화되거나 손상된 파일, 크기 제한을 넘는 파일은 실패할 수 있습니다. 이미지나 음성은 먼저 텍스트로 준비하세요.
 
 ### 확인이 필요한 순간에, 근거로 돌아가세요
 
-답변의 출처를 열어 원문을 확인하세요. 자료에 따라 파일 경로·제목·줄 위치·PDF 페이지 라벨을 보여 줍니다. 출처 링크를 복사하거나 근거 구간을 활성 노트에 삽입할 수도 있습니다.
+출처 패널에서 원문을 확인하세요. 파일 경로·제목·줄 또는 페이지를 가리킬 수 있습니다. 링크를 복사하거나 근거 구간을 노트에 넣으세요.
 
 출처 패널이나 작업 기록을 펼치면 확인된 구간, 검토가 필요한 자료, 처리 한도로 빠진 자료를 볼 수 있습니다. AI는 근거를 놓치거나 틀릴 수 있으므로 중요한 주장은 원문과 대조하세요.
 
@@ -182,13 +182,13 @@ PDF에 텍스트가 있으면 그 본문을 읽습니다. 스캔한 페이지는
 
 후속 질문으로 비교 결과를 개요로 만들거나, 프로젝트 요약에서 다음 행동을 정리해 보세요.
 
-쓸 만한 답변은 메시지 메뉴에서 복사하거나 활성 노트에 삽입하거나 새 노트로 저장하세요. 방향이 바뀌면 질문을 수정해 다시 보내 해당 지점 이후의 대화를 교체할 수 있습니다. 답변을 다시 생성하고 저장된 버전 사이를 이동할 수도 있습니다.
+답변을 복사하거나 노트에 저장하세요. 질문을 다시 보내면 그 뒤의 대화를 바꿀 수 있습니다. 답변 재생성과 저장한 버전 사이의 이동도 가능합니다.
 
 반복하는 작업에는 연구·학습·회의·글쓰기·회고·기술 작업용 프리셋을 사용하세요. 자주 쓰는 요구는 프롬프트 보관함에 저장해 전체 기본값이나 대화 하나에 적용할 수 있습니다.
 
 ### 내 작업에 맞는 연결을 선택하세요
 
-**ChatGPT 브라우저 로그인·OpenAI API·Claude·Ollama·Ollama Cloud·OpenRouter·OpenAI 호환 서버**를 연결할 수 있습니다. 사용할 제공자와 모델을 선택하세요. ChatGPT 로그인은 Codex 서버를 사용하며, 모델 접근 권한과 사용 한도는 계정에 따라 달라집니다.
+**ChatGPT 브라우저 로그인·OpenAI API·Claude·Ollama·Ollama Cloud·OpenRouter·OpenAI 호환 서버**를 연결하고 모델을 선택하세요. ChatGPT 로그인은 Codex 서버를 사용합니다. 모델 접근 권한과 사용 한도는 계정에 따라 다릅니다.
 
 검색과 채팅의 데이터 처리 위치는 각각 선택합니다. **로컬 검색과 PDF OCR은 내 기기에서 실행됩니다.** 원격 채팅과 원격 임베딩은 선택한 제공자에게 자료를 보낼 수 있습니다. 채팅 내용도 기기 안에 두려면 로컬 채팅 제공자를 사용하고, 활성화한 외부 도구도 확인하세요.
 
@@ -217,9 +217,9 @@ API 키와 ChatGPT 자격 증명은 볼트와 동기화되는 플러그인 설�
 <details>
 <summary><strong>외부 도구와 다른 Obsidian 플러그인</strong></summary>
 
-볼트 밖의 정보나 도구가 필요하면 로컬 **MCP** 서버를 연결하세요. 신뢰한 도구는 자동 실행할 수 있고, 승인이 필요한 도구는 기다립니다. 외부 서버만 멘션한 질문은 볼트 자동 검색을 건너뜁니다. 볼트 자료도 필요하면 참조를 함께 넣으세요.
+볼트 밖의 정보나 도구가 필요하세요? **MCP** 서버를 연결하세요. 신뢰한 도구는 자동 실행할 수 있고, 다른 도구는 승인을 기다릴 수 있습니다. 외부 서버 이름만 언급하면 볼트 검색을 건너뜁니다. 둘 다 찾으려면 볼트 참조도 넣으세요.
 
-**외부 도구 → 서버 설정 → 고급 JSON 편집**에서 최상위 `mcpServers`를 사용하세요. 로컬 stdio 항목은 Claude Desktop과 같은 `command`, 선택 항목 `args`, 문자열 값의 `env` 형식입니다. 이 플러그인은 원격 Streamable HTTP와 기존 SSE 항목도 지원하며, 실행 명령 대신 `url`과 `transport: "http"` 또는 `"sse"`를 사용합니다. 원격 필드는 로컬 JSON 형식의 확장이고, Claude Desktop의 원격 서버는 커넥터로 설정합니다. Bearer 인증 토큰은 Obsidian 보안 저장소에 저장하고 `authTokenSecret`으로 이름만 참조하세요. 적용하면 서버 목록 전체가 교체되므로 필요한 기존 항목을 유지하세요.
+**외부 도구 → 서버 설정 → 고급 JSON 편집**의 `mcpServers` 아래에 서버를 적으세요. 로컬 stdio는 Claude Desktop처럼 `command`, 선택 항목 `args`, 문자열 `env`를 사용합니다. 원격 Streamable HTTP와 SSE에는 `url`과 `transport`를 지정하세요. Claude Desktop에서는 원격 서버를 커넥터로 설정합니다. Bearer 토큰은 Obsidian 보안 저장소에 넣고 `authTokenSecret`으로 이름을 참조하세요. 적용하면 목록이 바뀌니 계속 쓸 항목도 남겨 두세요.
 
 다른 Obsidian 플러그인의 쿼리나 템플릿을 작성하려면 **설치된 플러그인에 맞춘 답변**을 켜고 **Context7 MCP**를 연결한 뒤 질문에 활성 플러그인 이름을 적으세요. 해당 문서를 답변에 활용할 수 있습니다. 설치 버전·내 설정·실행 결과는 별도로 확인하세요.
 
