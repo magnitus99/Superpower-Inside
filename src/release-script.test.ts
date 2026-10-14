@@ -10,7 +10,7 @@ describe('릴리스 스크립트 브랜치 정책', () => {
     const script = readFileSync(resolve(root, 'scripts/bump-version.fish'), 'utf8');
 
     expect(script).toContain('if test "$CURRENT_BRANCH" != main');
-    expect(script).toContain('Asia/Seoul 기준 YYYY.MM.DD[.증분]');
+    expect(script).toContain('patch|minor|major');
   });
 
   it('릴리스 스크립트는 release-notes 파일 대신 GitHub Release 본문 작성을 안내한다', () => {

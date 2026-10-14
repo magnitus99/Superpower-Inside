@@ -53,7 +53,7 @@ function readText(relativePath) {
 
 function validateVersionMetadata() {
   if (!isReleaseVersion(manifest.version)) {
-    errors.push(`manifest.json version must use YYYY.MM.DD or YYYY.MM.DD.N: ${manifest.version}`);
+    errors.push(`manifest.json version must be plain SemVer x.y.z: ${manifest.version}`);
   }
   if (pkg.version !== manifest.version) {
     errors.push(`package.json version ${pkg.version} must match manifest version ${manifest.version}`);

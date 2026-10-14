@@ -73,7 +73,7 @@ process.exitCode = stage === process.env.RELEASE_FAIL ? 7 : 0;
     const release = read('.github/workflows/release.yml');
     const copy = release.split('\n  copy:\n')[1].split('\n  publish:\n')[0];
     expect(release).not.toContain('pull_request:');
-    expect(release).toContain("- '20[0-9][0-9].[0-9][0-9].[0-9][0-9]'");
+    expect(release).toContain("- '[0-9]*.[0-9]*.[0-9]*'");
     expect(release).toContain('draft: true');
     expect(release).toContain('needs: [quality, copy]');
     expect(copy).toContain('runs-on: ubuntu-latest');
@@ -92,8 +92,10 @@ process.exitCode = stage === process.env.RELEASE_FAIL ? 7 : 0;
     const script = read('scripts/bump-version.fish');
     expect(script).toContain('npm run release:check');
     expect(script).not.toContain('npx -y npm@10 ci');
-    expect(script.indexOf('git status --porcelain')).toBeLessThan(script.indexOf('set TODAY'));
-    expect(script).toContain('Asia/Seoul');
+    expect(script.indexOf('git status --porcelain')).toBeLessThan(
+      script.indexOf('set CURRENT_VERSION'),
+    );
+    expect(script).toContain('BUMP_TYPE');
     expect(script).toContain('embeddinggemma-worker.js');
     expect(read('.github/workflows/release.yml')).not.toContain(
       'Verify manifest version matches tag',
