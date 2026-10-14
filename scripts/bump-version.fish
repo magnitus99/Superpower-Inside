@@ -1,10 +1,18 @@
 #!/usr/bin/env fish
-# 날짜 기반 버전을 적용하고 로컬 릴리스 자산을 준비합니다. 게시와 푸시는 별도 단계입니다.
-
-if test (count $argv) -gt 0
-    echo "사용법: ./scripts/bump-version.fish"
-    echo "Asia/Seoul 기준 YYYY.MM.DD[.증분] 버전을 선택합니다."
-    exit 1
+set BUMP_TYPE patch
+for ARG in $argv
+    switch "$ARG"
+        case patch minor major
+            set BUMP_TYPE "$ARG"
+        case -h --help
+            echo "사용법: ./scripts/bump-version.fish [patch|minor|major]"
+            echo "기본값: patch"
+            exit 0
+        case '*'
+            echo "ERROR: 유효하지 않은 인자 '$ARG'"
+            echo "사용법: ./scripts/bump-version.fish [patch|minor|major]"
+            exit 1
+    end
 end
 
 set CURRENT_BRANCH (git branch --show-current)
@@ -18,26 +26,27 @@ if test (count (git status --porcelain)) -gt 0
     exit 1
 end
 
-set TODAY (env TZ=Asia/Seoul date +%Y.%m.%d)
-set NEW_VERSION "$TODAY"
-set -l SAME_DAY_TAGS (git tag --list "$TODAY.*")
-set -l MAX_INCREMENT 0
-for TAG in $SAME_DAY_TAGS
-    set -l PARTS (string split '.' "$TAG")
-    if test (count $PARTS) -eq 4; and string match -rq '^[0-9]+$' -- "$PARTS[4]"
-        set -l INCREMENT (math $PARTS[4])
-        if test $INCREMENT -gt $MAX_INCREMENT
-            set MAX_INCREMENT $INCREMENT
-        end
-    end
+set CURRENT_VERSION (jq -r '.version' manifest.json)
+if not string match -rq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -- "$CURRENT_VERSION"
+    echo "ERROR: manifest.json 버전이 SemVer x.y.z 형식이 아닙니다: $CURRENT_VERSION"
+    exit 1
 end
-set -l BASE_TAG (git tag --list "$TODAY")
-if test "$BASE_TAG" = "$TODAY"
-    set MAX_INCREMENT (math $MAX_INCREMENT + 1)
+set PARTS (string split '.' "$CURRENT_VERSION")
+set MAJOR $PARTS[1]
+set MINOR $PARTS[2]
+set PATCH $PARTS[3]
+switch $BUMP_TYPE
+    case major
+        set MAJOR (math $MAJOR + 1)
+        set MINOR 0
+        set PATCH 0
+    case minor
+        set MINOR (math $MINOR + 1)
+        set PATCH 0
+    case patch
+        set PATCH (math $PATCH + 1)
 end
-if test $MAX_INCREMENT -gt 0
-    set NEW_VERSION "$TODAY.$MAX_INCREMENT"
-end
+set NEW_VERSION "$MAJOR.$MINOR.$PATCH"
 
 echo "새 버전: $NEW_VERSION"
 

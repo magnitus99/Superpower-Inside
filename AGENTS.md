@@ -20,8 +20,8 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 - `rg`로 관련 구현·호출부·테스트를 함께 읽고 테스트 계약부터 고정합니다. 라이브러리 API는 Context7, 없으면 공식 문서나 설치된 타입·소스로 확인합니다.
 - 진입점은 `main.ts`, 설정은 `src/settings.ts`, 계산은 `crates/rag-wasm/`, WASM 연결은 `src/rag/rust-core.ts`입니다. 채팅 변경 전 [src/chat/AGENTS.md](src/chat/AGENTS.md)를 읽습니다.
 - 설치·디버깅 명령은 `package.json`과 `scripts/`, 배포 자산은 `.github/workflows/release.yml`에서 확인합니다. 에이전트 규칙은 AGENTS.md에만 두며, 사용자 요청 없이 `docs/`나 README에 계획·설계 일지·검수 기록·에이전트용 가이드를 작성하지 않습니다.
-- 버전은 의미 기반 버전(SemVer) 대신 한국 시간(Asia/Seoul)의 릴리스 날짜를 기준으로 `YYYY.MM.DD[.증분]` 형식을 사용합니다. 연도는 네 자리, 월·일은 두 자리로 표기합니다. 해당 날짜의 증분은 0부터 시작하며 0은 생략하고 1부터 명시합니다. 예: 첫 릴리스 `2026.10.14`, 같은 날 두 번째 릴리스 `2026.10.14.1`, 세 번째 릴리스 `2026.10.14.2`. 날짜가 바뀌면 증분은 0으로 다시 시작합니다. 변경 규모에 따른 major·minor·patch 증가는 사용하지 않습니다. 이미 게시한 버전과 태그는 보존하고 이후 새 릴리스부터 적용합니다.
-- 릴리스는 `main`에서 준비하고 `manifest.json`·`package.json`·`package-lock.json` 버전과 `versions.json`의 새 버전 키를 맞춥니다. 태그는 날짜 기반 버전과 정확히 같아야 하며 `v`를 붙이지 않습니다. 버전 증가 스크립트·릴리스 검증·훅은 위 날짜 기반 형식을 동일하게 처리해야 합니다. workflow 실행 중 수동 Release 생성과 경합하지 말고 완료 후 자산을 확인합니다. 같은 버전 재출시의 태그 이동도 사용자 요청 범위에서만 수행합니다.
+- 버전은 SemVer `MAJOR.MINOR.PATCH` 형식을 사용합니다. 기능 추가는 minor, 호환성 수정·버그 수정은 patch, 호환성을 깨는 변경은 major로 올립니다. 이미 게시한 버전과 태그는 보존합니다.
+- 릴리스는 `main`에서 준비하고 `manifest.json`·`package.json`·`package-lock.json` 버전과 `versions.json`의 새 버전 키를 맞춥니다. 태그는 SemVer 버전과 정확히 같아야 하며 `v`를 붙이지 않습니다. 버전 증가 스크립트·릴리스 검증·훅은 SemVer 형식을 처리해야 합니다. workflow 실행 중 수동 Release 생성과 경합하지 말고 완료 후 자산을 확인합니다. 같은 버전 재출시의 태그 이동도 사용자 요청 범위에서만 수행합니다.
 - GitHub Release 노트는 직전 릴리스 태그와 현재 릴리스 태그 사이(`git log <prev>..<curr>`)의 작업을 근거로 하되, 커밋 제목·본문을 그대로 옮기지 않고 사용자가 체감하는 변경으로 풀이해 요약합니다. 버전 범프·번들 재빌드 같은 내부 커밋은 적지 않습니다. 첫 릴리스는 전체 이력을 범위로 삼습니다.
 - GitHub Release 본문은 `## English` → `---` → `## 한국어` 순서로 같은 내용을 각각 완성합니다. 노트 파일은 저장소에 커밋하지 않고 Release 본문에만 반영합니다.
 - 릴리스 완료를 보고하기 전에 `gh release view <tag> --json body`로 본문이 비어 있지 않고 영어·한국어가 모두 있는지 확인합니다.
@@ -84,7 +84,7 @@ and npm run review -- --tag (node -p "require('./manifest.json').version") --bui
 - Obsidian 네이티브 앱의 마우스·타이핑 자동화는 금지합니다. CLI·코드·로그를 사용합니다. 브라우저는 Codex 내부 → Chrome → 최후 수단 Playwright 순서입니다. 화면 검수는 커밋 전에 수행하며 촬영 불가 시 미완료 항목을 명시합니다.
 - 완료 보고는 실제 실행한 명령·종료 상태·남은 문제를 포함하며 테스트 통과를 실제 LLM 품질 개선의 증거로 대신하지 않습니다.
 - README는 현재 기능·사용 흐름을 설명합니다. 사용자 가치가 있는 기능만 자연스럽게 통합하며 커밋 로그·changelog·릴리스별 변경 파일을 만들지 않습니다. GitHub Release 요약은 사용자 관점으로 본문에만 작성합니다.
-- Patina는 릴리스 직전에 최종 제품 소개·사용 안내·홍보 문구의 영어·한국어를 검사합니다. 일반 수정·커밋·브랜치 푸시에 온라인 검사를 강제하지 않습니다. `pre-commit`은 스테이징의 diff 형식과 대상 JSON description만 로컬 검증하고 파일·인덱스를 재작성하지 않습니다. `pre-push`는 `YYYY.MM.DD[.증분]` 형식의 날짜 기반 릴리스 태그를 검사하며 삭제·개발 태그·브랜치는 레지스트리 조회와 모델 호출을 생략합니다. 기존 SemVer 태그를 명시적으로 재출시할 때도 검사를 생략하지 않습니다.
+- Patina는 릴리스 직전에 최종 제품 소개·사용 안내·홍보 문구의 영어·한국어를 검사합니다. 일반 수정·커밋·브랜치 푸시에 온라인 검사를 강제하지 않습니다. `pre-commit`은 스테이징의 diff 형식과 대상 JSON description만 로컬 검증하고 파일·인덱스를 재작성하지 않습니다. `pre-push`는 SemVer 릴리스 태그를 검사하며 삭제·개발 태그·브랜치는 레지스트리 조회와 모델 호출을 생략합니다.
 - Patina 대상은 루트 `README.md`, `package.json`·`manifest.json`의 `description`, `marketing/`·`copy/`·`releases/`의 홍보 문서입니다. 다른 사용자용 문서는 `scripts/check-copy.mjs`의 `copyDocuments`에 등록합니다. 개발 규칙·기술 명세·라이선스·테스트 자료는 제외하며 `docs/`·`public/` 또는 README라는 이름만으로 포함하지 않습니다. 외부 릴리스 본문도 게시 전에 같은 검사 대상으로 준비합니다.
 - 릴리스 태그는 package·manifest 버전과 일치해야 합니다. Patina는 태그가 가리키는 최종 커밋의 등록 문구 전체를 검사하며 과거 중간 커밋·미커밋 작업 파일을 검사하지 않습니다. 실행 시 최신 Patina 버전을 레지스트리에서 확인하고 실패하면 차단합니다. Codex CLI `gpt-6.1-sol/high`를 유지하며 언어별 실제 모델 점수와 최종 점수가 모두 15점 이하일 때만 통과합니다. 온라인 실패를 오프라인으로 대체하지 않습니다.
 - `npm run copy:check`와 `copy:check:online`은 등록 문구 전체를 수동 검사합니다. 동일 문구·최신 버전·스크립트·wrapper·정책에서 통과한 전체 온라인 결과만 Git 내부에 7일간 저장해 릴리스 준비와 태그 푸시 사이의 중복 모델 호출을 줄입니다. 기록 손상·만료·문구 또는 정책 변경은 재검사하며 `npm run copy:check -- --refresh`는 강제 재검사합니다. 기록에는 원문을 저장하지 않습니다. 오프라인 검사 결과는 온라인 통과 기록으로 사용하지 않습니다. Codex 인증이 없는 릴리스 CI는 `--release-ref <커밋> --offline`을 명시하고 이 결과를 실제 모델 점수로 표현하지 않습니다.
