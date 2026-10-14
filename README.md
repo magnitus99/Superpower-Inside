@@ -7,6 +7,8 @@ Bring a question to the notes and documents you already keep in Obsidian. Superp
 [![Obsidian](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)](https://obsidian.md/plugins?id=superpower-inside)
 [![license](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
 
+![Superpower Inside — From your material to your next step](media/superpower-inside-community-thumbnail.png)
+
 ## English
 
 ### From your material to your next step
@@ -16,8 +18,6 @@ Pick up a project, compare research, or start a draft. Ask for what you need wit
 **[Install in Obsidian](https://obsidian.md/plugins?id=superpower-inside)** · **[Download the latest release](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
 Free and open source for **desktop Obsidian 1.11.4 or later**. No plugin subscription or plugin account is required. Your chosen AI provider may require an account and charge for usage or impose limits. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md).
-
-[![Watch the 64-second film](https://raw.githubusercontent.com/magnitus99/Superpower-Inside/main/media/superpower-inside-en-thumbnail.png)](https://github.com/magnitus99/Superpower-Inside/blob/main/README.md#english)
 
 https://github.com/user-attachments/assets/b737eff2-d3e1-40a3-8c54-eaf0e714751c
 
@@ -125,8 +125,6 @@ For queries or templates involving another Obsidian plugin, enable **Answers inf
 **[Obsidian에서 설치](https://obsidian.md/plugins?id=superpower-inside)** · **[최신 릴리스 다운로드](https://github.com/magnitus99/Superpower-Inside/releases/latest)**
 
 **Obsidian 1.11.4 이상 데스크톱 버전**에서 사용하는 무료·오픈소스 플러그인입니다. 플러그인 구독료나 별도 플러그인 계정은 필요하지 않습니다. 선택한 AI 제공자의 계정·요금·사용 한도는 별도입니다. [MIT 라이선스](LICENSE) · [서드파티 고지](THIRD_PARTY_NOTICES.md).
-
-[![64초 홍보 영상 보기](https://raw.githubusercontent.com/magnitus99/Superpower-Inside/main/media/superpower-inside-ko-thumbnail.png)](https://github.com/magnitus99/Superpower-Inside/blob/main/README.md#%ED%95%9C%EA%B5%AD%EC%96%B4)
 
 https://github.com/user-attachments/assets/c73dac24-3e09-4ec2-9c82-1d71b8d182a6
 
