@@ -336,7 +336,7 @@ function buildMcpRows(
     return {
       id: `mcp-${server.name}`,
       label: server.name,
-      value: server.command,
+      value: server.url ?? server.command,
       statusLabel: mcpStatusLabel(status),
       detail:
         runtime?.error ??

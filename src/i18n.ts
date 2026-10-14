@@ -1,6 +1,10 @@
 export type Language = 'ko' | 'en';
 
 export interface I18nKeys {
+  xlsxMemoryBudgetError: string;
+  xlsxXmlTokenBudgetError: string;
+  xlsxTimeBudgetError: string;
+  xlsxExtractionError: string;
   retiredArtifactsSection: string;
   retiredArtifactsTitle: string;
   retiredArtifactsDesc: string;
@@ -46,6 +50,12 @@ export interface I18nKeys {
   settingsEditServer: string;
   settingsServerName: string;
   settingsServerCommand: string;
+  settingsServerTransport: string;
+  settingsServerUrl: string;
+  settingsServerAuthSecret: string;
+  settingsServerAuthSecretDetail: string;
+  mcpAuthSecretMissing: string;
+  mcpJsonInvalidRemote: string;
   settingsServerArgs: string;
   settingsServerArgsDetail: string;
   settingsServerEnv: string;
@@ -1592,6 +1602,10 @@ export interface I18nKeys {
 }
 
 const ko: I18nKeys = {
+  xlsxMemoryBudgetError: '엑셀 문서가 추출 작업의 메모리 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
+  xlsxXmlTokenBudgetError: '엑셀 내부 XML 구조가 파싱 버퍼 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
+  xlsxTimeBudgetError: '엑셀 문서 추출이 60초의 처리 시간 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
+  xlsxExtractionError: '엑셀 문서 전체를 추출하지 못했습니다 ({reason}). 일부 본문은 사용하지 않습니다.',
   retiredArtifactsSection: '저장 공간',
   retiredArtifactsTitle: '지원이 끝난 데이터',
   retiredArtifactsDesc:
@@ -1629,7 +1643,7 @@ const ko: I18nKeys = {
   settingsMcpJsonLabel: 'MCP 서버 설정 JSON',
   settingsMcpJsonTitle: '고급 JSON 편집',
   settingsMcpJsonFormatHelp:
-    'mcpServers 객체 안에 서버 이름별로 설정합니다. command는 필수 문자열이며, args(문자열 배열)와 env(문자열 값의 객체)는 생략할 수 있습니다. 주석과 마지막 쉼표 없이 작성하고 기존 서버 항목을 유지하세요.',
+    'mcpServers 안에 서버 이름별로 설정합니다. 로컬 stdio는 Claude Desktop처럼 command와 선택 항목 args·env를 사용합니다. 원격 서버는 url과 transport(http 또는 sse)를 사용하며, 생략하면 http입니다. 인증 토큰은 authTokenSecret으로 보안 저장소 이름만 참조하세요. 주석과 마지막 쉼표 없이 작성하고 필요한 기존 서버 항목을 유지하세요.',
   settingsMcpDraftHelp:
     '변경사항은 초안으로 보관됩니다. 적용하면 서버 목록 전체를 교체하고 다시 연결합니다.',
   settingsMcpApplied: '현재 서버 설정이 적용되어 있습니다.',
@@ -1645,6 +1659,12 @@ const ko: I18nKeys = {
   settingsEditServer: '수정',
   settingsServerName: '서버 이름',
   settingsServerCommand: '실행 명령',
+  settingsServerTransport: '연결 방식',
+  settingsServerUrl: '원격 서버 URL',
+  settingsServerAuthSecret: '인증 토큰의 보안 저장소 이름',
+  settingsServerAuthSecretDetail: 'Obsidian 보안 저장소에서 토큰을 선택하거나 추가하세요. 설정에는 이름만 저장하며, 인증에는 HTTPS 또는 로컬 서버가 필요합니다.',
+  mcpAuthSecretMissing: '이 기기의 보안 저장소에서 MCP 인증 토큰을 찾을 수 없습니다.',
+  mcpJsonInvalidRemote: '원격 서버에는 HTTP(S) URL과 http 또는 sse 연결 방식이 필요합니다. 토큰 원문 대신 authTokenSecret 이름을 사용하고 실행 명령은 제거하세요.',
   settingsServerArgs: '실행 인수',
   settingsServerArgsDetail: 'JSON 배열로 입력합니다. 예: ["-y", "@upstash/context7-mcp"]',
   settingsServerEnv: '환경 변수',
@@ -1790,7 +1810,7 @@ const ko: I18nKeys = {
   mcpStatusSectionDesc: 'MCP 서버 연결 상태와 필요한 복구 행동을 확인합니다.',
   mcpServersSectionTitle: '서버 설정',
   mcpServersSectionDesc:
-    'Claude Desktop의 mcpServers JSON 형식을 사용합니다. 로컬 stdio 서버만 연결할 수 있습니다.',
+    'mcpServers JSON 형식으로 로컬 stdio와 원격 Streamable HTTP·SSE 서버를 연결합니다.',
   mcpEnvironmentSectionTitle: '실행 환경',
   mcpEnvironmentSectionDesc: '서버 명령을 찾는 데 필요한 로컬 실행 환경을 관리합니다.',
   mcpEnvironmentDetailsTitle: '실행 환경 세부 조정',
@@ -3382,6 +3402,10 @@ const ko: I18nKeys = {
 };
 
 const en: I18nKeys = {
+  xlsxMemoryBudgetError: 'This spreadsheet exceeds the extraction memory budget. Partial text will not be used.',
+  xlsxXmlTokenBudgetError: 'The XML structure in this spreadsheet exceeds the parsing buffer budget. Partial text will not be used.',
+  xlsxTimeBudgetError: 'Spreadsheet extraction exceeded the 60-second processing budget. Partial text will not be used.',
+  xlsxExtractionError: 'The complete spreadsheet could not be extracted ({reason}). Partial text will not be used.',
   retiredArtifactsSection: 'Storage',
   retiredArtifactsTitle: 'Data from retired features',
   retiredArtifactsDesc:
@@ -3419,7 +3443,7 @@ const en: I18nKeys = {
   settingsMcpJsonLabel: 'MCP server configuration JSON',
   settingsMcpJsonTitle: 'Advanced JSON editor',
   settingsMcpJsonFormatHelp:
-    'Put each server under its name in the mcpServers object. command is a required string; args (an array of strings) and env (an object with string values) are optional. Use JSON without comments or trailing commas, and keep existing server entries.',
+    'Put each named server in mcpServers. Local stdio uses command and optional args/env, as in Claude Desktop. Remote servers use url and transport (http or sse); omitted transport defaults to http. Reference an authentication token by its Secret Storage name with authTokenSecret. Use JSON without comments or trailing commas, and keep existing entries you need.',
   settingsMcpDraftHelp:
     'Changes stay in a draft. Applying them replaces the entire server list and reconnects the servers.',
   settingsMcpApplied: 'Current server settings are applied.',
@@ -3435,6 +3459,12 @@ const en: I18nKeys = {
   settingsEditServer: 'Edit',
   settingsServerName: 'Server name',
   settingsServerCommand: 'Command',
+  settingsServerTransport: 'Transport',
+  settingsServerUrl: 'Remote server URL',
+  settingsServerAuthSecret: 'Authentication token secret name',
+  settingsServerAuthSecretDetail: 'Select or add a token in Obsidian Secret Storage. Settings store only its name. Authentication requires HTTPS or a local server.',
+  mcpAuthSecretMissing: 'The MCP authentication token is missing from Secret Storage on this device.',
+  mcpJsonInvalidRemote: 'Remote servers require an HTTP(S) URL and http or sse transport. Use an authTokenSecret name instead of a raw token and remove process fields.',
   settingsServerArgs: 'Arguments',
   settingsServerArgsDetail: 'Enter a JSON array, e.g. ["-y", "@upstash/context7-mcp"].',
   settingsServerEnv: 'Environment variables',
@@ -3556,7 +3586,7 @@ const en: I18nKeys = {
   mcpStatusSectionDesc: 'Check MCP server connections and the nearest recovery action.',
   mcpServersSectionTitle: 'Server setup',
   mcpServersSectionDesc:
-    'Uses the Claude Desktop mcpServers JSON format. Only local stdio servers are supported.',
+    'Connect local stdio and remote Streamable HTTP or SSE servers using mcpServers JSON.',
   mcpEnvironmentSectionTitle: 'Runtime environment',
   mcpEnvironmentSectionDesc: 'Manage the local environment used to find server commands.',
   mcpEnvironmentDetailsTitle: 'Runtime environment details',

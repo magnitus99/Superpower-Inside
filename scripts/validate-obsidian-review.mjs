@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { MAIN_JS_SIZE_LIMIT_BYTES } from './bundle-size-policy.mjs';
+import { isReleaseVersion } from './release-version.mjs';
 
 const args = new Set(process.argv.slice(2));
 const tagArg = readOption('--tag');
@@ -51,8 +52,8 @@ function readText(relativePath) {
 }
 
 function validateVersionMetadata() {
-  if (!/^\d+\.\d+\.\d+$/.test(manifest.version)) {
-    errors.push(`manifest.json version must be plain SemVer x.y.z: ${manifest.version}`);
+  if (!isReleaseVersion(manifest.version)) {
+    errors.push(`manifest.json version must use YYYY.MM.DD or YYYY.MM.DD.N: ${manifest.version}`);
   }
   if (pkg.version !== manifest.version) {
     errors.push(`package.json version ${pkg.version} must match manifest version ${manifest.version}`);

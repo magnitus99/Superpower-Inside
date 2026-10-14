@@ -1,4 +1,5 @@
 import type { TFile, Vault } from 'obsidian';
+import { extractXlsxSourceText, disposeXlsxWorker } from './xlsx-worker-runtime';
 import {
   configurePdfWorkerAssets,
   disposePdfWorker,
@@ -30,6 +31,7 @@ const readObservers = new Map<string, Set<PdfReadOptions>>();
 const recentReads = new Map<string, SourceText>();
 const RECENT_READ_CHAR_LIMIT = 8 * 1024 * 1024;
 let recentReadChars = 0;
+let cacheGeneration = 0;
 let pdfCache: PdfSourceCache | null = null;
 const vaultIds = new WeakMap<Vault, number>();
 let nextVaultId = 0;
@@ -50,6 +52,7 @@ export function configureSourceAssets(
 
 export function disposeSourceAssets(): void {
   disposePdfWorker();
+  disposeXlsxWorker();
   pdfCache?.close();
   pdfCache = null;
   clearSourceTextCache();
@@ -71,6 +74,7 @@ export async function readSourceText(
   if (extractor === null) return { text: await vault.cachedRead(file), segments: [] };
 
   const key = sourceCacheKey(vault, file);
+  const owner = cacheGeneration;
   const cached = recentReads.get(key);
   if (cached) return cached;
   let observers = readObservers.get(key);
@@ -80,7 +84,7 @@ export async function readSourceText(
   }
   observers.add(options);
   const pending = pendingReads.get(key);
-  if (pending) return waitForRead(pending, options);
+  if (pending) return waitForRead(pending, options, extractor === 'pdf');
 
   const read = extractSourceText(extractor, vault, file, {
     signal: options.signal,
@@ -90,25 +94,31 @@ export async function readSourceText(
   })
     .then((result) => {
       options.signal?.throwIfAborted();
-      remember(key, result);
+      if (owner === cacheGeneration) remember(key, result);
       return result;
     })
     .finally(() => {
-      pendingReads.delete(key);
-      readObservers.delete(key);
+      if (pendingReads.get(key) === read) {
+        pendingReads.delete(key);
+        readObservers.delete(key);
+      }
     });
   pendingReads.set(key, read);
-  return waitForRead(read, options);
+  return waitForRead(read, options, extractor === 'pdf');
 }
 
 /** 공유된 PDF 추출을 기다리는 소비자의 취소도 실제 worker에 전달합니다. */
-function waitForRead(read: Promise<SourceText>, options: PdfReadOptions): Promise<SourceText> {
+function waitForRead(
+  read: Promise<SourceText>,
+  options: PdfReadOptions,
+  cancelPdf: boolean,
+): Promise<SourceText> {
   const signal = options.signal;
   if (!signal) return read;
   return new Promise((resolve, reject) => {
     const abort = (): void => {
       const error = new DOMException('Source extraction aborted.', 'AbortError');
-      disposePdfWorker(error);
+      if (cancelPdf) disposePdfWorker(error);
       reject(error);
     };
     signal.addEventListener('abort', abort, { once: true });
@@ -152,6 +162,9 @@ async function extractSourceText(
     return source;
   }
 
+  if ((file.extension ?? '').trim().toLowerCase() === 'xlsx')
+    return extractXlsxSourceText(vault, file, options);
+
   const bytes = new Uint8Array(await vault.readBinary(file));
   const extracted = extractSourceTextRust(file.extension ?? '', bytes);
   if (!extracted) throw new Error(`Source text extraction is unavailable for ${file.path}.`);
@@ -164,6 +177,7 @@ async function extractSourceText(
 
 /** 캐시가 본문 길이 상한을 넘지 않도록 가장 오래된 항목부터 비웁니다. */
 function remember(key: string, result: SourceText): void {
+  if (result.text.length > RECENT_READ_CHAR_LIMIT) return;
   recentReads.set(key, result);
   recentReadChars += result.text.length;
   while (recentReadChars > RECENT_READ_CHAR_LIMIT && recentReads.size > 1) {
@@ -186,6 +200,7 @@ function sourceCacheKey(vault: Vault, file: TFile): string {
 
 /** 테스트와 다시 읽기에서 이전 revision 본문이 남지 않도록 캐시를 비웁니다. */
 export function clearSourceTextCache(): void {
+  cacheGeneration++;
   pendingReads.clear();
   readObservers.clear();
   recentReads.clear();

@@ -1,4 +1,5 @@
 import { requestUrl } from 'obsidian';
+import { desktopFetch, consumeDesktopStream, streamHeaders } from '../utils/desktop-stream';
 import { t } from '../i18n';
 import { prepareProviderRequest } from './request-budget';
 import { planChatGPTRust, planProviderModelDetailsRust } from '../rag/rust-core';
@@ -28,12 +29,13 @@ async function authenticatedRequest(
   path: 'responses' | 'models',
   body?: string,
   signal?: AbortSignal,
+  onData?: (data: string) => boolean,
 ) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     throwIfAborted(signal);
     const credentials = await chatGPTOAuth.credentials(profileId, attempt === 1);
     throwIfAborted(signal);
-    const response = await requestUrl({
+    const request = {
       url: `${BASE_URL}/${path}${path === 'models' ? `?${new URLSearchParams({ client_version: chatGPTOAuth.clientVersion })}` : ''}`,
       method: body === undefined ? 'GET' : 'POST',
       headers: {
@@ -46,7 +48,43 @@ async function authenticatedRequest(
       },
       body,
       throw: false,
-    });
+    };
+    let response;
+    if (path === 'responses' && onData) {
+      const native = await desktopFetch(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body,
+        signal,
+      });
+      if (native.ok) {
+        let text = '';
+        await consumeDesktopStream(
+          native,
+          'sse',
+          (data) => {
+            text += `data: ${data}\n\n`;
+            return onData(data);
+          },
+          signal,
+        );
+        response = {
+          status: native.status,
+          text,
+          headers: streamHeaders(native.headers),
+          json: null,
+        };
+      } else {
+        response = {
+          status: native.status,
+          text: await native.text(),
+          headers: streamHeaders(native.headers),
+          json: null,
+        };
+      }
+    } else {
+      response = await requestUrl(request);
+    }
     throwIfAborted(signal);
     if (response.status === 401 && attempt === 0) continue;
     if (response.status >= 400) {
@@ -108,7 +146,27 @@ export class ChatGPTProvider implements LLMProvider {
     tools?: ToolDefinition[],
     options?: ChatOptions,
   ): Promise<void> {
-    const result = await this.generate(messages, tools, options);
+    let content = '';
+    let reasoning = '';
+    const result = await this.generate(
+      messages,
+      tools,
+      options,
+      (data) => {
+        const chunk = planChatGPTRust<StreamChunk & { error?: boolean }>({
+          operation: 'stream-event',
+          data,
+        });
+        if (!chunk || chunk.error) throw new Error(t('chatGPTResponseInvalid'));
+        if (chunk.content || chunk.reasoning) {
+          content += chunk.content;
+          reasoning += chunk.reasoning ?? '';
+          onChunk(chunk);
+        }
+        return chunk.done;
+      },
+      () => ({ content, reasoning }),
+    );
     throwIfAborted(options?.signal);
     onChunk({ ...result, done: false });
     onChunk({ content: '', done: true });
@@ -118,6 +176,8 @@ export class ChatGPTProvider implements LLMProvider {
     messages: ChatMessage[],
     tools?: ToolDefinition[],
     options?: ChatOptions,
+    onData?: (data: string) => boolean,
+    emitted?: () => { content: string; reasoning: string },
   ): Promise<StreamChunk> {
     throwIfAborted(options?.signal);
     messages = prepareProviderRequest(
@@ -138,10 +198,12 @@ export class ChatGPTProvider implements LLMProvider {
       'responses',
       JSON.stringify(body),
       options?.signal,
+      onData,
     );
     const result = planChatGPTRust<StreamChunk & { model?: string }>({
-      operation: 'response',
+      operation: emitted ? 'stream-tail' : 'response',
       text: response.text,
+      ...emitted?.(),
     });
     if (!result) throw new Error(t('chatGPTResponseInvalid'));
     this.observedModel = result.model ?? this.observedModel;

@@ -15,6 +15,45 @@ const method = (start: string, end: string): string =>
   settings.slice(settings.indexOf(start), settings.indexOf(end, settings.indexOf(start)));
 
 describe('설정창 전체 개선 회귀 계약', () => {
+  it('플러그인 시작 경로는 원격 서버를 제거하지 않고 공통 Rust 마이그레이션을 사용한다', () => {
+    const main = readFileSync(resolve(__dirname, '../main.ts'), 'utf8');
+    const load = main.slice(
+      main.indexOf('async loadSettings()'),
+      main.indexOf('private async persistSettings()'),
+    );
+    expect(load).toContain('migrateStoredMcpServersRust(data.mcpServers)');
+    expect(load).not.toContain("transport === 'http' || transport === 'sse'");
+  });
+  it('MCP 초안에서 숨긴 행은 설정 블록 스타일보다 우선한다', () => {
+    const css = readFileSync(resolve(__dirname, '../styles.css'), 'utf8');
+    expect(css).toContain('.superpower-inside-mcp-draft .setting-item.superpower-inside-hidden');
+    const modal = readFileSync(resolve(__dirname, 'settings-mcp-modal.ts'), 'utf8');
+    expect(modal).toContain("body.classList.add('superpower-inside-mcp-draft')");
+    expect(modal).toContain('refreshTransport();');
+  });
+  it('원격 MCP 스키마는 HTTP·SSE와 비밀값 이름을 허용하고 평문 토큰·프로세스 혼합은 거부한다', () => {
+    for (const transport of ['http', 'sse']) {
+      const payload = {
+        mcpServers: {
+          remote: { url: 'https://example.com/mcp', transport, authTokenSecret: 'mcp-synthetic' },
+        },
+      };
+      expect(validateMcpJson(JSON.stringify(payload))).toEqual({ valid: true, data: payload });
+    }
+    for (const extra of [
+      { command: 'node' },
+      { headers: { Authorization: 'synthetic' } },
+      { url: 'file:///tmp/a' },
+      { transport: 'stdio' },
+      { authTokenSecret: 'raw secret' },
+    ]) {
+      expect(
+        validateMcpJson(
+          JSON.stringify({ mcpServers: { remote: { url: 'https://example.com/mcp', ...extra } } }),
+        ).valid,
+      ).toBe(false);
+    }
+  });
   it('실제 WASM 입력 검증은 빈 숫자·소수 정수·볼트 밖 경로를 거부한다', () => {
     expect(parseSettingsNumberRust('', 0, 1, false)).toBeNull();
     expect(parseSettingsNumberRust('1.5', 1, 10)).toBeNull();

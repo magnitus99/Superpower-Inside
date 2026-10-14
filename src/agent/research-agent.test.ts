@@ -14,6 +14,44 @@ import {
 } from './research-agent';
 
 describe('로컬 선별 우선 Vault Research Agent', () => {
+  it('최종 연구 답변만 스트리밍하고 내부 요약은 표시하지 않는다', async () => {
+    const runtime = createRuntime(
+      new Map([['synthetic/relay.md', 'Copper relay requires inspection.']]),
+    );
+    const chat = vi.fn(() => Promise.resolve('Copper relay inspection evidence.'));
+    let release = (): void => {};
+    let arrived = (): void => {};
+    const started = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    const streamChat = vi.fn(
+      async (
+        _messages: ChatMessage[],
+        consume: (chunk: { content: string; done: boolean }) => void,
+      ) => {
+        consume({ content: 'Copper relay ', done: false });
+        arrived();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        consume({ content: 'requires inspection.', done: false });
+        consume({ content: '', done: true });
+      },
+    );
+    const answers: string[] = [];
+    const pending = new VaultResearchAgent({ chat, streamChat }, runtime).run({
+      question: 'copper relay inspection',
+      scopePath: 'synthetic',
+      onAnswer: (content) => answers.push(content),
+    });
+    await started;
+    expect(answers).toEqual(['', 'Copper relay ']);
+    expect(chat).toHaveBeenCalled();
+    release();
+    const result = await pending;
+    expect(result.content).toContain('Copper relay requires inspection.');
+    expect(streamChat).toHaveBeenCalledOnce();
+  });
   it('작은 모델 예산에서도 질문과 맞는 후반 구절의 실제 행을 전달한다', async () => {
     const text =
       'title: Synthetic inspection\ndate: not-recorded\n\n' +

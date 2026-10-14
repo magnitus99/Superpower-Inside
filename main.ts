@@ -1,3 +1,4 @@
+import { migrateStoredMcpServersRust } from './src/rag/rust-core';
 import {
   getLanguage as getObsidianLanguage,
   Plugin,
@@ -41,7 +42,11 @@ import {
 import type { LLMProvider } from './src/llm/providers';
 import { createChatProviderForModel } from './src/llm/provider-resolution';
 import { normalizeProviderCapabilityOverrides } from './src/llm/provider-capabilities';
-import { chatGPTOAuth, initializeChatGPTOAuth, migrateChatGPTCredentials } from './src/llm/chatgpt-oauth';
+import {
+  chatGPTOAuth,
+  initializeChatGPTOAuth,
+  migrateChatGPTCredentials,
+} from './src/llm/chatgpt-oauth';
 import {
   hydrateProviderApiKeys,
   migrateProviderKeysToKeychain,
@@ -1253,40 +1258,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       data.mcpIncludeWslPath = false;
     }
 
-    // Migrate old MCP settings to standard format
-    const mcpServers = data.mcpServers as unknown[] | undefined;
-    if (Array.isArray(mcpServers)) {
-      const migrated: Array<{
-        name: string;
-        command?: string;
-        args?: string[];
-        env?: Record<string, string>;
-      }> = [];
-      for (const s of mcpServers) {
-        if (typeof s !== 'object' || s === null) continue;
-        const server = s as Record<string, unknown>;
-        // Skip non-stdio transports (HTTP/SSE servers are removed)
-        const transport = server.transport;
-        if (transport === 'http' || transport === 'sse') {
-          continue;
-        }
-        const name = typeof server.name === 'string' ? server.name : '';
-        const command = typeof server.command === 'string' ? server.command : undefined;
-        const args = Array.isArray(server.args)
-          ? server.args.filter((a): a is string => typeof a === 'string')
-          : undefined;
-        const env =
-          typeof server.env === 'object' && server.env !== null && !Array.isArray(server.env)
-            ? (Object.fromEntries(
-                Object.entries(server.env).filter(
-                  (entry): entry is [string, string] => typeof entry[1] === 'string',
-                ),
-              ) as Record<string, string>)
-            : undefined;
-        if (name && command) {
-          migrated.push({ name, command, args, env });
-        }
-      }
+    // 기존 로컬 설정과 새 원격 설정을 재시작 후에도 함께 유지한다.
+    if (Array.isArray(data.mcpServers)) {
+      const migrated = migrateStoredMcpServersRust(data.mcpServers);
+      if (!migrated) throw new Error(t('mcpConnectionFailed'));
       data.mcpServers = migrated;
     }
 
@@ -3023,7 +2998,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.refreshMcpConnectionState();
 
       try {
-        if (!server.command) {
+        if (!server.command && !server.url) {
           throw new Error('Command is required for stdio transport');
         }
 
@@ -3034,12 +3009,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
           PATH: server.env?.PATH || effectivePath,
         };
 
-        await client.connectStdio({
-          name: server.name,
-          command: server.command,
-          args: server.args,
-          env,
-        });
+        const token = server.authTokenSecret
+          ? readSecretStorage(this.app)?.getSecret(server.authTokenSecret)
+          : undefined;
+        if (server.authTokenSecret && !token) throw new Error(t('mcpAuthSecretMissing'));
+        await client.connect({ ...server, env: server.url ? undefined : env }, token ?? undefined);
 
         if (runId !== this.mcpConnectionRunId) {
           await client.disconnect();

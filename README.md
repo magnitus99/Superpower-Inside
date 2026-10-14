@@ -57,6 +57,8 @@ When the scope matters, name a file, folder, or tag. Type `[[` to choose a refer
 
 Your material can include **PDF, EPUB, DOCX, ODT, PPTX, XLSX, and HWPX**, alongside Markdown, plain text, code, JSON, and CSV. You do not have to turn each document into a note before using its text.
 
+Large XLSX spreadsheets are read in the background, one file at a time. If a document exceeds the processing budget or cannot be read completely, you see an error and its partial text is not used.
+
 PDFs use their text layer when available. Scanned pages use **Korean and English OCR on your device**. Source passages include page labels so you can check the original.
 
 Document extraction reads text, with limits: it does not preserve every layout, table, or visual. Scan quality affects OCR, and protected, oversized, damaged, or low-confidence documents can fail. Provide a text version of standalone images or audio before using them.
@@ -89,7 +91,7 @@ API keys and ChatGPT credentials are stored in **Obsidian's secret storage on th
 - **Meaning-based search:** choose Ternlight for short English notes or EmbeddingGemma 300M for multilingual material. Prepare the model files in settings and let indexing finish. Changing the embedding model rebuilds the index. Keyword search and built-in vault tools are available without an embedding index.
 - **Local storage:** search indexes and the PDF OCR cache stay in the vault's local browser storage. Chat messages, selected passages, and tool results may be sent to configured providers or tools.
 - **Exclusions:** use `superpower-inside-exclude: true` in a note's top-level YAML or the document exclusion command. Path exclusions and sensitive-file safeguards also apply. Extension exclusions affect search and indexing; a direct reference can still read a supported file within the other safeguards and size limits.
-- **Responses and stopping:** answers are received as buffered responses, rather than shown token by token. Stopping a run may not cancel inference already running at the provider.
+- **Responses and stopping:** chat answers appear as streaming text. Stopping a run closes the active connection; the provider may continue inference after disconnection.
 - **Answer coverage:** search does not read the whole vault, and checking a source passage does not guarantee the answer is correct. General knowledge and new drafts may have no vault source.
 
 </details>
@@ -108,7 +110,7 @@ API keys and ChatGPT credentials are stored in **Obsidian's secret storage on th
 
 Connect local **MCP** servers when you need outside information or tools. Trusted tools can run automatically; tools that require approval wait for you. A question that mentions only an external server skips automatic vault search; include a vault reference when you need both.
 
-In **External tools → Server setup → Advanced JSON editor**, use a top-level `mcpServers` object with named entries containing `command`, optional `args`, and optional string-valued `env`. Local stdio servers are supported; remote HTTP/SSE configurations are not. Applying the editor replaces the server list, so retain existing entries you need.
+In **External tools → Server setup → Advanced JSON editor**, use a top-level `mcpServers` object. Local stdio entries use Claude Desktop's `command`, optional `args`, and optional string-valued `env` format. This plugin also supports remote Streamable HTTP and legacy SSE entries: use `url` and `transport: "http"` or `"sse"` instead of process fields. These remote fields extend the local JSON format; Claude Desktop configures remote servers through connectors. For bearer authentication, store the token in Obsidian Secret Storage and reference its name with `authTokenSecret`. Applying the editor replaces the server list, so retain existing entries you need.
 
 For queries or templates involving another Obsidian plugin, enable **Answers informed by installed plugins**, connect **Context7 MCP**, and name an active plugin in your question. Its documentation can inform the answer. Check your installed version, settings, and execution results separately.
 
@@ -164,6 +166,8 @@ https://github.com/user-attachments/assets/c73dac24-3e09-4ec2-9c82-1d71b8d182a6
 
 Markdown뿐 아니라 **PDF·EPUB·DOCX·ODT·PPTX·XLSX·HWPX**, 일반 텍스트·코드·JSON·CSV도 활용할 수 있습니다. 문서마다 노트로 옮기지 않아도 본문을 읽어 비교할 수 있습니다.
 
+큰 XLSX 문서는 백그라운드에서 한 파일씩 읽습니다. 처리 예산을 초과하거나 문서 전체를 읽지 못하면 오류를 표시하고 일부 본문을 사용하지 않습니다.
+
 PDF에 텍스트가 있으면 그 본문을 읽습니다. 스캔한 페이지는 **기기 안에서 실행하는 한국어·영어 OCR**로 읽습니다. 근거 구간의 페이지 라벨로 원문을 확인할 수 있습니다.
 
 문서 추출은 본문 텍스트를 읽으며, 모든 배치·표·시각 자료를 보존하지는 않습니다. OCR 품질은 스캔 상태에 따라 달라지고, 암호화·크기 초과·손상·낮은 인식 신뢰도 등으로 추출이 실패할 수 있습니다. 별도 이미지 파일이나 음성은 먼저 텍스트로 준비하세요.
@@ -196,7 +200,7 @@ API 키와 ChatGPT 자격 증명은 볼트와 동기화되는 플러그인 설�
 - **의미 검색:** 짧은 영어 노트에는 Ternlight, 다국어 자료에는 EmbeddingGemma 300M을 선택할 수 있습니다. 설정에서 모델 파일을 준비하고 인덱싱을 마치세요. 임베딩 모델을 바꾸면 인덱스를 다시 만듭니다. 키워드 검색과 내장 볼트 도구는 임베딩 인덱스 없이 사용할 수 있습니다.
 - **로컬 저장:** 검색 인덱스와 PDF OCR 캐시는 해당 볼트의 로컬 브라우저 저장소에 남습니다. 채팅 메시지·선택한 구간·도구 결과는 설정한 제공자나 도구로 전송될 수 있습니다.
 - **자료 제외:** 노트 맨 위 YAML에 `superpower-inside-exclude: true`를 넣거나 문서 제외 명령을 사용하세요. 경로 제외와 민감 파일 보호도 적용됩니다. 확장자 제외는 검색·인덱싱에 적용되며, 지원 파일을 직접 참조하면 다른 보호 규칙과 크기 제한 안에서 읽을 수 있습니다.
-- **응답과 중단:** 답변은 토큰별 실시간 표시가 아니라 모아서 수신합니다. 중단해도 제공자에서 이미 실행 중인 추론은 계속될 수 있습니다.
+- **응답과 중단:** 채팅 답변은 수신되는 대로 스트리밍 표시합니다. 중단하면 진행 중인 연결을 닫지만, 제공자의 추론은 연결 종료 후에도 계속될 수 있습니다.
 - **답변 범위:** 검색이 볼트 전체를 읽는 것은 아니며, 근거 구간을 확인했다고 답변의 정확성이 보장되지는 않습니다. 일반 지식과 새 초안에는 볼트 출처가 없을 수 있습니다.
 
 </details>
@@ -215,7 +219,7 @@ API 키와 ChatGPT 자격 증명은 볼트와 동기화되는 플러그인 설�
 
 볼트 밖의 정보나 도구가 필요하면 로컬 **MCP** 서버를 연결하세요. 신뢰한 도구는 자동 실행할 수 있고, 승인이 필요한 도구는 기다립니다. 외부 서버만 멘션한 질문은 볼트 자동 검색을 건너뜁니다. 볼트 자료도 필요하면 참조를 함께 넣으세요.
 
-**외부 도구 → 서버 설정 → 고급 JSON 편집**에서 최상위 `mcpServers` 안에 서버별 `command`, 선택 항목 `args`, 문자열 값의 `env`를 넣으세요. 로컬 stdio 서버를 지원하며 원격 HTTP/SSE 설정은 지원하지 않습니다. 적용하면 서버 목록 전체가 교체되므로 필요한 기존 항목을 유지하세요.
+**외부 도구 → 서버 설정 → 고급 JSON 편집**에서 최상위 `mcpServers`를 사용하세요. 로컬 stdio 항목은 Claude Desktop과 같은 `command`, 선택 항목 `args`, 문자열 값의 `env` 형식입니다. 이 플러그인은 원격 Streamable HTTP와 기존 SSE 항목도 지원하며, 실행 명령 대신 `url`과 `transport: "http"` 또는 `"sse"`를 사용합니다. 원격 필드는 로컬 JSON 형식의 확장이고, Claude Desktop의 원격 서버는 커넥터로 설정합니다. Bearer 인증 토큰은 Obsidian 보안 저장소에 저장하고 `authTokenSecret`으로 이름만 참조하세요. 적용하면 서버 목록 전체가 교체되므로 필요한 기존 항목을 유지하세요.
 
 다른 Obsidian 플러그인의 쿼리나 템플릿을 작성하려면 **설치된 플러그인에 맞춘 답변**을 켜고 **Context7 MCP**를 연결한 뒤 질문에 활성 플러그인 이름을 적으세요. 해당 문서를 답변에 활용할 수 있습니다. 설치 버전·내 설정·실행 결과는 별도로 확인하세요.
 

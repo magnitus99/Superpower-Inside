@@ -3243,6 +3243,7 @@ export class ChatView extends ItemView {
           signal: abortController.signal,
           onProgress: (progress) => {
             if (!isChatRunActive(this.activeRun, run)) return;
+            if (progress.phase === 'complete') return;
             const progressText = t('vaultResearchProgress', {
               phase: getVaultResearchPhaseLabel(progress.phase),
               completed: String(progress.completedFiles),
@@ -3254,6 +3255,18 @@ export class ChatView extends ItemView {
               model: modelName,
               providerCapability,
               ...toTurnMeta(),
+              ...contextMeta,
+              ...assistantVariantMeta,
+            });
+          },
+          onAnswer: (content) => {
+            if (!isChatRunActive(this.activeRun, run)) return;
+            this.updateMessage(assistantId, content, false, undefined, undefined, {
+              providerKey: key,
+              providerLabel,
+              model: modelName,
+              providerCapability,
+              ...applyTurnEvent({ type: 'answer-delta' }),
               ...contextMeta,
               ...assistantVariantMeta,
             });

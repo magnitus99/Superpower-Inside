@@ -1,8 +1,36 @@
 import {
   extractStructuredReasoningRust,
   normalizeReasoningChunkRust,
+  normalizeReasoningStreamRust,
   splitReasoningTagsRust,
 } from '../rag/rust-core';
+import type { StreamChunk } from './providers';
+
+/** Rust 상태를 다음 네트워크 델타로 전달한다. 전체 답변은 재파싱하지 않는다. */
+export function createStreamingReasoningSink(
+  onChunk: (chunk: StreamChunk) => void,
+): (chunk: StreamChunk) => void {
+  let state = JSON.stringify({ pending: '', thinking: false });
+  return (chunk) => {
+    const normalized = normalizeReasoningStreamRust(
+      state,
+      chunk.content,
+      chunk.reasoning ?? '',
+      chunk.done,
+    );
+    if (!normalized) throw new Error('Invalid reasoning stream state');
+    state = JSON.stringify(normalized.state);
+    if (normalized.content || normalized.reasoning || chunk.toolCalls?.length) {
+      onChunk({
+        content: normalized.content,
+        done: false,
+        ...(normalized.reasoning ? { reasoning: normalized.reasoning } : {}),
+        ...(chunk.toolCalls ? { toolCalls: chunk.toolCalls } : {}),
+      });
+    }
+    if (chunk.done) onChunk({ content: '', done: true });
+  };
+}
 
 export interface ReasoningExtractor {
   name: string;
@@ -37,10 +65,7 @@ export function splitReasoningTags(content: string): NormalizedReasoningChunk {
   const REASONING_TAGS = ['think', 'thinking', 'reasoning', 'thought'];
   const REASONING_TAG_PATTERN = REASONING_TAGS.join('|');
 
-  const pairedTag = new RegExp(
-    `<(${REASONING_TAG_PATTERN})\\b[^>]*>([\\s\\S]*?)<\\/\\1>`,
-    'gi',
-  );
+  const pairedTag = new RegExp(`<(${REASONING_TAG_PATTERN})\\b[^>]*>([\\s\\S]*?)<\\/\\1>`, 'gi');
   const reasoningParts: string[] = [];
   const contentParts: string[] = [];
   let lastIndex = 0;

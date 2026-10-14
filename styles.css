@@ -33,6 +33,9 @@
 .superpower-inside-hidden {
   display: none;
 }
+.superpower-inside-mcp-draft .setting-item.superpower-inside-hidden {
+  display: none;
+}
 .superpower-inside-scroll-to-bottom.superpower-inside-hidden,
 .superpower-inside-typing-indicator.superpower-inside-hidden,
 .superpower-inside-mention-dropdown.superpower-inside-hidden,

@@ -125,6 +125,30 @@ export class VectorRuntimeIndex {
 }
 
 /**
+ * JSON 본문 복사 없이 UTF-8 버퍼를 워커에 전달하는 XLSX 추출 결과입니다.
+ */
+export class XlsxSourceText {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * ZIP XML을 순차적으로 읽어 전체 본문을 만들거나 명시적인 실패를 반환합니다.
+     */
+    constructor(bytes: Uint8Array);
+    /**
+     * 빈 문자열은 전체 추출 성공이며 나머지는 안정적인 실패 코드입니다.
+     */
+    reason(): string;
+    /**
+     * 작은 구간 메타데이터만 JSON으로 전달합니다.
+     */
+    segments_json(): string;
+    /**
+     * UTF-8 본문을 한 번만 이동하며 WASM 내부에 복사본을 남기지 않습니다.
+     */
+    take_text_bytes(): Uint8Array;
+}
+
+/**
  * retrieval source score/rank를 source-aware RAG relevance 계산 입력으로 요약한다.
  */
 export function analyze_retrieval_sources(source_codes: Uint8Array, source_scores: Float64Array, source_ranks: Float64Array): Float64Array;
@@ -334,6 +358,11 @@ export function is_whole_vault_research_intent(question: string): boolean;
 export function local_model_range_matches(start: number, end: number, total: number, status: number, length: number, content_range: string): boolean;
 
 /**
+ * 저장된 MCP 설정을 로컬·원격 공통 내부 형식으로 마이그레이션한다.
+ */
+export function migrate_stored_mcp_servers_json(input: string): string;
+
+/**
  * 확장자 문자열을 RAG 제외 설정 계약에 맞게 정규화한다.
  */
 export function normalize_exclude_extension_json(extension: string): string;
@@ -347,6 +376,11 @@ export function normalize_mcp_tool_result_json(result_json: string): string;
  * 구조화 reasoning과 태그 reasoning을 병합해 content/reasoning을 만들고 JSON으로 반환한다.
  */
 export function normalize_reasoning_chunk_json(content: string, reasoning: string): string;
+
+/**
+ * 스트림 간 미완성 태그만 보관하며 공백과 Unicode를 그대로 전달한다.
+ */
+export function normalize_reasoning_stream_json(state: string, content: string, reasoning: string, done: boolean): string;
 
 /**
  * 도구 입력 경로에서 `[[...]]` 표기와 별칭·heading·URL 인코딩을 벗겨낸 `JSON` 문자열을 반환한다.
@@ -1017,6 +1051,7 @@ export interface InitOutput {
     readonly __wbg_bm25runtimeindex_free: (a: number, b: number) => void;
     readonly __wbg_ivfruntimeindex_free: (a: number, b: number) => void;
     readonly __wbg_vectorruntimeindex_free: (a: number, b: number) => void;
+    readonly __wbg_xlsxsourcetext_free: (a: number, b: number) => void;
     readonly analyze_retrieval_sources: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly assign_vector_clusters: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly bm25_score_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
@@ -1077,9 +1112,11 @@ export interface InitOutput {
     readonly ivfruntimeindex_query: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly ivfruntimeindex_row_count: (a: number) => number;
     readonly local_model_range_matches: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
+    readonly migrate_stored_mcp_servers_json: (a: number, b: number) => [number, number];
     readonly normalize_exclude_extension_json: (a: number, b: number) => [number, number];
     readonly normalize_mcp_tool_result_json: (a: number, b: number) => [number, number];
     readonly normalize_reasoning_chunk_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly normalize_reasoning_stream_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly normalize_vault_link_target_json: (a: number, b: number) => [number, number];
     readonly parse_mcp_tool_arguments_json: (a: number, b: number) => [number, number];
     readonly parse_mention_candidates_json: (a: number, b: number) => [number, number];
@@ -1211,6 +1248,10 @@ export interface InitOutput {
     readonly vectorruntimeindex_rank_top_k: (a: number, b: number, c: number, d: number) => [number, number];
     readonly vectorruntimeindex_rank_top_k_filtered: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly vectorruntimeindex_row_count: (a: number) => number;
+    readonly xlsxsourcetext_new: (a: number, b: number) => number;
+    readonly xlsxsourcetext_reason: (a: number) => [number, number];
+    readonly xlsxsourcetext_segments_json: (a: number) => [number, number];
+    readonly xlsxsourcetext_take_text_bytes: (a: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
