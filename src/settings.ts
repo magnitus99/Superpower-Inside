@@ -112,34 +112,49 @@ import {
 } from './settings-overview';
 import { type AppLogger, type LoggerConfig } from './utils/logger';
 interface StandardMcpServerEntry {
-  command: string;
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  url?: string;
+  transport?: 'stdio' | 'http' | 'sse';
+  authTokenSecret?: string;
 }
 interface StandardMcpConfig {
   mcpServers: Record<string, StandardMcpServerEntry>;
 }
 export function internalToStandard(servers: MCPServerConfig[]): StandardMcpConfig {
-  const mcpServers: Record<string, StandardMcpServerEntry> = {};
-  for (const s of servers) {
-    const entry: StandardMcpServerEntry = { command: s.command };
-    if (s.args !== undefined && s.args.length > 0) entry.args = s.args;
-    if (s.env !== undefined && Object.keys(s.env).length > 0) entry.env = s.env;
-    mcpServers[s.name] = entry;
-  }
+  const mcpServers = Object.fromEntries(
+    servers.map((s): [string, StandardMcpServerEntry] => {
+      const entry: StandardMcpServerEntry = { command: s.command };
+      if (s.url) {
+        delete entry.command;
+        entry.url = s.url;
+        entry.transport = s.transport ?? 'http';
+        if (s.authTokenSecret) entry.authTokenSecret = s.authTokenSecret;
+      } else {
+        if (s.transport === 'stdio') entry.transport = s.transport;
+        if (s.args !== undefined && s.args.length > 0) entry.args = s.args;
+        if (s.env !== undefined && Object.keys(s.env).length > 0) entry.env = s.env;
+      }
+      return [s.name, entry];
+    }),
+  );
   return { mcpServers };
 }
 export function buildMcpJsonEditorValue(servers: MCPServerConfig[]): string {
   return JSON.stringify(internalToStandard(servers), null, 2);
 }
-function standardToInternal(standard: StandardMcpConfig): MCPServerConfig[] {
+export function standardToInternal(standard: StandardMcpConfig): MCPServerConfig[] {
   const result: MCPServerConfig[] = [];
   for (const [name, cfg] of Object.entries(standard.mcpServers)) {
     result.push({
       name,
-      command: cfg.command,
+      command: cfg.command ?? '',
       args: cfg.args,
       env: cfg.env,
+      url: cfg.url,
+      transport: cfg.transport,
+      authTokenSecret: cfg.authTokenSecret,
     });
   }
   return result;
@@ -402,6 +417,9 @@ export interface MCPServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  url?: string;
+  transport?: 'stdio' | 'http' | 'sse';
+  authTokenSecret?: string;
 }
 export type BuiltInEmbeddingProviderKey =
   | 'ternlight'
@@ -5097,7 +5115,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       for (const server of servers) {
         new Setting(list)
           .setName(server.name)
-          .setDesc(server.command)
+          .setDesc(server.url ?? server.command)
           .addButton((button) =>
             button
               .setButtonText(t('settingsEditServer'))
@@ -7219,7 +7237,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         const error = registry?.getLastError(server.name);
         this.createSettingsStatusRow(list, {
           label: server.name,
-          value: server.command,
+          value: server.url ?? server.command,
           statusLabel: labelText,
           detail: error ?? t('mcpStatusServerDetail'),
           tone:

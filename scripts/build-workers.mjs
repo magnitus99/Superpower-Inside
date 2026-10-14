@@ -10,6 +10,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workers = [
   ['rag/bm25', 'bm25', 'BM25'],
   ['rag/vector-search', 'vector-search', 'VECTOR_SEARCH'],
+  ['rag/xlsx', 'xlsx', 'XLSX'],
   ['llm/ternlight', 'ternlight', 'TERNLIGHT'],
 ];
 

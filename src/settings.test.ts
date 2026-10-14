@@ -39,6 +39,7 @@ import {
   buildEmbeddingModels,
   buildEmbeddingProviderOptions,
   buildMcpJsonEditorValue,
+  standardToInternal,
   buildChatModelOptions,
   buildEmbeddingProfileModelOptions,
   buildProviderModelRef,
@@ -59,6 +60,9 @@ import {
 } from './settings';
 import { CONTEXT7_MCP_SERVER_NAME, shouldShowPluginAwareContext7Warning } from './mcp/context7';
 import { setLanguage, t } from './i18n';
+import { validateMcpJson } from './utils/mcp-json';
+import { resolveSettingsLoadData } from './settings-storage';
+import { migrateStoredMcpServersRust } from './rag/rust-core';
 
 describe('프로바이더 모델 제거', () => {
   const setup = () => {
@@ -1343,6 +1347,69 @@ describe('RAG 설정 표시 헬퍼', () => {
 
   it('명시적으로 빈 MCP 서버 목록을 저장한 경우 JSON 편집기 값도 빈 객체로 유지한다', () => {
     expect(buildMcpJsonEditorValue([])).toBe(JSON.stringify({ mcpServers: {} }, null, 2));
+  });
+
+  it('Claude Desktop의 로컬 JSON과 원격 서버를 함께 저장·복원하고 선택한 접속 방식을 유지한다', () => {
+    const config = {
+      mcpServers: {
+        local: {
+          command: '/synthetic/path with spaces/node',
+          args: ['server.js', '한글 경로'],
+          env: { SYNTHETIC_OPTION: 'value' },
+        },
+        explicit: { command: 'node', transport: 'stdio' as const },
+        remote: {
+          url: 'https://example.com/mcp',
+          transport: 'http' as const,
+          authTokenSecret: 'mcp-synthetic',
+        },
+        legacy: { url: 'http://127.0.0.1:8080/sse', transport: 'sse' as const },
+      },
+    };
+    expect(validateMcpJson(JSON.stringify(config))).toEqual({ valid: true, data: config });
+    const servers = standardToInternal(config);
+    const stored: unknown = JSON.parse(JSON.stringify({ mcpServers: servers }));
+    const loaded = resolveSettingsLoadData(null, stored);
+    const migrated = migrateStoredMcpServersRust(loaded.raw.mcpServers);
+    expect(migrated).toEqual(
+      servers.map((server) =>
+        Object.fromEntries(Object.entries(server).filter(([, value]) => value !== undefined)),
+      ),
+    );
+    expect(migrateStoredMcpServersRust(migrated)).toEqual(migrated);
+    expect(JSON.parse(buildMcpJsonEditorValue(migrated ?? []))).toEqual(config);
+  });
+
+  it.each(['__proto__', 'constructor', 'toString', '한글 서버 이름'])(
+    '서버 이름 %s를 JSON 왕복 중 잃지 않는다',
+    (name) => {
+      const config = { mcpServers: Object.fromEntries([[name, { command: 'node' }]]) };
+      expect(validateMcpJson(JSON.stringify(config)).valid).toBe(true);
+      const servers = standardToInternal(config);
+      expect(JSON.parse(buildMcpJsonEditorValue(servers))).toEqual(config);
+      expect(Object.getPrototypeOf({})).toBe(Object.prototype);
+    },
+  );
+
+  it('원격 MCP JSON은 URL·연결 방식·비밀값 이름만 보존한다', () => {
+    const servers = [
+      {
+        name: 'remote',
+        command: '',
+        url: 'https://example.com/mcp',
+        transport: 'sse' as const,
+        authTokenSecret: 'mcp-synthetic',
+      },
+    ];
+    expect(JSON.parse(buildMcpJsonEditorValue(servers))).toEqual({
+      mcpServers: {
+        remote: {
+          url: 'https://example.com/mcp',
+          transport: 'sse',
+          authTokenSecret: 'mcp-synthetic',
+        },
+      },
+    });
   });
 
   it('플러그인 인식 생성이 켜졌고 Context7가 없거나 연결되지 않았을 때 경고한다', () => {

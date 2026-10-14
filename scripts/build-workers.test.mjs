@@ -20,6 +20,7 @@ it('작업 디렉터리와 무관하게 worker를 생성하고 Electron에서도
   const workers = [
     ['rag/bm25', 'bm25', 'BM25'],
     ['rag/vector-search', 'vector-search', 'VECTOR_SEARCH'],
+    ['rag/xlsx', 'xlsx', 'XLSX'],
     ['llm/ternlight', 'ternlight', 'TERNLIGHT'],
   ];
   try {

@@ -1,5 +1,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { desktopFetch } from '../utils/desktop-stream';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { Buffer } from 'node:buffer';
 import { t } from '../i18n';
@@ -11,6 +15,9 @@ export interface MCPServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  url?: string;
+  transport?: 'stdio' | 'http' | 'sse';
+  authTokenSecret?: string;
 }
 
 export interface MCPClientManagerOptions {
@@ -28,7 +35,7 @@ export type MCPListedTool = Pick<Tool, 'name' | 'description' | 'inputSchema'>;
 
 export class MCPClientManager {
   private client: Client | null;
-  private transport: StdioClientTransport | null;
+  private transport: Transport | null;
   private readonly connectTimeoutMs: number;
   private readonly toolsListTimeoutMs: number;
   private toolsCache: readonly MCPListedTool[] | null = null;
@@ -50,18 +57,80 @@ export class MCPClientManager {
     return this.client !== null && this.transport !== null;
   }
 
-  async testConnection(config: MCPServerConfig): Promise<{ success: boolean; error?: string }> {
-    if (!config.command) {
+  async testConnection(
+    config: MCPServerConfig,
+    token?: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!config.command && !config.url) {
       return { success: false, error: 'Command is required' };
     }
     const tempClient = new MCPClientManager();
     try {
-      await tempClient.connectStdio(config);
+      await tempClient.connect(config, token);
       await tempClient.disconnect();
       return { success: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { success: false, error: msg };
+    }
+  }
+
+  async connect(config: MCPServerConfig, token?: string): Promise<void> {
+    await this.disconnect();
+    if (!config.url) {
+      await this.connectStdio(config);
+      return;
+    }
+    const url = new URL(config.url);
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password)
+      throw new Error('Invalid MCP HTTP endpoint');
+    if (
+      token &&
+      url.protocol !== 'https:' &&
+      !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    )
+      throw new Error('MCP authentication requires HTTPS');
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    const transport =
+      config.transport === 'sse'
+        ? new SSEClientTransport(url, { fetch: desktopFetch, requestInit: { headers } })
+        : new StreamableHTTPClientTransport(url, { fetch: desktopFetch, requestInit: { headers } });
+    const client = new Client(
+      { name: 'superpower-inside', version: '1.0.0' },
+      {
+        listChanged: {
+          tools: {
+            autoRefresh: false,
+            debounceMs: 0,
+            onChanged: () => {
+              if (this.client === client) this.invalidateToolsCache();
+            },
+          },
+        },
+      },
+    );
+    this.client = client;
+    this.transport = transport;
+    client.onclose = () => {
+      if (this.client === client) {
+        this.client = null;
+        this.transport = null;
+        this.invalidateToolsCache();
+      }
+    };
+    try {
+      await withTimeout(
+        client.connect(transport),
+        this.connectTimeoutMs,
+        `MCP HTTP connection timed out after ${this.connectTimeoutMs}ms`,
+      );
+    } catch (error) {
+      if (this.client === client) await this.disconnect().catch(() => {});
+      // 원격 서버가 응답에 인증 정보를 반사해도 사용자 화면에 노출하지 않는다.
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        String(redactLogValue(token ? message.split(token).join('[REDACTED]') : message)),
+      );
     }
   }
 
@@ -156,6 +225,17 @@ export class MCPClientManager {
     this.invalidateToolsCache();
     this.client = null;
     this.transport = null;
+    if (transport instanceof StreamableHTTPClientTransport && transport.sessionId) {
+      try {
+        await withTimeout(
+          transport.terminateSession(),
+          this.connectTimeoutMs,
+          'MCP session termination timed out',
+        );
+      } catch {
+        // 서버의 종료 실패와 관계없이 아래에서 로컬 연결과 대기 요청을 해제한다.
+      }
+    }
     if (client) {
       await client.close();
       return;
