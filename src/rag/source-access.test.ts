@@ -259,6 +259,26 @@ describe('readSourceText', () => {
     },
   );
 
+  it('여러 슬라이드의 본문과 출처 줄이 WASM을 통과한 뒤에도 일치한다', async () => {
+    const bodies = ['합성 첫 줄\nSynthetic line', '日本語 😀', 'Third section'];
+    const entries = bodies.map((body, index): readonly [string, string] => [
+      `ppt/slides/slide${index + 1}.xml`,
+      `<p:sld>${body
+        .split('\n')
+        .map((line) => `<a:p><a:t>${line}</a:t></a:p>`)
+        .join('')}</p:sld>`,
+    ]);
+    const source = await readSourceText(
+      createVault(buildStoredZip(entries)),
+      createFile('synthetic/slides.pptx'),
+    );
+    const lines = source.text.split('\n');
+    expect(source.segments).toHaveLength(bodies.length);
+    source.segments.forEach((segment, index) => {
+      expect(lines.slice(segment.startLine, segment.endLine + 1).join('\n')).toBe(bodies[index]);
+    });
+  });
+
   it.each(DOCUMENT_CASES)(
     '$extension의 손상된 컨테이너는 텍스트 읽기로 대체하지 않는다',
     async ({ extension }) => {
