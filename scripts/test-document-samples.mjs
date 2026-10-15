@@ -99,9 +99,14 @@ for (const entry of await readdir(directory, { withFileTypes: true })) {
         'xml-token-budget',
         'time-budget',
         'worker-failed',
+        'ocr-required',
       ].find((code) => error.message === code) ?? 'extraction';
     row.reasons[reason] = (row.reasons[reason] ?? 0) + 1;
-    failures++;
+    if (reason === 'ocr-required') {
+      row.deferred = (row.deferred ?? 0) + 1;
+    } else {
+      failures++;
+    }
   }
   summary.set(extension, row);
 }
@@ -146,6 +151,13 @@ async function extractXlsx(bytes) {
 }
 assert(summary.size > 0, '지원 형식의 예시 파일이 없습니다.');
 console.log(JSON.stringify(Object.fromEntries(summary), null, 2));
+const deferred = [...summary.values()].reduce((total, row) => total + (row.deferred ?? 0), 0);
+if (deferred > 0) {
+  // 본문·파일명 없이 환경 한계만 알리고, 실제 검수는 브라우저·앱 검사로 안내합니다.
+  console.error(
+    `OCR이 필요한 문서 ${deferred}개는 Node에서 완결할 수 없어 보류했습니다(ocr-required). 실제 런타임 검사는 scripts/test-pdf-ocr.mjs를 사용하세요.`,
+  );
+}
 process.exitCode = failures > 0 ? 1 : 0;
 
 /** 실제 배포 PDF worker를 사용하며 OCR 자산 요청은 별도 검증으로 남깁니다. */
@@ -167,7 +179,8 @@ async function extractPdf(bytes) {
       worker.on('message', (message) => {
         if (message.kind === 'progress') return;
         clearTimeout(timer);
-        if (message.kind) reject(new Error('ocr-unavailable'));
+        // Node에는 렌더 캔버스가 없어 OCR·이미지 캔버스가 필요한 문서를 완결할 수 없습니다.
+        if (message.kind) reject(new Error('ocr-required'));
         else accept(message);
       });
       worker.once('error', (error) => {
