@@ -123,6 +123,7 @@ import {
 import { shouldAppendMcpPathHint } from './src/mcp/errors';
 import { getMcpDesktopOnlyMessage, isMcpStdioAvailable } from './src/mcp/platform';
 import { isLocalizedValue, resolveUiLanguage, setLanguage, t } from './src/i18n';
+import { PluginUpdateChecker, UPDATE_CHECK_INTERVAL_MS } from './src/plugin-update';
 import { RefreshBus } from './src/utils/refresh-bus';
 import {
   loadLocalSettings,
@@ -323,6 +324,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   eventDrivenRagStats: RagStatusSummary | null = null;
   private statsDebounceTimer: number | null = null;
   refreshBus: RefreshBus = new RefreshBus();
+  updateChecker: PluginUpdateChecker | null = null;
   private agentDiagnosticsService: AgentDiagnosticsService | null = null;
 
   async onload(): Promise<void> {
@@ -452,7 +454,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       callback: () => this.openAgentDiagnosticsView(),
     });
     // 설정 탭
-    this.addSettingTab(new SuperpowerInsideSettingTab(this.app, this));
+    const settingsTab = new SuperpowerInsideSettingTab(this.app, this);
+    this.addSettingTab(settingsTab);
+    this.startPluginUpdateCheck(settingsTab);
     this.startDeferredStartupTasks();
     if (this.settings.agentDiagnostics.enabled) {
       void this.agentDiagnosticsService?.writeNow('startup');
@@ -494,10 +498,31 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
     }
     this.mcpConnectionRunId++;
+    this.updateChecker?.dispose();
+    this.updateChecker = null;
     this.clearMcpRetryTimers();
     this.clearRAG();
     this.refreshBus.destroy();
     this.getLogger().info('Plugin unloaded.', { source: 'lifecycle' });
+  }
+
+  /**
+   * 릴리스 확인을 시작합니다. 시작할 때 한 번 조회하고, 이후 하루 간격으로만 다시 확인합니다.
+   * 확인기는 하루가 지나기 전의 호출을 건너뛰므로 타이머는 실제 조회를 만들지 않습니다.
+   */
+  private startPluginUpdateCheck(settingsTab: SuperpowerInsideSettingTab): void {
+    this.updateChecker = new PluginUpdateChecker(
+      this.app,
+      this.manifest.version,
+      this.getLogger(),
+      () => settingsTab.refreshUpdateNotice(),
+    );
+    this.registerInterval(
+      window.setInterval(() => {
+        void this.updateChecker?.check();
+      }, UPDATE_CHECK_INTERVAL_MS),
+    );
+    void this.updateChecker.check();
   }
 
   private startDeferredStartupTasks(): void {
