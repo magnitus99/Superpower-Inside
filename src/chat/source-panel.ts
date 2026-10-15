@@ -662,6 +662,49 @@ export class SourcePanel {
     const citationsById = new Map(citations.map((citation) => [citation.id, citation]));
     const pattern = new RegExp(`\\b(${ids.map(escapeRegExp).join('|')})\\b`, 'g');
     const doc = container.ownerDocument;
+    const createMarker = (citation: SourceCitation): HTMLAnchorElement => {
+      const view = createCitationMarkerView(citation);
+      const marker = doc.createElement('a');
+      marker.addClass('superpower-inside-chat-citation-marker', 'internal-link');
+      const target = citation.filePath + (citation.heading ? `#${citation.heading}` : '');
+      marker.setAttribute('href', target);
+      marker.setAttribute('data-href', target);
+      marker.setAttribute('data-citation-id', citation.id);
+      marker.setAttribute('aria-label', view.ariaLabel);
+      marker.setText(view.label);
+      marker.addEventListener('click', (event) => {
+        event.preventDefault();
+        void this.handlers.openCitation(citation);
+      });
+      marker.addEventListener('focus', () =>
+        this.setCitationHighlight(container, citation.id, true),
+      );
+      marker.addEventListener('blur', () =>
+        this.setCitationHighlight(container, citation.id, false),
+      );
+      marker.addEventListener('mouseenter', () =>
+        this.setCitationHighlight(container, citation.id, true),
+      );
+      marker.addEventListener('mouseleave', () =>
+        this.setCitationHighlight(container, citation.id, false),
+      );
+      return marker;
+    };
+    const inlineSources = new Map<string, SourceCitation>();
+    for (const citation of citations) {
+      for (const label of [
+        citation.id,
+        citation.filePath,
+        ...(citation.heading ? [`${citation.filePath}#${citation.heading}`] : []),
+      ]) {
+        if (!inlineSources.has(label)) inlineSources.set(label, citation);
+      }
+    }
+    for (const code of Array.from(bubble.querySelectorAll('code'))) {
+      if (code.closest('pre, a')) continue;
+      const citation = inlineSources.get(code.textContent ?? '');
+      if (citation) code.replaceWith(createMarker(citation));
+    }
     const walker = doc.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
     let node: Node | null;
@@ -687,29 +730,7 @@ export class SourcePanel {
         const citationId = match[1] ?? '';
         const citation = citationsById.get(citationId);
         if (!citation) continue;
-        const view = createCitationMarkerView(citation);
-        const marker = doc.createElement('a');
-        marker.addClass('superpower-inside-chat-citation-marker');
-        marker.setAttribute('href', '#');
-        marker.setAttribute('data-citation-id', citationId);
-        marker.setAttribute('aria-label', view.ariaLabel);
-        marker.setText(view.label);
-        marker.addEventListener('click', (event) => {
-          event.preventDefault();
-          void this.handlers.openCitation(citation);
-        });
-        marker.addEventListener('focus', () =>
-          this.setCitationHighlight(container, citationId, true),
-        );
-        marker.addEventListener('blur', () =>
-          this.setCitationHighlight(container, citationId, false),
-        );
-        marker.addEventListener('mouseenter', () =>
-          this.setCitationHighlight(container, citationId, true),
-        );
-        marker.addEventListener('mouseleave', () =>
-          this.setCitationHighlight(container, citationId, false),
-        );
+        const marker = createMarker(citation);
         fragments.push(marker);
         lastIndex = pattern.lastIndex;
       }
