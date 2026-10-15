@@ -1,6 +1,5 @@
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { Readable } from 'node:stream';
 import { createParser } from 'eventsource-parser';
 
 /** 완료 이벤트 없이 닫힌 스트림을 다른 provider 오류와 구분합니다. */
@@ -17,6 +16,43 @@ export function streamHeaders(headers: HeadersInit | undefined): Record<string, 
     result[key] = value;
   });
   return result;
+}
+
+/**
+ * Node 소켓을 현재 realm의 ReadableStream으로 옮긴다.
+ * 다른 realm의 스트림을 Response 본문으로 넘기면 렌더러가 본문을 문자열로 강제해 바이트를 잃는다.
+ */
+function socketBody(incoming: IncomingMessage): ReadableStream<Uint8Array> {
+  let paused = false;
+  let cancelled = false;
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      incoming.on('data', (chunk: Buffer) => {
+        if (cancelled) return;
+        controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+        if ((controller.desiredSize ?? 1) <= 0 && !paused) {
+          paused = true;
+          incoming.pause();
+        }
+      });
+      incoming.on('end', () => {
+        if (!cancelled) controller.close();
+      });
+      incoming.on('error', (error: Error) => {
+        if (!cancelled) controller.error(error);
+      });
+    },
+    pull() {
+      if (paused) {
+        paused = false;
+        incoming.resume();
+      }
+    },
+    cancel() {
+      cancelled = true;
+      incoming.destroy();
+    },
+  });
 }
 
 /** 데스크톱 스트림 I/O. 쿠키와 리디렉션을 사용하지 않고 취소 시 소켓을 닫는다. */
@@ -41,7 +77,7 @@ export async function desktopFetch(input: string | URL, init?: RequestInit): Pro
         const empty = [204, 205, 304].includes(status) || init?.method === 'HEAD';
         if (empty) incoming.resume();
         resolve(
-          new Response(empty ? null : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>), {
+          new Response(empty ? null : socketBody(incoming), {
             status,
             headers: responseHeaders,
           }),
