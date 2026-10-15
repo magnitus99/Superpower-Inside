@@ -123,6 +123,45 @@ describe('데스크톱 스트림 I/O 계약', () => {
     },
   );
 
+  it('다른 realm의 stream을 문자열로 강제하는 렌더러에서도 본문 바이트를 보존한다', async () => {
+    const url = await serve((response) => response.end('data: first\n\ndata: done\n\n'));
+    // Chromium은 자기 realm의 ReadableStream만 Response 본문으로 받아들이고 나머지는 문자열로 바꾼다.
+    class AmbientStream extends ReadableStream<Uint8Array> {}
+    class ChromiumLikeResponse {
+      readonly body: ReadableStream<Uint8Array> | null;
+      constructor(body: unknown) {
+        if (body == null) {
+          this.body = null;
+          return;
+        }
+        this.body =
+          body instanceof AmbientStream
+            ? body
+            : new AmbientStream({
+                start(controller) {
+                  // 실제 브라우저는 다른 realm의 스트림을 USVString으로 강제한다.
+                  controller.enqueue(
+                    new TextEncoder().encode(Object.prototype.toString.call(body)),
+                  );
+                  controller.close();
+                },
+              });
+      }
+    }
+    vi.stubGlobal('ReadableStream', AmbientStream);
+    vi.stubGlobal('Response', ChromiumLikeResponse);
+    try {
+      const values: string[] = [];
+      await consumeDesktopStream(await desktopFetch(url), 'sse', (data) => {
+        values.push(data);
+        return data === 'done';
+      });
+      expect(values).toEqual(['first', 'done']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('요청 전 취소와 헤더 대기 중 취소를 AbortError로 전달한다', async () => {
     const controller = new AbortController();
     controller.abort();
