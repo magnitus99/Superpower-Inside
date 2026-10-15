@@ -398,6 +398,48 @@
   margin-bottom: 12px;
 }
 
+/* 설정 맨 앞 새 버전 안내: 주의 색으로 알리고 모든 탭 위에 표시합니다. */
+.superpower-inside-settings-update {
+  display: none;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(var(--color-orange-rgb), 0.35);
+  border-radius: 8px;
+  background: rgba(var(--color-orange-rgb), 0.08);
+  color: var(--text-warning);
+  line-height: 1.45;
+}
+
+.superpower-inside-settings-update.is-visible {
+  display: flex;
+}
+
+.superpower-inside-settings-update-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.superpower-inside-settings-update-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.superpower-inside-settings-update-title {
+  font-size: var(--superpower-inside-type-label);
+  font-weight: var(--superpower-inside-weight-label);
+  text-wrap: balance;
+}
+
+.superpower-inside-settings-update-detail {
+  font-size: var(--superpower-inside-type-detail);
+  text-wrap: pretty;
+}
+
 /* 설정 탭 */
 .superpower-inside-settings-tabs {
   display: flex;

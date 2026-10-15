@@ -1,5 +1,11 @@
 import { requestUrl } from 'obsidian';
-import { desktopFetch, consumeDesktopStream, streamHeaders } from '../utils/desktop-stream';
+import {
+  desktopFetch,
+  consumeDesktopStream,
+  streamHeaders,
+  DesktopStreamIncompleteError,
+} from '../utils/desktop-stream';
+import { appLogger } from '../utils/logger';
 import { t } from '../i18n';
 import { prepareProviderRequest } from './request-budget';
 import { planChatGPTRust, planProviderModelDetailsRust } from '../rag/rust-core';
@@ -193,13 +199,33 @@ export class ChatGPTProvider implements LLMProvider {
       toolChoice: this.capability.toolCalling ? options?.toolChoice : 'none',
     });
     if (!body) throw new Error(t('chatGPTResponseInvalid'));
-    const response = await authenticatedRequest(
-      this.profileId,
-      'responses',
-      JSON.stringify(body),
-      options?.signal,
-      onData,
-    );
+    const send = () =>
+      authenticatedRequest(
+        this.profileId,
+        'responses',
+        JSON.stringify(body),
+        options?.signal,
+        onData,
+      );
+    let response;
+    try {
+      response = await send();
+    } catch (error) {
+      throwIfAborted(options?.signal);
+      const partial = emitted?.();
+      // 출력 전 EOF만 한 번 재시도합니다. 부분 답변·추론을 중복 전송하지 않습니다.
+      if (
+        !(error instanceof DesktopStreamIncompleteError) ||
+        !partial ||
+        partial.content ||
+        partial.reasoning
+      )
+        throw error;
+      appLogger.warn('ChatGPT stream ended before output; retrying once.', {
+        source: 'llm.chatgpt.stream',
+      });
+      response = await send();
+    }
     const result = planChatGPTRust<StreamChunk & { model?: string }>({
       operation: emitted ? 'stream-tail' : 'response',
       text: response.text,

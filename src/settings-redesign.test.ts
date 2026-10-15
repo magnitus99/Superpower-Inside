@@ -309,6 +309,57 @@ describe('설정 화면 리디자인 구조', () => {
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
 
+  it('설정 맨 앞에서 새 버전 안내를 보여주고 하루에 한 번만 릴리스를 확인한다', () => {
+    const viewStart = settingsSource.indexOf('private renderSettingsView(): void {');
+    const viewEnd = settingsSource.indexOf(
+      'private unregisterRefreshBusSubscriptions',
+      viewStart,
+    );
+    const view = settingsSource.slice(viewStart, viewEnd);
+    expect(viewStart).toBeGreaterThanOrEqual(0);
+    expect(view.indexOf('superpower-inside-settings-update')).toBeGreaterThanOrEqual(0);
+    expect(view.indexOf('superpower-inside-settings-update')).toBeLessThan(
+      view.indexOf('superpower-inside-settings-tabs'),
+    );
+    expect(view).toContain('this.refreshUpdateNotice()');
+    expect(settingsSource).toContain('updateChecker?.available');
+    expect(settingsSource).toContain("setIcon(icon, 'download')");
+    const noticeStart = settingsSource.indexOf('refreshUpdateNotice(): void {');
+    const notice = settingsSource.slice(
+      noticeStart,
+      settingsSource.indexOf('private refreshGeneralStatusSection', noticeStart),
+    );
+    expect(noticeStart).toBeGreaterThanOrEqual(0);
+    expect(notice).toContain('settingsUpdateTitle');
+    expect(notice).toContain('settingsUpdateDetail');
+    expect(notice).toContain('is-visible');
+    // 설정 안내는 토스트 토글과 무관하게 항상 표시됩니다.
+    expect(notice).not.toContain('noticeEnabled');
+    // Essentials에 토스트 토글이 업데이트 확인기에 연결되어 있어야 합니다.
+    const basicsStart = settingsSource.indexOf('private buildGeneralBasicsSection');
+    const basics = settingsSource.slice(
+      basicsStart,
+      settingsSource.indexOf('\n  private handlePluginDataReset', basicsStart),
+    );
+    expect(basicsStart).toBeGreaterThanOrEqual(0);
+    expect(basics).toContain('settingsUpdateNoticeLabel');
+    expect(basics).toContain('noticeEnabled');
+    expect(basics).toContain('setNoticeEnabled');
+
+    const startMethod = mainSource.indexOf('private startPluginUpdateCheck(');
+    const startMethodEnd = mainSource.indexOf('\n  private startDeferredStartupTasks', startMethod);
+    const start = mainSource.slice(startMethod, startMethodEnd);
+    expect(startMethod).toBeGreaterThanOrEqual(0);
+    expect(start).toContain('new PluginUpdateChecker(');
+    expect(start).toContain('UPDATE_CHECK_INTERVAL_MS');
+    expect(start).toContain('settingsTab.refreshUpdateNotice()');
+    expect(mainSource).toContain('this.updateChecker?.dispose()');
+
+    expect(styles).toMatch(/\.superpower-inside-settings-update \{[^}]*display: none;/u);
+    expect(styles).toMatch(/[\s\S]*\.superpower-inside-settings-update \{[^}]*color: var\(--text-warning\);/u);
+    expect(styles).toContain('.superpower-inside-settings-update.is-visible');
+  });
+
   it('General 탭은 metric dashboard와 수동 새로고침을 제거한다', () => {
     const methodStart = settingsSource.indexOf('private buildGeneralTab(containerEl: HTMLElement)');
     const methodEnd = settingsSource.indexOf('\n  private buildGeneralStatusSection', methodStart);

@@ -20,6 +20,7 @@ describe('Chat error recovery actions', () => {
     expect(classifyChatError('401 invalid api key')).toBe('auth');
     expect(classifyChatError('429 rate limit exceeded')).toBe('rate-limit');
     expect(classifyChatError('fetch failed ECONNRESET')).toBe('network');
+    expect(classifyChatError('HTTP stream ended before completion')).toBe('network');
     expect(classifyChatError('tool not found: search_notes')).toBe('tool-not-found');
     expect(classifyChatError('context build failed while reading RAG')).toBe('context-build');
   });

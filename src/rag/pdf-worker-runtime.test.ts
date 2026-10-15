@@ -49,6 +49,8 @@ describe('PDF worker bundle', () => {
         id: 1,
         ok: true,
         pageCount: 2,
+        // 저신뢰로 건너뛴 스캔 페이지가 없으면 0입니다.
+        lowConfidencePages: 0,
         text: 'First page body text\n\nSecond page body text',
         segments: [
           { label: 'Page 1', startLine: 0, endLine: 0 },

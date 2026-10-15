@@ -15,7 +15,7 @@ export function isCopyPath(file) {
   if (/(^|\/)AGENTS\.md$/i.test(file)) return false;
   return (
     copyDocuments.has(file) ||
-    /^(marketing|copy|releases)\/.*\.(md|mdx|txt|rst|adoc)$/i.test(file) ||
+    /^(marketing|copy)\/.*\.(md|mdx|txt|rst|adoc)$/i.test(file) ||
     ['package.json', 'manifest.json'].includes(file)
   );
 }

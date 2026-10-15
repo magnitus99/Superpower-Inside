@@ -37,7 +37,12 @@ export function classifyChatError(detail: string): ChatErrorKind {
   if (/\b(401|403|unauthorized|forbidden|api key|auth)\b/.test(normalized)) return 'auth';
   if (/\b(429|rate limit|too many requests)\b/.test(normalized)) return 'rate-limit';
   if (/\b(timeout|timed out|abort timeout)\b/.test(normalized)) return 'timeout';
-  if (/\b(network|fetch failed|econnreset|enotfound|offline)\b/.test(normalized)) return 'network';
+  if (
+    /\b(network|fetch failed|econnreset|enotfound|offline|stream ended before completion)\b/.test(
+      normalized,
+    )
+  )
+    return 'network';
   if (/\b(tool not found|unknown tool)\b/.test(normalized)) return 'tool-not-found';
   if (/\b(tool|mcp).*\b(failed|error)\b/.test(normalized)) return 'tool-failed';
   if (/\b(context|rag).*\b(failed|error|unavailable)\b/.test(normalized)) return 'context-build';

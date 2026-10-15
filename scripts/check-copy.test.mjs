@@ -33,12 +33,13 @@ describe('홍보 문구 검사 계약', () => {
       'README.md',
       'marketing/launch.md',
       'copy/homepage.md',
-      'releases/2.3.0.md',
       'manifest.json',
       'package.json',
     ])
       expect(isCopyPath(file)).toBe(true);
     for (const file of [
+      'releases/2.3.0.md',
+      'releases/3.3.0.mdx',
       'AGENTS.md',
       'docs/AGENTS.md',
       'src/chat/AGENTS.md',

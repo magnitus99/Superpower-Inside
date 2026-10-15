@@ -77,6 +77,47 @@ function frames(strategy: ProviderStrategyKey): [string, string] {
 }
 
 describe('모든 채팅 provider의 실제 스트림 경로', () => {
+  it('ChatGPT는 출력 전 EOF만 한 번 재시도하고 반복 실패는 그대로 반환한다', async () => {
+    let requests = 0;
+    await serve((response) => {
+      requests++;
+      response.end(
+        requests === 1
+          ? ''
+          : completedChatGPTResponse([
+              { type: 'message', content: [{ type: 'output_text', text: 'recovered' }] },
+            ]),
+      );
+    });
+    const chunks: StreamChunk[] = [];
+    await provider('openAIChatGPT').streamChat([], (chunk) => chunks.push(chunk));
+    expect(requests).toBe(2);
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe('recovered');
+    expect(chunks.filter((chunk) => chunk.done)).toHaveLength(1);
+    requests = 0;
+    await serve((response) => {
+      requests++;
+      response.end();
+    });
+    await expect(provider('openAIChatGPT').streamChat([], () => {})).rejects.toThrow(
+      'before completion',
+    );
+    expect(requests).toBe(2);
+  });
+
+  it('ChatGPT의 대체 완료 이벤트도 도구 호출과 본문을 한 번만 전달한다', async () => {
+    const completed = completedChatGPTResponse([
+      { type: 'message', content: [{ type: 'output_text', text: '한글 😀' }] },
+      { type: 'function_call', call_id: 'call-1', name: 'search', arguments: '{}' },
+    ]).replace('response.completed', 'response.done');
+    await serve((response) => response.end(frames('openAIChatGPT')[0] + completed));
+    const chunks: StreamChunk[] = [];
+    await provider('openAIChatGPT').streamChat([], (chunk) => chunks.push(chunk));
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe('한글 😀');
+    expect(chunks.flatMap((chunk) => chunk.toolCalls ?? [])).toHaveLength(1);
+    expect(chunks.filter((chunk) => chunk.done)).toHaveLength(1);
+  });
+
   it.each(strategies)(
     '%s 잘못된 프레임과 응답 안의 오류를 성공으로 바꾸지 않는다',
     async (strategy) => {
