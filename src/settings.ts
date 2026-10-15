@@ -1,3 +1,4 @@
+import type { PluginUpdateChecker } from './plugin-update';
 import { chatGPTOAuth } from './llm/chatgpt-oauth';
 import { buildRetiredArtifactSettings } from './storage/retired-artifacts-settings';
 import type { RetiredArtifactService } from './storage/retired-artifacts';
@@ -1109,6 +1110,7 @@ export interface PluginLike {
   lastAutoUpdateSkippedReason?: string | null;
   lastAutoUpdateResult?: IndexingResult | null;
   refreshBus: import('./utils/refresh-bus').RefreshBus;
+  updateChecker?: PluginUpdateChecker | null;
   logger: AppLogger;
 }
 // 탭 타입 및 설정
@@ -1463,6 +1465,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private cancelIndexingButton: HTMLButtonElement | null = null;
   private resumeIndexingButton: HTMLButtonElement | null = null;
   private providerStatusBody: HTMLElement | null = null;
+  private updateNoticeEl: HTMLElement | null = null;
   private disposeLocalModelSettings: (() => void) | null = null;
   private disposeEmbeddingCaution: (() => void) | null = null;
   // RefreshBus 구독 해제 함수들
@@ -1649,6 +1652,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.cancelIndexingButton = null;
     this.resumeIndexingButton = null;
     this.providerStatusBody = null;
+    this.updateNoticeEl = null;
   }
   display(): void {
     this.renderSettingsView();
@@ -1711,6 +1715,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       attr: { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' },
     });
     this.renderSaveState();
+    // 새 버전 안내: 모든 탭 위, 설정 창 맨 앞에서 보입니다.
+    this.updateNoticeEl = containerEl.createDiv({
+      cls: 'superpower-inside-settings-update',
+      attr: { role: 'status', 'aria-live': 'polite' },
+    });
+    this.refreshUpdateNotice();
     // 탭 바
     const tabBar = containerEl.createDiv({ cls: 'superpower-inside-settings-tabs' });
     tabBar.setAttribute('role', 'tablist');
@@ -1847,6 +1857,30 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.refreshGeneralStatusSection();
     this.repopulateDefaultModelDropdown();
   }
+  /**
+   * 설정 창 맨 앞 새 버전 안내를 다시 그립니다.
+   * 새 릴리스가 확인된 동안에만 보이고, 열려 있지 않은 설정 창은 건너뜁니다.
+   */
+  refreshUpdateNotice(): void {
+    const containerEl = this.updateNoticeEl;
+    if (!containerEl || !containerEl.isConnected) return;
+    const outdated = this.plugin.updateChecker?.available ?? false;
+    containerEl.toggleClass('is-visible', outdated);
+    containerEl.empty();
+    if (!outdated) return;
+    const icon = containerEl.createSpan({ cls: 'superpower-inside-settings-update-icon' });
+    setIcon(icon, 'download');
+    const copy = containerEl.createDiv({ cls: 'superpower-inside-settings-update-copy' });
+    copy.createDiv({
+      cls: 'superpower-inside-settings-update-title',
+      text: t('settingsUpdateTitle'),
+    });
+    copy.createDiv({
+      cls: 'superpower-inside-settings-update-detail',
+      text: t('settingsUpdateDetail'),
+    });
+  }
+
   private refreshGeneralStatusSection(): void {
     const statusBody = this.generalStatusBody;
     if (!statusBody || !statusBody.isConnected) return;
@@ -2277,6 +2311,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.tabPanels.get('providers')?.querySelector<HTMLButtonElement>('.mod-cta')?.focus();
         }),
       );
+    // 새 버전 토스트는 하루 한 번만 보내며, 값은 업데이트 확인기 상태에 함께 저장합니다.
+    new Setting(section.body)
+      .setName(t('settingsUpdateNoticeLabel'))
+      .setDesc(t('settingsUpdateNoticeDesc'))
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.updateChecker?.noticeEnabled ?? true);
+        toggle.onChange((value) => this.plugin.updateChecker?.setNoticeEnabled(value));
+      });
   }
 
   private buildAgentDiagnosticsSection(containerEl: HTMLElement): void {

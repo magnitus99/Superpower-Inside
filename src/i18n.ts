@@ -115,6 +115,11 @@ export interface I18nKeys {
   langKo: string;
   langEn: string;
   languageChangeConfirm: string;
+  settingsUpdateAvailable: string;
+  settingsUpdateTitle: string;
+  settingsUpdateDetail: string;
+  settingsUpdateNoticeLabel: string;
+  settingsUpdateNoticeDesc: string;
   generalStatusTitle: string;
   generalStatusDesc: string;
   generalAllReady: string;
@@ -1761,6 +1766,11 @@ const ko: I18nKeys = {
   langKo: '한국어',
   langEn: 'English',
   languageChangeConfirm: '표시 언어를 변경할까요? 열린 설정 화면에 바로 적용됩니다.',
+  settingsUpdateAvailable: '새로운 기능들이 기다리고 있어요! 커뮤니티 플러그인에서 업데이트해 보세요.',
+  settingsUpdateTitle: '새로운 기능들이 기다리고 있어요!',
+  settingsUpdateDetail: '커뮤니티 플러그인에서 업데이트해 보세요',
+  settingsUpdateNoticeLabel: '업데이트 알림',
+  settingsUpdateNoticeDesc: '새 기능이 준비되면 하루에 한 번 알려드려요',
   generalStatusTitle: '현재 상태',
   generalStatusDesc: '채팅과 검색을 바로 사용할 수 있는지 확인하고 필요한 다음 행동만 안내합니다.',
   generalAllReady: '현재 바로 처리할 항목이 없습니다.',
@@ -3533,6 +3543,11 @@ const en: I18nKeys = {
   langKo: 'Korean',
   langEn: 'English',
   languageChangeConfirm: 'Change the display language? It takes effect in the open settings view.',
+  settingsUpdateAvailable: 'New features are waiting for you! Update from community plugins.',
+  settingsUpdateTitle: 'New features are waiting for you!',
+  settingsUpdateDetail: 'Update from community plugins',
+  settingsUpdateNoticeLabel: 'Update alerts',
+  settingsUpdateNoticeDesc: 'Get one heads-up a day when new features are ready',
   generalStatusTitle: 'Current status',
   generalStatusDesc:
     'See whether chat and search are ready, with only the next useful action surfaced.',
