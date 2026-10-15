@@ -144,7 +144,7 @@ describe('chat run ownership', () => {
     const handleSource = viewSource.slice(handleStart, handleEnd);
     const userMessageIndex = handleSource.indexOf("this.addMessage('user'");
     const assistantMessageIndex = handleSource.indexOf("this.addMessage(\n      'assistant'");
-    const saveIndex = handleSource.indexOf('await this.saveCurrentSession(true)', userMessageIndex);
+    const saveIndex = handleSource.indexOf('await this.saveCurrentSession()', userMessageIndex);
     const collectToolsIndex = handleSource.indexOf(
       'await this.collectToolDefinitions(',
       userMessageIndex,

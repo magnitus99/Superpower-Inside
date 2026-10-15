@@ -3,7 +3,7 @@ import { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessageWithMeta } from './types';
 import { executeMcpToolCalls, type MCPRegistryLike } from './mcp-tool-execution';
-import { listChats, loadChat, saveChat } from './persistence';
+import { listChatMetasAsync, listChats, loadChat, saveChat } from './persistence';
 import { appendAssistantToolRound } from './tool-execution';
 import { planModelContextRust } from '../rag/rust-core';
 
@@ -19,6 +19,25 @@ vi.mock('obsidian', () => {
 });
 
 describe('chat persistence', () => {
+  it('목록은 실제 수정일의 최신순이며 읽기 순서로 바뀌지 않는다', async () => {
+    const vault = createVault();
+    vault.writeFile('Chats/old.md', '---\ncreated: "2026-01-01T00:00:00.000Z"\n---\n');
+    vault.writeFile('Chats/new.md', '---\ncreated: "2026-02-01T00:00:00.000Z"\n---\n');
+    vault.writeFile(
+      'Chats/edited.md',
+      '---\ncreated: "2025-01-01T00:00:00.000Z"\nupdated: "2026-03-01T00:00:00.000Z"\n---\n',
+    );
+    const expected = ['Chats/edited.md', 'Chats/new.md', 'Chats/old.md'];
+    expect((await listChatMetasAsync(vault, 'Chats')).map((meta) => meta.filePath)).toEqual(
+      expected,
+    );
+    await loadChat(vault, 'Chats/old.md');
+    await loadChat(vault, 'Chats/new.md');
+    expect((await listChatMetasAsync(vault, 'Chats')).map((meta) => meta.filePath)).toEqual(
+      expected,
+    );
+  });
+
   it('저장된 채팅 목록은 Rust folder plan으로 폴더 내부 Markdown만 고른다', () => {
     const vault = createVault();
     vault.writeFile('Chats/a.md', 'a');
