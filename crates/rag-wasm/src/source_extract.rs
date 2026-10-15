@@ -75,6 +75,10 @@ struct ExtractedDocument {
     text: String,
     /// 구간 목록입니다.
     segments: Vec<ExtractedSegment>,
+    /// 구간 추가 경로의 문자 누계입니다. XLSX는 별도 스트리밍 예산을 씁니다.
+    text_chars: usize,
+    /// 구간 추가 시 다음 본문이 시작할 0 기반 줄입니다.
+    next_line: usize,
 }
 
 impl ExtractedDocument {
@@ -83,15 +87,8 @@ impl ExtractedDocument {
         Self {
             text: String::new(),
             segments: Vec::new(),
-        }
-    }
-
-    /// 현재 줄 수를 셉니다. 빈 본문은 `0`입니다.
-    fn line_count(&self) -> usize {
-        if self.text.is_empty() {
-            0
-        } else {
-            self.text.matches('\n').count().saturating_add(1)
+            text_chars: 0,
+            next_line: 0,
         }
     }
 
@@ -103,10 +100,14 @@ impl ExtractedDocument {
         }
         if !self.text.is_empty() {
             self.text.push_str("\n\n");
+            self.text_chars = self.text_chars.saturating_add(2);
         }
-        let start_line = self.line_count();
+        let start_line = self.next_line;
         self.text.push_str(trimmed);
-        let end_line = self.line_count().saturating_sub(1);
+        self.text_chars = self.text_chars.saturating_add(trimmed.chars().count());
+        let end_line =
+            start_line.saturating_add(trimmed.bytes().filter(|byte| *byte == b'\n').count());
+        self.next_line = end_line.saturating_add(2);
         if self.segments.len() < MAX_SEGMENTS {
             self.segments.push(ExtractedSegment {
                 label: label.to_owned(),
@@ -117,8 +118,8 @@ impl ExtractedDocument {
     }
 
     /// 텍스트 상한을 넘겼는지 확인합니다.
-    fn conflicted(&self) -> bool {
-        self.text.chars().count() >= MAX_TEXT_CHARS
+    const fn conflicted(&self) -> bool {
+        self.text_chars >= MAX_TEXT_CHARS
     }
 
     /// 구간 목록을 JSON 배열로 만듭니다.
@@ -1088,6 +1089,30 @@ mod tests {
     use super::*;
     use std::io::Write as _;
     use zip::write::SimpleFileOptions;
+
+    /// 여러 구간의 시작·끝 줄은 실제 본문 슬라이스와 일치해야 합니다.
+    #[test]
+    fn source_segments_match_actual_lines_across_languages() {
+        let mut document = ExtractedDocument::new();
+        for (label, body) in [("A", "첫 줄\n다음 줄"), ("B", "日本語 😀"), ("C", "last")]
+        {
+            document.push_segment(label, body);
+        }
+        let lines = document.text.split('\n').collect::<Vec<_>>();
+        for (segment, body) in document
+            .segments
+            .iter()
+            .zip(["첫 줄\n다음 줄", "日本語 😀", "last"])
+        {
+            assert!(segment.start_line <= segment.end_line);
+            assert_eq!(
+                lines
+                    .get(segment.start_line..=segment.end_line)
+                    .map(|slice| slice.join("\n")),
+                Some(body.to_owned())
+            );
+        }
+    }
 
     /// 압축 없이 저장한 항목으로 테스트용 zip 컨테이너를 만듭니다.
     fn build_zip(entries: &[(&str, &str)]) -> Vec<u8> {

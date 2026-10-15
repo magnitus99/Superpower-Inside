@@ -26,6 +26,7 @@ interface PdfWorkerResponse {
   segments?: PdfSourceSegment[];
   page?: number;
   pageCount?: number;
+  lowConfidencePages?: number;
 }
 interface PendingRequest {
   resolve(response: PdfWorkerResponse): void;
@@ -85,6 +86,12 @@ export async function extractPdfSourceText(
     const request: PendingRequest = {
       resolve: (response) => {
         if (response.ok) {
+          const lowConfidencePages = response.lowConfidencePages ?? 0;
+          if (lowConfidencePages > 0)
+            appLogger.warn('PDF pages skipped at low OCR confidence.', {
+              source: 'rag.pdf',
+              data: { path: file.path, pages: lowConfidencePages },
+            });
           resolve({ text: response.text ?? '', segments: response.segments ?? [] });
         } else {
           appLogger.warn('PDF source extraction failed.', {

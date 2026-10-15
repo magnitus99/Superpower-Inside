@@ -37,6 +37,8 @@ interface PdfWorkerResponse {
   text?: string;
   segments?: PdfWorkerSegment[];
   pageCount?: number;
+  /** 신뢰도 게이트로 본문에서 제외한 스캔 페이지 수입니다. */
+  lowConfidencePages?: number;
 }
 
 // pdf.js는 이 전역이 있으면 내장 worker를 같은 스레드에서 실행합니다.
@@ -93,6 +95,8 @@ async function extract(bytes: Uint8Array, id: number): Promise<Omit<PdfWorkerRes
   }).promise;
   try {
     let text = '';
+    let nextLine = 0;
+    let lowConfidencePages = 0;
     const segments: PdfWorkerSegment[] = [];
     if (document.numPages > MAX_PAGES) return { ok: false, reason: 'too-large' };
     const pageCount = document.numPages;
@@ -114,11 +118,19 @@ async function extract(bytes: Uint8Array, id: number): Promise<Omit<PdfWorkerRes
           );
         if (body.length === 0 || hasScannedBody) {
           ocr ??= await createOcrWorker(id);
-          const viewport = page.getViewport({ scale: 200 / 72 });
-          // 거대한 페이지를 축소해 글자를 잃는 대신 명시적으로 실패시킵니다.
-          if (viewport.width * viewport.height > 16_000_000)
-            return { ok: false, reason: 'too-large' };
-          const canvas = new OffscreenCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+          const original = page.getViewport({ scale: 1 });
+          // 파일 크기와 판형을 구분하고 캔버스 메모리·변 길이 안에서 최대 해상도를 씁니다.
+          const scale = Math.min(
+            200 / 72,
+            Math.sqrt(16_000_000 / (original.width * original.height)),
+            8192 / original.width,
+            8192 / original.height,
+          );
+          const viewport = page.getViewport({ scale });
+          const canvas = new OffscreenCanvas(
+            Math.max(1, Math.floor(viewport.width)),
+            Math.max(1, Math.floor(viewport.height)),
+          );
           const context = canvas.getContext('2d');
           if (!context) throw new Error('PDF canvas is unavailable.');
           try {
@@ -128,13 +140,18 @@ async function extract(bytes: Uint8Array, id: number): Promise<Omit<PdfWorkerRes
               canvasContext: context as unknown as CanvasRenderingContext2D,
               viewport,
             }).promise;
-            const image = new Uint8Array(
-              await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer(),
-            );
-            const data = await recognizePdfPage(ocr, new Blob([image], { type: 'image/png' }));
-            body = data.text.trim();
-            if (body.length > 0 && (!Number.isFinite(data.confidence) || data.confidence < 50)) {
-              return { ok: false, reason: 'ocr-low-confidence' };
+            const image = await canvas.convertToBlob({ type: 'image/png' });
+            const data = await recognizePdfPage(ocr, image);
+            const recognized = data.text.trim();
+            // 신뢰도가 낮은 페이지는 OCR 본문만 버리고 나머지 페이지 추출은 계속합니다.
+            if (
+              recognized.length > 0 &&
+              (!Number.isFinite(data.confidence) || data.confidence < 50)
+            ) {
+              lowConfidencePages += 1;
+            } else if (recognized) {
+              // OCR이 생략·오인식한 본문과 링크도 원래 텍스트 계층에서 보존합니다.
+              body = body ? `${body}\n${recognized}` : recognized;
             }
           } finally {
             canvas.width = 0;
@@ -147,12 +164,17 @@ async function extract(bytes: Uint8Array, id: number): Promise<Omit<PdfWorkerRes
       if (body.length === 0) continue;
       if (text.length + body.length + 2 > MAX_TEXT_CHARS) return { ok: false, reason: 'too-large' };
       if (text.length > 0) text += '\n\n';
-      const startLine = Math.max(0, lineCount(text) - 1);
+      const startLine = nextLine;
       text += body;
-      segments.push({ label: `Page ${pageNumber}`, startLine, endLine: lineCount(text) - 1 });
+      const endLine = startLine + lineCount(body) - 1;
+      segments.push({ label: `Page ${pageNumber}`, startLine, endLine });
+      nextLine = endLine + 2;
     }
-    if (segments.length === 0) return { ok: false, reason: 'empty' };
-    return { ok: true, text, segments, pageCount: document.numPages };
+    if (segments.length === 0)
+      return lowConfidencePages > 0
+        ? { ok: false, reason: 'ocr-low-confidence' }
+        : { ok: false, reason: 'empty' };
+    return { ok: true, text, segments, pageCount: document.numPages, lowConfidencePages };
   } finally {
     await ocr?.terminate();
     await document.destroy();
