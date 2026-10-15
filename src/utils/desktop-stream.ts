@@ -3,6 +3,14 @@ import { request as httpsRequest } from 'node:https';
 import { Readable } from 'node:stream';
 import { createParser } from 'eventsource-parser';
 
+/** 완료 이벤트 없이 닫힌 스트림을 다른 provider 오류와 구분합니다. */
+export class DesktopStreamIncompleteError extends Error {
+  constructor() {
+    super('HTTP stream ended before completion');
+    this.name = 'DesktopStreamIncompleteError';
+  }
+}
+
 export function streamHeaders(headers: HeadersInit | undefined): Record<string, string> {
   const result: Record<string, string> = {};
   new Headers(headers).forEach((value, key) => {
@@ -100,7 +108,7 @@ export async function consumeDesktopStream(
       if (chunk.done) {
         consume(decoder.decode());
         if (format === 'ndjson' && pending.trim()) done = onData(pending.trim()) === true;
-        if (!done) throw new Error('HTTP stream ended before completion');
+        if (!done) throw new DesktopStreamIncompleteError();
         break;
       }
       consume(decoder.decode(chunk.value, { stream: true }));

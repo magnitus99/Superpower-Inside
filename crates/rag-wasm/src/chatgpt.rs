@@ -75,7 +75,9 @@ fn plan(input: &Value) -> Option<Value> {
                     json!({"content": "", "reasoning": event.get("delta")?.as_str()?, "done": false}),
                 ),
                 "response.failed" | "response.incomplete" | "error" => Some(json!({"error": true})),
-                "response.completed" => Some(json!({"content": "", "done": true})),
+                "response.completed" | "response.done" => {
+                    Some(json!({"content": "", "done": true}))
+                }
                 _ => Some(json!({"content": "", "done": false})),
             }
         }
@@ -196,7 +198,9 @@ fn response(body: &str) -> Option<Value> {
                     event.get("item")?.clone(),
                 ));
             }
-            "response.completed" => terminal = Some(event.get("response")?.clone()),
+            "response.completed" | "response.done" => {
+                terminal = Some(event.get("response")?.clone());
+            }
             "response.failed" | "response.incomplete" | "error" => return None,
             _ => {}
         }
@@ -244,6 +248,30 @@ fn response(body: &str) -> Option<Value> {
 mod tests {
     use super::plan;
     use serde_json::json;
+
+    #[test]
+    fn alternate_completion_preserves_tools_and_rejects_failed_status() {
+        for kind in ["response.completed", "response.done"] {
+            let event = json!({"type":kind,"response":{"status":"completed","output":[
+                {"type":"function_call","call_id":"call-1","name":"search","arguments":"{}"}
+            ]}});
+            let body = format!("data: {event}\n\n");
+            let result = plan(&json!({"operation":"response","text":body})).unwrap_or_default();
+            assert_eq!(result.pointer("/toolCalls/0/id"), Some(&json!("call-1")));
+            assert_eq!(
+                plan(&json!({"operation":"stream-event","data":event.to_string()}))
+                    .and_then(|value| value.get("done").cloned()),
+                Some(json!(true))
+            );
+            for status in ["failed", "incomplete", "in_progress"] {
+                let event = json!({"type":kind,"response":{"status":status,"output":[]}});
+                assert!(
+                    plan(&json!({"operation":"response","text":format!("data: {event}\n\n")}))
+                        .is_none()
+                );
+            }
+        }
+    }
 
     #[test]
     fn live_events_and_terminal_reconciliation_do_not_duplicate_text() {
