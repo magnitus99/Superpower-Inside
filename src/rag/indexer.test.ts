@@ -1309,4 +1309,37 @@ describe('압축 문서 인덱싱', () => {
     expect(indexedPaths).not.toContain('notes/broken.docx');
     expect(indexer.getFailedFilePaths()).toContain('notes/broken.docx');
   });
+
+  it('본문 추출에 실패한 압축 문서는 필요 문서 업데이트를 중단시키지 않는다', async () => {
+    const contents = new Map([
+      ['notes/a-good.md', 'alpha body'],
+      ['notes/b-broken.docx', 'x'],
+      ['notes/c-good.md', 'gamma body'],
+    ]);
+    const binaries = new Map([
+      ['notes/b-broken.docx', new TextEncoder().encode('not-a-zip-container')],
+    ]);
+    const vault = createVault(contents, binaries);
+    const store = new MemoryVectorStore();
+    const provider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      provider,
+      createRagConfig(),
+      createChatConfig(),
+    );
+
+    const result = await indexer.indexPending();
+    const indexedPaths = await store.getIndexedFilePaths();
+
+    expect(result.skipped).toBeGreaterThan(0);
+    expect(indexedPaths).toContain('notes/a-good.md');
+    expect(indexedPaths).toContain('notes/c-good.md');
+    expect(indexedPaths).not.toContain('notes/b-broken.docx');
+    expect(indexer.getFailedFilePaths()).toContain('notes/b-broken.docx');
+  });
 });

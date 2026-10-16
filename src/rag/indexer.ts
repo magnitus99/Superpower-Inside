@@ -583,38 +583,7 @@ export class VaultIndexer {
   ): Promise<IndexingResult> {
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
-      for (let i = 0; i < files.length; i++) {
-        throwIfIndexingCancelled(options.signal);
-        const file = files[i];
-        let fileResult: IndexingResult;
-        try {
-          fileResult = await this.indexFile(file, options, progressTracker, i);
-        } catch (error) {
-          if (
-            error instanceof IndexingCancelledError ||
-            error instanceof IndexingPerformancePausedError
-          )
-            throw error;
-          // 추출에 실패한 압축 문서 하나가 볼트 전체 재색인을 중단시키지 않게 합니다.
-          batchResult.skipped += 1;
-          batchResult.documents.push(file.path);
-          completeProgressFile(progressTracker, 0, 0);
-          emitIndexingProgress(options, progressTracker, 'file-complete');
-          this.logger.warn('File indexing skipped after a read failure.', {
-            data: { path: file.path },
-            error,
-          });
-          continue;
-        }
-        throwIfIndexingCancelled(options.signal);
-        batchResult.indexed += fileResult.indexed;
-        batchResult.vectors += fileResult.vectors;
-        batchResult.skipped += fileResult.skipped;
-        batchResult.documents.push(...fileResult.documents);
-        if (i > 0 && i % 5 === 0) {
-          await pauseAfterBatch(0, options.signal).catch(() => {});
-        }
-      }
+      await this.indexBatchFiles(files, batchResult, options, progressTracker);
       return batchResult;
     });
     const finished = finishIndexingResult(
@@ -637,6 +606,50 @@ export class VaultIndexer {
     });
     await this.saveEtaCalibration(progressTracker);
     return finished;
+  }
+
+  /**
+   * 파일 하나의 추출 실패가 같은 배치의 나머지 문서 색인을 중단시키지 않게 순차 처리합니다.
+   *
+   * 취소와 성능 일시중지는 배치 전체를 중단하고, 그 밖의 실패는 그 파일만 건너뜁니다.
+   */
+  private async indexBatchFiles(
+    files: readonly TFile[],
+    batchResult: IndexingResult,
+    options: IndexingOptions,
+    progressTracker: IndexingProgressTracker,
+  ): Promise<void> {
+    for (let i = 0; i < files.length; i++) {
+      throwIfIndexingCancelled(options.signal);
+      const file = files[i];
+      let fileResult: IndexingResult;
+      try {
+        fileResult = await this.indexFile(file, options, progressTracker, i);
+      } catch (error) {
+        if (
+          error instanceof IndexingCancelledError ||
+          error instanceof IndexingPerformancePausedError
+        )
+          throw error;
+        batchResult.skipped += 1;
+        batchResult.documents.push(file.path);
+        completeProgressFile(progressTracker, 0, 0);
+        emitIndexingProgress(options, progressTracker, 'file-complete');
+        this.logger.warn('File indexing skipped after a read failure.', {
+          data: { path: file.path },
+          error,
+        });
+        continue;
+      }
+      throwIfIndexingCancelled(options.signal);
+      batchResult.indexed += fileResult.indexed;
+      batchResult.vectors += fileResult.vectors;
+      batchResult.skipped += fileResult.skipped;
+      batchResult.documents.push(...fileResult.documents);
+      if (i > 0 && i % 5 === 0) {
+        await pauseAfterBatch(0, options.signal).catch(() => {});
+      }
+    }
   }
 
   private async planProgressChunks(
@@ -1092,23 +1105,7 @@ export class VaultIndexer {
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
       batchResult.skipped = Math.max(candidatePaths.length - selectedFiles.length, 0);
-      for (let i = 0; i < selectedFileIndices.length; i++) {
-        throwIfIndexingCancelled(options.signal);
-        const file = files[selectedFileIndices[i]];
-        if (!file) {
-          batchResult.skipped += 1;
-          continue;
-        }
-        const fileResult = await this.indexFile(file, options, progressTracker, i);
-        throwIfIndexingCancelled(options.signal);
-        batchResult.indexed += fileResult.indexed;
-        batchResult.vectors += fileResult.vectors;
-        batchResult.skipped += fileResult.skipped;
-        batchResult.documents.push(...fileResult.documents);
-        if (i > 0 && i % 5 === 0) {
-          await pauseAfterBatch(0, options.signal).catch(() => {});
-        }
-      }
+      await this.indexBatchFiles(selectedFiles, batchResult, options, progressTracker);
       return batchResult;
     });
 
