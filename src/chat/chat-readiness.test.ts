@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createChatReadinessSnapshot } from './chat-readiness';
+import { createChatReadinessSnapshot, resolveChatRetrievalReadiness } from './chat-readiness';
 
 describe('질문을 보내기 위한 준비 조건', () => {
   it('연결이 없으면 질문을 보존한 채 연결 설정만 안내한다', () => {
@@ -7,6 +7,7 @@ describe('질문을 보내기 위한 준비 조건', () => {
       enabledProviderCount: 0,
       availableModelCount: 0,
       selectedModel: '',
+      retrieval: 'ready',
     });
     expect(snapshot.blocksSend).toBe(true);
     expect(snapshot.items).toEqual([
@@ -23,6 +24,7 @@ describe('질문을 보내기 위한 준비 조건', () => {
         enabledProviderCount: 1,
         availableModelCount: 0,
         selectedModel: '',
+        retrieval: 'ready',
       }).items[0].action,
     ).toBe('configure-provider');
   });
@@ -32,16 +34,118 @@ describe('질문을 보내기 위한 준비 조건', () => {
         enabledProviderCount: 1,
         availableModelCount: 2,
         selectedModel: '',
+        retrieval: 'ready',
       }).items[0].action,
     ).toBe('select-model');
   });
-  it('질문이 가능한 경우 검색 준비·외부 도구·저장 위치 관리를 요구하지 않는다', () => {
+  it('질문이 가능하고 검색이 준비됐으면 아무 관리도 요구하지 않는다', () => {
     expect(
       createChatReadinessSnapshot({
         enabledProviderCount: 1,
         availableModelCount: 1,
         selectedModel: 'example:model',
+        retrieval: 'ready',
       }),
     ).toMatchObject({ status: 'ready', blocksSend: false, items: [] });
+  });
+  it('검색 인덱싱 중이면 전송을 막지 않고 누락 가능성만 알린다', () => {
+    const snapshot = createChatReadinessSnapshot({
+      enabledProviderCount: 1,
+      availableModelCount: 1,
+      selectedModel: 'example:model',
+      retrieval: 'preparing',
+    });
+    expect(snapshot).toMatchObject({ status: 'degraded', blocksSend: false });
+    expect(snapshot.items).toEqual([
+      expect.objectContaining({ kind: 'rag', severity: 'notice', tone: 'neutral', label: '검색 준비 중' }),
+    ]);
+  });
+  it('검색이 준비되지 않았으면 준비되지 않았다고 알린다', () => {
+    const snapshot = createChatReadinessSnapshot({
+      enabledProviderCount: 1,
+      availableModelCount: 1,
+      selectedModel: 'example:model',
+      retrieval: 'degraded',
+    });
+    expect(snapshot).toMatchObject({ status: 'degraded', blocksSend: false });
+    expect(snapshot.items).toEqual([
+      expect.objectContaining({ kind: 'rag', severity: 'notice', tone: 'warning', label: '검색 준비 안 됨' }),
+    ]);
+  });
+  it('연결이 막혀 있으면 검색 안내 대신 연결 문제만 보여 준다', () => {
+    const snapshot = createChatReadinessSnapshot({
+      enabledProviderCount: 0,
+      availableModelCount: 0,
+      selectedModel: '',
+      retrieval: 'degraded',
+    });
+    expect(snapshot.items.map((item) => item.kind)).toEqual(['provider']);
+  });
+});
+
+describe('검색 준비 상태 요약', () => {
+  it('넘어갈 준비가 모두 끝났으면 ready다', () => {
+    expect(
+      resolveChatRetrievalReadiness({
+        initializing: false,
+        failed: false,
+        keywordIndex: 'ready',
+        indexing: false,
+      }),
+    ).toBe('ready');
+  });
+  it('키워드 색인을 끈 구성은 준비 상태를 낮추지 않는다', () => {
+    expect(
+      resolveChatRetrievalReadiness({
+        initializing: false,
+        failed: false,
+        keywordIndex: 'disabled',
+        indexing: false,
+      }),
+    ).toBe('ready');
+  });
+  it('초기화·색인 로딩·문서 갱신은 모두 준비 중으로 묶는다', () => {
+    expect(
+      resolveChatRetrievalReadiness({
+        initializing: true,
+        failed: false,
+        keywordIndex: 'ready',
+        indexing: false,
+      }),
+    ).toBe('preparing');
+    expect(
+      resolveChatRetrievalReadiness({
+        initializing: false,
+        failed: false,
+        keywordIndex: 'loading',
+        indexing: false,
+      }),
+    ).toBe('preparing');
+    expect(
+      resolveChatRetrievalReadiness({
+        initializing: false,
+        failed: false,
+        keywordIndex: 'ready',
+        indexing: true,
+      }),
+    ).toBe('preparing');
+  });
+  it('초기화 실패·건너뜀과 색인 사용 불가는 제한 상태로 남긴다', () => {
+    expect(
+      resolveChatRetrievalReadiness({
+        initializing: false,
+        failed: true,
+        keywordIndex: 'ready',
+        indexing: false,
+      }),
+    ).toBe('degraded');
+    expect(
+      resolveChatRetrievalReadiness({
+        initializing: false,
+        failed: false,
+        keywordIndex: 'unavailable',
+        indexing: true,
+      }),
+    ).toBe('degraded');
   });
 });

@@ -1,4 +1,5 @@
 import type { PluginUpdateChecker } from './plugin-update';
+import type { ChatRetrievalReadiness } from './chat/chat-readiness';
 import { chatGPTOAuth } from './llm/chatgpt-oauth';
 import { buildRetiredArtifactSettings } from './storage/retired-artifacts-settings';
 import type { RetiredArtifactService } from './storage/retired-artifacts';
@@ -1098,6 +1099,7 @@ export interface PluginLike {
   ensureRagRuntimeInitialized(): Promise<boolean>;
   prepareRagForChat(): Promise<boolean>;
   isRagIndexing(): boolean;
+  getRetrievalReadiness(): ChatRetrievalReadiness;
   cancelRagIndexing(): void;
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;
   resumeRagIndexing(): boolean;

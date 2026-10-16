@@ -114,6 +114,11 @@ import {
   type AgentDiagnosticsRuntimeState,
 } from './src/diagnostics/snapshot';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
+import {
+  resolveChatRetrievalReadiness,
+  type ChatKeywordIndexState,
+  type ChatRetrievalReadiness,
+} from './src/chat/chat-readiness';
 import { MCPRegistry } from './src/mcp/registry';
 import {
   MCP_STATUS_CHANGE_EVENT,
@@ -558,6 +563,28 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return (
       this.ragIndexAbortController !== null || (this.ragIndexingScheduler?.isRunning() ?? false)
     );
+  }
+
+  /** 채팅 입력부에 보여 줄 검색 준비 상태입니다. 준비되지 않아도 질문은 보낼 수 있습니다. */
+  getRetrievalReadiness(): ChatRetrievalReadiness {
+    return resolveChatRetrievalReadiness({
+      initializing: this.ragEngine === null || (this.ragRuntimeInitRunner?.isRunning() ?? false),
+      failed: Boolean(this.lastRagRuntimeInitError || this.lastRagRuntimeInitSkippedReason),
+      keywordIndex: this.getKeywordIndexState(),
+      indexing: this.isRagIndexing(),
+    });
+  }
+
+  private getKeywordIndexState(): ChatKeywordIndexState {
+    if (!this.settings.rag.enableBM25) return 'disabled';
+    if (this.bm25Index) return this.bm25Index.isReady ? 'ready' : 'loading';
+    if (
+      this.lastRagRuntimeInitFinishedAt === null ||
+      (this.ragRuntimeInitRunner?.isRunning() ?? false)
+    ) {
+      return 'loading';
+    }
+    return 'unavailable';
   }
 
   cancelRagIndexing(): void {
@@ -1625,6 +1652,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
           message: error instanceof Error ? error.message : String(error),
         },
       });
+      // 채팅 준비 상태가 키워드 색인 실패를 바로 반영하게 합니다.
+      this.notifyRagStatsRefresh();
       return false;
     }
   }
