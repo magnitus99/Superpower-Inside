@@ -177,9 +177,7 @@ export class IndexedDbBM25Index {
         return;
       } catch (error) {
         worker.close();
-        if (this.workerRuntime === worker) {
-          this.workerRuntime = null;
-        }
+        // 닫힌 작업자를 남겨 다음 준비에서도 재초기화를 시도할 수 있게 합니다.
         this.loaded = false;
         throw error;
       }
@@ -461,8 +459,9 @@ export class IndexedDbBM25Index {
   async recoverClosedWorker(): Promise<void> {
     // 복구할 작업자가 없으면 초기 적재·변이 대기열에 호출자를 붙잡아 두지 않습니다.
     if (!this.workerRuntime?.isClosed) return;
-    await this.workerQueue;
     this.recovery ??= this.workerQueue
+      // 초기화 실패로 거절된 대기열도 복구 진입을 막지 않습니다.
+      .catch(() => undefined)
       .then(async () => {
         // 기록 대기 중인 변경을 먼저 저장하고 같은 코퍼스에서 작업자만 복원한다.
         await this.persist();

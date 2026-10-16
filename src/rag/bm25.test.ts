@@ -276,6 +276,55 @@ describe('IndexedDbBM25Index', () => {
     bm25.close();
   });
 
+  it('작업자 재초기화가 한 번 실패해도 다음 준비에서 저장된 자료로 다시 복구한다', async () => {
+    let created = 0;
+    let fail: ((event: ErrorEvent) => void) | undefined;
+    const workerFactory: BM25WorkerFactory = () => {
+      const attempt = ++created;
+      let respond: ((event: MessageEvent<BM25WorkerResponse>) => void) | undefined;
+      return {
+        worker: {
+          postMessage: (message) =>
+            queueMicrotask(() =>
+              respond?.({
+                data:
+                  attempt === 2
+                    ? { id: message.id, error: '합성 재초기화 실패' }
+                    : { id: message.id, ready: true, tokenizerCurrent: true, totalDocs: 1 },
+              } as MessageEvent<BM25WorkerResponse>),
+            ),
+          terminate: vi.fn(),
+          setOnMessage: (handler) => {
+            respond = handler;
+          },
+          setOnError: (handler) => {
+            fail = handler;
+          },
+        },
+        dispose: vi.fn(),
+      };
+    };
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter(), undefined, {
+      workerFactory,
+    });
+    try {
+      await bm25.load();
+      bm25.addDocument('synthetic::0', '합성 원문 보존', 'synthetic.md');
+      await bm25.persist();
+      await Promise.resolve();
+      fail?.({ message: '합성 작업자 종료' } as ErrorEvent);
+      await expect(bm25.recoverClosedWorker()).rejects.toThrow('합성 재초기화 실패');
+      await Promise.all([bm25.recoverClosedWorker(), bm25.recoverClosedWorker()]);
+      expect(created).toBe(3);
+      expect(bm25.isReady).toBe(true);
+      expect(await bm25.getCorpusDocumentsByIds(['synthetic::0'])).toEqual([
+        expect.objectContaining({ text: '합성 원문 보존' }),
+      ]);
+    } finally {
+      bm25.close();
+    }
+  });
+
   it('worker hydration 중에도 검색을 막지 않고 증분 변경은 순서대로 적용한다', async () => {
     const operations: string[] = [];
     const workerControl: {
