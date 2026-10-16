@@ -435,6 +435,8 @@ export class IndexedDbBM25Index {
     const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
     if (normalizedLimit === 0) return [];
     if (this.workerRuntime) {
+      // 초기 적재가 끝나기 전에는 결과만 비우고 채팅·검색을 기다리게 하지 않습니다.
+      if (!this.loaded) return [];
       await this.workerQueue;
       if (this.workerFailure) return [];
       return this.workerRuntime.searchTop(query, normalizedLimit, signal);
@@ -457,8 +459,9 @@ export class IndexedDbBM25Index {
   }
 
   async recoverClosedWorker(): Promise<void> {
-    await this.workerQueue;
+    // 복구할 작업자가 없으면 초기 적재·변이 대기열에 호출자를 붙잡아 두지 않습니다.
     if (!this.workerRuntime?.isClosed) return;
+    await this.workerQueue;
     this.recovery ??= this.workerQueue
       .then(async () => {
         // 기록 대기 중인 변경을 먼저 저장하고 같은 코퍼스에서 작업자만 복원한다.
