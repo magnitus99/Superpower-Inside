@@ -81,6 +81,7 @@ and npm run review -- --tag (node -p "require('./manifest.json').version") --bui
 
 - 기존 게이트의 구현·측정 데이터·통과 기준은 유지합니다. `security:full`은 lint → typecheck → Vitest·i18n·채팅 UX·오프라인 채팅 계약 → RAG 성능 → Rust fmt·clippy·tests·WASM·deny/audit/vet/geiger·npm audit·generated 정합성을 검사합니다. 임계값이나 제외 항목을 완화하지 않습니다.
 - UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 구조 테스트와 community review에 더해 실제 Obsidian 또는 충실한 시뮬레이션 스크린샷을 직접 찍고 봅니다. 정상·접힘/펼침·빈 상태·오류·disabled·진행 중·좁은 폭과 테마·focus·대비를 확인합니다.
+- 브라우저 시뮬레이션은 `npm run preview:prepare`로 설치된 Obsidian의 기본 CSS·자산·합성 Markdown 기준을 준비하고 `npm run preview`로 실행합니다. 제품 코드를 바꾼 뒤에는 `npm run preview:build`로 갱신합니다. `?check` 또는 화면의 제품 계약 검사로 기본 스타일·호스트·저장 계약을 확인하며, 기본 테마를 수제 CSS로 대체하지 않습니다. 앱 자산은 Git에서 제외한 `simulations/obsidian-preview/`에만 보관합니다.
 - Obsidian 네이티브 앱의 마우스·타이핑 자동화는 금지합니다. CLI·코드·로그를 사용합니다. 브라우저는 Codex 내부 → Chrome → 최후 수단 Playwright 순서입니다. 화면 검수는 커밋 전에 수행하며 촬영 불가 시 미완료 항목을 명시합니다.
 - 완료 보고는 실제 실행한 명령·종료 상태·남은 문제를 포함하며 테스트 통과를 실제 LLM 품질 개선의 증거로 대신하지 않습니다.
 - README는 현재 기능·사용 흐름을 설명합니다. 사용자 가치가 있는 기능만 자연스럽게 통합하며 커밋 로그·changelog·릴리스별 변경 파일을 만들지 않습니다. GitHub Release 요약은 사용자 관점으로 본문에만 작성합니다.
