@@ -6809,8 +6809,22 @@ fn remaining_estimated_chunk_units(
 fn average_completed_file_chunk_ms(
     durations_ms: &[f64],
     chunk_counts: &[usize],
+    overhead_durations_ms: &[f64],
 ) -> Option<RagIndexingEtaRate> {
-    weighted_average_ms_per_chunk(durations_ms, chunk_counts)
+    // 파일당 부대 시간은 ETA에서 별도로 더하므로 청크 처리 속도에서는 제외합니다.
+    let embedding_durations: Vec<_> = durations_ms
+        .iter()
+        .enumerate()
+        .map(|(index, duration)| {
+            duration
+                - overhead_durations_ms
+                    .get(index)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.0)
+        })
+        .collect();
+    weighted_average_ms_per_chunk(&embedding_durations, chunk_counts)
 }
 
 /// Completed batch samples에서 chunk당 평균 시간을 계산한다.
@@ -6818,7 +6832,16 @@ fn average_completed_batch_chunk_ms(
     durations_ms: &[f64],
     chunk_counts: &[usize],
 ) -> Option<RagIndexingEtaRate> {
-    weighted_average_ms_per_chunk(durations_ms, chunk_counts)
+    // 최근 유효 배치만 사용해 초기 로딩 비용과 과거 속도의 영향을 제한합니다.
+    let (durations, chunks): (Vec<_>, Vec<_>) = durations_ms
+        .iter()
+        .copied()
+        .zip(chunk_counts.iter().copied())
+        .rev()
+        .filter(|(duration, chunks)| duration.is_finite() && *duration > 0.0 && *chunks > 0)
+        .take(12)
+        .unzip();
+    weighted_average_ms_per_chunk(&durations, &chunks)
 }
 
 /// Duration/unit samples에서 weighted average milliseconds per chunk를 계산한다.
@@ -6884,6 +6907,7 @@ fn estimate_rag_indexing_remaining_time(
     let file_rate = average_completed_file_chunk_ms(
         &input.completed_file_durations_ms,
         &input.completed_file_chunk_counts,
+        &input.completed_file_overhead_durations_ms,
     );
     let selected_rate = select_rag_indexing_eta_rate(batch_rate, file_rate);
     let overhead_ms_per_file = trimmed_average_ms(&input.completed_file_overhead_durations_ms)
@@ -15020,6 +15044,41 @@ mod tests {
             rag_eta_test_number_matches(&plan, "remainingMs", 1250.0),
             "historical calibration should shrink raw estimated chunks",
         );
+    }
+
+    #[test]
+    fn rag_indexing_eta_batch_rate_tracks_recent_speed_with_chunk_weights() {
+        for (old_duration, recent_duration) in [(100.0, 1000.0), (1000.0, 100.0)] {
+            let mut durations = vec![old_duration; 100];
+            let mut chunks = vec![1; 100];
+            for index in 1..=12 {
+                durations.push(recent_duration * f64::from(index));
+                chunks.push(usize::try_from(index).unwrap_or(1));
+            }
+            let rate = super::average_completed_batch_chunk_ms(&durations, &chunks);
+            assert!(rate.is_some_and(|rate| {
+                (rate.ms_per_chunk - recent_duration).abs() < 0.001 && rate.sample_count == 12
+            }));
+        }
+    }
+
+    #[test]
+    fn rag_indexing_eta_batch_rate_ignores_invalid_samples_without_hiding_recent_work() {
+        let mut durations = vec![1000.0; 12];
+        let mut chunks = vec![2; 12];
+        durations.extend([f64::NAN, 0.0, -1.0, 100.0]);
+        chunks.extend([1, 1, 1, 0]);
+        let rate = super::average_completed_batch_chunk_ms(&durations, &chunks);
+        assert!(rate.is_some_and(|rate| {
+            (rate.ms_per_chunk - 500.0).abs() < 0.001 && rate.sample_count == 12
+        }));
+    }
+
+    #[test]
+    fn rag_indexing_eta_file_rate_does_not_count_overhead_twice() {
+        let rate =
+            super::average_completed_file_chunk_ms(&[3000.0, 5000.0], &[10, 20], &[1000.0, 1000.0]);
+        assert!(rate.is_some_and(|rate| (rate.ms_per_chunk - 200.0).abs() < 0.001));
     }
 
     /// MCP 연결 상태 계산은 `Rust`가 담당한다.

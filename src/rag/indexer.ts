@@ -424,6 +424,11 @@ function completeProgressFile(
     Math.max(0, durationMs - tracker.currentFileBatchDurationMs),
   );
   tracker.currentFileBatchDurationMs = 0;
+  // 완료한 파일의 청크는 누적 작업량에만 포함합니다.
+  tracker.currentFileTotalChunks = 0;
+  tracker.currentFileEmbeddedChunks = 0;
+  tracker.currentFileEstimatedChunks = 0;
+  tracker.currentFilePlannedChunks = 0;
 }
 
 function emitIndexingProgress(
