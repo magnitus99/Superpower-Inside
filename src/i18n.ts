@@ -2207,7 +2207,7 @@ const ko: I18nKeys = {
   promptLibraryOpen: '프롬프트 보관함 열기',
   mcpToolExecutionPolicy: 'MCP 툴 실행 정책',
   mcpToolExecutionPolicyDesc:
-    '멘션한 MCP 서버는 사용자가 신뢰하고 사용 의사를 표시한 서버로 간주해 일반 툴을 자동 실행합니다. 툴 결과는 최종 답변 생성을 위해 LLM provider로 다시 전달될 수 있으며, 위험하거나 미멘션된 툴은 승인 대기로 둡니다.',
+    '기본값은 연결된 MCP 서버의 일반 툴을 멘션 없이 자동 실행합니다. 멘션 서버만 자동 실행하거나 항상 수동 승인하도록 바꿀 수 있습니다. 툴 결과는 최종 답변 생성을 위해 LLM provider로 다시 전달될 수 있으며, 위험한 툴은 승인이 필요합니다.',
   mcpToolExecutionMentionedAuto: '멘션 서버 자동 실행',
   mcpToolExecutionAlwaysManual: '항상 수동 승인',
   mcpToolExecutionAlwaysAuto: '항상 자동 실행',
@@ -4042,7 +4042,7 @@ const en: I18nKeys = {
   promptLibraryOpen: 'Open Prompt Library',
   mcpToolExecutionPolicy: 'MCP tool execution policy',
   mcpToolExecutionPolicyDesc:
-    'A mentioned MCP server is treated as trusted and as user intent to use that server, so normal tools run automatically. Tool results may be sent back to the LLM provider to generate the final answer; risky or unmentioned tools stay pending approval.',
+    'By default, normal tools from connected MCP servers run automatically without mentions. You can limit automatic execution to mentioned servers or always require approval. Tool results may be sent back to the LLM provider to generate the final answer; risky tools require approval.',
   mcpToolExecutionMentionedAuto: 'Auto-run mentioned servers',
   mcpToolExecutionAlwaysManual: 'Always require approval',
   mcpToolExecutionAlwaysAuto: 'Always auto-run',

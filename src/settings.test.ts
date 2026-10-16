@@ -1440,17 +1440,27 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toBe(false);
   });
 
-  it('MCP 툴 실행 정책 설명은 멘션 서버 신뢰와 결과 전달 범위를 안내한다', () => {
+  it('MCP 기본 정책은 멘션 없이 자동 실행하되 저장된 정책을 보존한다', () => {
+    expect(DEFAULT_SETTINGS.chat.mcpToolExecutionPolicy).toBe('always-auto');
+    for (const mode of ['always-manual', 'mentioned-auto', 'always-auto']) {
+      const { raw } = resolveSettingsLoadData({ chat: { mcpToolExecutionPolicy: mode } }, null);
+      expect({ ...DEFAULT_SETTINGS.chat, ...(raw.chat as object) }.mcpToolExecutionPolicy).toBe(
+        mode,
+      );
+    }
+  });
+
+  it('MCP 툴 실행 정책 설명은 기본 자동 실행과 승인·결과 전달 범위를 안내한다', () => {
     setLanguage('ko');
-    expect(t('mcpToolExecutionPolicyDesc')).toContain('멘션한 MCP 서버');
-    expect(t('mcpToolExecutionPolicyDesc')).toContain('사용 의사');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('멘션 없이');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('위험한 툴은 승인');
     expect(t('mcpToolExecutionPolicyDesc')).toContain(
       '최종 답변 생성을 위해 LLM provider로 다시 전달',
     );
 
     setLanguage('en');
-    expect(t('mcpToolExecutionPolicyDesc')).toContain('mentioned MCP server');
-    expect(t('mcpToolExecutionPolicyDesc')).toContain('intent to use');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('without mentions');
+    expect(t('mcpToolExecutionPolicyDesc')).toContain('risky tools require approval');
     expect(t('mcpToolExecutionPolicyDesc')).toContain('sent back to the LLM provider');
 
     setLanguage('ko');
