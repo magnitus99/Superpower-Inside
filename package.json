@@ -28,6 +28,9 @@
     "format": "prettier --write src/ main.ts",
     "rust:check": "node scripts/run-fish.mjs scripts/check-rust-local.fish",
     "quality:local": "node scripts/check-quality.mjs",
+    "preview:prepare": "node scripts/obsidian-preview.mjs prepare",
+    "preview:build": "node scripts/obsidian-preview.mjs build",
+    "preview": "node scripts/obsidian-preview.mjs serve",
     "release:check": "node scripts/run-fish.mjs scripts/check-release.fish",
     "philosophy:check": "node scripts/check-philosophy.mjs"
   },
