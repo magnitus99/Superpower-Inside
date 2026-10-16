@@ -53,9 +53,9 @@ struct AgenticToolTurnInput {
     question: String,
     /// Whether RAG/context assembly already attached source-backed evidence.
     has_attached_evidence: bool,
-    /// Number of MCP servers explicitly selected for the current request.
+    /// 멘션 전용 모드에서만 0보다 큰, 사용을 강제할 MCP 서버 수.
     explicit_tool_server_count: usize,
-    /// 정확히 완료 여부를 추적할 명시 MCP 서버 이름.
+    /// 멘션 전용 모드에서만 채워지는, 완료를 추적할 MCP 서버 이름. 기본 제안 모드에서는 빈 목록임.
     explicit_tool_server_names: Vec<String>,
     /// Bounded prefix of tool names available in the current provider request.
     available_tool_names: Vec<String>,
@@ -2153,6 +2153,8 @@ fn required_tool_names(
     for action in actions.into_iter().take(MAX_REQUIRED_TOOL_NAMES) {
         push_available_tool_name(&mut names, &input.available_tool_names, action);
     }
+    // native 근거를 요구해도 연결된 MCP 도구는 모델이 스스로 선택할 수 있게 보존합니다.
+    names.extend(required_external_tool_names(&input.available_tool_names));
     names
 }
 
@@ -2448,6 +2450,45 @@ mod tests {
     use serde_json::{Value as JsonValue, json};
 
     use super::{plan_agentic_tool_turn_json, requires_multiple_source_evidence};
+
+    #[test]
+    fn unmentioned_mcp_tools_remain_available_during_native_research() {
+        for (phase, calls, round) in [
+            ("initial", json!([]), 0),
+            (
+                "after-tools",
+                json!([{
+                    "name": "superpower_inside_search",
+                    "status": "success",
+                    "arguments": "{\"query\":\"release\"}",
+                    "result": normalized_search_result(&["Decision.md"])
+                }]),
+                1,
+            ),
+        ] {
+            let result = plan(&json!({
+                "question": "내 노트에서 배포 근거를 조사해줘",
+                "hasAttachedEvidence": false,
+                "explicitToolServerCount": 0,
+                "availableToolNames": [
+                    "superpower_inside_search", "superpower_inside_read",
+                    "remote_search", "remote_read"
+                ],
+                "toolCalls": calls,
+                "phase": phase,
+                "round": round,
+                "maxRounds": 10
+            }));
+            let required_names = result
+                .get("requiredToolNames")
+                .and_then(JsonValue::as_array)
+                .cloned()
+                .unwrap_or_default();
+            assert!(required_names.contains(&json!("remote_search")));
+            assert!(required_names.contains(&json!("remote_read")));
+            assert_eq!(result.get("requiredExternalServerNames"), Some(&json!([])));
+        }
+    }
 
     fn plan(input: &JsonValue) -> JsonValue {
         serde_json::from_str(&plan_agentic_tool_turn_json(&input.to_string()))
@@ -3850,11 +3891,13 @@ mod tests {
         }));
 
         assert_eq!(result.get("nextAction"), Some(&json!("use-tool")));
+        // native 근거를 요구해도 새 행동 목록에서 연결된 MCP 도구를 잃지 않습니다.
         assert_eq!(
             result.get("requiredToolNames"),
             Some(&json!([
                 "superpower_inside_search",
-                "superpower_inside_read"
+                "superpower_inside_read",
+                "remote_issue"
             ]))
         );
     }
