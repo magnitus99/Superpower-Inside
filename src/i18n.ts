@@ -562,8 +562,8 @@ export interface I18nKeys {
   assistantResponseCollapse: string;
   assistantResponseExpand: string;
   thinkingPlaceholder: string;
-  enforceMcpTools: string;
-  enforceMcpToolsDesc: string;
+  mcpMentionOnly: string;
+  mcpMentionOnlyDesc: string;
   modelSelector: string;
   mcpRefresh: string;
   mcpReconnect: string;
@@ -2252,9 +2252,9 @@ const ko: I18nKeys = {
   assistantResponseCollapse: '응답 접기',
   assistantResponseExpand: '응답 펼치기',
   thinkingPlaceholder: '생각 중...',
-  enforceMcpTools: 'MCP 도구 미사용 감지 및 재시도',
-  enforceMcpToolsDesc:
-    '@mention한 MCP 서버가 있음에도 모델이 도구를 호출하지 않고 답변을 생성하면, 자동으로 시스템 프롬프트에 도구 사용을 강제하는 지시를 추가하여 재시도합니다.',
+  mcpMentionOnly: '멘션한 MCP 서버만 사용',
+  mcpMentionOnlyDesc:
+    '멘션한 서버가 있으면 그 서버의 도구만 모델에 제공하고 사용을 요구합니다. 기본값은 꺼짐이며, 멘션은 특정 서버를 권하는 제안으로만 작동합니다.',
   modelSelector: '모델',
   mcpRefresh: '새로고침',
   mcpReconnect: '재연결',
@@ -4087,9 +4087,9 @@ const en: I18nKeys = {
   assistantResponseCollapse: 'Collapse response',
   assistantResponseExpand: 'Expand response',
   thinkingPlaceholder: 'Thinking...',
-  enforceMcpTools: 'Detect & Retry on Missing MCP Tool Calls',
-  enforceMcpToolsDesc:
-    'When an @mentioned MCP server is available but the model generates a response without calling any tools, automatically retry with a strengthened system prompt that enforces tool usage.',
+  mcpMentionOnly: 'Use mentioned MCP servers only',
+  mcpMentionOnlyDesc:
+    'When you mention servers, only those servers are offered to the model and their use is required. Off by default: a mention suggests a server, while every connected server stays available.',
   modelSelector: 'Model',
   mcpRefresh: 'Refresh',
   mcpReconnect: 'Reconnect',

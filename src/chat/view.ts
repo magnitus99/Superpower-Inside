@@ -39,6 +39,7 @@ import {
 import {
   ExplicitMcpToolDiscoveryError,
   collectExternalMcpToolDefinitions,
+  scopeMcpServerNames,
 } from './mcp-tool-catalog';
 import {
   appendAssistantToolRound,
@@ -2851,6 +2852,7 @@ export class ChatView extends ItemView {
     const mentionedServers = wholeVaultResearch
       ? []
       : this.getEffectiveMcpServerNames(text, explicitlyMentionedServers);
+    const mentionOnlyServers = this.getMentionOnlyServers(explicitlyMentionedServers);
     let promptContext: ContextBuildResult;
     try {
       promptContext = wholeVaultResearch
@@ -3026,15 +3028,15 @@ export class ChatView extends ItemView {
       }
       const toolsEnabled = maxToolRounds > 0;
       const toolDefinitions = toolsEnabled
-        ? await this.collectToolDefinitions(mentionedServers, explicitlyMentionedServers, run)
+        ? await this.collectToolDefinitions(mentionedServers, mentionOnlyServers, run)
         : [];
       if (!isChatRunActive(this.activeRun, run)) return;
       const initialAgentPlan = toolsEnabled
         ? planAgenticToolTurn({
             question: text,
             contextAttachments: promptContext.attachments,
-            explicitToolServerCount: explicitlyMentionedServers.length,
-            explicitToolServerNames: explicitlyMentionedServers,
+            explicitToolServerCount: mentionOnlyServers.length,
+            explicitToolServerNames: mentionOnlyServers,
             toolDefinitions,
             toolCalls: [],
             phase: 'initial',
@@ -3613,8 +3615,8 @@ export class ChatView extends ItemView {
               citations: promptContext.citations,
             },
             mentionedServers,
-            explicitToolServerCount: explicitlyMentionedServers.length,
-            explicitToolServerNames: explicitlyMentionedServers,
+            explicitToolServerCount: mentionOnlyServers.length,
+            explicitToolServerNames: mentionOnlyServers,
             initialText: fullText,
             initialReasoning: fullReasoning,
           });
@@ -4552,14 +4554,21 @@ export class ChatView extends ItemView {
     mentionedServerNames = this.getMentionedServerNames(text),
   ): string[] {
     return getPluginAwareServerNames({
-      mentionedServerNames: mentionedServerNames.length
-        ? mentionedServerNames
-        : (this.plugin.mcpRegistry?.getEnabledServers().map((server) => server.name) ?? []),
+      mentionedServerNames: scopeMcpServerNames(
+        this.plugin.mcpRegistry?.getEnabledServers().map((server) => server.name) ?? [],
+        mentionedServerNames,
+        this.plugin.settings.chat.mcpMentionOnly,
+      ),
       pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
       userText: text,
       plugins: this.plugin.settings.pluginAwareEnabled ? getActivePluginInfo(this.app) : [],
       registry: this.plugin.mcpRegistry,
     });
+  }
+
+  /** 멘션 전용 모드에서만 멘션 서버의 사용을 강제하고, 기본값은 사용 제안으로 둡니다. */
+  private getMentionOnlyServers(mentionedServerNames: readonly string[]): string[] {
+    return this.plugin.settings.chat.mcpMentionOnly ? [...mentionedServerNames] : [];
   }
 
   private validateAssistantSources(
@@ -4642,6 +4651,7 @@ export class ChatView extends ItemView {
         currentQuestion,
         explicitlyMentionedServers,
       );
+      const mentionOnlyServers = this.getMentionOnlyServers(explicitlyMentionedServers);
       const toolCalls = message.toolCalls.map((toolCall) =>
         toolCall.id === toolCallId ? { ...toolCall, approved: true } : { ...toolCall },
       );
@@ -4716,7 +4726,7 @@ export class ChatView extends ItemView {
         }
         const toolDefinitions = await this.collectToolDefinitions(
           mentionedServers,
-          explicitlyMentionedServers,
+          mentionOnlyServers,
           run,
         );
         if (!isChatRunActive(this.activeRun, run)) return;
@@ -4775,8 +4785,8 @@ export class ChatView extends ItemView {
             dataBoundarySnapshot: resumePlan.dataBoundarySnapshot,
           },
           mentionedServers,
-          explicitToolServerCount: explicitlyMentionedServers.length,
-          explicitToolServerNames: explicitlyMentionedServers,
+          explicitToolServerCount: mentionOnlyServers.length,
+          explicitToolServerNames: mentionOnlyServers,
         });
         if (!isChatRunActive(this.activeRun, run)) return;
       } else {

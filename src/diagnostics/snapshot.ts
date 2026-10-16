@@ -193,7 +193,7 @@ export interface AgentDiagnosticsSnapshot {
       defaultModel: string;
       saveFolderConfigured: boolean;
       autoSaveEnabled: boolean;
-      enforceMcpTools: boolean;
+      mcpMentionOnly: boolean;
     };
     rag: {
       embeddingProvider: SuperpowerInsideSettings['rag']['embeddingProvider'];
@@ -528,7 +528,7 @@ function buildSettingsSummary(
       defaultModel: settings.chat.defaultModel,
       saveFolderConfigured: settings.chat.saveFolder.trim().length > 0,
       autoSaveEnabled: settings.chat.autoSaveEnabled,
-      enforceMcpTools: settings.chat.enforceMcpTools,
+      mcpMentionOnly: settings.chat.mcpMentionOnly,
     },
     rag: {
       embeddingProvider: settings.rag.embeddingProvider,

@@ -170,7 +170,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
         mcpToolExecutionPolicy: 'mentioned-auto',
         autoSaveEnabled: false,
         autoSaveDebounceMs: 1000,
-        enforceMcpTools: false,
+        mcpMentionOnly: false,
       };
       const scope = new RagNativeVaultFileScope(
         app,

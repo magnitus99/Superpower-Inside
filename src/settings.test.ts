@@ -1440,14 +1440,33 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toBe(false);
   });
 
-  it('MCP 기본 정책은 멘션 없이 자동 실행하되 저장된 정책을 보존한다', () => {
+  it('MCP 기본 정책은 멘션 없이 자동 실행하고 멘션은 제안으로만 다룬다', () => {
     expect(DEFAULT_SETTINGS.chat.mcpToolExecutionPolicy).toBe('always-auto');
+    expect(DEFAULT_SETTINGS.chat.mcpMentionOnly).toBe(false);
     for (const mode of ['always-manual', 'mentioned-auto', 'always-auto']) {
       const { raw } = resolveSettingsLoadData({ chat: { mcpToolExecutionPolicy: mode } }, null);
       expect({ ...DEFAULT_SETTINGS.chat, ...(raw.chat as object) }.mcpToolExecutionPolicy).toBe(
         mode,
       );
     }
+    for (const mentionOnly of [true, false]) {
+      const { raw } = resolveSettingsLoadData({ chat: { mcpMentionOnly: mentionOnly } }, null);
+      expect({ ...DEFAULT_SETTINGS.chat, ...(raw.chat as object) }.mcpMentionOnly).toBe(
+        mentionOnly,
+      );
+    }
+  });
+
+  it('MCP 멘션 전용 설명은 제안 기본값과 제한 동작을 안내한다', () => {
+    setLanguage('ko');
+    expect(t('mcpMentionOnly')).toContain('멘션한 MCP 서버만');
+    expect(t('mcpMentionOnlyDesc')).toContain('제안');
+
+    setLanguage('en');
+    expect(t('mcpMentionOnly')).toContain('mentioned MCP servers only');
+    expect(t('mcpMentionOnlyDesc')).toContain('suggests a server');
+
+    setLanguage('ko');
   });
 
   it('MCP 툴 실행 정책 설명은 기본 자동 실행과 승인·결과 전달 범위를 안내한다', () => {

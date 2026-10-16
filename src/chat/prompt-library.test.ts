@@ -402,7 +402,7 @@ function createSettings(
       mcpToolExecutionPolicy: 'mentioned-auto',
       autoSaveEnabled: true,
       autoSaveDebounceMs: 3000,
-      enforceMcpTools: true,
+      mcpMentionOnly: true,
       ...chat,
     },
   } as unknown as Parameters<typeof getEffectiveSystemPrompt>[0];
