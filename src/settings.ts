@@ -674,7 +674,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     systemPrompt: '',
     promptLibrary: [],
     activePromptId: 'default-obsidian-knowledge-work',
-    mcpToolExecutionPolicy: 'mentioned-auto',
+    mcpToolExecutionPolicy: 'always-auto',
     autoSaveEnabled: true,
     autoSaveDebounceMs: 3000,
     enforceMcpTools: true,
