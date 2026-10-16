@@ -276,7 +276,7 @@ describe('IndexedDbBM25Index', () => {
     bm25.close();
   });
 
-  it('worker hydration 중 들어온 증분 변경은 초기화 완료 뒤 순서대로 적용한다', async () => {
+  it('worker hydration 중에도 검색을 막지 않고 증분 변경은 순서대로 적용한다', async () => {
     const operations: string[] = [];
     const workerControl: {
       initializeRequestId?: number;
@@ -332,12 +332,11 @@ describe('IndexedDbBM25Index', () => {
     await Promise.resolve();
     expect(operations).toEqual(['initialize']);
 
-    let prepared = false;
-    const preparing = bm25.recoverClosedWorker().then(() => {
-      prepared = true;
-    });
-    await Promise.resolve();
-    expect(prepared).toBe(false);
+    // 적재 중 검색은 기다리지 않고 빈 결과로 물러납니다.
+    await expect(bm25.searchTopWithSources('hydration', 1)).resolves.toEqual([]);
+    // 복구할 작업자가 없으므로 준비 호출도 적재를 기다리지 않습니다.
+    await bm25.recoverClosedWorker();
+    expect(operations).toEqual(['initialize']);
 
     const initializeRequestId = workerControl.initializeRequestId;
     const onMessage = workerControl.onMessage;
@@ -353,8 +352,6 @@ describe('IndexedDbBM25Index', () => {
       },
     } as unknown as MessageEvent<BM25WorkerResponse>);
     await loading;
-    await preparing;
-    expect(prepared).toBe(true);
     const hits = await bm25.searchTopWithSources('hydration', 1);
 
     expect(operations).toEqual(['initialize', 'add', 'search-top']);
