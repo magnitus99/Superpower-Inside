@@ -1188,7 +1188,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     chat.promptLibrary = migratedPromptLibrary.promptLibrary;
     chat.activePromptId = migratedPromptLibrary.activePromptId;
     if (!('mcpToolExecutionPolicy' in chat)) {
-      chat.mcpToolExecutionPolicy = 'mentioned-auto';
+      chat.mcpToolExecutionPolicy = 'always-auto';
     }
 
     // Migrate old RAG settings (pre-overhaul)
@@ -1268,14 +1268,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
       if (typeof migratedRag.slowBatchThresholdMs !== 'number') {
         migratedRag.slowBatchThresholdMs = 3000;
-      }
-    }
-
-    // Migrate enforceMcpTools
-    if (chat && typeof chat === 'object' && !Array.isArray(chat)) {
-      const chatObj = chat as Record<string, unknown>;
-      if (typeof chatObj.enforceMcpTools !== 'boolean') {
-        chatObj.enforceMcpTools = true;
       }
     }
 

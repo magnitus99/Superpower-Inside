@@ -47,7 +47,7 @@ const baseChatConfig: ChatConfig = {
   mcpToolExecutionPolicy: 'mentioned-auto',
   autoSaveEnabled: true,
   autoSaveDebounceMs: 1000,
-  enforceMcpTools: false,
+  mcpMentionOnly: false,
 };
 
 describe('RAG 유효 제외 경로', () => {

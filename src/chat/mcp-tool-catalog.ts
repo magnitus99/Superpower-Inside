@@ -20,6 +20,22 @@ export interface CollectExternalMcpToolDefinitionsOptions {
   isActive: () => boolean;
 }
 
+/**
+ * 멘션은 기본적으로 사용 제안이며, 멘션 전용 모드에서만 카탈로그를 멘션 서버로 제한합니다.
+ * 제안 모드에서도 멘션한 서버를 먼저 배치해 모델이 그 서버를 우선 고려하게 합니다.
+ */
+export function scopeMcpServerNames(
+  enabledServerNames: readonly string[],
+  mentionedServerNames: readonly string[],
+  mentionOnly: boolean,
+): string[] {
+  if (mentionOnly && mentionedServerNames.length > 0) return [...mentionedServerNames];
+  return [
+    ...mentionedServerNames,
+    ...enabledServerNames.filter((name) => !mentionedServerNames.includes(name)),
+  ];
+}
+
 /** 사용자가 명시한 MCP 서버의 도구를 조회하지 못했음을 구분하는 오류입니다. */
 export class ExplicitMcpToolDiscoveryError extends Error {
   constructor(

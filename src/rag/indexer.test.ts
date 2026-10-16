@@ -1147,7 +1147,7 @@ function createChatConfig(): ChatConfig {
     mcpToolExecutionPolicy: 'mentioned-auto',
     autoSaveEnabled: true,
     autoSaveDebounceMs: 3000,
-    enforceMcpTools: true,
+    mcpMentionOnly: true,
   };
 }
 

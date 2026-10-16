@@ -568,7 +568,7 @@ export interface ChatConfig {
   mcpToolExecutionPolicy: 'mentioned-auto' | 'always-manual' | 'always-auto';
   autoSaveEnabled: boolean;
   autoSaveDebounceMs: number;
-  enforceMcpTools: boolean;
+  mcpMentionOnly: boolean;
 }
 export const DEFAULT_CHAT_SAVE_FOLDER = 'SuperpowerInsideChats';
 export function normalizeChatSaveFolder(value: unknown): string | null {
@@ -677,7 +677,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     mcpToolExecutionPolicy: 'always-auto',
     autoSaveEnabled: true,
     autoSaveDebounceMs: 3000,
-    enforceMcpTools: true,
+    mcpMentionOnly: false,
   },
   pluginAwareEnabled: false,
   autoSaveEnabled: true,
@@ -4941,11 +4941,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       t('chatToolDetailsDesc'),
     );
     new Setting(details.content)
-      .setName(t('enforceMcpTools'))
-      .setDesc(t('enforceMcpToolsDesc'))
+      .setName(t('mcpMentionOnly'))
+      .setDesc(t('mcpMentionOnlyDesc'))
       .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.chat.enforceMcpTools).onChange((value) => {
-          this.plugin.settings.chat.enforceMcpTools = value;
+        toggle.setValue(this.plugin.settings.chat.mcpMentionOnly).onChange((value) => {
+          this.plugin.settings.chat.mcpMentionOnly = value;
           this.debouncedSave();
         }),
       );

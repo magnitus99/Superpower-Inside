@@ -37,7 +37,7 @@ const chatConfig: ChatConfig = {
   mcpToolExecutionPolicy: 'mentioned-auto',
   autoSaveEnabled: true,
   autoSaveDebounceMs: 3000,
-  enforceMcpTools: true,
+  mcpMentionOnly: true,
 };
 
 describe('calculateRagStatus', () => {

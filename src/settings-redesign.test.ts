@@ -457,7 +457,7 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain("value === 'always-auto'");
     expect(methodSource).toContain('openPromptLibraryModal');
     expect(methodSource).toContain('autoSaveDebounceMs');
-    expect(methodSource).toContain('enforceMcpTools');
+    expect(methodSource).toContain('mcpMentionOnly');
   });
 
   it('Chat 현재 동작은 저장된 기본 모델이 실제 사용 가능한지 점검한다', () => {

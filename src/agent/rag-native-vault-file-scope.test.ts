@@ -10,7 +10,7 @@ const chatConfig: ChatConfig = {
   mcpToolExecutionPolicy: 'mentioned-auto',
   autoSaveEnabled: true,
   autoSaveDebounceMs: 1000,
-  enforceMcpTools: false,
+  mcpMentionOnly: false,
 };
 
 const baseRagConfig: RAGConfig = {

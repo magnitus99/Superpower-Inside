@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ExplicitMcpToolDiscoveryError,
   collectExternalMcpToolDefinitions,
+  scopeMcpServerNames,
 } from './mcp-tool-catalog';
 
 function createOptions(
@@ -178,14 +179,29 @@ describe('MCP 채팅 도구 카탈로그', () => {
     ]);
   });
 
-  it('초기 요청과 승인 재개 모두 명시 서버 목록을 별도로 전달한다', () => {
+  it('멘션은 기본 제안으로 멘션 서버를 앞세우고 연결된 서버를 모두 유지한다', () => {
+    expect(scopeMcpServerNames(['docs', 'search', 'plans'], ['search'], false)).toEqual([
+      'search',
+      'docs',
+      'plans',
+    ]);
+  });
+
+  it('멘션 전용 모드에서만 카탈로그를 멘션 서버로 제한한다', () => {
+    expect(scopeMcpServerNames(['docs', 'search'], ['search'], true)).toEqual(['search']);
+    expect(scopeMcpServerNames(['docs', 'search'], [], true)).toEqual(['docs', 'search']);
+  });
+
+  it('멘션 전용 모드에서만 강제 서버 목록을 정책과 카탈로그에 전달한다', () => {
     const source = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
 
-    expect(source).toContain('explicitToolServerCount: explicitlyMentionedServers.length');
-    expect(source).toContain('explicitToolServerNames: explicitlyMentionedServers');
+    expect(source).toContain('scopeMcpServerNames(');
+    expect(source).toContain('this.plugin.settings.chat.mcpMentionOnly ?');
+    expect(source).toContain('explicitToolServerCount: mentionOnlyServers.length');
+    expect(source).toContain('explicitToolServerNames: mentionOnlyServers');
     expect(
       source.match(
-        /this\.collectToolDefinitions\(\s*mentionedServers,\s*explicitlyMentionedServers,\s*run,?\s*\)/g,
+        /this\.collectToolDefinitions\(\s*mentionedServers,\s*mentionOnlyServers,\s*run,?\s*\)/g,
       ),
     ).toHaveLength(2);
     expect(source).toContain('toolCall.id === toolCallId');
