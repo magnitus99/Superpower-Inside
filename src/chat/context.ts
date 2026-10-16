@@ -48,6 +48,7 @@ export interface RagQueryLike {
 }
 
 export interface ContextBuildResult {
+  vaultSearchEnabled?: boolean;
   preparedMcpServerNames?: string[];
   pluginDocumentationFailure?: string;
   systemPrompt: string | null;
@@ -85,6 +86,7 @@ interface BuildContextOptions {
   deferImplicitFolderEvidenceToTools?: boolean;
   /** 플러그인 전용 생성에서는 명시한 자료만 읽고 자동 검색을 하지 않습니다. */
   explicitContextOnly?: boolean;
+  enableVaultSearch?: boolean;
 }
 
 const DEFAULT_MAX_FOLDER_FILES = 12;
@@ -438,6 +440,7 @@ export async function buildChatContext(
     ? t('contextTagScopePrompt', { tags: JSON.stringify(explicitTags.map((tag) => tag.name)) })
     : '';
   return {
+    vaultSearchEnabled: shouldUseAutoRag && options.enableVaultSearch !== false,
     systemPrompt:
       [
         scopeText,
@@ -971,14 +974,12 @@ async function appendFolderMention(
       for (let offset = 0; offset < indexableFiles.length; offset += 8) {
         samples.push(
           ...(await Promise.all(
-            indexableFiles
-              .slice(offset, offset + 8)
-              .map(
-                async (file) =>
-                  `${file.path}\n${await readSourceText(app.vault, file)
-                    .then((source) => source.text)
-                    .catch(() => '')}`,
-              ),
+            indexableFiles.slice(offset, offset + 8).map(
+              async (file) =>
+                `${file.path}\n${await readSourceText(app.vault, file)
+                  .then((source) => source.text)
+                  .catch(() => '')}`,
+            ),
           )),
         );
       }

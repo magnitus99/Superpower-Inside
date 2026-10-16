@@ -4,6 +4,7 @@ import type { ContextAttachment, ToolCallRecord } from './types';
 
 export interface AgenticToolTurnOptions {
   question: string;
+  answer?: string;
   contextAttachments: readonly ContextAttachment[];
   explicitToolServerCount: number;
   explicitToolServerNames?: readonly string[];
@@ -23,6 +24,12 @@ export function planAgenticToolTurn(
 ): RustAgenticToolTurnPlan | null {
   return planAgenticToolTurnRust({
     question: options.question,
+    answer: options.answer,
+    vaultSearchEnabled: options.contextAttachments.some(
+      (attachment) =>
+        (attachment.type === 'rag' && attachment.autoRagReason !== 'disabled') ||
+        (attachment.type === 'folder' && attachment.scopeOnly === true),
+    ),
     hasAttachedEvidence: options.contextAttachments.some(
       (attachment) =>
         (attachment.type === 'file' || attachment.type === 'reference') &&
@@ -64,9 +71,7 @@ export function selectAgenticToolDefinitions(
 ): ToolDefinition[] {
   if (!requiredToolNames || requiredToolNames.length === 0) return [...definitions];
   const required = new Set(requiredToolNames);
-  const availableNames = new Set(
-    definitions.map((definition) => definition.function.name),
-  );
+  const availableNames = new Set(definitions.map((definition) => definition.function.name));
   if ([...required].some((name) => !availableNames.has(name))) {
     return [...definitions];
   }

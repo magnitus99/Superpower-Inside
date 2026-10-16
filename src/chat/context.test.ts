@@ -72,6 +72,7 @@ describe('buildChatContext RAG 출처 검증', () => {
       explicitContextOnly: true,
     });
     expect(context.citations.map((citation) => citation.filePath)).toEqual(['Example.md']);
+    expect(context.vaultSearchEnabled).toBe(false);
     expect(context.systemPrompt).toContain('명시적으로 제공한 합성 자료');
     expect(context.systemPrompt).not.toContain('자동 첨부되면 안 되는 합성 자료');
     expect(query).not.toHaveBeenCalled();
@@ -83,6 +84,7 @@ describe('buildChatContext RAG 출처 검증', () => {
       explicitContextOnly: true,
     });
     expect(empty.citations).toEqual([]);
+    expect(empty.vaultSearchEnabled).toBe(false);
     expect(empty.attachments.some((item) => item.id.startsWith('folder:auto:'))).toBe(false);
     expect(queryExpander).not.toHaveBeenCalled();
   });

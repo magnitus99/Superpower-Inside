@@ -71,6 +71,22 @@ function normalizedReadResult(path: string): string {
 }
 
 describe('적극적 도구 오케스트레이션 경계', () => {
+  it('자동 검색을 허용한 비교는 볼트라는 단어가 없어도 원문 조사를 요구한다', () => {
+    expect(
+      planAgenticToolTurn({
+        question: '구리 저장소와 유리 큐의 지연 차이를 설명해줘',
+        contextAttachments: [
+          { id: 'rag:auto', type: 'rag', name: 'auto', label: 'RAG', status: 'low-relevance' },
+        ],
+        explicitToolServerCount: 0,
+        toolDefinitions: definitions,
+        toolCalls: [],
+        phase: 'initial',
+        round: 0,
+        maxRounds: 10,
+      }),
+    ).toMatchObject({ requiresEvidence: true, toolChoice: 'required', nextAction: 'use-tool' });
+  });
   it.each(['initial', 'after-tools'] as const)(
     '%s에서 멘션하지 않은 MCP의 설명과 스키마도 모델에 제공한다',
     (phase) => {

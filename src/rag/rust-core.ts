@@ -67,6 +67,7 @@ import {
   parse_mention_candidates_json,
   plan_tag_mentions_json,
   plan_agentic_tool_turn_json,
+  plan_evidence_collection_json,
   plan_folder_lexical_evidence_indices_json,
   plan_implicit_folder_query_paths_json,
   plan_assistant_response_classification_json,
@@ -4728,9 +4729,90 @@ export interface RustAgenticToolCallSnapshot {
   serverName?: string;
 }
 
+export interface RustEvidenceCollectionPlan {
+  done: boolean;
+  reason: string;
+  nextCall: { name: string; arguments: string } | null;
+  verifiedSources: number;
+  contextReads: number;
+  searchProbes: number;
+  maxCalls: number;
+  reviewRequest: string | null;
+  coverage: 'unreviewed' | 'supported' | 'incomplete' | 'invalid-review';
+  unresolved: string[];
+}
+
+/** 호스트는 원문 수집 I/O만 수행하고 선택·진행·종료는 Rust가 계산합니다. */
+export function planEvidenceCollectionRust(input: {
+  question: string;
+  scopes: readonly string[];
+  toolCalls: readonly RustAgenticToolCallSnapshot[];
+  reviewEnabled?: boolean;
+  reviews?: readonly { afterCalls: number; content: string }[];
+  budgetExpired?: boolean;
+}): RustEvidenceCollectionPlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const plan: unknown = JSON.parse(plan_evidence_collection_json(JSON.stringify(input)));
+    if (
+      !isStringRecordValueMap(plan) ||
+      typeof plan.done !== 'boolean' ||
+      !isStringValue(plan.reason) ||
+      !isNonNegativeSafeInteger(plan.verifiedSources) ||
+      !isNonNegativeSafeInteger(plan.contextReads) ||
+      !isNonNegativeSafeInteger(plan.searchProbes) ||
+      !isNonNegativeSafeInteger(plan.maxCalls) ||
+      plan.maxCalls > 48 ||
+      (plan.reviewRequest !== null && !isStringValue(plan.reviewRequest)) ||
+      !['unreviewed', 'supported', 'incomplete', 'invalid-review'].includes(
+        String(plan.coverage),
+      ) ||
+      !Array.isArray(plan.unresolved) ||
+      !plan.unresolved.every(isStringValue)
+    )
+      return null;
+    const next = plan.nextCall;
+    if (
+      next !== null &&
+      (!isStringRecordValueMap(next) ||
+        ![
+          'superpower_inside_search',
+          'superpower_inside_read',
+          'superpower_inside_related',
+        ].includes(String(next.name)) ||
+        !isStringValue(next.arguments))
+    )
+      return null;
+    if (plan.done !== (next === null && plan.reviewRequest === null)) return null;
+    if (next !== null && plan.reviewRequest !== null) return null;
+    return {
+      done: plan.done,
+      reason: plan.reason,
+      nextCall:
+        next === null
+          ? null
+          : {
+              name: String(next.name),
+              arguments: String(next.arguments),
+            },
+      verifiedSources: plan.verifiedSources,
+      contextReads: plan.contextReads,
+      searchProbes: plan.searchProbes,
+      maxCalls: plan.maxCalls,
+      reviewRequest: plan.reviewRequest,
+      coverage: plan.coverage as RustEvidenceCollectionPlan['coverage'],
+      unresolved: plan.unresolved,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface RustAgenticToolTurnInput {
   question: string;
+  answer?: string;
   hasAttachedEvidence: boolean;
+  vaultSearchEnabled?: boolean;
   explicitToolServerCount: number;
   explicitToolServerNames?: readonly string[];
   availableToolNames: readonly string[];
@@ -4757,6 +4839,8 @@ export interface RustAgenticEvidenceLedger {
 
 export interface RustAgenticToolTurnPlan {
   requiresEvidence: boolean;
+  minimumSources: number;
+  answerNeedsRepair: boolean;
   nativeEvidenceRequirement: RustNativeEvidenceRequirement;
   nativeEvidenceRequirements: RustNativeEvidenceRequirement[];
   toolChoice: RustAgenticToolChoice;
@@ -4829,7 +4913,9 @@ export function stripCompatibilityToolCallsRust(content: string): string | null 
 function isAgenticToolTurnInput(input: RustAgenticToolTurnInput): boolean {
   return (
     isStringValue(input.question) &&
+    (input.answer === undefined || isStringValue(input.answer)) &&
     typeof input.hasAttachedEvidence === 'boolean' &&
+    (input.vaultSearchEnabled === undefined || typeof input.vaultSearchEnabled === 'boolean') &&
     isNonNegativeSafeInteger(input.explicitToolServerCount) &&
     (input.explicitToolServerNames === undefined ||
       (input.explicitToolServerNames.length <= 64 &&
@@ -4879,6 +4965,9 @@ function isAgenticToolTurnPlan(value: unknown): value is RustAgenticToolTurnPlan
   const requirements = value.nativeEvidenceRequirements;
   return (
     typeof value.requiresEvidence === 'boolean' &&
+    typeof value.answerNeedsRepair === 'boolean' &&
+    isNonNegativeSafeInteger(value.minimumSources) &&
+    value.minimumSources <= 2 &&
     isNativeEvidenceRequirement(primaryRequirement) &&
     Array.isArray(requirements) &&
     requirements.length <= 4 &&

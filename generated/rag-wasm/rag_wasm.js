@@ -1927,6 +1927,26 @@ export function plan_evidence_candidate_order_json(scores_json, available_eviden
 }
 
 /**
+ * 원문 수집의 다음 읽기 전용 호출을 결정합니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function plan_evidence_collection_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_evidence_collection_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * vector entry metadata snapshot에서 file index record JSON plan을 만든다.
  * @param {string} entries_json
  * @param {number} updated

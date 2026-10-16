@@ -40,6 +40,7 @@ export function createToolEvidencePrompt(definitions: readonly ToolDefinition[])
   return [
     shared,
     '[Superpower Inside proactive research and evidence contract]',
+    t('llmVaultInvestigationWorkflow'),
     'Use the available tools proactively whenever the answer depends on vault contents, paths, links, counts, the current chat session, or explicitly connected MCP data. Do not wait for the user to repeat a request to investigate.',
     'For find, investigate, compare, analyze, summarize, or explain requests over connected data: search or list candidates, read the most relevant original sources, repair one invalid call when possible, then answer the latest user objective.',
     t('llmVerifiedCandidateBoundary'),

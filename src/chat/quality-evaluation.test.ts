@@ -4,6 +4,89 @@ import type { ToolCallRecord } from './types';
 import { evaluateToolTrace } from './quality-evaluation';
 
 describe('채팅 품질 trace 평가', () => {
+  it('두 문서를 수집했어도 답변이 한쪽만 연결하면 근거 충족으로 세지 않는다', () => {
+    const toolCalls: ToolCallRecord[] = ['Copper.md', 'Glass.md'].map((path, index) => ({
+      id: `read-${index}`,
+      name: 'superpower_inside_read',
+      status: 'success',
+      arguments: JSON.stringify({ path }),
+      normalizedResult: JSON.stringify({
+        action: 'read',
+        path,
+        startLine: 1,
+        endLine: 1,
+        totalLines: 1,
+        content: '합성 근거',
+        truncated: false,
+        citations: [],
+      }),
+    }));
+    expect(
+      evaluateToolTrace({
+        question: '내 볼트에서 두 방식의 차이',
+        answer: '한쪽 근거만 사용한 비교 [vault:Copper.md:1-1]',
+        toolCalls,
+        toolDefinitions: createNativeVaultToolDefinitions(),
+        citations: [
+          {
+            id: 'vault:Copper.md:1-1',
+            filePath: 'Copper.md',
+            status: 'verified',
+            preview: '합성 근거',
+          },
+        ],
+      }),
+    ).toMatchObject({ verifiedSources: 2, answerGrounded: false });
+  });
+  it('범위 표현이 없어도 근거 없는 일반 지식을 grounded 성공으로 세지 않는다', () => {
+    expect(
+      evaluateToolTrace({
+        question: '두 합성 저장 방식의 차이',
+        answer: '일반 지식으로 작성한 비교',
+        toolCalls: [],
+        citations: [],
+      }).answerGrounded,
+    ).toBe(false);
+  });
+
+  it('한 문서의 여러 출처 카드를 서로 다른 원문으로 세지 않는다', () => {
+    const result = evaluateToolTrace({
+      question: '합성 자료 설명',
+      answer: '합성 근거',
+      toolCalls: [],
+      citations: [1, 2, 3].map((line) => ({
+        id: `s-${line}`,
+        filePath: 'Synthetic.md',
+        preview: '합성 근거',
+        line,
+        status: 'verified',
+      })),
+    });
+    expect(result.verifiedSources).toBe(1);
+    expect(result.verifiedAnswerCitationCount).toBe(3);
+    expect(result.semanticQualityAssessed).toBe(false);
+  });
+
+  it('자동 검색 비교의 한쪽 문서만 인용한 답변을 근거 충족으로 세지 않는다', () => {
+    expect(
+      evaluateToolTrace({
+        question: '구리 저장소와 유리 큐의 차이',
+        answer: '한쪽 문서만으로 한 비교',
+        toolCalls: [],
+        toolDefinitions: createNativeVaultToolDefinitions(),
+        contextAttachments: [
+          { id: 'rag:auto', type: 'rag', name: 'auto', label: 'RAG', status: 'attached' },
+        ],
+        citations: [1, 2].map((line) => ({
+          id: `s-${line}`,
+          filePath: 'Copper.md',
+          preview: '합성 근거',
+          line,
+          status: 'verified',
+        })),
+      }),
+    ).toMatchObject({ requiresEvidence: true, verifiedSources: 1, answerGrounded: false });
+  });
   it('검색 후보와 원문 읽기를 답변 근거 승격 지표로 계산한다', () => {
     const toolCalls: ToolCallRecord[] = [
       {

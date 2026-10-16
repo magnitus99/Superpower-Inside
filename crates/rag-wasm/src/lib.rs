@@ -60,6 +60,8 @@ mod performance_guard;
 pub use performance_guard::plan_rag_performance_guard_json;
 
 mod chat_input;
+mod evidence_collection;
+pub use evidence_collection::plan_evidence_collection_json;
 /// 완료된 채팅 세션의 제목 요약 입력과 정규화.
 mod session_title;
 pub use session_title::plan_session_title_json;
