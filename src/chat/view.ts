@@ -805,6 +805,7 @@ export class ChatView extends ItemView {
       enabledProviderCount: this.getEnabledProviderCount(),
       availableModelCount: this.getAvailableModelCount(),
       selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
+      retrieval: this.plugin.getRetrievalReadiness(),
     });
     this.readinessEl.empty();
     this.readinessEl.className = `superpower-inside-chat-readiness ${snapshot.status}`;
@@ -822,7 +823,7 @@ export class ChatView extends ItemView {
     const list = this.readinessEl.createDiv({ cls: 'superpower-inside-chat-readiness-items' });
     for (const item of snapshot.items.slice(0, 3)) {
       const row = list.createDiv({
-        cls: `superpower-inside-chat-readiness-item ${item.kind} severity-${item.severity}`,
+        cls: `superpower-inside-chat-readiness-item ${item.kind} severity-${item.severity} tone-${item.tone}`,
       });
       row.createSpan({ cls: 'superpower-inside-chat-readiness-label', text: item.label });
       row.createSpan({ cls: 'superpower-inside-chat-readiness-detail', text: item.detail });

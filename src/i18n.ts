@@ -2298,11 +2298,12 @@ const ko: I18nKeys = {
   chatReadinessModelMissing: '답변에 사용할 모델을 선택해 주세요',
   chatReadinessModelMissingDetail:
     '기존 연결에서 사용할 모델을 선택하세요. 모델이 없으면 AI 연결 설정에서 등록할 수 있습니다.',
-  chatReadinessRagIndexing: 'RAG 인덱싱 중',
+  chatReadinessRagIndexing: '검색 준비 중',
   chatReadinessRagIndexingDetail:
-    '이번 질문은 보낼 수 있지만 최신 볼트 컨텍스트가 일부 빠질 수 있습니다.',
-  chatReadinessRagNotReady: 'RAG 준비 안 됨',
-  chatReadinessRagNotReadyDetail: '인덱스를 만들거나 갱신하면 자동 컨텍스트 품질이 좋아집니다.',
+    '인덱스를 갱신하는 동안 최신 문서가 답변 근거에서 빠질 수 있습니다.',
+  chatReadinessRagNotReady: '검색 준비 안 됨',
+  chatReadinessRagNotReadyDetail:
+    '키워드 색인이 준비되지 않아 일부 문서가 검색되지 않거나 답변이 느려질 수 있습니다.',
   chatReadinessPrepareDocuments: '문서 준비',
   chatReadinessSelectModelAction: '모델 선택',
   chatReadinessConfigureProviderAction: 'AI 연결 설정',
@@ -4133,12 +4134,12 @@ const en: I18nKeys = {
   chatReadinessModelMissing: 'Choose a model for the answer',
   chatReadinessModelMissingDetail:
     'Choose a model from your connection. If none is available, add one in AI connection settings.',
-  chatReadinessRagIndexing: 'RAG indexing',
+  chatReadinessRagIndexing: 'Preparing search',
   chatReadinessRagIndexingDetail:
-    'You can send now, but some current vault context may be missing.',
-  chatReadinessRagNotReady: 'RAG not ready',
+    'While the index updates, the newest documents may not be used as evidence yet.',
+  chatReadinessRagNotReady: 'Search not ready',
   chatReadinessRagNotReadyDetail:
-    'Build or refresh the index to improve automatic context quality.',
+    'The keyword index is unavailable, so some documents may not be searched and answers may take longer.',
   chatReadinessPrepareDocuments: 'Prepare documents',
   chatReadinessSelectModelAction: 'Select model',
   chatReadinessConfigureProviderAction: 'Set up AI connection',

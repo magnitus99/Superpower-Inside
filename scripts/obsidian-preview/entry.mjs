@@ -117,6 +117,11 @@ async function start() {
     prepareRagForChat: async () => false,
     getSourceFileProcessingStatus: async () => null,
     isRagIndexing: () => false,
+    // ?retrieval=preparing|degraded로 검색 준비 안내를 검수합니다.
+    getRetrievalReadiness: () =>
+      ['preparing', 'degraded'].includes(params.get('retrieval') ?? '')
+        ? params.get('retrieval')
+        : 'ready',
   };
   window.preview = { files, failSave: params.has('saveError'), reference, openedPath: null };
   const view = new ChatView(new WorkspaceLeaf(app), plugin);
