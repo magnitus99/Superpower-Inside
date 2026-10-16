@@ -71,7 +71,7 @@ describe('chat UX fixture gate', () => {
 
   it('chat 실행 소유권은 RAG 컨텍스트 준비보다 먼저 시작되어 준비 단계도 취소할 수 있다', () => {
     const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
-    const handleSendStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleSendStart = viewSource.indexOf('private async handleSend(');
     const handleSendEnd = viewSource.indexOf('private setLoading(', handleSendStart);
     const handleSendSource = viewSource.slice(handleSendStart, handleSendEnd);
     const runOwnershipIndex = handleSendSource.indexOf('this.activeRun = run;');

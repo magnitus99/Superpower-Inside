@@ -158,6 +158,29 @@ afterAll(() => {
 });
 
 describe('SourcePanel view model contract', () => {
+  it('같은 출처 경고라도 클릭한 답변의 식별자로 확인을 요청한다', () => {
+    const repairSourceWarning = vi.fn();
+    const panel = new SourcePanel({
+      setIcon: vi.fn(),
+      openCitation: vi.fn(),
+      copyCitationLink: vi.fn(),
+      insertCitation: vi.fn(),
+      repairSourceWarning,
+    });
+    const warning: SourceValidationWarning = {
+      id: 'warning',
+      label: 'source-1',
+      detail: '합성 미확인 출처',
+      kind: 'unverified-source',
+    };
+    for (const id of ['earlier-answer', 'latest-answer']) {
+      const container = new TestHTMLElement();
+      panel.renderSourceWarningsSection(container as unknown as HTMLElement, [warning], id);
+      container.querySelector('.superpower-inside-chat-source-repair')?.click();
+      expect(repairSourceWarning).toHaveBeenLastCalledWith(warning, id);
+    }
+  });
+
   it('검색 범위를 첨부한 문서 수로 표시하지 않고 모델 기본값과 예약 공간을 구분한다', () => {
     setLanguage('ko');
     const scope = createContextAttachmentChipViews([

@@ -133,7 +133,7 @@ describe('승인 대기 도구 provider 재개 계약', () => {
 
   it('초기·승인 데이터 경계는 후보 MCP가 아니라 실제 실행 서버만 나중에 기록한다', () => {
     const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
-    const handleStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleStart = viewSource.indexOf('private async handleSend(');
     const handleEnd = viewSource.indexOf('private setLoading(', handleStart);
     const handleSource = viewSource.slice(handleStart, handleEnd);
     const initialBoundaryStart = handleSource.indexOf('const dataBoundarySnapshot =');
@@ -165,7 +165,7 @@ describe('승인 대기 도구 provider 재개 계약', () => {
 
   it('초기 provider와 compatibility 최종 표시에도 native 근거 계약을 적용한다', () => {
     const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
-    const handleStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleStart = viewSource.indexOf('private async handleSend(');
     const handleEnd = viewSource.indexOf('private setLoading(', handleStart);
     const handleSource = viewSource.slice(handleStart, handleEnd);
     const contractIndex = handleSource.indexOf(
