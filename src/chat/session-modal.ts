@@ -1,6 +1,6 @@
 import type { App, Vault } from 'obsidian';
 import { setIcon } from 'obsidian';
-import { t } from '../i18n';
+import { formatNumber, t } from '../i18n';
 import { isDomInstance } from '../utils/dom';
 import type { RefreshBus } from '../utils/refresh-bus';
 import { runActionWithFeedback } from '../utils/action-feedback';
@@ -201,7 +201,7 @@ export function openSessionHistoryModal(
       });
       groupHeader.createSpan({
         cls: 'superpower-inside-session-group-count',
-        text: String(groupMetas.length),
+        text: formatNumber(groupMetas.length),
       });
 
       for (const meta of groupMetas) {
@@ -233,12 +233,16 @@ export function openSessionHistoryModal(
           if (meta.model) parts.push(meta.model);
           metaLine.createSpan({ text: parts.join(' · ') });
           metaLine.createSpan({ text: ' · ' });
-          metaLine.createSpan({ text: `${meta.messageCount}${t('chatMessageUnit')}` });
+          metaLine.createSpan({
+            text: `${formatNumber(meta.messageCount)}${t('chatMessageUnit')}`,
+          });
           metaLine.createSpan({ text: ' · ' });
           metaLine.createSpan({ text: formatRelativeTime(meta.updated ?? meta.created) });
         } else {
           const metaLine = openBtn.createDiv({ cls: 'superpower-inside-session-item-meta' });
-          metaLine.createSpan({ text: `${meta.messageCount}${t('chatMessageUnit')}` });
+          metaLine.createSpan({
+            text: `${formatNumber(meta.messageCount)}${t('chatMessageUnit')}`,
+          });
           metaLine.createSpan({ text: ' · ' });
           metaLine.createSpan({ text: formatRelativeTime(meta.updated ?? meta.created) });
         }

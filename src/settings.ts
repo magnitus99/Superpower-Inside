@@ -96,7 +96,7 @@ import {
   getDocumentExclusionHotkeyLabel,
   openDocumentExclusionHotkeys,
 } from './utils/document-exclusion-hotkeys';
-import { isLocalizedValue, setLanguage, type Language, t } from './i18n';
+import { isLocalizedValue, setLanguage, type Language, t, formatNumber } from './i18n';
 import {
   MAX_PROVIDER_TOOL_ROUNDS,
   normalizeProviderCapabilityOverrides,
@@ -1384,7 +1384,7 @@ class ProviderModelImportModal extends Modal {
       copy.createSpan({ cls: 'superpower-inside-provider-import-model-id', text: model.id });
       const metaParts = [
         model.name && model.name !== model.id ? model.name : '',
-        model.contextLength ? t('providerImportContext', { v0: String(model.contextLength) }) : '',
+        model.contextLength ? t('providerImportContext', { v0: model.contextLength }) : '',
       ].filter(Boolean);
       if (metaParts.length > 0) {
         copy.createSpan({
@@ -1409,8 +1409,8 @@ class ProviderModelImportModal extends Modal {
     if (!this.countEl) return;
     this.countEl.setText(
       t('providerImportCount', {
-        v0: String(this.selectedIds.size),
-        v1: String(filteredCount),
+        v0: this.selectedIds.size,
+        v1: filteredCount,
       }),
     );
     if (this.addButton) {
@@ -2700,8 +2700,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     if (status.lastResult) {
       return t('settingsAuto080', {
-        v0: String(status.lastResult.indexed),
-        v1: String(status.lastResult.vectors),
+        v0: status.lastResult.indexed,
+        v1: status.lastResult.vectors,
       });
     }
     return t('settingsAuto078');
@@ -2710,7 +2710,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const progress = status.progress;
     const phase = this.formatRagIndexingPhase(status.phase, progress);
     if (!progress || progress.totalFiles <= 0) {
-      return t('settingsAuto079', { v0: phase, v1: String(status.queuedFiles) });
+      return t('settingsAuto079', { v0: phase, v1: status.queuedFiles });
     }
     const completed = Math.min(progress.completedFiles, progress.totalFiles);
     const eta = progress.eta;
@@ -2722,22 +2722,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     ) {
       return t('ragIndexingRunningEtaCalculating', {
         phase,
-        completed: String(completed),
-        total: String(progress.totalFiles),
+        completed: completed,
+        total: progress.totalFiles,
       });
     }
     if (eta.confidence === 'medium') {
       return t('ragIndexingRunningWithApproxEta', {
         phase,
-        completed: String(completed),
-        total: String(progress.totalFiles),
+        completed: completed,
+        total: progress.totalFiles,
         eta: this.formatEtaDuration(eta.remainingMs),
       });
     }
     return t('ragIndexingRunningWithEta', {
       phase,
-      completed: String(completed),
-      total: String(progress.totalFiles),
+      completed: completed,
+      total: progress.totalFiles,
       eta: this.formatEtaDuration(eta.remainingMs),
     });
   }
@@ -2748,8 +2748,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (phase === 'paused') return t('ragPerformancePaused');
     if (progress?.sourcePageCount)
       return t('ragSourcePageProgress', {
-        page: String(progress.sourcePage ?? 0),
-        total: String(progress.sourcePageCount),
+        page: progress.sourcePage ?? 0,
+        total: progress.sourcePageCount,
       });
     const phaseLabel =
       phase === 'file'
@@ -2762,23 +2762,25 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (!progress || progress.currentFileTotalChunks <= 0) return phaseLabel;
     return t('ragIndexingPhaseWithChunks', {
       phase: phaseLabel,
-      completed: String(
-        Math.min(progress.currentFileEmbeddedChunks, progress.currentFileTotalChunks),
-      ),
-      total: String(progress.currentFileTotalChunks),
+      completed: Math.min(progress.currentFileEmbeddedChunks, progress.currentFileTotalChunks),
+      total: progress.currentFileTotalChunks,
     });
   }
   private formatEtaDuration(durationMs: number): string {
     const totalSeconds = Math.max(0, Math.ceil(durationMs / 1000));
-    if (totalSeconds < 60) return `${totalSeconds}s`;
+    if (totalSeconds < 60) return `${formatNumber(totalSeconds)}s`;
     const totalMinutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     if (totalMinutes < 60) {
-      return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+      return seconds > 0
+        ? `${formatNumber(totalMinutes)}m ${formatNumber(seconds)}s`
+        : `${formatNumber(totalMinutes)}m`;
     }
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    return minutes > 0
+      ? `${formatNumber(hours)}h ${formatNumber(minutes)}m`
+      : `${formatNumber(hours)}h`;
   }
   private buildEmbeddingProviderSection(containerEl: HTMLElement): void {
     const ANCHOR_CLS = 'si-embedding-anchor';
@@ -3284,7 +3286,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                       },
                     );
                   }
-                  const detail = t('settingsAuto096', { v0: String(result.models.length) });
+                  const detail = t('settingsAuto096', { v0: result.models.length });
                   statusEl.setText(detail);
                   return { status: 'success', detail };
                 }
@@ -3388,22 +3390,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     const stats = [
       {
-        value: String(status.totalDocuments),
+        value: formatNumber(status.totalDocuments),
         label: t('settingsAuto106'),
         desc: t('settingsAuto107'),
       },
       {
-        value: String(status.healthyDocuments),
+        value: formatNumber(status.healthyDocuments),
         label: t('settingsAuto108'),
         desc: t('settingsAuto109'),
       },
       {
-        value: String(status.updateRequiredDocuments.length),
+        value: formatNumber(status.updateRequiredDocuments.length),
         label: t('settingsAuto110'),
         desc: t('settingsAuto111'),
       },
       {
-        value: String(status.totalVectors),
+        value: formatNumber(status.totalVectors),
         label: t('settingsAuto112'),
         desc: t('settingsAuto113'),
       },
@@ -3469,7 +3471,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       row.createDiv({ cls: 'superpower-inside-rag-file-type-label', text: item.label });
       row.createDiv({
         cls: 'superpower-inside-rag-file-type-count',
-        text: t('settingsAuto022', { v0: String(item.count) }),
+        text: t('settingsAuto022', { v0: item.count }),
       });
     }
   }
@@ -3499,7 +3501,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const body = row.createDiv({ cls: 'superpower-inside-rag-recommendation-body' });
       body.createDiv({
         cls: 'superpower-inside-rag-recommendation-label',
-        text: t('settingsAuto114', { v0: String(item.label), v1: String(item.count) }),
+        text: t('settingsAuto114', { v0: String(item.label), v1: item.count }),
       });
       body.createDiv({ cls: 'superpower-inside-rag-recommendation-reason', text: item.reason });
       if (item.extension === '(none)' || !isRecommendableExcludeExtension(item.extension)) continue;
@@ -3540,8 +3542,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (detailEl && progress && progress.totalFiles > 0) {
       detailEl.setText(
         t('ragOverviewDetail', {
-          healthy: String(Math.min(progress.completedFiles, progress.totalFiles)),
-          total: String(progress.totalFiles),
+          healthy: Math.min(progress.completedFiles, progress.totalFiles),
+          total: progress.totalFiles,
           auto: this.getAutoUpdateLabel(),
         }),
       );
@@ -3661,7 +3663,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       : isRunning
         ? (indexingDetail ?? this.getIndexingStatusLabel())
         : updateCount > 0
-          ? t('ragOverviewNeedsUpdate', { count: String(updateCount) })
+          ? t('ragOverviewNeedsUpdate', { count: updateCount })
           : status.totalDocuments > 0
             ? t('ragOverviewReady')
             : t('ragOverviewEmpty');
@@ -3679,8 +3681,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     copy.createDiv({
       cls: 'superpower-inside-rag-overview-detail',
       text: t('ragOverviewDetail', {
-        healthy: String(healthyCount),
-        total: String(status.totalDocuments),
+        healthy: healthyCount,
+        total: status.totalDocuments,
         auto: this.getAutoUpdateLabel(),
       }),
     });
@@ -3701,7 +3703,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       return t('settingsAuto130');
     }
     const updateCount = status.updateRequiredDocuments.length;
-    if (updateCount > 0) return t('settingsAuto133', { v0: String(updateCount) });
+    if (updateCount > 0) return t('settingsAuto133', { v0: updateCount });
     if (status.totalDocuments > 0) return t('settingsAuto134');
     return t('settingsAuto135');
   }
@@ -3800,10 +3802,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const staleCount = documents.filter((document) => document.status === 'stale').length;
     const unknownCount = documents.filter((document) => document.status === 'unknown').length;
     return t('settingsAuto151', {
-      v0: String(documents.length),
-      v1: String(missingCount),
-      v2: String(staleCount),
-      v3: String(unknownCount),
+      v0: documents.length,
+      v1: missingCount,
+      v2: staleCount,
+      v3: unknownCount,
     });
   }
   private renderRagUpdateDocument(containerEl: HTMLElement, document: RagDocumentUpdate): void {
@@ -4001,15 +4003,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               this.updateRagStats();
               return { status: 'noop', detail: t('ragNoPendingUpdatesNotice') };
             }
-            new Notice(t('settingsAuto165', { v0: String(status.updateRequiredDocuments.length) }));
+            new Notice(t('settingsAuto165', { v0: status.updateRequiredDocuments.length }));
             try {
               const result = await latestRuntime.ragIndexingScheduler.indexPending();
               this.updateRagStats();
               return {
                 status: 'success',
                 detail: t('settingsAuto166', {
-                  v0: String(result.indexed),
-                  v1: String(result.skipped),
+                  v0: result.indexed,
+                  v1: result.skipped,
                 }),
               };
             } catch (err) {
@@ -4062,7 +4064,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               this.updateRagStats();
               return {
                 status: 'success',
-                detail: t('settingsAuto171', { v0: String(result.indexed) }),
+                detail: t('settingsAuto171', { v0: result.indexed }),
               };
             } catch (err) {
               if (isIndexingCancelledError(err)) {
@@ -4528,7 +4530,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       section.createDiv({
         cls: 'superpower-inside-rag-performance-summary',
         text: performanceSettings.enabled
-          ? t('settingsAuto188', { v0: String(performanceSettings.maxEmbeddingBatchSize) })
+          ? t('settingsAuto188', { v0: performanceSettings.maxEmbeddingBatchSize })
           : t('ragTernlightPerformanceSummary'),
       });
     }
@@ -4569,7 +4571,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     new Setting(section)
       .setName(t('minScore'))
       .setDesc(
-        `${t('minScoreDesc')} ${t('searchQualityDefault', { value: String(DEFAULT_SEARCH_QUALITY.minScore) })}`,
+        `${t('minScoreDesc')} ${t('searchQualityDefault', { value: DEFAULT_SEARCH_QUALITY.minScore })}`,
       )
       .addText((text) => {
         text
@@ -4602,7 +4604,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     new Setting(section)
       .setName(t('bm25Weight'))
       .setDesc(
-        `${t('bm25WeightDesc')} ${t('searchQualityDefault', { value: String(DEFAULT_SEARCH_QUALITY.bm25Weight) })}`,
+        `${t('bm25WeightDesc')} ${t('searchQualityDefault', { value: DEFAULT_SEARCH_QUALITY.bm25Weight })}`,
       )
       .addText((text) => {
         text
@@ -5504,8 +5506,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       getProviderProfileDisplayName(profile),
       t('providerModelCountLine', {
         provider: getProviderStrategyLabels()[profile.strategy],
-        general: String(profile.models.filter((model) => model.kind === 'general').length),
-        embedding: String(profile.models.filter((model) => model.kind === 'embedding').length),
+        general: profile.models.filter((model) => model.kind === 'general').length,
+        embedding: profile.models.filter((model) => model.kind === 'embedding').length,
       }),
       { idPrefix: 'superpower-inside-provider-disclosure' },
     );
@@ -6170,7 +6172,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         try {
           const saved = await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
           if (!saved.success) throw new Error(t('settingsApplyFailed'));
-          statusEl.setText(t('providerImportAdded', { v0: String(modelIds.length) }));
+          statusEl.setText(t('providerImportAdded', { v0: modelIds.length }));
           this.notifyProviderModelsChanged();
           this.refreshProvidersTab(profile.id);
           return true;
@@ -6452,9 +6454,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       validation,
     });
     const modelLabel =
-      modelCount > 0
-        ? t('providerModelsSelected', { v0: String(modelCount) })
-        : t('providerNoModelsShort');
+      modelCount > 0 ? t('providerModelsSelected', { v0: modelCount }) : t('providerNoModelsShort');
     const keyLabel = apiKeyRequired
       ? hasApiKey
         ? t('providerKeyReady')
@@ -6499,7 +6499,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       tone: 'ready',
       iconName: 'badge-check',
       statusLabel: t('providerStatusReady'),
-      summary: t('providerSummaryReady', { v0: String(modelCount) }),
+      summary: t('providerSummaryReady', { v0: modelCount }),
       keyLabel,
       modelLabel,
       typeLabel,
@@ -6555,7 +6555,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         if (config.models.length > 2) {
           modelPreview.createSpan({
             cls: 'superpower-inside-provider-preview-more',
-            text: `+${config.models.length - 2}`,
+            text: `+${formatNumber(config.models.length - 2)}`,
           });
         }
       }
@@ -6761,8 +6761,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         cls: 'superpower-inside-settings-model-list-header',
       });
       header.textContent = t('settingsAuto253', {
-        v0: String(visibleModels.length),
-        v1: String(sortedModels.length),
+        v0: visibleModels.length,
+        v1: sortedModels.length,
       });
       if (visibleModels.length === 0) {
         modelListContainer.createDiv({
@@ -6954,7 +6954,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 serverReachable: true,
                 lastError: undefined,
               });
-              const detail = t('settingsAuto258', { v0: String(result.models.length) });
+              const detail = t('settingsAuto258', { v0: result.models.length });
               statusContainer.setText(detail);
               renderModelList();
               return { status: 'success', detail };
@@ -6998,7 +6998,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 : await validateProviderConnection('customOpenAI', target.config);
             if (result.valid) {
               availableModels = this.mergeModels(config.models, result.models);
-              const detail = t('settingsAuto260', { v0: String(result.models.length) });
+              const detail = t('settingsAuto260', { v0: result.models.length });
               statusContainer.setText(detail);
               this.validationCache[cacheKey] = result;
               await this.recordProviderValidation(cacheKey, config, {
@@ -7248,7 +7248,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             new Notice(t('settingsAuto227', { v0: String(errorDetails) }), 10000);
             return {
               status: 'partial',
-              detail: t('settingsAuto270', { v0: String(errors.length) }),
+              detail: t('settingsAuto270', { v0: errors.length }),
             };
           }
           return { status: 'success' };

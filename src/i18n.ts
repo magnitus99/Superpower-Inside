@@ -5374,10 +5374,14 @@ export function getLanguage(): Language {
   return currentLang;
 }
 
-/**
- * Translate a key into the current language.
- * Supports simple interpolation with {key} placeholders.
- */
+const numberFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 20 });
+
+/** 화면에 표시할 숫자의 정밀도를 유지하며 천 단위 쉼표를 넣습니다. */
+export function formatNumber(value: number): string {
+  return numberFormatter.format(value);
+}
+
+/** 현재 언어로 번역하며 숫자 변수에는 천 단위 쉼표를 적용합니다. */
 export function t<K extends keyof I18nKeys>(
   key: K,
   vars?: Record<string, string | number>,
@@ -5385,7 +5389,10 @@ export function t<K extends keyof I18nKeys>(
   let text = STRINGS[currentLang][key] ?? STRINGS['en'][key] ?? String(key);
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
-      text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
+      text = text.replace(
+        new RegExp(`\\{${k}\\}`, 'g'),
+        typeof v === 'number' ? formatNumber(v) : v,
+      );
     }
   }
   return text;
