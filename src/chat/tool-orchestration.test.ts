@@ -71,6 +71,56 @@ function normalizedReadResult(path: string): string {
 }
 
 describe('적극적 도구 오케스트레이션 경계', () => {
+  it.each(['initial', 'after-tools'] as const)(
+    '%s에서 멘션하지 않은 MCP의 설명과 스키마도 모델에 제공한다',
+    (phase) => {
+      const external: ToolDefinition = {
+        type: 'function',
+        function: {
+          name: 'remote_search',
+          description: 'MCP server "remote". Actual tool "remote_search". Search remote evidence.',
+          parameters: {
+            type: 'object',
+            properties: { query: { type: 'string' } },
+            required: ['query'],
+          },
+        },
+      };
+      const catalog = [...definitions, external];
+      const plan = planAgenticToolTurn({
+        question: '내 노트에서 배포 근거를 조사해줘',
+        contextAttachments: [],
+        explicitToolServerCount: 0,
+        toolDefinitions: catalog,
+        toolCalls:
+          phase === 'initial'
+            ? []
+            : [
+                {
+                  id: 'search',
+                  name: 'superpower_inside_search',
+                  arguments: '{"query":"release"}',
+                  status: 'success',
+                  normalizedResult: normalizedSearchResult(['Decision.md']),
+                },
+              ],
+        phase,
+        round: phase === 'initial' ? 0 : 1,
+        maxRounds: 10,
+      });
+
+      expect(plan).not.toBeNull();
+      expect(plan?.requiredExternalServerNames).toEqual([]);
+      expect(
+        selectAgenticToolDefinitions(
+          catalog,
+          plan?.requiredToolNames,
+          plan?.requiredExternalServerNames,
+        ),
+      ).toContainEqual(external);
+    },
+  );
+
   it('질문에 필요한 후보를 읽은 뒤에는 다른 검색 후보를 모두 읽도록 강제하지 않는다', () => {
     const plan = planAgenticToolTurn({
       question: '내 노트에서 이 구절의 앞뒤 원문을 읽고 누가 말했는지 알려줘',
