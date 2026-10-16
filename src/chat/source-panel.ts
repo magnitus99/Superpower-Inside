@@ -48,7 +48,7 @@ export interface SourcePanelHandlers {
   openCitation(citation: SourceCitation): void | Promise<void>;
   copyCitationLink(citation: SourceCitation, button: HTMLButtonElement): void | Promise<void>;
   insertCitation(citation: SourceCitation): void | Promise<void>;
-  repairSourceWarning?(warning: SourceValidationWarning): void | Promise<void>;
+  repairSourceWarning?(warning: SourceValidationWarning, messageId: string): void | Promise<void>;
 }
 
 interface DisclosureSnapshot {
@@ -493,7 +493,11 @@ export class SourcePanel {
     }
   }
 
-  renderSourceWarningsSection(container: HTMLElement, warnings: SourceValidationWarning[]): void {
+  renderSourceWarningsSection(
+    container: HTMLElement,
+    warnings: SourceValidationWarning[],
+    messageId: string,
+  ): void {
     let section = container.querySelector('.superpower-inside-chat-source-warnings');
     if (warnings.length === 0) {
       section?.remove();
@@ -523,7 +527,7 @@ export class SourcePanel {
         if (original) {
           repair.addEventListener(
             'click',
-            () => void this.handlers.repairSourceWarning?.(original),
+            () => void this.handlers.repairSourceWarning?.(original, messageId),
           );
         }
       }

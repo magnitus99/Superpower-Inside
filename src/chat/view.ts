@@ -19,7 +19,7 @@ import type {
   ToolCallRecord,
 } from './types';
 import type { ContextAttachment, SourceCitation } from './types';
-import { loadChat, saveChat } from './persistence';
+import { formatAnswerNoteContent, loadChat, saveChat } from './persistence';
 import { SaveAnswerModal } from './save-answer-modal';
 import { summarizeSessionTitle } from './session-title';
 import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
@@ -359,7 +359,7 @@ export class ChatView extends ItemView {
       openCitation: (citation) => this.openCitation(citation),
       copyCitationLink: (citation, button) => this.copyCitationLink(citation, button),
       insertCitation: (citation) => this.insertCitationIntoActiveNote(citation),
-      repairSourceWarning: (warning) => this.repairSourceWarning(warning),
+      repairSourceWarning: (warning, messageId) => this.repairSourceWarning(warning, messageId),
     });
     this.toolCallPanel = new ToolCallPanel({
       setIcon: (element, icon) => setIcon(element, icon),
@@ -1485,7 +1485,11 @@ export class ChatView extends ItemView {
     this.sourcePanel.renderCitationsSection(layout.panels.sources, citations ?? [], {
       mode: 'embedded',
     });
-    this.sourcePanel.renderSourceWarningsSection(layout.panels.sources, sourceWarnings ?? []);
+    this.sourcePanel.renderSourceWarningsSection(
+      layout.panels.sources,
+      sourceWarnings ?? [],
+      messageId,
+    );
   }
 
   private updateAssistantLayers(
@@ -1600,7 +1604,11 @@ export class ChatView extends ItemView {
     this.sourcePanel.renderCitationsSection(layout.panels.sources, citations ?? [], {
       mode: 'embedded',
     });
-    this.sourcePanel.renderSourceWarningsSection(layout.panels.sources, sourceWarnings ?? []);
+    this.sourcePanel.renderSourceWarningsSection(
+      layout.panels.sources,
+      sourceWarnings ?? [],
+      bubbleContainer.getAttribute('data-message-id') ?? '',
+    );
     layout.update({
       hasAnswer: Boolean(content.trim() || assistantQuestion),
       hasWork: Boolean(reasoning?.trim() || toolCalls?.length),
@@ -2306,7 +2314,7 @@ export class ChatView extends ItemView {
       return;
     }
     try {
-      await this.app.vault.append(active, `\n\n${msg.content}\n`);
+      await this.app.vault.append(active, `\n\n${formatAnswerNoteContent(msg)}\n`);
       new Notice(t('messageInsertedNotice'));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2319,12 +2327,12 @@ export class ChatView extends ItemView {
     new Notice(t('sourceWarningIncluded', { count: msg.sourceWarnings.length }), 5000);
   }
 
-  private repairSourceWarning(warning: SourceValidationWarning): void {
-    if (!this.inputArea) return;
-    this.inputArea.value = t('sourceRepairPrompt', { label: warning.label });
-    this.inputArea.focus();
-    this.autoResizeInput();
-    this.renderContextPreview(this.inputArea.value);
+  private repairSourceWarning(warning: SourceValidationWarning, messageId: string): void {
+    const message = this.messages.find(
+      (item) => item.id === messageId && item.role === 'assistant',
+    );
+    if (!message) return;
+    void this.handleSend(t('sourceRepairPrompt', { label: warning.label }), message);
   }
 
   private saveMessageAsNote(msg: ChatMessageWithMeta, button: HTMLButtonElement): void {
@@ -2373,10 +2381,7 @@ export class ChatView extends ItemView {
     this.pendingRegeneration = draft;
     this.markDirtyAndAutoSave();
     this.rebuildMessagesDOM();
-    this.inputArea!.value = draft.text;
-    this.autoResizeInput();
-    this.renderContextPreview(draft.text);
-    await this.handleSend();
+    await this.handleSend(draft.text);
     // 완료된 변형을 턴 자리로 재배치하고 이전 변형을 숨긴다.
     this.rebuildMessagesDOM();
   }
@@ -2754,8 +2759,11 @@ export class ChatView extends ItemView {
     );
   }
 
-  private async handleSend(): Promise<void> {
-    const text = this.inputArea?.value.trim();
+  private async handleSend(
+    submittedText?: string,
+    sourceMessage?: ChatMessageWithMeta,
+  ): Promise<void> {
+    const text = (submittedText ?? this.inputArea?.value)?.trim();
     if (!text || this.isStreaming) return;
     const workspaceFiles = captureWorkspaceMentionFiles(this.app);
     const regeneration = this.pendingRegeneration;
@@ -2763,10 +2771,10 @@ export class ChatView extends ItemView {
       this.messages,
       regeneration?.previousUserId,
     );
-    this.pendingSubmittedDraft = createComposerDraftSnapshot({
-      text,
-      attachmentIds: this.getDraftAttachmentIds(text),
-    });
+    this.pendingSubmittedDraft =
+      submittedText === undefined
+        ? createComposerDraftSnapshot({ text, attachmentIds: this.getDraftAttachmentIds(text) })
+        : null;
     this.lastUserPrompt = text;
 
     const abortController = new AbortController();
@@ -2782,6 +2790,7 @@ export class ChatView extends ItemView {
       this.activeRun = null;
       this.abortController = null;
       this.pendingSubmittedDraft = null;
+      this.pendingRegeneration = null;
       this.setLoading(false);
     };
 
@@ -2834,9 +2843,11 @@ export class ChatView extends ItemView {
       return toTurnMeta();
     };
 
-    this.inputArea!.value = '';
-    this.autoResizeInput();
-    this.renderContextPreview('');
+    if (submittedText === undefined) {
+      this.inputArea!.value = '';
+      this.autoResizeInput();
+      this.renderContextPreview('');
+    }
     const contextMentions = this.parseMentions(text);
     const mentionedFolders = contextMentions.filter((mention) => mention.type === 'folder');
     const researchScopePath = mentionedFolders.length === 1 ? mentionedFolders[0].name : undefined;
@@ -2889,6 +2900,7 @@ export class ChatView extends ItemView {
         this.activeRun = null;
         this.abortController = null;
         this.restoreSubmittedDraft();
+        this.pendingRegeneration = null;
         this.setLoading(false);
         this.preparationErrorEl?.setText(t('answerNotePreparing'));
         setHidden(this.preparationErrorEl, false);
@@ -2979,6 +2991,13 @@ export class ChatView extends ItemView {
       providerConversationSource,
       toolProtocol,
     );
+    if (sourceMessage) {
+      // 검증 대상은 assistant 자료로 연결하며 멘션·검색 범위를 정하는 사용자 입력에 섞지 않습니다.
+      providerConversationMessages.splice(-1, 0, {
+        role: 'assistant',
+        content: sourceMessage.content,
+      });
+    }
     const waitStatus = createProviderWaitStatus({
       providerLabel,
       model: modelName,
@@ -3724,6 +3743,7 @@ export class ChatView extends ItemView {
       const finalization = planChatRunFinalization(this.activeRun, run, restoreDraft);
       if (finalization.restoreSubmittedDraft) {
         this.restoreSubmittedDraft();
+        this.pendingRegeneration = null;
       } else if (finalization.clearPendingState) {
         this.pendingSubmittedDraft = null;
         this.pendingRegeneration = null;

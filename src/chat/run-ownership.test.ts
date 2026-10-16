@@ -84,7 +84,7 @@ describe('chat run ownership', () => {
     const executeStart = viewSource.indexOf('private async executeAssistantToolCalls(');
     const executeEnd = viewSource.indexOf('private async approveToolCall(', executeStart);
     const executeSource = viewSource.slice(executeStart, executeEnd);
-    const handleStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleStart = viewSource.indexOf('private async handleSend(');
     const handleEnd = viewSource.indexOf('private setLoading(', handleStart);
     const handleSource = viewSource.slice(handleStart, handleEnd);
     const streamStart = viewSource.indexOf('private async streamFinalAnswerAfterTools(');
@@ -115,7 +115,7 @@ describe('chat run ownership', () => {
 
   it('도구 호환 폴백과 비활성 설정도 active run 및 명시적 예산을 지킨다', () => {
     const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
-    const handleStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleStart = viewSource.indexOf('private async handleSend(');
     const handleEnd = viewSource.indexOf('private setLoading(', handleStart);
     const handleSource = viewSource.slice(handleStart, handleEnd);
     const loopStart = viewSource.indexOf('private async runToolResponseLoop(');
@@ -139,7 +139,7 @@ describe('chat run ownership', () => {
 
   it('제출 user 다음 assistant placeholder는 첫 비동기 저장·도구 정의 gap보다 먼저 생긴다', () => {
     const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
-    const handleStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleStart = viewSource.indexOf('private async handleSend(');
     const handleEnd = viewSource.indexOf('private setLoading(', handleStart);
     const handleSource = viewSource.slice(handleStart, handleEnd);
     const userMessageIndex = handleSource.indexOf("this.addMessage('user'");
@@ -158,7 +158,7 @@ describe('chat run ownership', () => {
 
   it('프로바이더 생성 실패는 제출 run과 로딩 상태를 즉시 해제한다', () => {
     const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
-    const handleStart = viewSource.indexOf('private async handleSend(): Promise<void>');
+    const handleStart = viewSource.indexOf('private async handleSend(');
     const handleEnd = viewSource.indexOf('private setLoading(', handleStart);
     const handleSource = viewSource.slice(handleStart, handleEnd);
     const failureNoticeIndex = handleSource.indexOf('chatProviderInitializationFailed');

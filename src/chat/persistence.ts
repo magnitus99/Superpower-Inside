@@ -83,7 +83,12 @@ export async function saveAnswerNote(
 ): Promise<TFile> {
   await ensureFolder(vault, folder);
   const path = await buildUniqueFilename(vault, folder, new Date(), sanitizeFilename(title));
-  const lines = [`# ${title}`, '', message.content];
+  return vault.create(path, `# ${title}\n\n${formatAnswerNoteContent(message)}\n`);
+}
+
+/** 새 노트와 기존 노트 삽입에서 답변·출처·확인 한계를 같은 형식으로 유지합니다. */
+export function formatAnswerNoteContent(message: ChatMessageWithMeta): string {
+  const lines = [message.content];
   if (message.stopReason === 'cancelled') lines.push('', t('chatGenerationStopped'));
   if (message.sourceWarnings?.length) {
     lines.push('', t('answerNoteLimitations'), '');
@@ -94,7 +99,7 @@ export async function saveAnswerNote(
     lines.push('', t('answerNoteSources'), '');
     for (const citation of message.citations) lines.push(formatCitation(citation, true));
   }
-  return vault.create(path, `${lines.join('\n')}\n`);
+  return lines.join('\n');
 }
 
 export async function saveChat(
