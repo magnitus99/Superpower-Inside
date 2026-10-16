@@ -851,6 +851,11 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(batchProgress?.currentFileEstimatedChunks).toBe(3);
     expect(batchProgress?.currentFilePlannedChunks).toBeGreaterThan(0);
     expect(batchProgress?.completedBatchDurationsMs.length).toBeGreaterThan(0);
+    for (const snapshot of progress.filter((entry) => entry.event === 'file-complete')) {
+      expect(snapshot.currentFileEmbeddedChunks).toBe(0);
+      expect(snapshot.currentFileEstimatedChunks).toBe(0);
+      expect(snapshot.currentFilePlannedChunks).toBe(0);
+    }
     const finalProgress = progress.find(
       (snapshot) => snapshot.event === 'file-complete' && snapshot.currentFilePath === 'b.md',
     );
