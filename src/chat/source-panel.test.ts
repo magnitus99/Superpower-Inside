@@ -581,6 +581,18 @@ describe('SourcePanel disclosure DOM contract', () => {
     };
 
     panel.renderCitationsSection(container, [firstCitation]);
+    const quote = container.querySelector<HTMLButtonElement>(
+      '.superpower-inside-chat-citation-preview-toggle',
+    );
+    expect(quote?.getAttribute('aria-expanded')).toBe('false');
+    quote?.click();
+    expect(quote?.getAttribute('aria-expanded')).toBe('true');
+    panel.renderCitationsSection(container, [firstCitation]);
+    expect(
+      container
+        .querySelector('.superpower-inside-chat-citation-preview-toggle')
+        ?.getAttribute('aria-expanded'),
+    ).toBe('true');
 
     const firstToggle = container.querySelector<HTMLButtonElement>(
       '.superpower-inside-chat-citations-label',

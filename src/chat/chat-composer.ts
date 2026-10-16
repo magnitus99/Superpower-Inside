@@ -9,7 +9,6 @@ export interface ComposerLoadingState {
     text: string;
   };
   inputDisabled: boolean;
-  toolsDisabled: boolean;
   modelSelectDisabled: boolean;
   runControl: {
     hidden: boolean;
@@ -166,7 +165,6 @@ export function createComposerLoadingState(loading: boolean): ComposerLoadingSta
       text: loading ? t('stopButton') : t('sendButton'),
     },
     inputDisabled: loading,
-    toolsDisabled: loading,
     modelSelectDisabled: loading,
     runControl: {
       hidden: !loading,
@@ -180,7 +178,6 @@ export function createContextPreviewChips(
   mentions: readonly ContextPreviewMention[],
 ): ContextPreviewChip[] {
   return [
-    { label: t('chatAutoRagChip'), cls: 'rag' },
     ...mentions.map((mention) => ({
       label: createMentionChipLabel(mention),
       cls: mention.type,

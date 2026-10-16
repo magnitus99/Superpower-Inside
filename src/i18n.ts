@@ -494,6 +494,19 @@ export interface I18nKeys {
   progressLabel: string;
 
   // 채팅 탭
+  answerNotePreparing: string;
+  sourcePreviewAction: string;
+  chatQuestionLabel: string;
+  answerNoteLimitations: string;
+  answerNoteSources: string;
+  answerNoteSaveDetail: string;
+  answerNoteName: string;
+  answerNoteFolder: string;
+  answerNoteVaultRoot: string;
+  answerNoteSaveAction: string;
+  answerNoteSaving: string;
+  answerNoteSaved: string;
+  answerNoteOpen: string;
   chatTabTitle: string;
   toolbarTools: string;
   sendButton: string;
@@ -1607,10 +1620,14 @@ export interface I18nKeys {
 }
 
 const ko: I18nKeys = {
-  xlsxMemoryBudgetError: '엑셀 문서가 추출 작업의 메모리 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
-  xlsxXmlTokenBudgetError: '엑셀 내부 XML 구조가 파싱 버퍼 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
-  xlsxTimeBudgetError: '엑셀 문서 추출이 60초의 처리 시간 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
-  xlsxExtractionError: '엑셀 문서 전체를 추출하지 못했습니다 ({reason}). 일부 본문은 사용하지 않습니다.',
+  xlsxMemoryBudgetError:
+    '엑셀 문서가 추출 작업의 메모리 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
+  xlsxXmlTokenBudgetError:
+    '엑셀 내부 XML 구조가 파싱 버퍼 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
+  xlsxTimeBudgetError:
+    '엑셀 문서 추출이 60초의 처리 시간 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
+  xlsxExtractionError:
+    '엑셀 문서 전체를 추출하지 못했습니다 ({reason}). 일부 본문은 사용하지 않습니다.',
   retiredArtifactsSection: '저장 공간',
   retiredArtifactsTitle: '지원이 끝난 데이터',
   retiredArtifactsDesc:
@@ -1667,9 +1684,11 @@ const ko: I18nKeys = {
   settingsServerTransport: '연결 방식',
   settingsServerUrl: '원격 서버 URL',
   settingsServerAuthSecret: '인증 토큰의 보안 저장소 이름',
-  settingsServerAuthSecretDetail: 'Obsidian 보안 저장소에서 토큰을 선택하거나 추가하세요. 설정에는 이름만 저장하며, 인증에는 HTTPS 또는 로컬 서버가 필요합니다.',
+  settingsServerAuthSecretDetail:
+    'Obsidian 보안 저장소에서 토큰을 선택하거나 추가하세요. 설정에는 이름만 저장하며, 인증에는 HTTPS 또는 로컬 서버가 필요합니다.',
   mcpAuthSecretMissing: '이 기기의 보안 저장소에서 MCP 인증 토큰을 찾을 수 없습니다.',
-  mcpJsonInvalidRemote: '원격 서버에는 HTTP(S) URL과 http 또는 sse 연결 방식이 필요합니다. 토큰 원문 대신 authTokenSecret 이름을 사용하고 실행 명령은 제거하세요.',
+  mcpJsonInvalidRemote:
+    '원격 서버에는 HTTP(S) URL과 http 또는 sse 연결 방식이 필요합니다. 토큰 원문 대신 authTokenSecret 이름을 사용하고 실행 명령은 제거하세요.',
   settingsServerArgs: '실행 인수',
   settingsServerArgsDetail: 'JSON 배열로 입력합니다. 예: ["-y", "@upstash/context7-mcp"]',
   settingsServerEnv: '환경 변수',
@@ -1766,7 +1785,8 @@ const ko: I18nKeys = {
   langKo: '한국어',
   langEn: 'English',
   languageChangeConfirm: '표시 언어를 변경할까요? 열린 설정 화면에 바로 적용됩니다.',
-  settingsUpdateAvailable: '새로운 기능들이 기다리고 있어요! 커뮤니티 플러그인에서 업데이트해 보세요.',
+  settingsUpdateAvailable:
+    '새로운 기능들이 기다리고 있어요! 커뮤니티 플러그인에서 업데이트해 보세요.',
   settingsUpdateTitle: '새로운 기능들이 기다리고 있어요!',
   settingsUpdateDetail: '커뮤니티 플러그인에서 업데이트해 보세요',
   settingsUpdateNoticeLabel: '업데이트 알림',
@@ -2161,6 +2181,20 @@ const ko: I18nKeys = {
   progressLabel: '진행률',
 
   // Chat
+  answerNotePreparing:
+    '자료를 확인하지 못했습니다. 질문은 남겨 뒀습니다. 다시 전송하거나 참조 자료를 바꿔 주세요.',
+  sourcePreviewAction: '인용 구간',
+  chatQuestionLabel: '질문',
+  answerNoteLimitations: '## 근거의 한계',
+  answerNoteSources: '## 출처',
+  answerNoteSaveDetail: '답변과 출처를 함께 남깁니다. 저장 위치는 이번 작업에만 사용합니다.',
+  answerNoteName: '노트 이름',
+  answerNoteFolder: '저장 위치',
+  answerNoteVaultRoot: '볼트 최상위',
+  answerNoteSaveAction: '이 위치에 저장',
+  answerNoteSaving: '저장 중…',
+  answerNoteSaved: '저장됨',
+  answerNoteOpen: '저장한 노트 보기',
   chatTabTitle: 'AI 채팅',
   toolbarTools: '도구',
   sendButton: '전송',
@@ -2238,7 +2272,7 @@ const ko: I18nKeys = {
   chatMcpReconnectCompleteNotice: 'MCP 서버 재연결 완료',
   chatSearchButton: '검색',
   chatMessageSearchAria: '메시지 검색',
-  chatInputPlaceholder: '메시지를 입력하세요. @로 문서·폴더·도구 참조',
+  chatInputPlaceholder: '노트에서 알고 싶은 내용을 물어보세요',
   chatMessageSearchPrompt: '검색할 메시지 내용을 입력하세요.',
   chatAutoRagChip: '관련 노트',
   chatFolderMentionChip: '폴더 {name}',
@@ -2258,11 +2292,12 @@ const ko: I18nKeys = {
   chatReferenceAvailable: '사용 가능',
   chatReferenceMissing: '찾을 수 없음',
   chatReferenceUnavailable: '참조를 확인할 수 없습니다.',
-  chatReadinessProviderMissing: 'Provider 설정 필요',
+  chatReadinessProviderMissing: '답변에 사용할 AI 연결이 필요해요',
   chatReadinessProviderMissingDetail:
-    '설정에서 최소 하나의 LLM Provider를 활성화해야 전송할 수 있습니다.',
-  chatReadinessModelMissing: '모델 선택 필요',
-  chatReadinessModelMissingDetail: '활성 Provider에 사용할 모델을 하나 이상 등록하세요.',
+    '작성한 질문은 남겨 둡니다. AI 연결을 설정한 뒤 이어서 보낼 수 있습니다.',
+  chatReadinessModelMissing: '답변에 사용할 모델을 선택해 주세요',
+  chatReadinessModelMissingDetail:
+    '기존 연결에서 사용할 모델을 선택하세요. 모델이 없으면 AI 연결 설정에서 등록할 수 있습니다.',
   chatReadinessRagIndexing: 'RAG 인덱싱 중',
   chatReadinessRagIndexingDetail:
     '이번 질문은 보낼 수 있지만 최신 볼트 컨텍스트가 일부 빠질 수 있습니다.',
@@ -2270,10 +2305,10 @@ const ko: I18nKeys = {
   chatReadinessRagNotReadyDetail: '인덱스를 만들거나 갱신하면 자동 컨텍스트 품질이 좋아집니다.',
   chatReadinessPrepareDocuments: '문서 준비',
   chatReadinessSelectModelAction: '모델 선택',
-  chatReadinessConfigureProviderAction: 'Provider 설정',
-  chatEmptyStateTitle: '볼트에 대해 물어보세요',
+  chatReadinessConfigureProviderAction: 'AI 연결 설정',
+  chatEmptyStateTitle: '노트에서 찾고, 이해한 내용을 이어 가세요.',
   chatEmptyStateDetail:
-    '관련 문서는 내장 검색으로 자동 참조하고 답변 아래에 출처를 표시합니다. MCP는 필요하지 않습니다.',
+    '궁금한 내용을 물어보세요. 필요한 자료는 기존 검색 설정과 권한 안에서 확인합니다.',
   chatEmptyStatePromptSummary: '이 볼트의 핵심 주제를 근거와 함께 요약해줘',
   chatEmptyStatePromptConnections: '최근 노트와 연결되는 관련 문서를 찾아줘',
   chatReadinessMcpPartial: 'MCP 일부 연결 필요',
@@ -2361,7 +2396,8 @@ const ko: I18nKeys = {
   variantNavNext: '다음 답변',
   variantNavPosition: '{current} / {total}',
   chatActionWhileStreamingNotice: '응답 생성이 끝난 뒤에 사용할 수 있습니다.',
-  chatGenerationStopped: '응답 생성이 중단되었습니다.',
+  chatGenerationStopped:
+    '요청을 중단했습니다. 질문과 확인한 결과는 보존했습니다. 이미 전송된 외부 요청의 처리·과금까지 취소되지는 않을 수 있습니다.',
   vaultResearchProgress: '볼트 조사 중 · {phase} · {completed}/{total}',
   vaultResearchPhaseInventory: '문서 확인',
   vaultResearchPhaseMap: '문서 읽기',
@@ -2472,7 +2508,7 @@ const ko: I18nKeys = {
   messageCopyAction: '복사',
   messageRetryAction: '재생성',
   messageInsertIntoNoteAction: '노트에 삽입',
-  messageNewNoteAction: '새 노트',
+  messageNewNoteAction: '노트로 저장',
   messageBranchAction: '브랜치',
   messageEditAndSendAction: '수정 후 전송',
   activeNoteMissingNotice: '활성 노트가 없습니다.',
@@ -3412,10 +3448,14 @@ const ko: I18nKeys = {
 };
 
 const en: I18nKeys = {
-  xlsxMemoryBudgetError: 'This spreadsheet exceeds the extraction memory budget. Partial text will not be used.',
-  xlsxXmlTokenBudgetError: 'The XML structure in this spreadsheet exceeds the parsing buffer budget. Partial text will not be used.',
-  xlsxTimeBudgetError: 'Spreadsheet extraction exceeded the 60-second processing budget. Partial text will not be used.',
-  xlsxExtractionError: 'The complete spreadsheet could not be extracted ({reason}). Partial text will not be used.',
+  xlsxMemoryBudgetError:
+    'This spreadsheet exceeds the extraction memory budget. Partial text will not be used.',
+  xlsxXmlTokenBudgetError:
+    'The XML structure in this spreadsheet exceeds the parsing buffer budget. Partial text will not be used.',
+  xlsxTimeBudgetError:
+    'Spreadsheet extraction exceeded the 60-second processing budget. Partial text will not be used.',
+  xlsxExtractionError:
+    'The complete spreadsheet could not be extracted ({reason}). Partial text will not be used.',
   retiredArtifactsSection: 'Storage',
   retiredArtifactsTitle: 'Data from retired features',
   retiredArtifactsDesc:
@@ -3472,9 +3512,12 @@ const en: I18nKeys = {
   settingsServerTransport: 'Transport',
   settingsServerUrl: 'Remote server URL',
   settingsServerAuthSecret: 'Authentication token secret name',
-  settingsServerAuthSecretDetail: 'Select or add a token in Obsidian Secret Storage. Settings store only its name. Authentication requires HTTPS or a local server.',
-  mcpAuthSecretMissing: 'The MCP authentication token is missing from Secret Storage on this device.',
-  mcpJsonInvalidRemote: 'Remote servers require an HTTP(S) URL and http or sse transport. Use an authTokenSecret name instead of a raw token and remove process fields.',
+  settingsServerAuthSecretDetail:
+    'Select or add a token in Obsidian Secret Storage. Settings store only its name. Authentication requires HTTPS or a local server.',
+  mcpAuthSecretMissing:
+    'The MCP authentication token is missing from Secret Storage on this device.',
+  mcpJsonInvalidRemote:
+    'Remote servers require an HTTP(S) URL and http or sse transport. Use an authTokenSecret name instead of a raw token and remove process fields.',
   settingsServerArgs: 'Arguments',
   settingsServerArgsDetail: 'Enter a JSON array, e.g. ["-y", "@upstash/context7-mcp"].',
   settingsServerEnv: 'Environment variables',
@@ -3972,6 +4015,21 @@ const en: I18nKeys = {
   progressLabel: 'Progress',
 
   // Chat
+  answerNotePreparing:
+    'The material could not be checked. Your question was kept. Send again or change the references.',
+  sourcePreviewAction: 'Quoted passage',
+  chatQuestionLabel: 'Question',
+  answerNoteLimitations: '## Evidence limitations',
+  answerNoteSources: '## Sources',
+  answerNoteSaveDetail:
+    'Save the answer with its sources. This location applies only to this save.',
+  answerNoteName: 'Note name',
+  answerNoteFolder: 'Save location',
+  answerNoteVaultRoot: 'Vault root',
+  answerNoteSaveAction: 'Save here',
+  answerNoteSaving: 'Saving…',
+  answerNoteSaved: 'Saved',
+  answerNoteOpen: 'Open saved note',
   chatTabTitle: 'AI Chat',
   toolbarTools: 'Tools',
   sendButton: 'Send',
@@ -4049,7 +4107,7 @@ const en: I18nKeys = {
   chatMcpReconnectCompleteNotice: 'MCP servers reconnected.',
   chatSearchButton: 'Search',
   chatMessageSearchAria: 'Search messages',
-  chatInputPlaceholder: 'Enter a message. Use @ for documents, folders, or tools',
+  chatInputPlaceholder: 'Ask what you want to know from your notes',
   chatMessageSearchPrompt: 'Enter message text to search for.',
   chatAutoRagChip: 'Related notes',
   chatFolderMentionChip: 'Folder {name}',
@@ -4069,11 +4127,12 @@ const en: I18nKeys = {
   chatReferenceAvailable: 'Available',
   chatReferenceMissing: 'Not found',
   chatReferenceUnavailable: 'References could not be checked.',
-  chatReadinessProviderMissing: 'Provider setup required',
+  chatReadinessProviderMissing: 'An AI connection is needed to answer',
   chatReadinessProviderMissingDetail:
-    'Enable at least one LLM provider in settings before sending.',
-  chatReadinessModelMissing: 'Model selection required',
-  chatReadinessModelMissingDetail: 'Add at least one model to an enabled provider.',
+    'Your question stays here. Set up an AI connection, then send it.',
+  chatReadinessModelMissing: 'Choose a model for the answer',
+  chatReadinessModelMissingDetail:
+    'Choose a model from your connection. If none is available, add one in AI connection settings.',
   chatReadinessRagIndexing: 'RAG indexing',
   chatReadinessRagIndexingDetail:
     'You can send now, but some current vault context may be missing.',
@@ -4082,10 +4141,10 @@ const en: I18nKeys = {
     'Build or refresh the index to improve automatic context quality.',
   chatReadinessPrepareDocuments: 'Prepare documents',
   chatReadinessSelectModelAction: 'Select model',
-  chatReadinessConfigureProviderAction: 'Configure provider',
-  chatEmptyStateTitle: 'Ask about your vault',
+  chatReadinessConfigureProviderAction: 'Set up AI connection',
+  chatEmptyStateTitle: 'Find it in your notes. Take your understanding further.',
   chatEmptyStateDetail:
-    'Built-in search automatically references related documents and shows sources below the answer. MCP is not required.',
+    'Ask what you want to understand. Relevant material is checked within your search settings and permissions.',
   chatEmptyStatePromptSummary: 'Summarize the main themes in this vault with evidence',
   chatEmptyStatePromptConnections: 'Find documents related to my recent notes',
   chatReadinessMcpPartial: 'Some MCP connections need attention',
@@ -4173,7 +4232,8 @@ const en: I18nKeys = {
   variantNavNext: 'Next answer',
   variantNavPosition: '{current} / {total}',
   chatActionWhileStreamingNotice: 'Available once the current response finishes.',
-  chatGenerationStopped: 'Response generation was stopped.',
+  chatGenerationStopped:
+    'The request was stopped. Your question and available results were kept. Processing and charges for requests already sent may continue.',
   vaultResearchProgress: 'Researching vault · {phase} · {completed}/{total}',
   vaultResearchPhaseInventory: 'Checking documents',
   vaultResearchPhaseMap: 'Reading documents',
@@ -4285,7 +4345,7 @@ const en: I18nKeys = {
   messageCopyAction: 'Copy',
   messageRetryAction: 'Regenerate',
   messageInsertIntoNoteAction: 'Insert into note',
-  messageNewNoteAction: 'New note',
+  messageNewNoteAction: 'Save as note',
   messageBranchAction: 'Branch',
   messageEditAndSendAction: 'Edit and send',
   activeNoteMissingNotice: 'No active note.',
@@ -4674,7 +4734,8 @@ const en: I18nKeys = {
   settingsTitle: 'Superpower Inside — Settings',
   securityWarning:
     'API keys are kept in Obsidian’s secret storage on this device, so vault sync and backups never include them. Enter them again on other devices.',
-  apiKeyMissingOnDevice: 'No key value is stored on this device. Enter it again to use this provider.',
+  apiKeyMissingOnDevice:
+    'No key value is stored on this device. Enter it again to use this provider.',
   apiKeyMigratedToSecretStorage:
     'Stored {count} API key(s) in Obsidian’s secret storage on this device.',
   apiKeySecretStorageUnavailable:

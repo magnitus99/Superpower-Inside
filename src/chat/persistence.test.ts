@@ -3,7 +3,7 @@ import { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessageWithMeta } from './types';
 import { executeMcpToolCalls, type MCPRegistryLike } from './mcp-tool-execution';
-import { listChatMetasAsync, listChats, loadChat, saveChat } from './persistence';
+import { listChatMetasAsync, listChats, loadChat, saveChat, saveAnswerNote } from './persistence';
 import { appendAssistantToolRound } from './tool-execution';
 import { planModelContextRust } from '../rag/rust-core';
 
@@ -19,6 +19,50 @@ vi.mock('obsidian', () => {
 });
 
 describe('chat persistence', () => {
+  it('답변 저장은 본문·출처·근거 제한을 보존하고 기존 노트를 덮어쓰지 않는다', async () => {
+    const vault = createVault();
+    vault.writeFile('Notes/Comparison.md', '기존 사용자 노트');
+    const message = createMessage({
+      role: 'assistant',
+      content: '확인한 자료에 한정한 비교입니다. [source-1]',
+      citations: [
+        {
+          id: 'source-1',
+          filePath: 'Examples/A.md',
+          line: 2,
+          preview: '합성 근거',
+          status: 'verified',
+        },
+      ],
+      sourceWarnings: [
+        {
+          id: 'missing',
+          label: '일부 자료 누락',
+          detail: '확인하지 못한 자료가 있습니다.',
+          kind: 'unverified-source',
+        },
+      ],
+    });
+    const file = await saveAnswerNote(vault, message, 'Notes', 'Comparison');
+    expect(file.path).toBe('Notes/Comparison-2.md');
+    const content = await vault.cachedRead(file);
+    expect(content).toContain(message.content);
+    expect(content).toContain('Examples/A.md');
+    expect(content).toContain('합성 근거');
+    expect(content).toContain('확인하지 못한 자료가 있습니다.');
+    expect(
+      await vault.cachedRead(vault.getAbstractFileByPath('Notes/Comparison.md') as TFile),
+    ).toBe('기존 사용자 노트');
+  });
+
+  it('답변은 루트에도 저장할 수 있고 저장 실패를 성공으로 반환하지 않는다', async () => {
+    const vault = createVault();
+    const message = createMessage({ role: 'assistant', content: '답변' });
+    expect((await saveAnswerNote(vault, message, '', 'Answer')).path).toBe('Answer.md');
+    vi.spyOn(vault, 'create').mockRejectedValueOnce(new Error('쓰기 실패'));
+    await expect(saveAnswerNote(vault, message, '', 'Another')).rejects.toThrow('쓰기 실패');
+    expect(message.content).toBe('답변');
+  });
   it('목록은 실제 수정일의 최신순이며 읽기 순서로 바뀌지 않는다', async () => {
     const vault = createVault();
     vault.writeFile('Chats/old.md', '---\ncreated: "2026-01-01T00:00:00.000Z"\n---\n');

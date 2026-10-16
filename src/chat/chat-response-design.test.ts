@@ -13,14 +13,14 @@ describe('assistant 단일 캔버스 디자인 계약', () => {
   it('A안은 보조 행동을 헤더 메뉴에 두고 입력 아래에 전송 행동을 둔다', () => {
     const header = viewSource.slice(
       viewSource.indexOf('private buildHeader('),
-      viewSource.indexOf('private buildMcpStatusBar('),
+      viewSource.indexOf('private buildInputArea('),
     );
     const composer = viewSource.slice(
       viewSource.indexOf('private buildInputArea('),
       viewSource.indexOf('private async focusMessageSearch('),
     );
-    expect(header).toContain("setIcon(newChatBtn, 'square-pen')");
-    expect(header).toContain("setIcon(historyBtn, 'history')");
+    expect(header).toContain("newChatBtn.setText(t('chatNewSession'))");
+    expect(header).toContain("historyBtn.setText(t('chatHistory'))");
     expect(header).toContain("'aria-haspopup': 'menu'");
     expect(header).toContain('this.focusMessageSearch()');
     expect(header).toContain('openPromptLibraryModal');
@@ -78,11 +78,20 @@ describe('assistant 단일 캔버스 디자인 계약', () => {
     expect(viewSource.includes("mode: 'embedded'")).toBe(true);
   });
 
-  it('메시지 행동은 근거 요약과 핵심 행동, 더 보기로 위계를 나눈다', () => {
-    expect(viewSource.includes('superpower-inside-chat-message-evidence')).toBe(true);
+  it('메시지 행동은 복사·출처를 포함한 저장·더 보기로 이어진다', () => {
+    expect(viewSource).toContain("createChatMessageActionId('save-as-note')");
     expect(viewSource.includes('superpower-inside-chat-message-action-buttons')).toBe(true);
     expect(viewSource.includes('assistantResponseMoreActions')).toBe(true);
     expect(styles.includes('.superpower-inside-chat-message-evidence')).toBe(true);
+  });
+
+  it('도구 선택·인자 입력·직접 실행 경로를 없애고 기존 LLM 실행 경로를 사용한다', () => {
+    expect(viewSource).not.toContain('openMcpToolPicker');
+    expect(viewSource).not.toContain('openMcpToolForm');
+    expect(viewSource).not.toContain('private async executeMcpTool(');
+    expect(viewSource).not.toContain("t('toolbarTools')");
+    expect(viewSource).toContain('executeAssistantToolCalls(');
+    expect(viewSource).toContain('collectExternalMcpToolDefinitions(');
   });
 
   it('emoji 대신 Obsidian 아이콘을 사용하고 좁은 sidebar reflow를 제공한다', () => {

@@ -395,6 +395,15 @@ export class SourcePanel {
       return;
     }
     const view = createCitationSectionView(citations);
+    const previousCards = existingSection?.querySelector(
+      '.superpower-inside-chat-citations-content',
+    )?.children;
+    const previewStates = new Map(
+      Array.from(previousCards ?? []).map((card) => [
+        card.getAttribute('data-citation-id'),
+        readDisclosureSnapshot(card, '.superpower-inside-chat-citation-preview-toggle', false),
+      ]),
+    );
     const mode = options.mode ?? 'disclosure';
     const disclosure =
       mode === 'embedded'
@@ -461,7 +470,16 @@ export class SourcePanel {
       if (cardView.detail) {
         card.createDiv({ cls: 'superpower-inside-chat-citation-warning', text: cardView.detail });
       }
-      card.createDiv({ cls: 'superpower-inside-chat-citation-preview', text: cardView.preview });
+      const previewState = previewStates.get(cardView.id);
+      const preview = this.renderDisclosure(card, {
+        buttonClassName: 'superpower-inside-chat-citation-preview-toggle',
+        iconClassName: 'superpower-inside-chat-citations-toggle-icon',
+        contentClassName: 'superpower-inside-chat-citation-preview',
+        contentId: previewState?.contentId ?? `superpower-inside-quote-${++this.sectionSequence}`,
+        label: t('sourcePreviewAction'),
+        expanded: previewState?.expanded ?? false,
+      });
+      preview.createDiv({ text: cardView.preview });
       const actions = card.createDiv({ cls: 'superpower-inside-chat-citation-actions' });
       const openBtn = actions.createEl('button', { text: t('sourceOpenAction') });
       openBtn.addEventListener('click', () => void this.handlers.openCitation(citation));
