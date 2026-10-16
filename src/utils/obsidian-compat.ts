@@ -15,6 +15,15 @@ export interface ActivePluginInfo {
   description?: string;
 }
 
+/** 공개 타입에 없는 데스크톱 설정 창 접근을 호스트 경계 한곳에 둡니다. */
+export function openPluginSettings(app: App, pluginId: string): void {
+  const host = app as App & {
+    setting: { open(): void; openTabById(id: string): void };
+  };
+  host.setting.open();
+  host.setting.openTabById(pluginId);
+}
+
 export function getActivePluginInfo(app: App): ActivePluginInfo[] {
   try {
     const plugins = (app as unknown as Record<string, unknown>).plugins as

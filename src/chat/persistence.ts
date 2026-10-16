@@ -74,6 +74,29 @@ export interface SaveChatOptions {
   title?: string;
 }
 
+/** 답변과 출처를 함께 내보내며 기존 노트는 덮어쓰지 않습니다. */
+export async function saveAnswerNote(
+  vault: Vault,
+  message: ChatMessageWithMeta,
+  folder: string,
+  title: string,
+): Promise<TFile> {
+  await ensureFolder(vault, folder);
+  const path = await buildUniqueFilename(vault, folder, new Date(), sanitizeFilename(title));
+  const lines = [`# ${title}`, '', message.content];
+  if (message.stopReason === 'cancelled') lines.push('', t('chatGenerationStopped'));
+  if (message.sourceWarnings?.length) {
+    lines.push('', t('answerNoteLimitations'), '');
+    for (const warning of message.sourceWarnings)
+      lines.push(`- ${warning.label}: ${warning.detail}`);
+  }
+  if (message.citations?.length) {
+    lines.push('', t('answerNoteSources'), '');
+    for (const citation of message.citations) lines.push(formatCitation(citation, true));
+  }
+  return vault.create(path, `${lines.join('\n')}\n`);
+}
+
 export async function saveChat(
   vault: Vault,
   messages: ChatMessageWithMeta[],
@@ -448,10 +471,12 @@ function formatToolCall(toolCall: ToolCallRecord): string {
   return `##### Tool: ${toolCall.name}${server} [${toolCall.status}]${approval}${argsBlock}${resultBlock ?? ''}\n`;
 }
 
-function formatCitation(citation: SourceCitation): string {
+function formatCitation(citation: SourceCitation, linked = false): string {
   const location = [
-    citation.filePath,
-    citation.heading ? `# ${citation.heading}` : '',
+    linked
+      ? `[[${citation.filePath}${citation.heading ? `#${citation.heading}` : ''}]]`
+      : citation.filePath,
+    !linked && citation.heading ? `# ${citation.heading}` : '',
     citation.line !== undefined ? `line ${citation.line}` : '',
   ]
     .filter(Boolean)
@@ -683,12 +708,18 @@ function formatDateForFilename(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}`;
 }
 
-async function buildUniqueFilename(vault: Vault, folder: string, date: Date): Promise<string> {
-  const baseName = formatDateForFilename(date);
-  let candidate = `${folder}/${baseName}.md`;
+async function buildUniqueFilename(
+  vault: Vault,
+  folder: string,
+  date: Date,
+  name?: string,
+): Promise<string> {
+  const baseName = name ?? formatDateForFilename(date);
+  const prefix = folder ? `${folder}/` : '';
+  let candidate = `${prefix}${baseName}.md`;
   let index = 2;
   while (await vault.adapter.exists(candidate)) {
-    candidate = `${folder}/${baseName}-${index}.md`;
+    candidate = `${prefix}${baseName}-${index}.md`;
     index++;
   }
   return candidate;

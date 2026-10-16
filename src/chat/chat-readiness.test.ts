@@ -1,84 +1,47 @@
 import { describe, expect, it } from 'vitest';
-import {
-  createChatReadinessSnapshot,
-  resolveChatReadinessActionButtonState,
-} from './chat-readiness';
+import { createChatReadinessSnapshot } from './chat-readiness';
 
-describe('chat readiness contract', () => {
-  it('provider/model이 없으면 전송 차단 상태를 계산한다', () => {
+describe('질문을 보내기 위한 준비 조건', () => {
+  it('연결이 없으면 질문을 보존한 채 연결 설정만 안내한다', () => {
     const snapshot = createChatReadinessSnapshot({
       enabledProviderCount: 0,
       availableModelCount: 0,
       selectedModel: '',
-      ragEnabled: true,
-      ragReady: false,
-      ragIndexing: false,
-      configuredMcpServerCount: 1,
-      connectedMcpServerCount: 0,
-      saveFolderConfigured: true,
     });
-
-    expect(snapshot).toMatchObject({
-      status: 'blocked',
-      blocksSend: true,
-      primaryText: 'Provider 설정 필요',
-    });
-    expect(snapshot.items.find((item) => item.kind === 'provider')).toMatchObject({
-      severity: 'blocking',
-      action: 'configure-provider',
-    });
-  });
-
-  it('RAG/MCP/save folder 문제는 degraded 상태로 묶는다', () => {
-    const snapshot = createChatReadinessSnapshot({
-      enabledProviderCount: 1,
-      availableModelCount: 1,
-      selectedModel: 'ollama:llama3.1',
-      ragEnabled: true,
-      ragReady: false,
-      ragIndexing: false,
-      configuredMcpServerCount: 2,
-      connectedMcpServerCount: 1,
-      saveFolderConfigured: false,
-    });
-
-    expect(snapshot.status).toBe('degraded');
-    expect(snapshot.blocksSend).toBe(false);
-    expect(snapshot.items.map((item) => item.kind)).toEqual(['rag', 'mcp', 'save-folder']);
-  });
-});
-
-describe('chat readiness action button state', () => {
-  it('진행 중인 액션은 다시 그려져도 로딩 상태를 유지한다', () => {
-    expect(
-      resolveChatReadinessActionButtonState({
-        action: 'reconnect-mcp',
-        pendingAction: 'reconnect-mcp',
-        label: '재연결',
-        loadingLabel: '재연결 중...',
+    expect(snapshot.blocksSend).toBe(true);
+    expect(snapshot.items).toEqual([
+      expect.objectContaining({
+        kind: 'provider',
+        action: 'configure-provider',
+        severity: 'blocking',
       }),
-    ).toEqual({ text: '재연결 중...', disabled: true, loading: true });
+    ]);
   });
-
-  it('다른 액션이 진행 중이면 해당 버튼은 대기 상태를 유지한다', () => {
+  it('모델이 등록되지 않았으면 연결 설정으로 안내한다', () => {
     expect(
-      resolveChatReadinessActionButtonState({
-        action: 'index-rag',
-        pendingAction: 'reconnect-mcp',
-        label: '문서 준비',
-        loadingLabel: '인덱싱 시작',
-      }),
-    ).toEqual({ text: '문서 준비', disabled: false, loading: false });
+      createChatReadinessSnapshot({
+        enabledProviderCount: 1,
+        availableModelCount: 0,
+        selectedModel: '',
+      }).items[0].action,
+    ).toBe('configure-provider');
   });
-
-  it('진행 중인 액션이 없으면 기본 라벨을 표시한다', () => {
+  it('사용할 모델이 있지만 선택하지 않았을 때만 모델 선택을 요청한다', () => {
     expect(
-      resolveChatReadinessActionButtonState({
-        action: 'reconnect-mcp',
-        pendingAction: null,
-        label: '재연결',
-        loadingLabel: '재연결 중...',
+      createChatReadinessSnapshot({
+        enabledProviderCount: 1,
+        availableModelCount: 2,
+        selectedModel: '',
+      }).items[0].action,
+    ).toBe('select-model');
+  });
+  it('질문이 가능한 경우 검색 준비·외부 도구·저장 위치 관리를 요구하지 않는다', () => {
+    expect(
+      createChatReadinessSnapshot({
+        enabledProviderCount: 1,
+        availableModelCount: 1,
+        selectedModel: 'example:model',
       }),
-    ).toEqual({ text: '재연결', disabled: false, loading: false });
+    ).toMatchObject({ status: 'ready', blocksSend: false, items: [] });
   });
 });

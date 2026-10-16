@@ -37,7 +37,8 @@ describe('ChatComposer state contract', () => {
       isServer: () => false,
       resolveLink: (target: string) => {
         if (target === 'monithub 개요.pdf') return { type: 'file' as const, path: target };
-        if (target === 'Projects/Alpha/') return { type: 'folder' as const, path: 'Projects/Alpha' };
+        if (target === 'Projects/Alpha/')
+          return { type: 'folder' as const, path: 'Projects/Alpha' };
         return null;
       },
     };
@@ -117,7 +118,6 @@ describe('ChatComposer state contract', () => {
       isStreaming: true,
       sendButton: { disabled: false, text: '중단' },
       inputDisabled: true,
-      toolsDisabled: true,
       modelSelectDisabled: true,
       runControl: { hidden: false, statusText: '답변 작업 중', stopText: '전체 중단' },
     });
@@ -144,7 +144,6 @@ describe('ChatComposer state contract', () => {
       isStreaming: false,
       sendButton: { disabled: false, text: '전송' },
       inputDisabled: false,
-      toolsDisabled: false,
       modelSelectDisabled: false,
       runControl: { hidden: true, statusText: '답변 작업 중', stopText: '전체 중단' },
     });
@@ -184,7 +183,6 @@ describe('ChatComposer state contract', () => {
         { type: 'file', name: 'Notes/A.md' },
       ]),
     ).toEqual([
-      { label: 'Related notes', cls: 'rag' },
       { label: 'Tool search', cls: 'server' },
       { label: 'Folder Research', cls: 'folder' },
       { label: 'File Notes/A.md', cls: 'file' },

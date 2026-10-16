@@ -20,6 +20,7 @@ import type {
 } from './types';
 import type { ContextAttachment, SourceCitation } from './types';
 import { loadChat, saveChat } from './persistence';
+import { SaveAnswerModal } from './save-answer-modal';
 import { summarizeSessionTitle } from './session-title';
 import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
 import { collectTagMentionFiles } from './tag-mentions';
@@ -39,7 +40,6 @@ import {
   ExplicitMcpToolDiscoveryError,
   collectExternalMcpToolDefinitions,
 } from './mcp-tool-catalog';
-import { classifyMcpToolError, normalizeToolResult } from './mcp-tools';
 import {
   appendAssistantToolRound,
   collectCompletedMcpServerNames,
@@ -76,7 +76,7 @@ import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
 import { buildPluginAwareDocumentation } from './plugin-aware-docs';
-import { getActivePluginInfo } from '../utils/obsidian-compat';
+import { getActivePluginInfo, openPluginSettings } from '../utils/obsidian-compat';
 import { confirmWithModal } from '../utils/modal-prompts';
 import { validateAnswerSources } from './source-validation';
 import {
@@ -102,12 +102,7 @@ import {
   type ComposerDraftSnapshot,
 } from './chat-composer';
 import { evaluateToolTrace } from './quality-evaluation';
-import {
-  createChatReadinessSnapshot,
-  resolveChatReadinessActionButtonState,
-  type ChatReadinessAction,
-  type ChatReadinessItem,
-} from './chat-readiness';
+import { createChatReadinessSnapshot, type ChatReadinessItem } from './chat-readiness';
 import {
   createChatMessageMetaItems,
   createChatMessageTechnicalSummary,
@@ -165,8 +160,6 @@ import {
   type ChatTurnState,
 } from './turn-state';
 import { t } from '../i18n';
-import { RefreshAction } from '../utils/refresh-action';
-import { runActionWithFeedback } from '../utils/action-feedback';
 import { isDomInstance } from '../utils/dom';
 import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
@@ -260,15 +253,13 @@ export class ChatView extends ItemView {
   private messagesArea: HTMLElement | null;
   private inputArea: HTMLTextAreaElement | null;
   private sendBtn: HTMLButtonElement | null;
-  private mcpBtn: HTMLButtonElement | null;
   private typingIndicator: HTMLElement | null;
   private emptyStateEl: HTMLElement | null;
   private scrollBtn: HTMLElement | null;
-  private mcpStatusBar: HTMLElement | null;
   private readinessEl: HTMLElement | null;
+  private preparationErrorEl: HTMLElement | null = null;
   private runControlEl: HTMLElement | null;
   private modelSelectEl: HTMLSelectElement | null;
-  private pendingReadinessAction: ChatReadinessAction | null;
   private contextPreviewEl: HTMLElement | null;
   private mentionDropdown: HTMLElement | null;
   private mentionQuery: string;
@@ -299,8 +290,6 @@ export class ChatView extends ItemView {
   private lastStreamingMarkdownAt: number;
   private localToolCallSequence: number;
 
-  // RefreshAction 인스턴스
-  private mcpRefreshAction: RefreshAction | null = null;
   // RefreshBus 구독 해제 함수들
   private refreshBusUnsubscribers: (() => void)[] = [];
 
@@ -325,15 +314,12 @@ export class ChatView extends ItemView {
     this.messagesArea = null;
     this.inputArea = null;
     this.sendBtn = null;
-    this.mcpBtn = null;
     this.typingIndicator = null;
     this.emptyStateEl = null;
     this.scrollBtn = null;
-    this.mcpStatusBar = null;
     this.readinessEl = null;
     this.runControlEl = null;
     this.modelSelectEl = null;
-    this.pendingReadinessAction = null;
     this.contextPreviewEl = null;
     this.mentionDropdown = null;
     this.mentionQuery = '';
@@ -397,7 +383,6 @@ export class ChatView extends ItemView {
     this.container = root;
 
     this.buildHeader(root);
-    this.buildMcpStatusBar(root);
 
     const messagesShell = root.createDiv({ cls: 'superpower-inside-chat-messages-shell' });
     this.messagesArea = messagesShell.createDiv({
@@ -448,7 +433,6 @@ export class ChatView extends ItemView {
   private registerRefreshBusEvents(): void {
     this.refreshBusUnsubscribers.push(
       this.plugin.refreshBus.on('mcp', () => {
-        this.renderMcpStatusBar();
         this.renderChatReadiness();
       }),
     );
@@ -468,7 +452,7 @@ export class ChatView extends ItemView {
   private registerMcpStatusEvents(): void {
     this.registerEvent(
       (this.app.workspace as unknown as Events).on(MCP_STATUS_CHANGE_EVENT, () => {
-        this.renderMcpStatusBar();
+        this.renderChatReadiness();
       }),
     );
   }
@@ -477,9 +461,6 @@ export class ChatView extends ItemView {
     this.clearAutoSaveTimer();
     this.invalidateActiveChatRun(false);
     this.cancelStreamingMarkdownRender();
-    // RefreshAction 정리
-    this.mcpRefreshAction?.detach();
-    this.mcpRefreshAction = null;
     // RefreshBus 구독 해제
     for (const unsub of this.refreshBusUnsubscribers) {
       unsub();
@@ -498,8 +479,6 @@ export class ChatView extends ItemView {
       attr: { role: 'note' },
     });
     this.emptyStateEl = emptyState;
-    const icon = emptyState.createDiv({ cls: 'superpower-inside-chat-empty-state-icon' });
-    setIcon(icon, 'book-open-text');
     emptyState.createDiv({
       cls: 'superpower-inside-chat-empty-state-title',
       text: t('chatEmptyStateTitle'),
@@ -566,14 +545,14 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-header-btn',
       attr: { type: 'button', 'aria-label': t('chatNewSession'), title: t('chatNewSession') },
     });
-    setIcon(newChatBtn, 'square-pen');
+    newChatBtn.setText(t('chatNewSession'));
     newChatBtn.addEventListener('click', () => void this.startNewSession());
 
     const historyBtn = actions.createEl('button', {
       cls: 'superpower-inside-chat-header-btn',
       attr: { type: 'button', 'aria-label': t('chatHistory'), title: t('chatHistory') },
     });
-    setIcon(historyBtn, 'history');
+    historyBtn.setText(t('chatHistory'));
     historyBtn.addEventListener('click', () => void this.openSessionHistoryModal());
 
     const moreBtn = actions.createEl('button', {
@@ -585,7 +564,7 @@ export class ChatView extends ItemView {
         'aria-haspopup': 'menu',
       },
     });
-    setIcon(moreBtn, 'ellipsis');
+    moreBtn.setText(t('assistantResponseMoreActions'));
     moreBtn.addEventListener('click', () => {
       const menu = new Menu();
       menu.setUseNativeMenu(false);
@@ -618,73 +597,6 @@ export class ChatView extends ItemView {
     });
   }
 
-  private buildMcpStatusBar(container: HTMLElement): void {
-    this.mcpStatusBar = container.createDiv({ cls: 'superpower-inside-chat-mcp-status-bar' });
-    this.renderMcpStatusBar();
-  }
-
-  private renderMcpStatusBar(): void {
-    if (!this.mcpStatusBar) return;
-    this.mcpStatusBar.empty();
-    setHidden(this.mcpStatusBar, false);
-
-    const registry = this.plugin.mcpRegistry;
-    const state = this.plugin.mcpConnectionState ?? 'idle';
-    if (state === 'connecting') {
-      const connectingLabel = this.mcpStatusBar.createSpan({
-        cls: 'superpower-inside-chat-mcp-status-label',
-      });
-      connectingLabel.setText(t('mcpConnecting'));
-      this.attachMcpRefreshButton();
-      this.renderChatReadiness();
-      return;
-    }
-
-    if (!registry || registry.getConnectedCount() === 0) {
-      setHidden(this.mcpStatusBar, true);
-      this.renderChatReadiness();
-      return;
-    }
-
-    setHidden(this.mcpStatusBar, true);
-    this.renderChatReadiness();
-  }
-
-  private attachMcpRefreshButton(): void {
-    if (!this.mcpStatusBar) return;
-    // 이전 버튼 정리
-    const existing = this.mcpStatusBar.querySelector('.superpower-inside-chat-mcp-refresh-btn');
-    if (existing) existing.remove();
-
-    const refreshBtn = this.mcpStatusBar.createEl('button', {
-      cls: 'superpower-inside-chat-mcp-refresh-btn',
-      text: t('mcpReconnect'),
-    });
-
-    this.mcpRefreshAction?.detach();
-    this.mcpRefreshAction = new RefreshAction({
-      action: async (_signal) => {
-        const errors = await this.plugin.reconnectMCP();
-        if (errors.length > 0) {
-          new Notice(t('chatMcpReconnectFailedNotice', { count: errors.length }), 5000);
-          return {
-            status: 'partial',
-            detail: t('chatMcpReconnectFailedDetail', { count: errors.length }),
-          };
-        }
-        new Notice(t('chatMcpReconnectCompleteNotice'), 3000);
-        return { status: 'success' };
-      },
-      loadingText: t('mcpRefreshing'),
-      spinnerClass: 'spinning',
-      errorNotice: false,
-      successNotice: false,
-      refreshBus: this.plugin.refreshBus,
-      refreshDomains: ['mcp'],
-    });
-    this.mcpRefreshAction.attach(refreshBtn);
-  }
-
   private buildInputArea(container: HTMLElement): void {
     const wrapper = container.createDiv({ cls: 'superpower-inside-chat-input-wrapper' });
 
@@ -692,6 +604,12 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-readiness',
       attr: { role: 'status', 'aria-live': 'polite' },
     });
+
+    this.preparationErrorEl = wrapper.createDiv({
+      cls: 'superpower-inside-chat-preparation-error',
+      attr: { role: 'status', 'aria-live': 'polite' },
+    });
+    setHidden(this.preparationErrorEl, true);
 
     this.runControlEl = wrapper.createDiv({
       cls: 'superpower-inside-chat-run-control',
@@ -715,7 +633,12 @@ export class ChatView extends ItemView {
     this.contextPreviewEl.addEventListener('focusin', () => this.hideMentionDropdown());
     this.renderContextPreview('');
 
-    const inputRow = wrapper.createDiv({ cls: 'superpower-inside-chat-input-area' });
+    const surface = wrapper.createDiv({ cls: 'superpower-inside-chat-composer-surface' });
+    const label = surface.createEl('label', {
+      cls: 'superpower-inside-chat-input-label',
+      text: t('chatQuestionLabel'),
+    });
+    const inputRow = surface.createDiv({ cls: 'superpower-inside-chat-input-area' });
     this.inputArea = inputRow.createEl('textarea', {
       cls: 'superpower-inside-chat-input',
       attr: {
@@ -727,6 +650,8 @@ export class ChatView extends ItemView {
         'aria-expanded': 'false',
       },
     });
+    label.htmlFor = `superpower-inside-chat-input-${this.mentionDropdownId}`;
+    this.inputArea.id = label.htmlFor;
     this.inputArea.addEventListener('keydown', (e) => this.handleInputKeydown(e));
     this.inputArea.addEventListener('input', () => {
       this.autoResizeInput();
@@ -737,21 +662,13 @@ export class ChatView extends ItemView {
       window.setTimeout(() => this.hideMentionDropdown(), 200);
     });
 
-    const toolbar = wrapper.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
+    const toolbar = surface.createDiv({ cls: 'superpower-inside-chat-input-toolbar' });
     this.modelSelectEl = toolbar.createEl('select', {
       cls: 'superpower-inside-chat-model-select',
       attr: { 'aria-label': t('modelSelector') },
     });
     this.modelSelectEl.addEventListener('change', () => this.renderChatReadiness());
     this.populateModelSelect();
-
-    this.mcpBtn = toolbar.createEl('button', {
-      cls: 'superpower-inside-chat-toolbar-btn',
-      attr: { type: 'button', 'aria-label': t('toolbarTools') },
-    });
-    setIcon(this.mcpBtn, 'wrench');
-    this.mcpBtn.createSpan({ text: t('toolbarTools') });
-    this.mcpBtn.addEventListener('click', () => void this.openMcpToolPicker());
 
     this.sendBtn = toolbar.createEl('button', {
       cls: 'superpower-inside-chat-send-btn',
@@ -887,12 +804,6 @@ export class ChatView extends ItemView {
       enabledProviderCount: this.getEnabledProviderCount(),
       availableModelCount: this.getAvailableModelCount(),
       selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
-      ragEnabled: Boolean(this.plugin.settings.rag.autoUpdateEnabled || this.plugin.vectorStore),
-      ragReady: Boolean(this.plugin.eventDrivenRagStats || this.plugin.vectorStore),
-      ragIndexing: this.plugin.isRagIndexing(),
-      configuredMcpServerCount: this.plugin.settings.mcpServers.length,
-      connectedMcpServerCount: this.plugin.mcpRegistry?.getConnectedCount() ?? 0,
-      saveFolderConfigured: Boolean(this.plugin.settings.chat.saveFolder.trim()),
     });
     this.readinessEl.empty();
     this.readinessEl.className = `superpower-inside-chat-readiness ${snapshot.status}`;
@@ -915,35 +826,20 @@ export class ChatView extends ItemView {
       row.createSpan({ cls: 'superpower-inside-chat-readiness-label', text: item.label });
       row.createSpan({ cls: 'superpower-inside-chat-readiness-detail', text: item.detail });
       if (item.action) {
-        const state = resolveChatReadinessActionButtonState({
-          action: item.action,
-          pendingAction: this.pendingReadinessAction,
-          label: this.getReadinessActionText(item),
-          loadingLabel: this.getReadinessActionLoadingText(item),
-        });
         const action = row.createEl('button', {
           cls: 'superpower-inside-chat-readiness-action',
-          text: state.text,
+          text: this.getReadinessActionText(item),
+          attr: { type: 'button' },
         });
-        action.disabled = state.disabled;
-        if (state.loading) action.addClass('spinning');
-        action.addEventListener('click', () => void this.handleReadinessAction(item, action));
+        action.addEventListener('click', () => void this.handleReadinessAction(item));
       }
     }
   }
 
   private getReadinessActionText(item: ChatReadinessItem): string {
-    if (item.action === 'index-rag') return t('chatReadinessPrepareDocuments');
-    if (item.action === 'reconnect-mcp') return t('mcpReconnect');
     if (item.action === 'select-model') return t('chatReadinessSelectModelAction');
     if (item.action === 'configure-provider') return t('chatReadinessConfigureProviderAction');
     return item.label;
-  }
-
-  private getReadinessActionLoadingText(item: ChatReadinessItem): string {
-    if (item.action === 'index-rag') return t('indexingStarted');
-    if (item.action === 'reconnect-mcp') return t('mcpRefreshing');
-    return this.getReadinessActionText(item);
   }
 
   private getEnabledProviderCount(): number {
@@ -954,57 +850,12 @@ export class ChatView extends ItemView {
     return resolveChatModelState(this.plugin.settings).availableModelCount;
   }
 
-  private async handleReadinessAction(
-    item: ChatReadinessItem,
-    button: HTMLButtonElement,
-  ): Promise<void> {
-    if (item.action === 'reconnect-mcp') {
-      this.pendingReadinessAction = 'reconnect-mcp';
-      await runActionWithFeedback({
-        button,
-        loadingText: this.getReadinessActionLoadingText(item),
-        refreshBus: this.plugin.refreshBus,
-        refreshDomains: ['mcp'],
-        action: async () => {
-          const errors = await this.plugin.reconnectMCP();
-          if (errors.length > 0) {
-            return {
-              status: 'partial',
-              detail: t('chatMcpReconnectFailedDetail', { count: errors.length }),
-            };
-          }
-          return { status: 'success', notice: false };
-        },
-      });
-      this.pendingReadinessAction = null;
-      this.renderMcpStatusBar();
-      this.renderChatReadiness();
-      return;
-    }
-    if (item.action === 'index-rag') {
-      this.pendingReadinessAction = 'index-rag';
-      await runActionWithFeedback({
-        button,
-        loadingText: this.getReadinessActionLoadingText(item),
-        refreshBus: this.plugin.refreshBus,
-        refreshDomains: ['rag'],
-        action: async () => {
-          const initialized = await this.plugin.prepareRagForChat();
-          if (!initialized) {
-            return { status: 'error', detail: t('ragIndexerNotInitializedBase') };
-          }
-          return { status: 'success', notice: false };
-        },
-      });
-      this.pendingReadinessAction = null;
-      this.renderChatReadiness();
-      return;
-    }
+  private handleReadinessAction(item: ChatReadinessItem): void {
     if (item.action === 'select-model') {
       this.modelSelectEl?.focus();
       return;
     }
-    new Notice(item.detail, 5000);
+    openPluginSettings(this.app, this.plugin.manifest?.id ?? 'superpower-inside');
   }
 
   private handleInputKeydown(e: KeyboardEvent): void {
@@ -2197,7 +2048,8 @@ export class ChatView extends ItemView {
     existing?.remove();
     const isComplete =
       msg.turnStage === 'complete' || (msg.turnStage === undefined && msg.status === 'complete');
-    if (msg.role === 'assistant' && !msg.errorKind && !isComplete) return;
+    if (msg.role === 'assistant' && !msg.errorKind && !isComplete && msg.stopReason !== 'cancelled')
+      return;
     const actions = container.createDiv({ cls: 'superpower-inside-chat-message-actions' });
     const response = this.assistantResponseLayouts.get(container)?.root;
     actions.hidden = Boolean(response?.hidden);
@@ -2280,6 +2132,15 @@ export class ChatView extends ItemView {
       return;
     }
 
+    if (msg.stopReason === 'cancelled') {
+      actions.createDiv({ text: t('chatGenerationStopped'), attr: { role: 'status' } });
+      const retry = actions.createEl('button', {
+        text: t('messageRetryAction'),
+        attr: { type: 'button' },
+      });
+      retry.addEventListener('click', () => void this.regenerateFromAssistant(msg.id));
+    }
+
     const actionButtons = actions.createDiv({
       cls: 'superpower-inside-chat-message-action-buttons',
     });
@@ -2310,28 +2171,12 @@ export class ChatView extends ItemView {
     copyBtn.addEventListener('click', () => void this.copyMessage(msg, copyBtn));
 
     if (msg.role === 'assistant') {
-      const sourceCount = msg.citations?.length ?? 0;
-      if (sourceCount > 0) {
-        const evidence = actions.createDiv({
-          cls: 'superpower-inside-chat-message-evidence',
-          attr: { role: 'status' },
-        });
-        const evidenceIcon = evidence.createSpan({
-          cls: 'superpower-inside-chat-message-evidence-icon',
-          attr: { 'aria-hidden': 'true' },
-        });
-        setIcon(evidenceIcon, 'shield-check');
-        evidence.createSpan({
-          text: t('assistantResponseEvidenceSummary', { count: sourceCount }),
-        });
-      }
-
-      const retryBtn = createVisibleAction(
-        t('messageRetryAction'),
-        'refresh-cw',
-        createChatMessageActionId('regenerate'),
+      const saveBtn = createVisibleAction(
+        t('messageNewNoteAction'),
+        'file-plus-2',
+        createChatMessageActionId('save-as-note'),
       );
-      retryBtn.addEventListener('click', () => void this.regenerateFromAssistant(msg.id));
+      saveBtn.addEventListener('click', () => this.saveMessageAsNote(msg, saveBtn));
 
       this.renderVariantNavIfNeeded(actionButtons, msg);
 
@@ -2348,7 +2193,7 @@ export class ChatView extends ItemView {
         }),
         createChatMessageActionId('more'),
       );
-      setIcon(moreBtn, 'ellipsis');
+      moreBtn.setText(moreLabel);
       moreBtn.addEventListener('click', () => {
         const menu = new Menu();
         menu.setUseNativeMenu(false);
@@ -2360,9 +2205,9 @@ export class ChatView extends ItemView {
         );
         menu.addItem((item) =>
           item
-            .setTitle(t('messageNewNoteAction'))
-            .setIcon('file-plus-2')
-            .onClick(() => void this.saveMessageAsNote(msg)),
+            .setTitle(t('messageRetryAction'))
+            .setIcon('refresh-cw')
+            .onClick(() => void this.regenerateFromAssistant(msg.id)),
         );
         menu.addItem((item) =>
           item
@@ -2480,21 +2325,15 @@ export class ChatView extends ItemView {
     this.renderContextPreview(this.inputArea.value);
   }
 
-  private async saveMessageAsNote(msg: ChatMessageWithMeta): Promise<void> {
-    const folder = this.plugin.settings.chat.saveFolder || 'SuperpowerInsideChats';
-    const title = this.session.title || t('aiAnswerTitle');
-    const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
-    const path = `${folder}/${safeTitle}-answer-${Date.now()}.md`;
-    try {
-      if (!(await this.app.vault.adapter.exists(folder))) {
-        await this.app.vault.createFolder(folder);
-      }
-      await this.app.vault.create(path, `# ${title}\n\n${msg.content}\n`);
-      new Notice(t('savedAsNewNoteNotice', { path }));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      new Notice(t('savedAsNewNoteFailedNotice', { message }), 5000);
-    }
+  private saveMessageAsNote(msg: ChatMessageWithMeta, button: HTMLButtonElement): void {
+    this.noticeSourceWarnings(msg);
+    new SaveAnswerModal(
+      this.app,
+      msg,
+      this.plugin.settings.chat.saveFolder,
+      this.session.title || t('aiAnswerTitle'),
+      button,
+    ).open();
   }
 
   private editAndResendUserMessage(msg: ChatMessageWithMeta): void {
@@ -2958,6 +2797,7 @@ export class ChatView extends ItemView {
 
     try {
       const resolved = await prepareChatProviderForModel(this.plugin.settings, selectedModel);
+      if (!isChatRunActive(this.activeRun, run)) return;
       if (!resolved) {
         new Notice(t('noActiveProviderNotice'));
         releaseSetupRun();
@@ -3047,6 +2887,8 @@ export class ChatView extends ItemView {
         this.abortController = null;
         this.restoreSubmittedDraft();
         this.setLoading(false);
+        this.preparationErrorEl?.setText(t('answerNotePreparing'));
+        setHidden(this.preparationErrorEl, false);
         const detail = error instanceof Error ? error.message : String(error);
         new Notice(t('contextRagLoadFailed', { error: redactDebugDetail(detail) }), 5000);
       }
@@ -3899,6 +3741,7 @@ export class ChatView extends ItemView {
 
   private setLoading(loading: boolean): void {
     if (loading) this.hideMentionDropdown();
+    if (loading) setHidden(this.preparationErrorEl, true);
     const state = createComposerLoadingState(loading);
     this.isStreaming = state.isStreaming;
     if (this.sendBtn) {
@@ -3912,7 +3755,6 @@ export class ChatView extends ItemView {
     }
     if (this.inputArea) this.inputArea.disabled = state.inputDisabled;
     this.inputArea?.setAttribute('aria-busy', String(loading));
-    if (this.mcpBtn) this.mcpBtn.disabled = state.toolsDisabled;
     if (this.modelSelectEl) this.modelSelectEl.disabled = state.modelSelectDisabled;
     setHidden(this.runControlEl, state.runControl.hidden);
     if (!loading) this.renderChatReadiness();
@@ -4710,7 +4552,9 @@ export class ChatView extends ItemView {
     mentionedServerNames = this.getMentionedServerNames(text),
   ): string[] {
     return getPluginAwareServerNames({
-      mentionedServerNames,
+      mentionedServerNames: mentionedServerNames.length
+        ? mentionedServerNames
+        : (this.plugin.mcpRegistry?.getEnabledServers().map((server) => server.name) ?? []),
       pluginAwareEnabled: this.plugin.settings.pluginAwareEnabled,
       userText: text,
       plugins: this.plugin.settings.pluginAwareEnabled ? getActivePluginInfo(this.app) : [],
@@ -5094,357 +4938,6 @@ export class ChatView extends ItemView {
   private parseMentions(text: string): ParsedMention[] {
     return parseContextMentions(text, createAppMentionResolver(this.app, this.plugin.mcpRegistry));
   }
-  private async openMcpToolPicker(): Promise<void> {
-    const registry = this.plugin.mcpRegistry;
-    if (!registry || registry.getConnectedCount() === 0) {
-      new Notice(t('noToolsAvailable'));
-      return;
-    }
-
-    const overlay = this.container!.createDiv({
-      cls: 'superpower-inside-mcp-tool-picker-overlay',
-    });
-    const panel = overlay.createDiv({ cls: 'superpower-inside-mcp-tool-picker' });
-
-    const title = panel.createDiv({
-      cls: 'superpower-inside-mcp-tool-picker-title',
-      text: t('selectTool'),
-    });
-    const closeBtn = title.createEl('button', {
-      cls: 'superpower-inside-mcp-tool-picker-close',
-      text: '×',
-      attr: { type: 'button', 'aria-label': t('closeLabel') },
-    });
-    const close = () => overlay.remove();
-    closeBtn.addEventListener('click', close);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close();
-    });
-
-    const list = panel.createDiv({ cls: 'superpower-inside-mcp-tool-list' });
-
-    for (const server of registry.getEnabledServers()) {
-      const client = registry.getClient(server.name);
-      if (!client) continue;
-      try {
-        const tools = await client.listTools();
-        if (tools.length === 0) continue;
-        list.createDiv({
-          cls: 'superpower-inside-mcp-tool-server',
-          text: server.name,
-        });
-        for (const tool of tools) {
-          const item = list.createEl('button', {
-            cls: 'superpower-inside-mcp-tool-item',
-            attr: { type: 'button' },
-          });
-          item.createDiv({ cls: 'superpower-inside-mcp-tool-name', text: tool.name });
-          if (tool.description) {
-            item.createDiv({
-              cls: 'superpower-inside-mcp-tool-desc',
-              text: tool.description,
-            });
-          }
-          item.addEventListener('click', () => {
-            close();
-            void this.openMcpToolForm(server.name, tool.name, tool.inputSchema ?? {});
-          });
-        }
-      } catch {
-        // 서버 스킵
-      }
-    }
-
-    if (list.children.length === 0) {
-      list.createDiv({
-        cls: 'superpower-inside-mcp-empty-state-desc',
-        text: t('noToolsAvailable'),
-      });
-    }
-  }
-
-  private openMcpToolForm(
-    serverName: string,
-    toolName: string,
-    inputSchema: Record<string, unknown>,
-  ): void {
-    const overlay = this.container!.createDiv({
-      cls: 'superpower-inside-mcp-tool-picker-overlay',
-    });
-    const panel = overlay.createDiv({ cls: 'superpower-inside-mcp-tool-picker' });
-
-    const title = panel.createDiv({
-      cls: 'superpower-inside-mcp-tool-picker-title',
-      text: toolName,
-    });
-    const closeBtn = title.createEl('button', {
-      cls: 'superpower-inside-mcp-tool-picker-close',
-      text: '×',
-      attr: { type: 'button', 'aria-label': t('closeLabel') },
-    });
-    const close = () => overlay.remove();
-    closeBtn.addEventListener('click', close);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) close();
-    });
-
-    const form = panel.createDiv({ cls: 'superpower-inside-mcp-tool-form' });
-    const inputs: {
-      key: string;
-      el: HTMLInputElement | HTMLTextAreaElement;
-      def: {
-        type?: string;
-        description?: string;
-        pattern?: string;
-        minimum?: number;
-        maximum?: number;
-      };
-      required: boolean;
-    }[] = [];
-
-    const schema = inputSchema as {
-      properties?: Record<
-        string,
-        {
-          type?: string;
-          description?: string;
-          pattern?: string;
-          minimum?: number;
-          maximum?: number;
-        }
-      >;
-      required?: string[];
-    };
-    const properties = schema.properties ?? {};
-    const requiredSet = new Set(schema.required ?? []);
-
-    for (const [propName, propDef] of Object.entries(properties)) {
-      const row = form.createDiv({ cls: 'superpower-inside-mcp-tool-form-row' });
-      row.createEl('label', {
-        cls: 'superpower-inside-mcp-tool-form-label',
-        text: propName,
-      });
-      if (propDef.description) {
-        row.createDiv({
-          cls: 'superpower-inside-mcp-tool-form-desc',
-          text: propDef.description,
-        });
-      }
-
-      let inputEl: HTMLInputElement | HTMLTextAreaElement;
-      const type = propDef.type ?? 'string';
-      if (type === 'boolean') {
-        inputEl = row.createEl('input', {
-          type: 'checkbox',
-          cls: 'superpower-inside-mcp-tool-form-input',
-        });
-      } else if (type === 'number' || type === 'integer') {
-        inputEl = row.createEl('input', {
-          type: 'number',
-          cls: 'superpower-inside-mcp-tool-form-input',
-        });
-      } else if (type === 'string') {
-        inputEl = row.createEl('input', {
-          type: 'text',
-          cls: 'superpower-inside-mcp-tool-form-input',
-        });
-      } else {
-        inputEl = row.createEl('textarea', {
-          cls: 'superpower-inside-mcp-tool-form-input',
-          attr: { rows: '3' },
-        });
-      }
-      if (requiredSet.has(propName)) {
-        inputEl.required = true;
-      }
-      inputs.push({
-        key: propName,
-        el: inputEl,
-        def: propDef,
-        required: requiredSet.has(propName),
-      });
-    }
-
-    const actions = panel.createDiv({
-      cls: 'superpower-inside-mcp-tool-form-actions',
-    });
-    const execBtn = actions.createEl('button', {
-      cls: 'superpower-inside-chat-send-btn',
-      text: t('executeTool'),
-    });
-    execBtn.addEventListener('click', () => {
-      const values: Record<string, unknown> = {};
-      const validationErrors: string[] = [];
-
-      for (const { key, el, def, required } of inputs) {
-        if (el.type === 'checkbox') {
-          values[key] = (el as HTMLInputElement).checked;
-        } else if (el.type === 'number') {
-          const numVal = parseFloat(el.value);
-          if (Number.isNaN(numVal)) {
-            if (required) {
-              validationErrors.push(
-                t('mcpToolInvalidField', { field: key, detail: t('validationNeedsNumber') }),
-              );
-              continue;
-            }
-            continue;
-          }
-          if (def.minimum !== undefined && numVal < def.minimum) {
-            validationErrors.push(
-              t('mcpToolInvalidField', {
-                field: key,
-                detail: t('validationMinValue', { minimum: def.minimum }),
-              }),
-            );
-            continue;
-          }
-          if (def.maximum !== undefined && numVal > def.maximum) {
-            validationErrors.push(
-              t('mcpToolInvalidField', {
-                field: key,
-                detail: t('validationMaxValue', { maximum: def.maximum }),
-              }),
-            );
-            continue;
-          }
-          values[key] = numVal;
-        } else {
-          const trimmed = el.value.trim();
-          if (required && trimmed === '') {
-            validationErrors.push(
-              t('mcpToolInvalidField', { field: key, detail: t('validationRequiredValue') }),
-            );
-            continue;
-          }
-          if (trimmed === '' && !required) {
-            continue;
-          }
-          if (def.pattern && trimmed !== '') {
-            try {
-              const regex = new RegExp(def.pattern);
-              if (!regex.test(trimmed)) {
-                validationErrors.push(
-                  t('mcpToolInvalidField', {
-                    field: key,
-                    detail: t('validationPatternDetail', { pattern: def.pattern }),
-                  }),
-                );
-                continue;
-              }
-            } catch {
-              // 잘못된 regex 패턴은 무시
-            }
-          }
-          try {
-            if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
-              values[key] = JSON.parse(trimmed);
-            } else {
-              values[key] = trimmed;
-            }
-          } catch {
-            values[key] = trimmed;
-          }
-        }
-      }
-
-      if (validationErrors.length > 0) {
-        new Notice(t('mcpToolValidationError') + '\n' + validationErrors.join('\n'), 8000);
-        return;
-      }
-
-      close();
-      void this.executeMcpTool(serverName, toolName, values);
-    });
-  }
-
-  private async executeMcpTool(
-    serverName: string,
-    toolName: string,
-    args: Record<string, unknown>,
-    messageId?: string,
-  ): Promise<void> {
-    const registry = this.plugin.mcpRegistry;
-    if (!registry) {
-      new Notice(t('mcpRegistryUnavailableNotice'), 5000);
-      return;
-    }
-    const client = registry.getClient(serverName);
-    if (!client) {
-      new Notice(t('mcpClientUnavailableNotice', { server: serverName }), 5000);
-      return;
-    }
-
-    let runId: string | null = null;
-    if (messageId) {
-      this.updateToolCallInMessage(messageId, toolName, {
-        arguments: JSON.stringify(args),
-        status: 'running',
-      });
-    } else {
-      runId = this.addMessage('tool', `${t('mcpToolRunning')} ${toolName}...`);
-    }
-
-    try {
-      const result = await client.callTool(toolName, args);
-      const normalized = normalizeToolResult(result);
-      const formatted = normalized.displayText;
-      if (messageId) {
-        this.updateToolCallInMessage(messageId, toolName, {
-          result: formatted,
-          resultSummary: formatted,
-          normalizedResult: normalized.modelText,
-          status: 'success',
-        });
-      } else if (runId) {
-        this.updateMessage(runId, `**${t('mcpToolSuccess')} — ${toolName}**\n\n${formatted}`, true);
-      }
-    } catch (err) {
-      const rawMsg = err instanceof Error ? err.message : String(err);
-      const friendlyMsg = classifyMcpToolError(rawMsg, 'view');
-      if (messageId) {
-        this.updateToolCallInMessage(messageId, toolName, {
-          result: friendlyMsg,
-          status: 'error',
-        });
-      } else if (runId) {
-        this.updateMessage(runId, `**${t('mcpToolError')} — ${toolName}**\n\n${friendlyMsg}`, true);
-      }
-    }
-  }
-
-  private updateToolCallInMessage(
-    messageId: string,
-    toolName: string,
-    patch: Partial<ToolCallRecord>,
-  ): void {
-    const message = this.messages.find((m) => m.id === messageId);
-    if (!message) return;
-    const toolCalls = message.toolCalls ?? [];
-    const existing = toolCalls.find((toolCall) => toolCall.name === toolName);
-    if (existing) {
-      Object.assign(existing, patch);
-    } else {
-      toolCalls.push({
-        id: patch.id ?? '',
-        name: patch.name ?? toolName,
-        arguments: patch.arguments ?? '',
-        result: patch.result,
-        resultSummary: patch.resultSummary,
-        normalizedResult: patch.normalizedResult,
-        status: patch.status ?? 'running',
-      });
-    }
-    message.toolCalls = toolCalls;
-    this.updateMessage(
-      messageId,
-      message.content,
-      true,
-      message.reasoning,
-      toolCalls.map((toolCall) => ({ ...toolCall })),
-    );
-  }
-
   /** LLM API 에러 발생 시 진단 정보를 포함한 상세 메시지 생성 */
   private formatErrorDetail(
     providerKey: string,

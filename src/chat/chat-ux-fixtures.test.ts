@@ -42,7 +42,7 @@ describe('chat UX fixture gate', () => {
     const styles = readFileSync(resolve(__dirname, '../../styles.css'), 'utf8');
 
     expect(viewSource).toContain("cls: 'superpower-inside-chat-empty-state'");
-    expect(viewSource).toContain("setIcon(icon, 'book-open-text')");
+    expect(viewSource).toContain("text: t('chatEmptyStateTitle')");
     expect(viewSource).toContain('this.plugin.prepareRagForChat()');
     expect(viewSource).toContain("setHidden(this.readinessEl, snapshot.status === 'ready')");
     expect(viewSource).toContain('severity-${item.severity}');
