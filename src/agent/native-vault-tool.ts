@@ -79,6 +79,8 @@ export interface NativeVaultSearchResult extends NativeVaultResultBase {
   hits: NativeVaultSearchHit[];
   scannedFiles: number;
   unreadableFiles: number;
+  /** 색인 없이 볼트 전체를 훑는 폴백에서 추출 비용이 커 건너뛴 문서 수입니다. */
+  skippedFiles?: number;
   totalHits: number;
   truncated: boolean;
 }

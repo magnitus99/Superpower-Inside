@@ -396,6 +396,32 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.scopeRestricted).toBe(true);
   });
 
+  it('색인 없이 전체 볼트를 훑을 때는 추출 문서를 건너뛰고 그 사실을 남긴다', async () => {
+    const note = createFile('Notes/alpha.md', 'alpha 근거');
+    const sheet = createFile('Notes/전표.xlsx', 'alpha 근거');
+    const port = createNativeVaultPort(createApp([note, sheet]));
+
+    const blind = await port.search({
+      action: 'search',
+      query: 'alpha',
+      path: '',
+      limit: 10,
+      match: 'all',
+    });
+    expect(blind.hits.map((hit) => hit.path)).toEqual([note.path]);
+    expect(blind.skippedFiles).toBe(1);
+    expect(blind.truncated).toBe(true);
+
+    const scoped = await port.search({
+      action: 'search',
+      query: 'alpha',
+      path: 'Notes',
+      limit: 10,
+      match: 'all',
+    });
+    expect(scoped.skippedFiles).toBeUndefined();
+  });
+
   it('목록의 다음 페이지에서 필터를 바꾸면 이전 snapshot을 재사용하지 않는다', async () => {
     const files = [createFile('A.md', ''), createFile('B.md', ''), createFile('C.md', '')];
     const app = createApp(files);

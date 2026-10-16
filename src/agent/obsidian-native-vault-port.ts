@@ -15,6 +15,7 @@ import {
   planNativeVaultReadRangeRust,
   planNativeVaultSearchRrfRust,
   planNativeVaultStatsRust,
+  isExtractableSourceExtensionRust,
   isSourceRevisionCurrentRust,
   normalizeVaultLinkTargetRust,
   type RustNativeVaultToolRequest,
@@ -114,6 +115,8 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   ): Promise<NativeVaultSearchResult> {
     throwIfAborted(signal);
     const queries = getSearchQueries(request);
+    // 폴더·필터 없이 볼트 전체를 훑는 라이브 폴백에서만 추출 비용이 큰 문서를 건너뜁니다.
+    const blindLiveFallback = !request.path.trim() && request.filters === undefined;
     const filteredFiles = request.filters
       ? this.filterFiles(await this.fileScope.listCandidateFiles(), request.filters, request.path)
       : undefined;
@@ -155,7 +158,13 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
           filteredFiles ??
           indexedAttempt.inventoryFiles ??
           (await this.fileScope.listCandidateFiles());
-        const lexicalResult = await this.searchLexically(request, queries, files, signal);
+        const lexicalResult = await this.searchLexically(
+          request,
+          queries,
+          files,
+          signal,
+          blindLiveFallback,
+        );
         return lexicalResult.hits.length > 0
           ? mergeIndexedAndLexicalSearchResults(request, queries, indexedResult, lexicalResult)
           : indexedResult;
@@ -172,7 +181,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       filteredFiles ??
       indexedAttempt?.inventoryFiles ??
       (await this.fileScope.listCandidateFiles());
-    return this.searchLexically(request, queries, files, signal);
+    return this.searchLexically(request, queries, files, signal, blindLiveFallback);
   }
 
   async read(
@@ -608,16 +617,21 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     queries: readonly string[],
     files: readonly TFile[],
     signal?: AbortSignal,
+    skipExtractedSources = false,
   ): Promise<NativeVaultSearchResult> {
     throwIfAborted(signal);
+    const scannableFiles = skipExtractedSources
+      ? files.filter((file) => !requiresSourceExtraction(file.extension ?? ''))
+      : files;
+    const skippedFiles = files.length - scannableFiles.length;
     const scope = planNativeVaultListRust(
-      files.map((file) => file.path),
+      scannableFiles.map((file) => file.path),
       request.path,
       0,
-      files.length,
+      scannableFiles.length,
     );
     if (!scope) throw new Error(t('nativeVaultSearchScopeFailed'));
-    const filesByPath = new Map(files.map((file) => [file.path, file]));
+    const filesByPath = new Map(scannableFiles.map((file) => [file.path, file]));
     let state: RustNativeVaultLexicalState | null = null;
     for (let offset = 0; offset < scope.paths.length; offset += LEXICAL_READ_BATCH_SIZE) {
       throwIfAborted(signal);
@@ -698,7 +712,8 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       scannedFiles: state?.scannedFiles ?? 0,
       unreadableFiles: state?.unreadableFiles ?? 0,
       totalHits: state?.totalHits ?? 0,
-      truncated: (state?.totalHits ?? 0) > hits.length,
+      truncated: (state?.totalHits ?? 0) > hits.length || skippedFiles > 0,
+      ...(skippedFiles > 0 ? { skippedFiles } : {}),
       scopeRestricted:
         request.filters !== undefined || (request.field !== undefined && request.field !== 'both'),
       ...(request.filters ? { filters: request.filters } : {}),
@@ -1057,6 +1072,7 @@ function buildSearchResult(
   coverage: {
     scannedFiles?: number;
     unreadableFiles?: number;
+    skippedFiles?: number;
     totalHits?: number;
     truncated?: boolean;
     scopeRestricted?: boolean;
@@ -1112,6 +1128,7 @@ function buildSearchResult(
     hits,
     scannedFiles: coverage.scannedFiles ?? 0,
     unreadableFiles: coverage.unreadableFiles ?? 0,
+    ...(coverage.skippedFiles ? { skippedFiles: coverage.skippedFiles } : {}),
     totalHits,
     truncated: coverage.truncated ?? totalHits > hits.length,
     ...(coverage.scopeRestricted ? { scopeRestricted: true } : {}),
@@ -1120,6 +1137,14 @@ function buildSearchResult(
     ...(coverage.field ? { field: coverage.field } : {}),
     citations,
   };
+}
+
+/**
+ * 인덱스가 없는 동안의 전체 Vault 라이브 검색에서 본문 추출이 필요한 문서인지 확인합니다.
+ * 추출은 문서당 수 초에서 수십 초가 걸릴 수 있어, 색인 검색이 준비되면 그 경로가 담당합니다.
+ */
+function requiresSourceExtraction(extension: string): boolean {
+  return isExtractableSourceExtensionRust(extension) === true;
 }
 
 function createCitation(
