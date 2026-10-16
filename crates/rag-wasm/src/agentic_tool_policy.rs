@@ -51,8 +51,12 @@ const NATIVE_UNIFIED_TOOL_NAME: &str = "superpower_inside";
 struct AgenticToolTurnInput {
     /// Latest user objective, which always outranks older chat questions.
     question: String,
+    /// 출처 연결을 검토할 선택적 최종 답변입니다.
+    answer: String,
     /// Whether RAG/context assembly already attached source-backed evidence.
     has_attached_evidence: bool,
+    /// 호스트가 자동 볼트 검색을 허용한 현재 작업인지 여부입니다.
+    vault_search_enabled: bool,
     /// 멘션 전용 모드에서만 0보다 큰, 사용을 강제할 MCP 서버 수.
     explicit_tool_server_count: usize,
     /// 멘션 전용 모드에서만 채워지는, 완료를 추적할 MCP 서버 이름. 기본 제안 모드에서는 빈 목록임.
@@ -233,11 +237,7 @@ pub fn plan_agentic_tool_turn_json(input_json: &str) -> String {
         return String::new();
     }
 
-    let requirements = native_evidence_requirements(&input.question);
-    let requirement = requirements
-        .first()
-        .copied()
-        .unwrap_or(NativeEvidenceRequirement::Unknown);
+    let requirements = native_evidence_requirements(&input.question, input.vault_search_enabled);
     let relation_requires_content = requirements.contains(&NativeEvidenceRequirement::Relations)
         && requirements.contains(&NativeEvidenceRequirement::Content);
     let requires_evidence = requires_connected_evidence(&input, &requirements);
@@ -246,6 +246,12 @@ pub fn plan_agentic_tool_turn_json(input_json: &str) -> String {
         && requires_multiple_source_evidence(&input.question);
     let requires_full_content_coverage = requires_full_file_content(&input.question);
     let ledger = derive_evidence_ledger(&input.tool_calls, &input.explicit_tool_server_names);
+    let (minimum_sources, answer_needs_repair) = answer_evidence_review(
+        &input.answer,
+        &ledger,
+        requires_multiple_sources,
+        requires_evidence && requirements_need_content(&requirements, relation_requires_content),
+    );
     let next_action = plan_next_action(
         &input,
         &requirements,
@@ -273,7 +279,6 @@ pub fn plan_agentic_tool_turn_json(input_json: &str) -> String {
     } else {
         "auto"
     };
-    let should_retry_without_tools = next_action.requires_tool();
     let required_tool_names = required_tool_names(
         &input,
         next_action,
@@ -301,13 +306,15 @@ pub fn plan_agentic_tool_turn_json(input_json: &str) -> String {
 
     json!({
         "requiresEvidence": requires_evidence,
-        "nativeEvidenceRequirement": requirement.as_str(),
+        "minimumSources": minimum_sources,
+        "answerNeedsRepair": answer_needs_repair,
+        "nativeEvidenceRequirement": requirements.first().copied().unwrap_or(NativeEvidenceRequirement::Unknown).as_str(),
         "nativeEvidenceRequirements": requirements
             .iter()
             .map(|requirement| requirement.as_str())
             .collect::<Vec<_>>(),
         "toolChoice": tool_choice,
-        "shouldRetryWithoutTools": should_retry_without_tools,
+        "shouldRetryWithoutTools": next_action.requires_tool(),
         "nextAction": next_action.as_str(),
         "requiredToolNames": required_tool_names,
         "requiredExternalServerNames": required_external_server_names,
@@ -315,6 +322,27 @@ pub fn plan_agentic_tool_turn_json(input_json: &str) -> String {
         "ledger": evidence_ledger_json(&ledger)
     })
     .to_string()
+}
+
+/// 확보한 문서 수를 늘려 세지 않고 답변의 최소 출처 연결만 검토합니다.
+fn answer_evidence_review(
+    answer: &str,
+    ledger: &EvidenceLedger,
+    multiple: bool,
+    content_required: bool,
+) -> (usize, bool) {
+    let minimum = if multiple {
+        2
+    } else {
+        usize::from(content_required)
+    };
+    let required = minimum.min(ledger.verified_source_paths.len());
+    let cited = ledger
+        .verified_source_paths
+        .iter()
+        .filter(|path| answer.contains(path.as_str()))
+        .count();
+    (minimum, !answer.trim().is_empty() && cited < required)
 }
 
 /// 호스트에 전달할 최소 조사 상태를 직렬화합니다.
@@ -367,7 +395,15 @@ fn parse_input(value: &JsonValue) -> Option<AgenticToolTurnInput> {
     };
     Some(AgenticToolTurnInput {
         question: object.get("question")?.as_str()?.to_owned(),
+        answer: match object.get("answer") {
+            Some(value) => value.as_str()?.to_owned(),
+            None => String::new(),
+        },
         has_attached_evidence: object.get("hasAttachedEvidence")?.as_bool()?,
+        vault_search_enabled: match object.get("vaultSearchEnabled") {
+            Some(value) => value.as_bool()?,
+            None => false,
+        },
         explicit_tool_server_count: json_usize(object.get("explicitToolServerCount")?)?,
         explicit_tool_server_names: parse_explicit_tool_server_names(
             object.get("explicitToolServerNames"),
@@ -499,6 +535,12 @@ fn requires_connected_evidence(
     input: &AgenticToolTurnInput,
     requirements: &[NativeEvidenceRequirement],
 ) -> bool {
+    if input.vault_search_enabled {
+        return input
+            .available_tool_names
+            .iter()
+            .any(|name| is_native_tool_name(name));
+    }
     if input.explicit_tool_server_count > 0 || !input.explicit_tool_server_names.is_empty() {
         return true;
     }
@@ -516,9 +558,12 @@ fn requires_connected_evidence(
 }
 
 /// 볼트 범위 목표가 함께 요구하는 native 근거 형태를 우선순위 순으로 분류함.
-fn native_evidence_requirements(question: &str) -> Vec<NativeEvidenceRequirement> {
+fn native_evidence_requirements(
+    question: &str,
+    implicit_vault_scope: bool,
+) -> Vec<NativeEvidenceRequirement> {
     let normalized = question.to_lowercase();
-    if !has_native_vault_scope(&normalized) {
+    if !implicit_vault_scope && !has_native_vault_scope(&normalized) {
         return Vec::new();
     }
     let folder_scope = has_folder_scope(&normalized);
@@ -538,6 +583,11 @@ fn native_evidence_requirements(question: &str) -> Vec<NativeEvidenceRequirement
         requirements.push(NativeEvidenceRequirement::Content);
     }
     requirements
+}
+
+/// 호스트가 허용한 질문에서 목록·통계만으로 끝낼 수 없는 경우입니다.
+pub fn needs_content_evidence(question: &str) -> bool {
+    native_evidence_requirements(question, true).contains(&NativeEvidenceRequirement::Content)
 }
 
 /// native 링크와 관계 구조를 요구하는 표현을 감지함.
@@ -809,7 +859,7 @@ fn contains_any(value: &str, markers: &[&str]) -> bool {
 }
 
 /// Detects connected-data comparisons that normally need evidence from two distinct sources.
-fn requires_multiple_source_evidence(question: &str) -> bool {
+pub fn requires_multiple_source_evidence(question: &str) -> bool {
     let normalized = question.to_lowercase();
     let has_marker = [
         "비교",

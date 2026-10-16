@@ -63,6 +63,7 @@ import {
 } from '../agent/native-vault-tool';
 import { ObsidianNativeVaultToolPort } from '../agent/obsidian-native-vault-port';
 import { RagNativeVaultFileScope } from '../agent/rag-native-vault-file-scope';
+import { collectVaultEvidence, finalizeEvidenceAnswer } from './evidence-collection';
 import {
   selectDisplayedAnswerCitations,
   selectGroundedRepairCitations,
@@ -2957,7 +2958,7 @@ export class ChatView extends ItemView {
         : {};
     const contextMeta: Pick<
       MessageMetaInput,
-      'contextAttachments' | 'contextBudgetSnapshot' | 'dataBoundarySnapshot'
+      'contextAttachments' | 'contextBudgetSnapshot' | 'dataBoundarySnapshot' | 'citations'
     > = {
       contextAttachments: promptContext.attachments,
       contextBudgetSnapshot,
@@ -3051,6 +3052,29 @@ export class ChatView extends ItemView {
         ? await this.collectToolDefinitions(mentionedServers, mentionOnlyServers, run)
         : [];
       if (!isChatRunActive(this.activeRun, run)) return;
+      const evidence =
+        toolsEnabled && !wholeVaultResearch && promptContext.vaultSearchEnabled
+          ? await collectVaultEvidence({
+              question: text,
+              scopes: mentionedFolders.map((folder) => folder.name),
+              nativeTool: this.nativeVaultTool,
+              provider,
+              createId: () => `evidence-${++this.localToolCallSequence}`,
+              signal: abortController.signal,
+              onUpdate: (calls) => {
+                if (!isChatRunActive(this.activeRun, run)) return;
+                this.updateMessage(assistantId, '', false, undefined, calls, {
+                  ...contextMeta,
+                  status: 'streaming',
+                  ...applyTurnEvent({ type: 'tools-running', activeToolCalls: calls.length }),
+                });
+              },
+            })
+          : null;
+      if (!isChatRunActive(this.activeRun, run)) return;
+      const evidenceToolCalls = evidence?.toolCalls ?? [];
+      promptContext.citations = collectToolCitations(promptContext.citations, evidenceToolCalls);
+      contextMeta.citations = promptContext.citations;
       const initialAgentPlan = toolsEnabled
         ? planAgenticToolTurn({
             question: text,
@@ -3058,8 +3082,8 @@ export class ChatView extends ItemView {
             explicitToolServerCount: mentionOnlyServers.length,
             explicitToolServerNames: mentionOnlyServers,
             toolDefinitions,
-            toolCalls: [],
-            phase: 'initial',
+            toolCalls: evidenceToolCalls,
+            phase: evidenceToolCalls.length > 0 ? 'after-tools' : 'initial',
             round: 0,
             maxRounds: maxToolRounds,
           })
@@ -3078,7 +3102,12 @@ export class ChatView extends ItemView {
           ? createToolEvidencePrompt(initialToolDefinitions)
           : createCompatibilityToolPrompt(initialToolDefinitions)
         : '';
-      let systemPrompt = [promptContext.systemPrompt, toolPrompt, initialAgentPlan?.checkpoint]
+      let systemPrompt = [
+        promptContext.systemPrompt,
+        toolPrompt,
+        evidence?.checkpoint,
+        initialAgentPlan?.checkpoint,
+      ]
         .filter((part): part is string => Boolean(part))
         .join('\n\n');
       if (toolsEnabled && !providerCapability.toolCalling && mentionedServers.length > 0) {
@@ -3201,7 +3230,7 @@ export class ChatView extends ItemView {
           fullText,
           chunk.done,
           fullReasoning || undefined,
-          Array.from(toolCallMap.values()),
+          [...evidenceToolCalls, ...toolCallMap.values()],
           {
             providerKey: key,
             providerLabel,
@@ -3214,23 +3243,33 @@ export class ChatView extends ItemView {
         );
       };
       const streamInitialPass = (): Promise<void> => {
-        messages = prepareProviderRequest(
-          messages,
+        const preparedMessages = prepareProviderRequest(
+          appendAgenticCheckpoint(
+            appendAssistantToolRound(messages, '', evidenceToolCalls, toolProtocol),
+            evidenceToolCalls.length > 0 ? (initialAgentPlan?.checkpoint ?? '') : '',
+          ),
           providerToolDefinitions,
           provider.contextBudget?.inputBytes,
         ).messages;
         contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(dataBoundarySnapshot, {
           recentConversationMessages: Math.max(
             0,
-            messages.filter((message) => message.role !== 'system').length - 1,
+            providerConversationMessages.filter((message) => message.role !== 'system').length - 1,
           ),
+          toolResultCount: evidenceToolCalls.length,
         });
         const userMessage = this.messages.find((message) => message.id === userMessageId);
         if (userMessage) userMessage.dataBoundarySnapshot = contextMeta.dataBoundarySnapshot;
-        return provider.streamChat(messages, consumeInitialChunk, 0.7, providerToolDefinitions, {
-          signal: abortController.signal,
-          toolChoice: providerToolDefinitions ? initialAgentPlan?.toolChoice : undefined,
-        });
+        return provider.streamChat(
+          preparedMessages,
+          consumeInitialChunk,
+          0.7,
+          providerToolDefinitions,
+          {
+            signal: abortController.signal,
+            toolChoice: providerToolDefinitions ? initialAgentPlan?.toolChoice : undefined,
+          },
+        );
       };
 
       try {
@@ -3253,6 +3292,7 @@ export class ChatView extends ItemView {
         systemPrompt = [
           promptContext.systemPrompt,
           compatibilityPrompt,
+          evidence?.checkpoint,
           initialAgentPlan?.checkpoint,
         ]
           .filter((part): part is string => Boolean(part))
@@ -3316,12 +3356,15 @@ export class ChatView extends ItemView {
       });
       if (
         initialAgentPlan?.shouldRetryWithoutTools !== true &&
-        shouldRenderAssistantQuestion(firstClassification, toolCallMap.size)
+        shouldRenderAssistantQuestion(
+          firstClassification,
+          toolCallMap.size + evidenceToolCalls.length,
+        )
       ) {
-        const questionContract = enforceNativeToolAnswerContract(
-          firstClassification.content,
-          Array.from(toolCallMap.values()),
-        );
+        const questionContract = enforceNativeToolAnswerContract(firstClassification.content, [
+          ...evidenceToolCalls,
+          ...toolCallMap.values(),
+        ]);
         const questionBlocked = questionContract.content !== firstClassification.content;
         const questionCitations = selectDisplayedAnswerCitations(
           questionContract.content,
@@ -3332,7 +3375,7 @@ export class ChatView extends ItemView {
           questionContract.content,
           true,
           firstClassification.reasoning || undefined,
-          Array.from(toolCallMap.values()),
+          [...evidenceToolCalls, ...toolCallMap.values()],
           {
             providerKey: key,
             providerLabel,
@@ -3363,7 +3406,7 @@ export class ChatView extends ItemView {
         }
         const previousAttempt = fullText.trim();
         const retryMessages: ChatMessage[] = [
-          ...messages,
+          ...appendAssistantToolRound(messages, '', evidenceToolCalls, toolProtocol),
           ...(previousAttempt ? [{ role: 'assistant' as const, content: previousAttempt }] : []),
           {
             role: 'user',
@@ -3528,9 +3571,29 @@ export class ChatView extends ItemView {
         return;
       }
 
+      toolCalls = [...evidenceToolCalls, ...toolCalls];
+      const evidenceAnswer = toolCalls.some((call) => call.status === 'running')
+        ? { content: fullText, reasoning: fullReasoning, warnings: [] }
+        : await finalizeEvidenceAnswer({
+            question: text,
+            content: fullText,
+            reasoning: fullReasoning,
+            contextAttachments: promptContext.attachments,
+            toolDefinitions,
+            toolCalls,
+            messages: appendAssistantToolRound(messages, '', toolCalls, toolProtocol),
+            provider,
+            signal: abortController.signal,
+          });
+      if (!isChatRunActive(this.activeRun, run)) return;
+      fullText = evidenceAnswer.content;
+      fullReasoning = evidenceAnswer.reasoning;
       fullText = enforceNativeToolAnswerContract(fullText, toolCalls).content;
       const displayedCitations = selectDisplayedAnswerCitations(fullText, promptContext.citations);
-      const sourceWarnings = this.validateAssistantSources(fullText, displayedCitations);
+      const sourceWarnings = [
+        ...evidenceAnswer.warnings,
+        ...this.validateAssistantSources(fullText, displayedCitations),
+      ];
       const postProviderTurnMeta =
         toolCalls.length > 0
           ? applyTurnEvent({ type: 'tool-call-delta', activeToolCalls: toolCalls.length })
@@ -4475,6 +4538,23 @@ export class ChatView extends ItemView {
           }
         }
         accumulatedText = answerContract.content;
+        const evidenceAnswer = await finalizeEvidenceAnswer({
+          question: args.question,
+          content: accumulatedText,
+          reasoning: accumulatedReasoning,
+          contextAttachments: args.contextAttachments,
+          toolDefinitions: args.toolDefinitions,
+          toolCalls: allToolCalls,
+          messages: conversationMessages,
+          provider: args.provider,
+          signal: args.run.controller.signal,
+        });
+        if (!isChatRunActive(this.activeRun, args.run)) return;
+        accumulatedText = enforceNativeToolAnswerContract(
+          evidenceAnswer.content,
+          allToolCalls,
+        ).content;
+        accumulatedReasoning = evidenceAnswer.reasoning;
         if (answerContract.violationCodes.length > 0) {
           this.plugin.logger.warn('Unsupported answer claims removed.', {
             source: 'chat.answer-contract',
@@ -4511,7 +4591,10 @@ export class ChatView extends ItemView {
           groundedRepairCitations.length > 0
             ? groundedRepairCitations
             : selectDisplayedAnswerCitations(accumulatedText, turnCitations);
-        const sourceWarnings = this.validateAssistantSources(accumulatedText, answerCitations);
+        const sourceWarnings = [
+          ...evidenceAnswer.warnings,
+          ...this.validateAssistantSources(accumulatedText, answerCitations),
+        ];
         this.plugin.logger.debug('Chat tool trace quality measured.', {
           source: 'chat.quality',
           data: evaluateToolTrace({
@@ -4952,6 +5035,7 @@ export class ChatView extends ItemView {
       maxContextChars: provider?.contextBudget?.evidenceChars,
       deferImplicitFolderEvidenceToTools,
       explicitContextOnly: pluginDocumentation !== null,
+      enableVaultSearch: !skipAutoRag && pluginDocumentation === null,
       queryExpander: (question) =>
         expandVaultSearchPlan(question, provider, previousUserQuestions, signal),
     });

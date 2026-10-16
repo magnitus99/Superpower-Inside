@@ -840,7 +840,7 @@ fn collect_research_terms_and_facets(
 }
 
 /// Appends lexical terms that remain after removing conversational research boilerplate.
-fn append_meaningful_tokens(target: &mut Vec<String>, text: &str) {
+pub fn append_meaningful_tokens(target: &mut Vec<String>, text: &str) {
     for raw_token in text.split(|character: char| {
         !character.is_alphanumeric() && character != '_' && character != '-'
     }) {

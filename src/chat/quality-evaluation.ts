@@ -60,6 +60,7 @@ export function evaluateToolTrace(input: ToolTraceQualityInput): ToolTraceQualit
   const maxToolRounds = Math.max(1, Math.trunc(input.maxToolRounds ?? 10));
   const plan = planAgenticToolTurn({
     question: input.question,
+    answer: input.answer,
     contextAttachments: input.contextAttachments ?? [],
     explicitToolServerCount: 0,
     toolDefinitions: input.toolDefinitions ?? [],
@@ -70,10 +71,19 @@ export function evaluateToolTrace(input: ToolTraceQualityInput): ToolTraceQualit
   });
   const ledger = plan?.ledger;
   const requiresEvidence = plan?.requiresEvidence ?? false;
-  const verifiedSources = Math.max(ledger?.verifiedSources ?? 0, verifiedAnswerCitationCount);
+  const verifiedSources = Math.max(
+    ledger?.verifiedSources ?? 0,
+    new Set(
+      citations
+        .filter((citation) => citation.status === 'verified')
+        .map((citation) => citation.filePath),
+    ).size,
+  );
   const answerGrounded =
     input.answer.trim().length > 0 &&
-    (!requiresEvidence || verifiedSources > 0 || verifiedAnswerCitationCount > 0);
+    plan?.answerNeedsRepair !== true &&
+    (verifiedSources >= Math.max(1, plan?.minimumSources ?? 0) ||
+      (plan?.minimumSources === 0 && (ledger?.successfulExternalCalls ?? 0) > 0));
 
   return {
     totalCalls: input.toolCalls.length,

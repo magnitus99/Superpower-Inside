@@ -534,6 +534,11 @@ export function plan_empty_file_index_record_json(entry_json: string, updated: n
 export function plan_evidence_candidate_order_json(scores_json: string, available_evidence_ids_json: string): string;
 
 /**
+ * 원문 수집의 다음 읽기 전용 호출을 결정합니다.
+ */
+export function plan_evidence_collection_json(input: string): string;
+
+/**
  * vector entry metadata snapshot에서 file index record JSON plan을 만든다.
  */
 export function plan_file_index_records_json(entries_json: string, updated: number): string;
@@ -1145,6 +1150,7 @@ export interface InitOutput {
     readonly plan_diverse_result_indices_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_empty_file_index_record_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_evidence_candidate_order_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_evidence_collection_json: (a: number, b: number) => [number, number];
     readonly plan_file_index_records_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_folder_lexical_evidence_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_folder_mention_file_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
