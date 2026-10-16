@@ -12,15 +12,18 @@ import {
   syntheticVault,
   evaluateToolLoop,
   evaluateRetrieval,
+  evaluateEvidenceCollection,
   isEvaluationHostAlive,
 } from './chat-tool-evaluation.mjs';
 import { createPublicToolCases } from './chat-tool-scenarios.mjs';
+import { createEvidenceCollectionCases } from './evidence-collection-scenarios.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixture = JSON.parse(
   await readFile(path.join(repository, 'tests/fixtures/chat-quality.json'), 'utf8'),
 );
 fixture.cases.push(...createPublicToolCases());
+fixture.cases.push(...createEvidenceCollectionCases());
 
 // 볼트 I/O만 합성 데이터로 치환하며 컨텍스트·도구·provider 구현은 그대로 번들합니다.
 const obsidianAdapter = `
@@ -73,6 +76,7 @@ async function compileRuntime(root, directory) {
     export { ObsidianNativeVaultToolPort } from './src/agent/obsidian-native-vault-port';
     export { NativeVaultToolRuntime, createNativeVaultToolDefinitions } from './src/agent/native-vault-tool';
     export { planAgenticToolTurn } from './src/chat/tool-orchestration';
+    export { collectVaultEvidence, finalizeEvidenceAnswer } from './src/chat/evidence-collection';
     export { createProviderForStrategy } from './src/llm/providers';
     export { getEffectiveSystemPrompt } from './src/chat/prompt-library';
     export { setLanguage } from './src/i18n';
@@ -135,6 +139,10 @@ async function evaluate(runtime, settings) {
   for (const test of fixture.cases) {
     const start = performance.now();
     const { files, app } = syntheticVault(runtime, test);
+    if (test.workflow === 'evidence-collection') {
+      results.push(await evaluateEvidenceCollection(runtime, test, { files, app }, provider));
+      continue;
+    }
     if (test.workflow === 'tool-loop') {
       const vault = { files, app };
       const retrieval = await evaluateRetrieval(runtime, test, vault);
