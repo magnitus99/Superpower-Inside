@@ -161,7 +161,7 @@ import {
   type ChatTurnStage,
   type ChatTurnState,
 } from './turn-state';
-import { t } from '../i18n';
+import { formatNumber, t } from '../i18n';
 import { isDomInstance } from '../utils/dom';
 import { promptWithModal } from '../utils/modal-prompts';
 import { EditMessageModal } from './edit-modal';
@@ -2504,7 +2504,7 @@ export class ChatView extends ItemView {
     if (!this.sessionInfoEl) return;
     const parts: string[] = [];
     if (this.messages.length > 0) {
-      parts.push(`${this.messages.length}${t('chatMessageUnit')}`);
+      parts.push(`${formatNumber(this.messages.length)}${t('chatMessageUnit')}`);
     }
     if (this.session.isDirty) {
       parts.push('●');
@@ -3139,8 +3139,8 @@ export class ChatView extends ItemView {
             if (progress.phase === 'complete') return;
             const progressText = t('vaultResearchProgress', {
               phase: getVaultResearchPhaseLabel(progress.phase),
-              completed: String(progress.completedFiles),
-              total: String(progress.totalFiles),
+              completed: progress.completedFiles,
+              total: progress.totalFiles,
             });
             this.updateMessage(assistantId, progressText, false, undefined, undefined, {
               providerKey: key,

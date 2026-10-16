@@ -52,3 +52,18 @@ describe('UI 언어 계약', () => {
       expect(t('settingsMcpJsonFormatHelp')).toContain(field);
   });
 });
+
+describe('숫자 표시 계약', () => {
+  it.each(['ko', 'en'] as const)('%s에서 모든 숫자 변수에 천 단위 쉼표를 넣는다', (lang) => {
+    setLanguage(lang);
+    expect(
+      t('ragIndexingPhaseWithChunks', { phase: 'phase', completed: 12345, total: 9876543 }),
+    ).toContain('12,345/9,876,543');
+    expect(t('providerImportContext', { v0: -12345.6789 })).toContain('-12,345.6789');
+    expect(t('providerImportContext', { v0: 0 })).toContain('0');
+  });
+  it('숫자처럼 보이는 식별 문자열은 보존한다', () => {
+    expect(t('providerImportContext', { v0: '123456' })).toContain('123456');
+    expect(t('providerImportContext', { v0: 'model-123456' })).toContain('model-123456');
+  });
+});
