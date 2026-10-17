@@ -38,6 +38,8 @@ https://github.com/user-attachments/assets/b737eff2-d3e1-40a3-8c54-eaf0e714751c
 
 Keyword and meaning-based search help find relevant passages. Built-in vault tools can read surrounding text and follow note links, so you can ask a follow-up without copying each passage into chat yourself. These tools read your vault; saving or inserting a result is an action you choose.
 
+When vault search is active, indexed documents in the allowed scope are reviewed before an answer is generated. Search ranks determine the reading order; they do not remove the remaining indexed documents. Each passage receives an acceptance or rejection decision, and accepted quotations are checked against the original text. The answer cites those sources. If review cannot finish, the plugin reports the failure instead of filling the answer with general knowledge.
+
 Name a file, folder, or tag when scope matters. Type `[[` to choose one, paste an existing link, or use `@` to bring in your workspace. Before you send, the input checks for missing or unreadable references.
 
 <details>
@@ -89,10 +91,10 @@ API keys and ChatGPT credentials are stored in **Obsidian's secret storage on th
 <summary><strong>Local search and data controls</strong></summary>
 
 - **Meaning-based search:** choose Ternlight for short English notes or EmbeddingGemma 300M for multilingual material. Prepare the model files in settings and let indexing finish. Changing the embedding model rebuilds the index. Keyword search and built-in vault tools are available without an embedding index.
-- **Local storage:** search indexes and the PDF OCR cache stay in the vault's local browser storage. Chat messages, selected passages, and tool results may be sent to configured providers or tools.
+- **Local storage:** search indexes and the PDF OCR cache stay in the vault's local browser storage. Indexed-vault review sends the text of all allowed indexed documents to the selected chat provider in batches. A large collection takes more time and provider usage. Chat messages, referenced passages, and tool results may also be sent to configured providers or tools.
 - **Exclusions:** use `superpower-inside-exclude: true` in a note's top-level YAML or the document exclusion command. Path exclusions and sensitive-file safeguards also apply. Extension exclusions affect search and indexing; a direct reference can still read a supported file within the other safeguards and size limits.
-- **Responses and stopping:** chat answers appear as streaming text. Stopping a run closes the active connection; the provider may continue inference after disconnection.
-- **Answer coverage:** search does not read the whole vault, and checking a source passage does not guarantee the answer is correct. General knowledge and new drafts may have no vault source.
+- **Responses and stopping:** indexed-vault answers appear after review and source checks finish. Other chat answers can stream. Stopping a run closes the active connection; the provider may continue inference after disconnection.
+- **Answer coverage:** review covers indexed documents in the allowed scope, including passages the model rejects as unrelated. Excluded and unindexed files are outside that review. Checking quotations and source identifiers does not guarantee that the model interpreted the evidence correctly.
 
 </details>
 
@@ -147,6 +149,8 @@ https://github.com/user-attachments/assets/c73dac24-3e09-4ec2-9c82-1d71b8d182a6
 
 키워드·의미 검색으로 관련 구간을 찾고, 내장 볼트 도구로 앞뒤 내용을 읽거나 노트 링크를 따라갈 수 있습니다. 구간마다 직접 복사해 붙이지 않고 후속 질문을 이어 가세요. 내장 도구는 볼트를 읽으며, 결과를 저장하거나 삽입하는 작업은 사용자가 선택합니다.
 
+볼트 검색이 활성화된 질문은 허용 범위의 색인 문서를 검토한 뒤 답변합니다. 검색 순위는 먼저 읽을 순서에만 쓰며, 나머지 색인 문서를 검토에서 제외하지 않습니다. 각 원문 구간을 채택하거나 제외한 이유를 판단하고, 채택한 인용은 원문과 대조합니다. 답변에는 해당 출처를 연결합니다. 검토를 끝내지 못하면 일반 지식으로 답을 채우지 않고 실패를 알립니다.
+
 범위가 중요하면 파일·폴더·태그를 지정하세요. `[[`를 입력해 참조를 고르거나 기존 링크를 붙여 넣어도 됩니다. `@`는 현재 작업을 가져옵니다. 전송 전에 입력창에서 참조를 확인하세요.
 
 <details>
@@ -198,10 +202,10 @@ API 키와 ChatGPT 자격 증명은 볼트와 동기화되는 플러그인 설�
 <summary><strong>로컬 검색과 데이터 제어</strong></summary>
 
 - **의미 검색:** 짧은 영어 노트에는 Ternlight, 다국어 자료에는 EmbeddingGemma 300M을 선택할 수 있습니다. 설정에서 모델 파일을 준비하고 인덱싱을 마치세요. 임베딩 모델을 바꾸면 인덱스를 다시 만듭니다. 키워드 검색과 내장 볼트 도구는 임베딩 인덱스 없이 사용할 수 있습니다.
-- **로컬 저장:** 검색 인덱스와 PDF OCR 캐시는 해당 볼트의 로컬 브라우저 저장소에 남습니다. 채팅 메시지·선택한 구간·도구 결과는 설정한 제공자나 도구로 전송될 수 있습니다.
+- **로컬 저장:** 검색 인덱스와 PDF OCR 캐시는 해당 볼트의 로컬 브라우저 저장소에 남습니다. 색인 볼트 검토는 허용된 색인 문서 전체의 본문을 선택한 채팅 제공자에게 묶음으로 보냅니다. 자료가 많으면 시간과 제공자 사용량이 늘어납니다. 채팅 메시지·참조 구간·도구 결과도 설정한 제공자나 도구로 전송될 수 있습니다.
 - **자료 제외:** 노트 맨 위 YAML에 `superpower-inside-exclude: true`를 넣거나 문서 제외 명령을 사용하세요. 경로 제외와 민감 파일 보호도 적용됩니다. 확장자 제외는 검색·인덱싱에 적용되며, 지원 파일을 직접 참조하면 다른 보호 규칙과 크기 제한 안에서 읽을 수 있습니다.
-- **응답과 중단:** 채팅 답변은 수신되는 대로 스트리밍 표시합니다. 중단하면 진행 중인 연결을 닫지만, 제공자의 추론은 연결 종료 후에도 계속될 수 있습니다.
-- **답변 범위:** 검색이 볼트 전체를 읽는 것은 아니며, 근거 구간을 확인했다고 답변의 정확성이 보장되지는 않습니다. 일반 지식과 새 초안에는 볼트 출처가 없을 수 있습니다.
+- **응답과 중단:** 색인 볼트 답변은 검토와 출처 검사가 끝난 뒤 표시합니다. 다른 채팅 답변은 스트리밍될 수 있습니다. 중단하면 진행 중인 연결을 닫지만, 제공자의 추론은 연결 종료 후에도 계속될 수 있습니다.
+- **답변 범위:** 허용 범위의 색인 문서를 검토하며, 모델이 관련 없다고 제외한 구간도 검토에 포함됩니다. 제외한 파일과 색인하지 않은 파일은 검토 범위 밖입니다. 인용 구절과 출처가 존재해도 모델이 근거를 올바르게 해석했다는 보장은 없습니다.
 
 </details>
 
