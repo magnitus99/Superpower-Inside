@@ -130,10 +130,10 @@ function loadModel(device: 'webgpu' | 'wasm'): Promise<InferenceSession> {
 
 async function inferTexts(texts: string[]): Promise<Float32Array> {
   if (backend === 'webgpu') return inferBatch(texts);
-  // CPU에서는 길이가 다른 청크의 패딩 연산을 피하고 ONNX의 다중 스레드를 활용합니다.
+  // 상위의 길이 정렬 순서를 유지하며 최대 4행씩 처리하고 이전 배치를 먼저 해제합니다.
   const values = new Float32Array(texts.length * 768);
-  for (let index = 0; index < texts.length; index++) {
-    values.set(await inferBatch([texts[index]]), index * 768);
+  for (let index = 0; index < texts.length; index += 4) {
+    values.set(await inferBatch(texts.slice(index, index + 4)), index * 768);
   }
   return values;
 }
@@ -148,6 +148,18 @@ async function inferBatch(texts: string[]): Promise<Float32Array> {
   const inputs: Record<string, OnnxTensor> = {};
   let output: InferenceSession.OnnxValueMapType | undefined;
   try {
+    // CPU는 패딩 포함 2,048토큰을 넘는 조합을 단건으로 되돌려 긴 입력의 메모리 증폭을 막습니다.
+    if (
+      backend === 'wasm' &&
+      texts.length > 1 &&
+      tokens.input_ids instanceof Tensor &&
+      texts.length * tokens.input_ids.dims[1] > 2048
+    ) {
+      const values = new Float32Array(texts.length * 768);
+      for (let index = 0; index < texts.length; index++)
+        values.set(await inferBatch([texts[index]]), index * 768);
+      return values;
+    }
     for (const name of model.inputNames) {
       const token = tokenInputs[name];
       if (!(token instanceof Tensor) || !(token.data instanceof BigInt64Array))
