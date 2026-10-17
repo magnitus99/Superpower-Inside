@@ -1883,6 +1883,23 @@ export function plan_diverse_result_indices_json(candidates_json, top_k) {
 }
 
 /**
+ * 동일 문자열을 재사용하도록 글자수순 입력, 원순서 복원과 누적 처리 수를 반환한다.
+ * @param {string} texts_json
+ * @returns {string | undefined}
+ */
+export function plan_embedding_inputs_json(texts_json) {
+    const ptr0 = passStringToWasm0(texts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.plan_embedding_inputs_json(ptr0, len0);
+    let v2;
+    if (ret[0] !== 0) {
+        v2 = getStringFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    }
+    return v2;
+}
+
+/**
  * 청크가 없는 파일도 완료 상태로 유지할 file index record JSON plan을 만든다.
  * @param {string} entry_json
  * @param {number} updated

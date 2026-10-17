@@ -18,6 +18,7 @@ import {
   planIndexPendingFilesRust,
   planRagAutomaticRecoveryBatchRust,
   isSourceRevisionCurrentRust,
+  planEmbeddingInputsRust,
 } from './rust-core';
 import type { PerformanceGuardState } from './performance-guard';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
@@ -1133,17 +1134,20 @@ export class VaultIndexer {
     options: IndexingOptions,
     progressTracker?: IndexingProgressTracker,
   ): Promise<number[][]> {
+    const plan = planEmbeddingInputsRust(texts);
+    if (!plan) throw new Error('Rust embedding batch planning failed');
+    const inputs = plan.inputIndices.map((index) => texts[index]);
     const vectors: number[][] = [];
     let expectedDimension: number | undefined;
     let offset = 0;
 
-    while (offset < texts.length) {
+    while (offset < inputs.length) {
       throwIfIndexingCancelled(options.signal);
       throwIfPerformanceGuardPaused(options);
       const requestedBatchSize =
-        options.getMaxEmbeddingBatchSize?.() ?? options.maxEmbeddingBatchSize ?? texts.length;
+        options.getMaxEmbeddingBatchSize?.() ?? options.maxEmbeddingBatchSize ?? inputs.length;
       const batchSize = Math.max(1, Math.floor(requestedBatchSize));
-      const batch = texts.slice(offset, offset + batchSize);
+      const batch = inputs.slice(offset, offset + batchSize);
       const startedAt = performance.now();
       this.logger.trace('Embedding batch started.', {
         data: {
@@ -1169,7 +1173,7 @@ export class VaultIndexer {
         progressTracker.currentFileBatchDurationMs += durationMs;
         progressTracker.currentFileEmbeddedChunks = Math.min(
           progressTracker.currentFileTotalChunks,
-          progressTracker.currentFileEmbeddedChunks + batch.length,
+          plan.cumulativeChunkCounts[offset + batch.length - 1],
         );
         emitIndexingProgress(options, progressTracker, 'batch-complete');
       }
@@ -1185,13 +1189,13 @@ export class VaultIndexer {
       throwIfPerformanceGuardPaused(options);
       vectors.push(...batchVectors);
       offset += batch.length;
-      if (offset < texts.length) {
+      if (offset < inputs.length) {
         const yieldMs = options.getIndexingYieldMs?.() ?? options.indexingYieldMs ?? 0;
         await pauseAfterBatch(yieldMs, options.signal);
       }
     }
 
-    return vectors;
+    return plan.outputIndices.map((index) => vectors[index]);
   }
 
   private async withIndexBatch<T>(operation: () => Promise<T>): Promise<T> {

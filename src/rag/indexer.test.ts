@@ -385,7 +385,10 @@ describe('VaultIndexer 배치 인덱싱', () => {
 
     const entries = await store.getEntries();
     expect(batchSizes.slice(0, 3)).toEqual([4, 2, 1]);
-    expect(entries.map((entry) => entry.metadata.text)).toEqual(submittedTexts);
+    expect(entries.map((entry) => entry.metadata.text)).toEqual(
+      chunkMarkdown(content, 40).map((chunk) => buildSearchText(file, chunk)),
+    );
+    expect(new Set(entries.map((entry) => entry.metadata.text))).toEqual(new Set(submittedTexts));
     expect(new Set(submittedTexts).size).toBe(submittedTexts.length);
   });
 
@@ -1061,6 +1064,57 @@ describe('VaultIndexer 배치 인덱싱', () => {
     const entries = await store.getEntries();
     expect(entries.some((entry) => entry.metadata.filePath === 'deleted.md')).toBe(false);
     expect([...bm25.search('staleterm').keys()]).toEqual([]);
+  });
+
+  it('길이별 고유 입력을 배치 처리하고 원래 청크의 벡터·진행률을 복원한다', async () => {
+    const content = [
+      'a'.repeat(90),
+      '반복'.repeat(45),
+      'a'.repeat(90),
+      'z'.repeat(60),
+      '반복'.repeat(45),
+    ].join('\n\n');
+    const vault = createVault(new Map([['batch.txt', content]]));
+    const file = vault.getFiles()[0];
+    const store = new MemoryVectorStore();
+    const batches: string[][] = [];
+    const progress: number[] = [];
+    const indexer = new VaultIndexer(
+      vault,
+      store,
+      {
+        embed: () => Promise.resolve([1, 0]),
+        embedBatch: (texts) => {
+          batches.push(texts);
+          return Promise.resolve(texts.map((text) => [text.length, 1]));
+        },
+      },
+      createRagConfig(),
+      createChatConfig(),
+    );
+    const sourceTexts = chunkPlainText(content, 100).map((chunk) => buildSearchText(file, chunk));
+    expect(new Set(sourceTexts).size).toBeLessThan(sourceTexts.length);
+
+    await indexer.indexFile(file, {
+      maxEmbeddingBatchSize: 2,
+      onProgress: (snapshot) => {
+        if (snapshot.event === 'batch-complete') progress.push(snapshot.currentFileEmbeddedChunks);
+      },
+    });
+
+    const embeddedTexts = batches.flat();
+    expect(embeddedTexts).toHaveLength(new Set(sourceTexts).size);
+    expect(new Set(embeddedTexts)).toEqual(new Set(sourceTexts));
+    expect(embeddedTexts.map((text) => text.length)).toEqual(
+      embeddedTexts.map((text) => text.length).sort((a, b) => b - a),
+    );
+    expect(batches.every((batch) => batch.length <= 2)).toBe(true);
+    const entries = await store.getEntries();
+    expect(entries.map((entry) => entry.metadata.text)).toEqual(sourceTexts);
+    expect(entries.map((entry) => entry.vector)).toEqual(
+      sourceTexts.map((text) => [text.length, 1]),
+    );
+    expect(progress.at(-1)).toBe(sourceTexts.length);
   });
 
   it('가드 없는 배치 옵션은 파일 청크를 한 번에 임베딩한다', async () => {
