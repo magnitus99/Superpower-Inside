@@ -5055,7 +5055,10 @@ fn merge_retrieval_source(
 
 /// BM25 index에 document를 추가하거나 기존 document를 교체한다.
 fn add_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, source_path: &str) {
-    remove_bm25_document(index, doc_id);
+    // 새 문서는 삭제할 posting이 없으므로 전체 용어 사전 순회를 생략한다.
+    if index.doc_lengths.contains_key(doc_id) {
+        remove_bm25_document(index, doc_id);
+    }
     insert_bm25_document(index, doc_id, text, source_path);
 }
 
@@ -5136,6 +5139,8 @@ fn search_bm25_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore>
         let Some(df_f64) = usize_to_f64(posting.len()) else {
             continue;
         };
+        // Lucene·Tantivy처럼 같은 용어의 IDF는 posting 순회 전에 한 번만 계산한다.
+        let idf = ((total_docs_f64 - df_f64 + 0.5) / (df_f64 + 0.5)).ln_1p();
         for (doc_id, term_frequency) in posting {
             if !term_frequency.is_finite() || *term_frequency <= 0.0 {
                 continue;
@@ -5146,13 +5151,7 @@ fn search_bm25_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore>
                 .copied()
                 .filter(|value| value.is_finite() && *value > 0.0)
                 .unwrap_or(1.0);
-            let score = bm25_score_value(
-                total_docs_f64,
-                df_f64,
-                *term_frequency,
-                doc_length,
-                avg_doc_length,
-            );
+            let score = bm25_score_value(idf, *term_frequency, doc_length, avg_doc_length);
             if score <= 0.0 || !score.is_finite() {
                 continue;
             }
@@ -5237,28 +5236,19 @@ fn compare_ranked_bm25_search_scores_descending(
         .then_with(|| left.sequence.cmp(&right.sequence))
 }
 
-/// BM25 score 공식을 계산한다.
-fn bm25_score_value(
-    total_docs: f64,
-    document_frequency: f64,
-    term_frequency: f64,
-    doc_length: f64,
-    avg_doc_length: f64,
-) -> f64 {
-    if !total_docs.is_finite()
-        || !document_frequency.is_finite()
+/// 용어별 IDF를 재사용해 BM25 점수를 계산한다.
+fn bm25_score_value(idf: f64, term_frequency: f64, doc_length: f64, avg_doc_length: f64) -> f64 {
+    if !idf.is_finite()
         || !term_frequency.is_finite()
         || !doc_length.is_finite()
         || !avg_doc_length.is_finite()
-        || total_docs <= 0.0
-        || document_frequency <= 0.0
+        || idf <= 0.0
         || term_frequency <= 0.0
         || doc_length <= 0.0
         || avg_doc_length <= 0.0
     {
         return 0.0;
     }
-    let idf = ((total_docs - document_frequency + 0.5) / (document_frequency + 0.5)).ln_1p();
     let denominator = BM25_K1.mul_add(
         BM25_B.mul_add(doc_length / avg_doc_length, 1.0 - BM25_B),
         term_frequency,
@@ -14181,6 +14171,90 @@ mod tests {
             limited_doc_ids, expected_doc_ids,
             "제한 검색은 전체 결과를 JS로 넘기지 않고 상위 BM25 hit만 반환해야 한다",
         );
+    }
+
+    /// 용어별로 미리 계산한 IDF도 기존 BM25 공식과 같은 점수를 반환해야 한다.
+    #[test]
+    fn bm25_precomputed_idf_preserves_scores() {
+        for (total_docs, df) in [(100.0, 1.0), (100.0, 100.0), (100.0, 37.0)] {
+            let idf = ((total_docs - df + 0.5_f64) / (df + 0.5)).ln_1p();
+            for tf in [1.0, 3.0, 100.0] {
+                for length in [1.0, 23.0, 1_000.0] {
+                    let actual = bm25_score_value(idf, tf, length, 23.0);
+                    let expected = bm25_score(total_docs, df, tf, length, 23.0);
+                    assert!(
+                        (actual - expected).abs() < 1e-12,
+                        "기존 점수를 보존해야 한다"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 일반 추가도 고유 문서 경로와 같으며 교체·삭제·복원 후 오래된 용어가 남지 않아야 한다.
+    #[test]
+    fn bm25_upserts_match_unique_append_and_preserve_mutations() {
+        let mut upserts = Bm25RuntimeIndex::new(2);
+        let mut appended = Bm25RuntimeIndex::new(2);
+        for (id, text) in [("a", "alpha beta"), ("b", "beta beta gamma"), ("c", "")] {
+            upserts.add_document(id, text, "shared.md", 2);
+            appended.add_new_document(id, text, "shared.md", 2);
+        }
+        assert_eq!(upserts.to_json(), appended.to_json());
+        for compact in [false, true] {
+            let snapshot = if compact {
+                upserts.to_json()
+            } else {
+                serialize_bm25_index_json(&upserts.index)
+            };
+            let mut restored = Bm25RuntimeIndex::from_json(&snapshot, 2);
+            assert_eq!(
+                restored.search_json("beta alpha"),
+                upserts.search_json("beta alpha")
+            );
+            assert_eq!(
+                restored.search_top_json("beta", 2),
+                upserts.search_top_json("beta", 2)
+            );
+            assert_eq!(restored.source_path_for_doc("c"), "shared.md");
+            restored.add_document("a", "delta delta", "other.md", 2);
+            restored.add_document("d", "gamma", "shared.md", 2);
+            assert_eq!(restored.search_json("alpha"), "[]");
+            restored.remove_document("missing", 2);
+            restored.remove_source("shared.md", 2);
+            assert_eq!(restored.total_docs(), 1);
+            assert_eq!(restored.search_json("beta gamma"), "[]");
+            assert!(restored.search_json("delta").contains("\"docId\":\"a\""));
+        }
+    }
+
+    /// 합성 어휘가 증가하는 일반 추가 경로와 검색의 중앙값을 수동 비교한다.
+    #[ignore = "수동 BM25 성능 측정"]
+    #[test]
+    fn bench_bm25_upsert_and_search() {
+        let mut populated = Bm25RuntimeIndex::new(2);
+        for doc_index in 0..2_000_usize {
+            let id = format!("doc-{doc_index}");
+            let text = format!("alpha beta gamma unique{doc_index}");
+            populated.add_new_document(&id, &text, &id, 2);
+        }
+        let search_ns = measure_median_nanos(40, || {
+            std::hint::black_box(populated.search_top_json("alpha beta gamma", 20));
+        });
+        let upsert_ns = measure_median_nanos(7, || {
+            let mut index = Bm25RuntimeIndex::new(2);
+            for doc_index in 0..2_000_usize {
+                let id = format!("doc-{doc_index}");
+                let text = format!("alpha beta gamma unique{doc_index}");
+                index.add_document(&id, &text, &id, 2);
+            }
+            std::hint::black_box(index.total_docs());
+        });
+        let mut stdout = std::io::stdout().lock();
+        if !write_bench_line(&mut stdout, "bm25_upsert_2000", upsert_ns) {
+            return;
+        }
+        let _ = write_bench_line(&mut stdout, "bm25_search_2000", search_ns);
     }
 
     /// RAG core hot path의 deterministic median benchmark를 출력한다.

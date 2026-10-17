@@ -17,6 +17,7 @@ import {
   plan_model_context_json,
   plan_provider_model_details_json,
   embedding_gemma_inputs_json,
+  plan_embedding_inputs_json,
   local_model_range_matches,
   plan_chatgpt_json,
   plan_chat_evidence_json,
@@ -1759,6 +1760,47 @@ export function formatMcpConnectionErrorRust(
 export function createContentHashRust(content: string): string | null {
   if (!ensureRustCore()) return null;
   return create_content_hash(content);
+}
+
+export interface RustEmbeddingInputPlan {
+  inputIndices: number[];
+  outputIndices: number[];
+  cumulativeChunkCounts: number[];
+}
+
+export function planEmbeddingInputsRust(texts: readonly string[]): RustEmbeddingInputPlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_embedding_inputs_json(JSON.stringify(texts));
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const plan = parsed as Partial<RustEmbeddingInputPlan>;
+    if (
+      !isNonNegativeIntegerArray(plan.inputIndices) ||
+      !isNonNegativeIntegerArray(plan.outputIndices) ||
+      !isNonNegativeIntegerArray(plan.cumulativeChunkCounts) ||
+      plan.outputIndices.length !== texts.length ||
+      plan.inputIndices.length !== plan.cumulativeChunkCounts.length ||
+      !plan.inputIndices.every((index) => index < texts.length)
+    )
+      return null;
+    const uniqueCount = plan.inputIndices.length;
+    if (!plan.outputIndices.every((index) => index < uniqueCount)) return null;
+    const counts = plan.cumulativeChunkCounts;
+    if (
+      !counts.every((count, index) => count > (counts[index - 1] ?? 0) && count <= texts.length) ||
+      (counts.at(-1) ?? 0) !== texts.length
+    )
+      return null;
+    return {
+      inputIndices: plan.inputIndices,
+      outputIndices: plan.outputIndices,
+      cumulativeChunkCounts: plan.cumulativeChunkCounts,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function embeddingGemmaInputsRust(

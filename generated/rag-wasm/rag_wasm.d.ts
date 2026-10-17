@@ -524,6 +524,11 @@ export function plan_context_sources_json(results_json: string, verifications_js
 export function plan_diverse_result_indices_json(candidates_json: string, top_k: number): string;
 
 /**
+ * 동일 문자열을 재사용하도록 글자수순 입력, 원순서 복원과 누적 처리 수를 반환한다.
+ */
+export function plan_embedding_inputs_json(texts_json: string): string | undefined;
+
+/**
  * 청크가 없는 파일도 완료 상태로 유지할 file index record JSON plan을 만든다.
  */
 export function plan_empty_file_index_record_json(entry_json: string, updated: number): string;
@@ -1168,6 +1173,7 @@ export interface InitOutput {
     readonly plan_context_budget_append_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_context_sources_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_diverse_result_indices_json: (a: number, b: number, c: number) => [number, number];
+    readonly plan_embedding_inputs_json: (a: number, b: number) => [number, number];
     readonly plan_empty_file_index_record_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_evidence_candidate_order_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_evidence_collection_json: (a: number, b: number) => [number, number];

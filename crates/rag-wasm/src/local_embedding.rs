@@ -1,4 +1,48 @@
+use std::cmp::Reverse;
+use std::collections::HashMap;
 use wasm_bindgen::prelude::wasm_bindgen;
+
+#[wasm_bindgen]
+/// 동일 문자열을 재사용하도록 글자수순 입력, 원순서 복원과 누적 처리 수를 반환한다.
+#[must_use]
+pub fn plan_embedding_inputs_json(texts_json: &str) -> Option<String> {
+    let texts: Vec<String> = serde_json::from_str(texts_json).ok()?;
+    let mut occurrences: HashMap<&str, (usize, usize)> = HashMap::new();
+    for (index, text) in texts.iter().enumerate() {
+        occurrences
+            .entry(text)
+            .and_modify(|(_, count)| *count += 1)
+            .or_insert((index, 1));
+    }
+    let mut unique_inputs: Vec<_> = occurrences
+        .iter()
+        .map(|(&text, &(index, count))| (text, index, count, text.chars().count()))
+        .collect();
+    unique_inputs.sort_unstable_by_key(|&(_, index, _, length)| (Reverse(length), index));
+
+    let mut input_indices = Vec::with_capacity(unique_inputs.len());
+    let mut cumulative_chunk_counts = Vec::with_capacity(unique_inputs.len());
+    let mut output_slots = HashMap::with_capacity(unique_inputs.len());
+    let mut completed = 0;
+    for (slot, (text, index, count, _)) in unique_inputs.into_iter().enumerate() {
+        input_indices.push(index);
+        completed += count;
+        cumulative_chunk_counts.push(completed);
+        output_slots.insert(text, slot);
+    }
+    let output_indices: Option<Vec<_>> = texts
+        .iter()
+        .map(|text| output_slots.get(text.as_str()).copied())
+        .collect();
+    Some(
+        serde_json::json!({
+            "inputIndices": input_indices,
+            "outputIndices": output_indices?,
+            "cumulativeChunkCounts": cumulative_chunk_counts,
+        })
+        .to_string(),
+    )
+}
 
 #[wasm_bindgen]
 /// 검색 질의와 문서에 공식 `EmbeddingGemma` 접두사를 적용한다.
@@ -44,6 +88,41 @@ pub fn local_model_range_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedding_plan_sorts_unique_inputs_and_restores_duplicates() {
+        assert_eq!(
+            plan_embedding_inputs_json(r#"["a","long","a","bb","long",""]"#).as_deref(),
+            Some(
+                r#"{"inputIndices":[1,3,0,5],"outputIndices":[2,0,2,1,0,3],"cumulativeChunkCounts":[2,3,5,6]}"#
+            )
+        );
+    }
+
+    #[test]
+    fn embedding_plan_counts_unicode_scalars_and_preserves_equal_length_order() {
+        assert_eq!(
+            plan_embedding_inputs_json(r#"["😀","ab","가","é","e\u0301","😀",""]"#).as_deref(),
+            Some(
+                r#"{"inputIndices":[1,4,0,2,3,6],"outputIndices":[2,0,3,4,1,2,5],"cumulativeChunkCounts":[1,2,4,5,6,7]}"#
+            )
+        );
+    }
+
+    #[test]
+    fn embedding_plan_handles_empty_and_identical_inputs() {
+        assert_eq!(
+            plan_embedding_inputs_json("[]").as_deref(),
+            Some(r#"{"inputIndices":[],"outputIndices":[],"cumulativeChunkCounts":[]}"#)
+        );
+        assert_eq!(
+            plan_embedding_inputs_json(r#"["","",""]"#).as_deref(),
+            Some(r#"{"inputIndices":[0],"outputIndices":[0,0,0],"cumulativeChunkCounts":[3]}"#)
+        );
+        for invalid in ["", "null", "{}", r#"["a",1]"#] {
+            assert!(plan_embedding_inputs_json(invalid).is_none());
+        }
+    }
 
     #[test]
     fn prefixes_distinguish_query_and_document() {
