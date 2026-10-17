@@ -5356,7 +5356,7 @@ button.superpower-inside-prompt-danger-btn:disabled {
 }
 
 .superpower-inside-session-item.is-active {
-  background: var(--background-modifier-success);
+  background: var(--background-primary-alt);
   border-left: 3px solid var(--interactive-accent);
 }
 
