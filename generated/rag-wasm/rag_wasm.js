@@ -2175,6 +2175,47 @@ export function plan_indexed_db_storage_layout_json(plugin_id, vault_identity, l
 }
 
 /**
+ * 이름·검색 순위로 자료를 제거하지 않고 색인과 허용 범위의 교집합을 반환합니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function plan_indexed_review_inventory_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_review_inventory_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 긴 한 줄도 생략하지 않고 모델의 요청 예산 안에 들어가는 원문 조각으로 나눕니다.
+ * @param {string} input
+ * @param {number} max_chars
+ * @returns {string}
+ */
+export function plan_indexed_review_segments_json(input, max_chars) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_review_segments_json(ptr0, len0, max_chars);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * MCP server 후보 순서를 Rust에서 계산한다.
  * @param {string} preferred_server_names_json
  * @param {string} enabled_server_names_json
@@ -3848,6 +3889,29 @@ export function recompute_centroids(vectors, assignments, previous_centroids, di
 }
 
 /**
+ * 모든 답변 문단을 검토에서 채택한 실제 출처에 연결한 뒤 Markdown을 만듭니다.
+ * @param {string} source_ids
+ * @param {string} response
+ * @returns {string}
+ */
+export function render_indexed_review_answer_json(source_ids, response) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(source_ids, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(response, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.render_indexed_review_answer_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * retrieval source rank map에서 RRF score를 계산한다.
  * @param {Uint8Array} source_codes
  * @param {Float64Array} ranks
@@ -4136,6 +4200,29 @@ export function validate_exclude_path_input_json(input, existing_paths_json) {
         const ptr1 = passStringToWasm0(existing_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.validate_exclude_path_input_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 모든 원문 조각에 명시적 채택/제외가 있어야 완료하며 채택 구절은 원문과 대조합니다.
+ * @param {string} segments_json
+ * @param {string} response
+ * @returns {string}
+ */
+export function validate_indexed_review_json(segments_json, response) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(segments_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(response, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.validate_indexed_review_json(ptr0, len0, ptr1, len1);
         deferred3_0 = ret[0];
         deferred3_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);

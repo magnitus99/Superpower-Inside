@@ -587,6 +587,16 @@ export function plan_indexed_db_bounded_retention_json(oldest_records_json: stri
 export function plan_indexed_db_storage_layout_json(plugin_id: string, vault_identity: string, legacy_vault_name: string, embedding_namespace: string, index_namespace: string): string;
 
 /**
+ * 이름·검색 순위로 자료를 제거하지 않고 색인과 허용 범위의 교집합을 반환합니다.
+ */
+export function plan_indexed_review_inventory_json(input: string): string;
+
+/**
+ * 긴 한 줄도 생략하지 않고 모델의 요청 예산 안에 들어가는 원문 조각으로 나눕니다.
+ */
+export function plan_indexed_review_segments_json(input: string, max_chars: number): string;
+
+/**
  * MCP server 후보 순서를 Rust에서 계산한다.
  */
 export function plan_mcp_server_candidates_json(preferred_server_names_json: string, enabled_server_names_json: string, connection_statuses_json: string): string;
@@ -969,6 +979,11 @@ export function recall_at_k(exact_indices: Uint32Array, approximate_indices: Uin
 export function recompute_centroids(vectors: Float64Array, assignments: Uint32Array, previous_centroids: Float64Array, dimensions: number): Float64Array;
 
 /**
+ * 모든 답변 문단을 검토에서 채택한 실제 출처에 연결한 뒤 Markdown을 만듭니다.
+ */
+export function render_indexed_review_answer_json(source_ids: string, response: string): string;
+
+/**
  * retrieval source rank map에서 RRF score를 계산한다.
  */
 export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
@@ -1043,6 +1058,11 @@ export function validate_exclude_extension_input_json(input: string, existing_ex
  * `path-missing` 경고는 host(상태 검사 필요)에서 처리한다.
  */
 export function validate_exclude_path_input_json(input: string, existing_paths_json: string): string;
+
+/**
+ * 모든 원문 조각에 명시적 채택/제외가 있어야 완료하며 채택 구절은 원문과 대조합니다.
+ */
+export function validate_indexed_review_json(segments_json: string, response: string): string;
 
 /**
  * MCP stdio server 설정 JSON을 스키마 기반으로 검증한다.
@@ -1160,6 +1180,8 @@ export interface InitOutput {
     readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
     readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
+    readonly plan_indexed_review_inventory_json: (a: number, b: number) => [number, number];
+    readonly plan_indexed_review_segments_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_mcp_server_candidates_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_merged_retrieval_candidates: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_merged_retrieval_candidates_by_entry_id: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
@@ -1234,6 +1256,7 @@ export interface InitOutput {
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly recall_at_k: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly recompute_centroids: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly render_indexed_review_answer_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly select_diverse_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly select_plugin_context7_library_id: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1248,6 +1271,7 @@ export interface InitOutput {
     readonly update_generated_artifact_registry_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly validate_exclude_extension_input_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_exclude_path_input_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validate_indexed_review_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_mcp_json: (a: number, b: number) => [number, number];
     readonly vectorruntimeindex_dimensions: (a: number) => number;
     readonly vectorruntimeindex_new: (a: number, b: number, c: number) => number;

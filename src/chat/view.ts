@@ -63,17 +63,17 @@ import {
 } from '../agent/native-vault-tool';
 import { ObsidianNativeVaultToolPort } from '../agent/obsidian-native-vault-port';
 import { RagNativeVaultFileScope } from '../agent/rag-native-vault-file-scope';
-import { collectVaultEvidence, finalizeEvidenceAnswer } from './evidence-collection';
+import { finalizeEvidenceAnswer } from './evidence-collection';
 import {
   selectDisplayedAnswerCitations,
   selectGroundedRepairCitations,
 } from '../agent/citation-selection';
 import {
-  VaultResearchAgent,
   getVaultResearchPhaseLabel,
   isWholeVaultResearchRequest,
   isScopedVaultResearchRequest,
 } from '../agent/research-agent';
+import { reviewIndexedVault } from '../agent/indexed-vault-review';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
@@ -3048,89 +3048,17 @@ export class ChatView extends ItemView {
         return;
       }
       const toolsEnabled = maxToolRounds > 0;
-      const toolDefinitions = toolsEnabled
-        ? await this.collectToolDefinitions(mentionedServers, mentionOnlyServers, run)
-        : [];
-      if (!isChatRunActive(this.activeRun, run)) return;
-      const evidence =
-        toolsEnabled && !wholeVaultResearch && promptContext.vaultSearchEnabled
-          ? await collectVaultEvidence({
-              question: text,
-              scopes: mentionedFolders.map((folder) => folder.name),
-              nativeTool: this.nativeVaultTool,
-              provider,
-              createId: () => `evidence-${++this.localToolCallSequence}`,
-              signal: abortController.signal,
-              onUpdate: (calls) => {
-                if (!isChatRunActive(this.activeRun, run)) return;
-                this.updateMessage(assistantId, '', false, undefined, calls, {
-                  ...contextMeta,
-                  status: 'streaming',
-                  ...applyTurnEvent({ type: 'tools-running', activeToolCalls: calls.length }),
-                });
-              },
-            })
-          : null;
-      if (!isChatRunActive(this.activeRun, run)) return;
-      const evidenceToolCalls = evidence?.toolCalls ?? [];
-      promptContext.citations = collectToolCitations(promptContext.citations, evidenceToolCalls);
-      contextMeta.citations = promptContext.citations;
-      const initialAgentPlan = toolsEnabled
-        ? planAgenticToolTurn({
-            question: text,
-            contextAttachments: promptContext.attachments,
-            explicitToolServerCount: mentionOnlyServers.length,
-            explicitToolServerNames: mentionOnlyServers,
-            toolDefinitions,
-            toolCalls: evidenceToolCalls,
-            phase: evidenceToolCalls.length > 0 ? 'after-tools' : 'initial',
-            round: 0,
-            maxRounds: maxToolRounds,
-          })
-        : null;
-      const initialToolDefinitions = toolsEnabled
-        ? selectAgenticToolDefinitions(
-            toolDefinitions,
-            initialAgentPlan?.requiredToolNames,
-            initialAgentPlan?.requiredExternalServerNames,
-          )
-        : [];
-      let providerToolDefinitions =
-        toolsEnabled && toolProtocol === 'native' ? initialToolDefinitions : undefined;
-      const toolPrompt = toolsEnabled
-        ? toolProtocol === 'native'
-          ? createToolEvidencePrompt(initialToolDefinitions)
-          : createCompatibilityToolPrompt(initialToolDefinitions)
-        : '';
-      let systemPrompt = [
-        promptContext.systemPrompt,
-        toolPrompt,
-        evidence?.checkpoint,
-        initialAgentPlan?.checkpoint,
-      ]
-        .filter((part): part is string => Boolean(part))
-        .join('\n\n');
-      if (toolsEnabled && !providerCapability.toolCalling && mentionedServers.length > 0) {
-        new Notice(t('providerToolCallingUnsupportedNotice', { provider: providerLabel }), 5000);
-      }
-      let messages: ChatMessage[] = [
-        ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
-        ...providerConversationMessages,
-      ];
-
-      if (wholeVaultResearch) {
-        const researchQueries = await expandVaultSearchPlan(
-          text,
-          provider,
-          previousUserQuestions,
-          abortController.signal,
-        );
-        const researchResult = await new VaultResearchAgent(provider, this.nativeVaultTool).run({
+      const indexedVaultReview = wholeVaultResearch || promptContext.vaultSearchEnabled === true;
+      if (indexedVaultReview) {
+        await this.plugin.prepareRagForChat();
+        if (!isChatRunActive(this.activeRun, run)) return;
+        const indexedPaths = (await this.plugin.vectorStore?.getIndexedFilePaths()) ?? [];
+        const researchResult = await reviewIndexedVault({
           question: text,
-          scopePath: researchScopePath,
-          searchQuestion: researchQueries.variants.length
-            ? JSON.stringify([researchQueries.query, ...researchQueries.variants])
-            : researchQueries.query,
+          indexedPaths,
+          scopes: mentionedFolders.map((folder) => folder.name),
+          nativeTool: this.nativeVaultTool,
+          provider,
           systemPrompt: getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt),
           previousUserQuestions,
           signal: abortController.signal,
@@ -3166,32 +3094,91 @@ export class ChatView extends ItemView {
           },
         });
         if (!isChatRunActive(this.activeRun, run)) return;
-        const researchCitations = selectDisplayedAnswerCitations(
-          researchResult.content,
-          researchResult.citations,
-        );
-        const sourceWarnings = this.validateAssistantSources(
-          researchResult.content,
-          researchCitations,
-        );
-        this.updateMessage(assistantId, researchResult.content, true, undefined, undefined, {
-          providerKey: key,
-          providerLabel,
-          model: modelName,
-          providerCapability,
-          ...applyTurnEvent({ type: 'complete' }),
-          ...contextMeta,
-          dataBoundarySnapshot: withDataBoundaryProviderUsage(dataBoundarySnapshot, {
-            researchDocumentCount: researchResult.providerTransfer.sentFiles,
-          }),
-          ...assistantVariantMeta,
-          citations: researchCitations,
-          sourceWarnings,
+        contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(dataBoundarySnapshot, {
+          researchDocumentCount: researchResult.providerTransfer.sentFiles,
         });
-        setHidden(this.typingIndicator, true);
-        assistantWrapper?.classList.remove('generating');
-        return;
+        if (toolsEnabled && mentionedServers.length > 0) {
+          // 명시한 외부 도구도 실행할 수 있도록 검토 결과와 원문 인용을 기존 흐름에 전달합니다.
+          promptContext.systemPrompt = [
+            promptContext.systemPrompt,
+            t('llmEvidenceDataBoundary'),
+            JSON.stringify({
+              indexedDocumentReview: researchResult.content,
+              verifiedSourcePassages: researchResult.citations,
+            }),
+          ]
+            .filter(Boolean)
+            .join('\n\n');
+          promptContext.citations = [...promptContext.citations, ...researchResult.citations];
+          contextMeta.citations = promptContext.citations;
+        } else {
+          const researchCitations = selectDisplayedAnswerCitations(
+            researchResult.content,
+            researchResult.citations,
+          );
+          const sourceWarnings = this.validateAssistantSources(
+            researchResult.content,
+            researchCitations,
+          );
+          this.updateMessage(assistantId, researchResult.content, true, undefined, undefined, {
+            providerKey: key,
+            providerLabel,
+            model: modelName,
+            providerCapability,
+            ...applyTurnEvent({ type: 'complete' }),
+            ...contextMeta,
+            ...assistantVariantMeta,
+            citations: researchCitations,
+            sourceWarnings,
+          });
+          setHidden(this.typingIndicator, true);
+          assistantWrapper?.classList.remove('generating');
+          return;
+        }
       }
+
+      const toolDefinitions = toolsEnabled
+        ? await this.collectToolDefinitions(mentionedServers, mentionOnlyServers, run)
+        : [];
+      if (!isChatRunActive(this.activeRun, run)) return;
+      const evidenceToolCalls: ToolCallRecord[] = [];
+      const initialAgentPlan = toolsEnabled
+        ? planAgenticToolTurn({
+            question: text,
+            contextAttachments: promptContext.attachments,
+            explicitToolServerCount: mentionOnlyServers.length,
+            explicitToolServerNames: mentionOnlyServers,
+            toolDefinitions,
+            toolCalls: evidenceToolCalls,
+            phase: evidenceToolCalls.length > 0 ? 'after-tools' : 'initial',
+            round: 0,
+            maxRounds: maxToolRounds,
+          })
+        : null;
+      const initialToolDefinitions = toolsEnabled
+        ? selectAgenticToolDefinitions(
+            toolDefinitions,
+            initialAgentPlan?.requiredToolNames,
+            initialAgentPlan?.requiredExternalServerNames,
+          )
+        : [];
+      let providerToolDefinitions =
+        toolsEnabled && toolProtocol === 'native' ? initialToolDefinitions : undefined;
+      const toolPrompt = toolsEnabled
+        ? toolProtocol === 'native'
+          ? createToolEvidencePrompt(initialToolDefinitions)
+          : createCompatibilityToolPrompt(initialToolDefinitions)
+        : '';
+      let systemPrompt = [promptContext.systemPrompt, toolPrompt, initialAgentPlan?.checkpoint]
+        .filter((part): part is string => Boolean(part))
+        .join('\n\n');
+      if (toolsEnabled && !providerCapability.toolCalling && mentionedServers.length > 0) {
+        new Notice(t('providerToolCallingUnsupportedNotice', { provider: providerLabel }), 5000);
+      }
+      let messages: ChatMessage[] = [
+        ...(systemPrompt ? [{ role: 'system' as const, content: systemPrompt }] : []),
+        ...providerConversationMessages,
+      ];
 
       let fullText = '';
       let fullReasoning = '';
@@ -3251,13 +3238,16 @@ export class ChatView extends ItemView {
           providerToolDefinitions,
           provider.contextBudget?.inputBytes,
         ).messages;
-        contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(dataBoundarySnapshot, {
-          recentConversationMessages: Math.max(
-            0,
-            providerConversationMessages.filter((message) => message.role !== 'system').length - 1,
-          ),
-          toolResultCount: evidenceToolCalls.length,
-        });
+        contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(
+          contextMeta.dataBoundarySnapshot ?? dataBoundarySnapshot,
+          {
+            recentConversationMessages: Math.max(
+              0,
+              providerConversationMessages.filter((message) => message.role !== 'system').length - 1,
+            ),
+            toolResultCount: evidenceToolCalls.length,
+          },
+        );
         const userMessage = this.messages.find((message) => message.id === userMessageId);
         if (userMessage) userMessage.dataBoundarySnapshot = contextMeta.dataBoundarySnapshot;
         return provider.streamChat(
@@ -3292,7 +3282,6 @@ export class ChatView extends ItemView {
         systemPrompt = [
           promptContext.systemPrompt,
           compatibilityPrompt,
-          evidence?.checkpoint,
           initialAgentPlan?.checkpoint,
         ]
           .filter((part): part is string => Boolean(part))
