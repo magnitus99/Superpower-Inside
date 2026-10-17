@@ -68,6 +68,10 @@ import {
   plan_tag_mentions_json,
   plan_agentic_tool_turn_json,
   plan_evidence_collection_json,
+  plan_indexed_review_inventory_json,
+  plan_indexed_review_segments_json,
+  validate_indexed_review_json,
+  render_indexed_review_answer_json,
   plan_folder_lexical_evidence_indices_json,
   plan_implicit_folder_query_paths_json,
   plan_assistant_response_classification_json,
@@ -4740,6 +4744,142 @@ export interface RustEvidenceCollectionPlan {
   reviewRequest: string | null;
   coverage: 'unreviewed' | 'supported' | 'incomplete' | 'invalid-review';
   unresolved: string[];
+}
+
+export interface IndexedReviewSegment {
+  id: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  text: string;
+}
+
+export interface IndexedReviewFinding {
+  path: string;
+  startLine: number;
+  endLine: number;
+  sourceId: string;
+  claim: string;
+  quote: string;
+}
+
+export function renderIndexedReviewAnswerRust(
+  sourceIds: readonly string[],
+  response: string,
+): string | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const value: unknown = JSON.parse(
+      render_indexed_review_answer_json(JSON.stringify(sourceIds), response),
+    );
+    return isStringRecordValueMap(value) && isStringValue(value.content) ? value.content : null;
+  } catch {
+    return null;
+  }
+}
+
+export function planIndexedReviewInventoryRust(input: {
+  indexedPaths: readonly string[];
+  visiblePaths: readonly string[];
+  priorityPaths: readonly string[];
+  scopes: readonly string[];
+}): string[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const value: unknown = JSON.parse(plan_indexed_review_inventory_json(JSON.stringify(input)));
+    return isStringRecordValueMap(value) &&
+      Array.isArray(value.paths) &&
+      value.paths.every(isStringValue)
+      ? value.paths
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isIndexedReviewRange(value: unknown): value is Record<string, unknown> & {
+  path: string;
+  startLine: number;
+  endLine: number;
+} {
+  return (
+    isStringRecordValueMap(value) &&
+    isStringValue(value.path) &&
+    isNonNegativeSafeInteger(value.startLine) &&
+    value.startLine > 0 &&
+    isNonNegativeSafeInteger(value.endLine) &&
+    value.endLine >= value.startLine
+  );
+}
+
+export function planIndexedReviewSegmentsRust(
+  payload: string,
+  maxChars: number,
+): IndexedReviewSegment[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const value: unknown = JSON.parse(plan_indexed_review_segments_json(payload, maxChars));
+    if (!isStringRecordValueMap(value) || !Array.isArray(value.segments)) return null;
+    const rows: IndexedReviewSegment[] = [];
+    for (const row of value.segments) {
+      if (!isIndexedReviewRange(row) || !isStringValue(row.id) || !isStringValue(row.text))
+        return null;
+      rows.push({
+        id: row.id,
+        path: row.path,
+        startLine: row.startLine,
+        endLine: row.endLine,
+        text: row.text,
+      });
+    }
+    return rows;
+  } catch {
+    return null;
+  }
+}
+
+export function validateIndexedReviewRust(
+  segments: readonly IndexedReviewSegment[],
+  response: string,
+): { findings: IndexedReviewFinding[]; reviewedSegments: number; rejectedSegments: number } | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const value: unknown = JSON.parse(
+      validate_indexed_review_json(JSON.stringify(segments), response),
+    );
+    if (
+      !isStringRecordValueMap(value) ||
+      !Array.isArray(value.findings) ||
+      !isNonNegativeSafeInteger(value.reviewedSegments) ||
+      !isNonNegativeSafeInteger(value.rejectedSegments)
+    )
+      return null;
+    const findings: IndexedReviewFinding[] = [];
+    for (const row of value.findings) {
+      if (
+        !isIndexedReviewRange(row) ||
+        !isStringValue(row.sourceId) ||
+        !isStringValue(row.claim) ||
+        !isStringValue(row.quote)
+      )
+        return null;
+      findings.push({
+        path: row.path,
+        startLine: row.startLine,
+        endLine: row.endLine,
+        sourceId: row.sourceId,
+        claim: row.claim,
+        quote: row.quote,
+      });
+    }
+    return {
+      findings,
+      reviewedSegments: value.reviewedSegments,
+      rejectedSegments: value.rejectedSegments,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** 호스트는 원문 수집 I/O만 수행하고 선택·진행·종료는 Rust가 계산합니다. */

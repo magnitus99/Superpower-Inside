@@ -85,10 +85,6 @@ interface IndexedSearchCandidate {
 
 interface IndexedSearchAttempt {
   candidates: IndexedSearchCandidate[];
-  diagnosticsByQuery: RetrievalProviderDiagnostic[][];
-  indexReadiness: RetrievalProviderReadiness | null;
-  inventoryFiles: readonly TFile[] | null;
-  failed: boolean;
 }
 
 interface LexicalSearchCandidate {
@@ -99,6 +95,13 @@ interface LexicalSearchCandidate {
 
 export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   private listSnapshot: NativeVaultListSnapshot | null = null;
+  private readSnapshot: {
+    path: string;
+    mtime: number;
+    size: number;
+    lines: string[];
+    metadata: NativeVaultReadResult['metadata'];
+  } | null = null;
 
   constructor(
     private readonly app: App,
@@ -143,21 +146,14 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
           (candidate) => !allowedPaths || allowedPaths.has(candidate.result.sourcePath),
         ),
       );
-      const needsLiveLexicalFallback =
-        visible.length === 0 ||
-        request.filters !== undefined ||
-        shouldUseLiveLexicalFallback(indexedAttempt);
       if (visible.length > 0) {
         const indexedResult = await this.verifyCurrentSearchEvidence(
           buildIndexedSearchResult(request, queries, visible),
           signal,
           visible,
         );
-        if (!needsLiveLexicalFallback && indexedResult.hits.length > 0) return indexedResult;
-        const files =
-          filteredFiles ??
-          indexedAttempt.inventoryFiles ??
-          (await this.fileScope.listCandidateFiles());
+        // 정상 인덱스의 상위 후보가 있어도 본문 전체의 어휘 일치를 함께 확인합니다.
+        const files = filteredFiles ?? (await this.fileScope.listCandidateFiles());
         const lexicalResult = await this.searchLexically(
           request,
           queries,
@@ -169,18 +165,9 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
           ? mergeIndexedAndLexicalSearchResults(request, queries, indexedResult, lexicalResult)
           : indexedResult;
       }
-      if (!needsLiveLexicalFallback) {
-        return buildSearchResult(request.query, queries, request.path, request.match, [], {
-          // topK 인덱스 miss도 전체 Vault 부재를 증명하지 않습니다.
-          truncated: true,
-        });
-      }
     }
 
-    const files =
-      filteredFiles ??
-      indexedAttempt?.inventoryFiles ??
-      (await this.fileScope.listCandidateFiles());
+    const files = filteredFiles ?? (await this.fileScope.listCandidateFiles());
     return this.searchLexically(request, queries, files, signal, blindLiveFallback);
   }
 
@@ -195,9 +182,28 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       throw new Error(t('nativeVaultFileUnreadable', { path: request.path }));
     }
     throwIfAborted(signal);
-    const content = (await awaitWithAbort(readSourceText(this.app.vault, file), signal)).text;
-    throwIfAborted(signal);
-    const lines = content.split('\n');
+    let snapshot = this.readSnapshot;
+    if (
+      !snapshot ||
+      snapshot.path !== file.path ||
+      snapshot.mtime !== file.stat.mtime ||
+      snapshot.size !== file.stat.size
+    ) {
+      // 한 문서만 보관해 긴 본문을 400줄마다 다시 추출·분할·분석하지 않습니다.
+      this.readSnapshot = null;
+      const source = await awaitWithAbort(readSourceFileSnapshot(this.app.vault, file), signal);
+      throwIfAborted(signal);
+      if (!source) throw new Error(t('nativeVaultFileUnreadable', { path: request.path }));
+      snapshot = {
+        path: source.revision.filePath,
+        mtime: source.revision.sourceMtime,
+        size: source.revision.sourceSize,
+        lines: source.content.split('\n'),
+        metadata: planSourceMetadataRust(source.content) ?? undefined,
+      };
+      this.readSnapshot = snapshot;
+    }
+    const { lines, metadata } = snapshot;
     const range = planNativeVaultReadRangeRust(
       lines.length,
       request.startLine,
@@ -213,7 +219,6 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     }
     selectedLines[0] = firstLine.slice(startOffset);
     const selectedContent = selectedLines.join('\n');
-    const metadata = planSourceMetadataRust(content) ?? undefined;
     const citation = createCitation(
       file.path,
       range.startLine,
@@ -428,27 +433,6 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     if (filteredFiles?.length === 0) return null;
 
     const candidates: IndexedSearchCandidate[] = [];
-    const diagnosticsByQuery: RetrievalProviderDiagnostic[][] = [];
-    let indexReadiness: RetrievalProviderReadiness | null = null;
-    let inventoryFiles: readonly TFile[] | null = null;
-    let failed = false;
-    if (engine.getIndexReadiness) {
-      try {
-        throwIfAborted(signal);
-        inventoryFiles = await this.fileScope.listCandidateFiles();
-        throwIfAborted(signal);
-        indexReadiness = await engine.getIndexReadiness(
-          inventoryFiles.map((file) => ({
-            path: file.path,
-            mtime: file.stat.mtime,
-            size: file.stat.size,
-          })),
-        );
-      } catch (error) {
-        if (isAbortError(error) || signal?.aborted) throw error;
-        failed = true;
-      }
-    }
     for (let queryIndex = 0; queryIndex < queries.length; queryIndex++) {
       const query = queries[queryIndex];
       if (!query) continue;
@@ -479,15 +463,11 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
             result,
           })),
         );
-        const queryDiagnostics = engine.getLastRetrievalDiagnostics?.() ?? [];
-        diagnosticsByQuery.push([...queryDiagnostics]);
       } catch (error) {
         if (isAbortError(error) || signal?.aborted) throw error;
-        failed = true;
-        diagnosticsByQuery.push([]);
       }
     }
-    return { candidates, diagnosticsByQuery, indexReadiness, inventoryFiles, failed };
+    return { candidates };
   }
 
   private async filterVisibleIndexedCandidates(
@@ -634,6 +614,11 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     const filesByPath = new Map(scannableFiles.map((file) => [file.path, file]));
     let state: RustNativeVaultLexicalState | null = null;
     for (let offset = 0; offset < scope.paths.length; offset += LEXICAL_READ_BATCH_SIZE) {
+      if (offset > 0)
+        await awaitWithAbort(
+          new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0)),
+          signal,
+        );
       throwIfAborted(signal);
       const batch = scope.paths.slice(offset, offset + LEXICAL_READ_BATCH_SIZE);
       const entries = await Promise.all(
@@ -785,6 +770,9 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   }
 
   private resolveVaultFile(rawPath: string): TFile | null {
+    // 목록·인덱스의 실제 경로를 링크 헤딩·별칭·URL로 바꾸지 않습니다.
+    const exact = this.app.vault.getAbstractFileByPath(rawPath);
+    if (exact instanceof TFile) return exact;
     const path = normalizeVaultLinkTargetRust(rawPath);
     if (!path) return null;
     const candidates = path.endsWith('.md') ? [path] : [path, `${path}.md`];
@@ -802,34 +790,6 @@ function getSearchQueries(
 ): string[] {
   const queries = request.queries?.length ? request.queries : [request.query];
   return queries.slice(0, 4);
-}
-
-function shouldUseLiveLexicalFallback(attempt: IndexedSearchAttempt): boolean {
-  if (attempt.failed) return true;
-  if (attempt.indexReadiness && attempt.indexReadiness.readiness !== 'ready') return true;
-  return !attempt.diagnosticsByQuery.every(
-    (diagnostics) =>
-      diagnostics.some(
-        (diagnostic) =>
-          isCoreRetrievalDiagnostic(diagnostic) &&
-          diagnostic.status === 'ok' &&
-          diagnostic.readiness === 'ready',
-      ) &&
-      !diagnostics.some(
-        (diagnostic) =>
-          isCoreRetrievalDiagnostic(diagnostic) &&
-          (diagnostic.status === 'timeout' || diagnostic.status === 'error'),
-      ),
-  );
-}
-
-function isCoreRetrievalDiagnostic(diagnostic: RetrievalProviderDiagnostic): boolean {
-  return (
-    diagnostic.source === 'vector' ||
-    diagnostic.source === 'ann' ||
-    diagnostic.source === 'bm25' ||
-    diagnostic.source === 'structural'
-  );
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
