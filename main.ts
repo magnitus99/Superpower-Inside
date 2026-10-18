@@ -3152,11 +3152,20 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private async openChatView(): Promise<void> {
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (!leaf) return;
+    const workspace = this.app.workspace;
+    const chatLeaves = workspace.getLeavesOfType(CHAT_VIEW_TYPE);
+    const activeChatView = workspace.getActiveViewOfType(ChatView);
+    const contextLeaf = workspace.getMostRecentLeaf(workspace.rootSplit);
+    const existingLeaf =
+      (activeChatView ? chatLeaves.find((leaf) => leaf.view === activeChatView) : undefined) ??
+      (contextLeaf ? chatLeaves.find((leaf) => leaf.parent === contextLeaf.parent) : chatLeaves[0]);
+    if (existingLeaf) {
+      void workspace.revealLeaf(existingLeaf);
+      return;
+    }
+    const leaf = workspace.getLeaf('tab');
     await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
-    void this.app.workspace.revealLeaf(leaf);
-    return Promise.resolve();
+    void workspace.revealLeaf(leaf);
   }
 
   private isRootWorkspaceLeaf(leaf: WorkspaceLeaf): boolean {
