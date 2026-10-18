@@ -50,11 +50,20 @@ export interface ToolCallDelta {
   };
 }
 
+export interface TokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cacheReadTokens?: number;
+  reasoningTokens?: number;
+}
+
 export interface StreamChunk {
   content: string;
   done: boolean;
   reasoning?: string;
   toolCalls?: ToolCallDelta[];
+  usage?: TokenUsage;
 }
 
 export interface ToolDefinition {
@@ -69,6 +78,7 @@ export interface ToolDefinition {
 export type ToolChoice = 'auto' | 'required' | 'none';
 
 export interface ChatOptions {
+  onUsage?: (usage: TokenUsage) => void;
   inputBudgetBytes?: number;
   maxOutputTokens?: number;
   contextTokens?: number;

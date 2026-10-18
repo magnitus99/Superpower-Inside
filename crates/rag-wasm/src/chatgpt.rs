@@ -239,9 +239,11 @@ fn response(body: &str) -> Option<Value> {
             _ => {}
         }
     }
-    Some(
-        json!({ "content": content, "reasoning": reasoning, "toolCalls": calls, "model": terminal.get("model").and_then(Value::as_str) }),
-    )
+    let mut result = json!({ "content": content, "reasoning": reasoning, "toolCalls": calls, "model": terminal.get("model").and_then(Value::as_str) });
+    if let Some(usage) = crate::provider_usage::normalize("responses", &terminal) {
+        result.as_object_mut()?.insert("usage".to_owned(), usage);
+    }
+    Some(result)
 }
 
 #[cfg(test)]

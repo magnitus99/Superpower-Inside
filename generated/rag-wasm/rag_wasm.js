@@ -1233,6 +1233,29 @@ export function normalize_mcp_tool_result_json(result_json) {
 }
 
 /**
+ * 공급자가 실제로 제공한 안전한 정수 토큰만 공통 형식으로 옮깁니다.
+ * @param {string} format
+ * @param {string} payload_json
+ * @returns {string}
+ */
+export function normalize_provider_usage_json(format, payload_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(format, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(payload_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.normalize_provider_usage_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * 구조화 reasoning과 태그 reasoning을 병합해 content/reasoning을 만들고 JSON으로 반환한다.
  * @param {string} content
  * @param {string} reasoning
@@ -3552,6 +3575,26 @@ export function plan_tool_result_summary_json(content, question, max_bytes) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 요청 안의 누적 보고는 덮어쓰고 서로 다른 요청의 사용량만 합산합니다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_turn_usage_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_turn_usage_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
