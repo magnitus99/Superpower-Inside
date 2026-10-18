@@ -78,6 +78,7 @@ function buildRuntime(): AgentDiagnosticsRuntimeState {
     ragIndexingStatus: {
       running: true,
       phase: 'pending',
+      startedAt: null,
       queuedFiles: 4,
       lastResult: null,
       progress: null,

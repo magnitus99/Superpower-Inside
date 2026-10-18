@@ -183,6 +183,179 @@ describe('RAGIndexingScheduler', () => {
     expect(scheduler.getStatus().progress).toBeNull();
   });
 
+  it('실행 중 1초마다 마지막 progress로 상태를 다시 알리고 종료 뒤 멈춘다', async () => {
+    vi.useFakeTimers();
+    const statuses: ReturnType<RAGIndexingScheduler['getStatus']>[] = [];
+    let release = (): void => undefined;
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => Promise.resolve(createResult()),
+      reindexAll: (options) => {
+        options.onProgress?.({
+          event: 'batch-complete',
+          startedAtMs: 0,
+          nowMs: performance.now(),
+          totalFiles: 3,
+          completedFiles: 1,
+          currentFilePath: 'b.md',
+          currentFileIndex: 1,
+          currentFileTotalChunks: 1,
+          currentFileEmbeddedChunks: 0,
+          totalEstimatedChunks: 3,
+          completedEstimatedChunks: 1,
+          currentFileEstimatedChunks: 1,
+          totalPlannedChunks: 0,
+          completedPlannedChunks: 0,
+          currentFilePlannedChunks: 0,
+          planningComplete: false,
+          indexed: 1,
+          vectors: 1,
+          skipped: 0,
+          completedBatchDurationsMs: [],
+          completedBatchChunkCounts: [],
+          completedFileDurationsMs: [],
+          completedFileChunkCounts: [],
+          completedFileEstimatedChunkCounts: [],
+          completedFileActualChunkCounts: [],
+          completedFileOverheadDurationsMs: [],
+          historicalMsPerChunk: null,
+          historicalChunkEstimateRatio: null,
+          historicalVariance: null,
+        });
+        return new Promise((resolve) => {
+          release = () => resolve(createResult({ indexed: 3, vectors: 3 }));
+        });
+      },
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    const running = scheduler.reindexAll();
+    await vi.advanceTimersByTimeAsync(0);
+    const afterStart = statuses.length;
+    const baseline = statuses.at(-1);
+    expect(baseline?.running).toBe(true);
+    expect(baseline?.progress?.completedFiles).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(statuses.length).toBe(afterStart + 1);
+    expect(statuses.at(-1)?.progress?.currentFilePath).toBe('b.md');
+    expect(statuses.at(-1)?.progress?.nowMs).toBeGreaterThanOrEqual(baseline?.progress?.nowMs ?? 0);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(statuses.length).toBe(afterStart + 3);
+
+    release();
+    await running;
+    await scheduler.waitForIdle();
+    const afterFinish = statuses.length;
+    expect(statuses.at(-1)?.running).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(statuses.length).toBe(afterFinish);
+    vi.useRealTimers();
+  });
+
+  it('사전 단계를 준비 상태로 표시하고 경과 시간을 실제 실행으로 이어받는다', async () => {
+    vi.useFakeTimers();
+    const statuses: ReturnType<RAGIndexingScheduler['getStatus']>[] = [];
+    let release = (): void => undefined;
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () =>
+        new Promise((resolve) => {
+          release = () => resolve(createResult());
+        }),
+      reindexAll: () => Promise.resolve(createResult()),
+      onStatusChange: (status) => statuses.push(status),
+    });
+
+    scheduler.beginPreparation();
+    const startedAt = scheduler.getStatus().startedAt;
+    expect(statuses.at(-1)).toEqual(
+      expect.objectContaining({ running: true, phase: 'preparing', startedAt }),
+    );
+    expect(startedAt).not.toBeNull();
+    const beforeTicks = statuses.length;
+    vi.advanceTimersByTime(2000);
+    // 사전 단계에서도 하트비트가 1초마다 상태를 다시 알립니다.
+    expect(statuses.length).toBe(beforeTicks + 2);
+    expect(statuses.at(-1)).toEqual(
+      expect.objectContaining({ running: true, phase: 'preparing', startedAt }),
+    );
+
+    const pending = scheduler.indexPending();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scheduler.getStatus()).toEqual(
+      expect.objectContaining({ running: true, phase: 'pending', startedAt }),
+    );
+
+    release();
+    await pending;
+    await scheduler.waitForIdle();
+    expect(scheduler.getStatus()).toEqual(
+      expect.objectContaining({ running: false, phase: 'idle', startedAt: null }),
+    );
+
+    scheduler.beginPreparation();
+    expect(scheduler.getStatus().phase).toBe('preparing');
+    scheduler.endPreparation();
+    expect(scheduler.getStatus()).toEqual(
+      expect.objectContaining({ running: false, phase: 'idle', startedAt: null }),
+    );
+    vi.useRealTimers();
+  });
+
+  it('실행 중 startedAt을 노출하고 종료·취소 뒤 비운다', async () => {
+    vi.useFakeTimers();
+    let releaseReindex = (): void => undefined;
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => Promise.resolve(createResult()),
+      reindexAll: () =>
+        new Promise((resolve) => {
+          releaseReindex = () => resolve(createResult({ indexed: 1, vectors: 1 }));
+        }),
+    });
+
+    expect(scheduler.getStatus().startedAt).toBeNull();
+    const running = scheduler.reindexAll();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scheduler.getStatus().startedAt).not.toBeNull();
+
+    releaseReindex();
+    await running;
+    await scheduler.waitForIdle();
+    expect(scheduler.getStatus().startedAt).toBeNull();
+
+    let releasePending = (): void => undefined;
+    const cancelling = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () =>
+        new Promise((resolve) => {
+          releasePending = () => resolve(createResult());
+        }),
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+    const pending = cancelling.indexPending();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancelling.getStatus().startedAt).not.toBeNull();
+
+    cancelling.cancel();
+    expect(cancelling.getStatus().startedAt).toBeNull();
+
+    releasePending();
+    await pending.catch(() => undefined);
+    await cancelling.waitForIdle();
+    vi.useRealTimers();
+  });
+
   it('returns to idle when a pending indexing job rejects', async () => {
     const scheduler = new RAGIndexingScheduler({
       debounceMs: 0,
@@ -417,7 +590,9 @@ describe('RAGIndexingScheduler', () => {
     const first = scheduler.indexPending();
     await Promise.resolve();
 
-    await expect(scheduler.indexPending()).resolves.toEqual(expect.objectContaining({ indexed: 0 }));
+    await expect(scheduler.indexPending()).resolves.toEqual(
+      expect.objectContaining({ indexed: 0 }),
+    );
     release();
     await expect(first).resolves.toEqual(expect.objectContaining({ indexed: 1 }));
     await scheduler.waitForIdle();
@@ -501,7 +676,9 @@ describe('RAGIndexingScheduler', () => {
     releaseActive();
     await scheduler.waitForIdle();
 
-    await expect(scheduler.indexPending()).resolves.toEqual(expect.objectContaining({ indexed: 1 }));
+    await expect(scheduler.indexPending()).resolves.toEqual(
+      expect.objectContaining({ indexed: 1 }),
+    );
   });
 });
 
