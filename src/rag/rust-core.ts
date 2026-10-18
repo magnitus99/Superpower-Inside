@@ -75,7 +75,9 @@ import {
   plan_evidence_collection_json,
   plan_indexed_review_inventory_json,
   plan_indexed_review_segments_json,
+  score_indexed_review_segments_json,
   validate_indexed_review_json,
+  validate_indexed_review_screen_json,
   render_indexed_review_answer_json,
   plan_folder_lexical_evidence_indices_json,
   plan_implicit_folder_query_paths_json,
@@ -4858,6 +4860,12 @@ export interface IndexedReviewSegment {
   text: string;
 }
 
+export interface IndexedReviewScreenDecision {
+  id: string;
+  relevant: boolean;
+  reason: string;
+}
+
 export interface IndexedReviewFinding {
   path: string;
   startLine: number;
@@ -4937,6 +4945,62 @@ export function planIndexedReviewSegmentsRust(
       });
     }
     return rows;
+  } catch {
+    return null;
+  }
+}
+
+export function scoreIndexedReviewSegmentsRust(
+  question: string,
+  segments: readonly IndexedReviewSegment[],
+): Map<string, number> | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const value: unknown = JSON.parse(
+      score_indexed_review_segments_json(JSON.stringify({ question, segments })),
+    );
+    if (!isStringRecordValueMap(value) || !Array.isArray(value.scores)) return null;
+    const scores = new Map<string, number>();
+    for (const row of value.scores) {
+      if (
+        !isStringRecordValueMap(row) ||
+        !isStringValue(row.id) ||
+        typeof row.score !== 'number' ||
+        !Number.isFinite(row.score) ||
+        row.score < 0 ||
+        row.score > 1
+      )
+        return null;
+      scores.set(row.id, row.score);
+    }
+    return scores;
+  } catch {
+    return null;
+  }
+}
+
+export function validateIndexedReviewScreenRust(
+  segments: readonly IndexedReviewSegment[],
+  response: string,
+): IndexedReviewScreenDecision[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const value: unknown = JSON.parse(
+      validate_indexed_review_screen_json(JSON.stringify({ segments }), response),
+    );
+    if (!isStringRecordValueMap(value) || !Array.isArray(value.decisions)) return null;
+    const decisions: IndexedReviewScreenDecision[] = [];
+    for (const row of value.decisions) {
+      if (
+        !isStringRecordValueMap(row) ||
+        !isStringValue(row.id) ||
+        typeof row.relevant !== 'boolean' ||
+        !isStringValue(row.reason)
+      )
+        return null;
+      decisions.push({ id: row.id, relevant: row.relevant, reason: row.reason });
+    }
+    return decisions;
   } catch {
     return null;
   }
