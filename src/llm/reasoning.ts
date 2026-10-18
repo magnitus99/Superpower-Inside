@@ -20,12 +20,13 @@ export function createStreamingReasoningSink(
     );
     if (!normalized) throw new Error('Invalid reasoning stream state');
     state = JSON.stringify(normalized.state);
-    if (normalized.content || normalized.reasoning || chunk.toolCalls?.length) {
+    if (normalized.content || normalized.reasoning || chunk.toolCalls?.length || chunk.usage) {
       onChunk({
         content: normalized.content,
         done: false,
         ...(normalized.reasoning ? { reasoning: normalized.reasoning } : {}),
         ...(chunk.toolCalls ? { toolCalls: chunk.toolCalls } : {}),
+        ...(chunk.usage ? { usage: chunk.usage } : {}),
       });
     }
     if (chunk.done) onChunk({ content: '', done: true });
