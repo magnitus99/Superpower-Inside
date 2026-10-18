@@ -1004,6 +1004,11 @@ export function render_indexed_review_answer_json(source_ids: string, response: 
 export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
 
 /**
+ * 질문 토큰과 겹치는 비율만 계산하고 임계 판정은 호스트에 맡깁니다.
+ */
+export function score_indexed_review_segments_json(input: string): string;
+
+/**
  * Query result 후보에서 기존 `TypeScript` MMR diversity selection과 같은 index를 고른다.
  */
 export function select_diverse_indices(scores: Float64Array, vectors: Float64Array, dimensions: number, source_keys: Uint32Array, heading_keys: Uint32Array, top_k: number): Float64Array;
@@ -1078,6 +1083,11 @@ export function validate_exclude_path_input_json(input: string, existing_paths_j
  * 모든 원문 조각에 명시적 채택/제외가 있어야 완료하며 채택 구절은 원문과 대조합니다.
  */
 export function validate_indexed_review_json(segments_json: string, response: string): string;
+
+/**
+ * 화면 단계의 채택/제외 판정을 검증하고 extract가 사용할 판정 순서를 보존합니다.
+ */
+export function validate_indexed_review_screen_json(segments_json: string, response: string): string;
 
 /**
  * MCP stdio server 설정 JSON을 스키마 기반으로 검증한다.
@@ -1276,6 +1286,7 @@ export interface InitOutput {
     readonly recompute_centroids: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly render_indexed_review_answer_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly score_indexed_review_segments_json: (a: number, b: number) => [number, number];
     readonly select_diverse_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly select_plugin_context7_library_id: (a: number, b: number, c: number, d: number) => [number, number];
     readonly select_relevant_result_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
@@ -1290,6 +1301,7 @@ export interface InitOutput {
     readonly validate_exclude_extension_input_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_exclude_path_input_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_indexed_review_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validate_indexed_review_screen_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_mcp_json: (a: number, b: number) => [number, number];
     readonly vectorruntimeindex_dimensions: (a: number) => number;
     readonly vectorruntimeindex_new: (a: number, b: number, c: number) => number;

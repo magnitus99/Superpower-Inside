@@ -3988,6 +3988,26 @@ export function rrf_score_or_nan(source_codes, ranks, bm25_weight) {
 }
 
 /**
+ * 질문 토큰과 겹치는 비율만 계산하고 임계 판정은 호스트에 맡깁니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function score_indexed_review_segments_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.score_indexed_review_segments_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Query result 후보에서 기존 `TypeScript` MMR diversity selection과 같은 index를 고른다.
  * @param {Float64Array} scores
  * @param {Float64Array} vectors
@@ -4283,6 +4303,29 @@ export function validate_indexed_review_json(segments_json, response) {
         const ptr1 = passStringToWasm0(response, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.validate_indexed_review_json(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 화면 단계의 채택/제외 판정을 검증하고 extract가 사용할 판정 순서를 보존합니다.
+ * @param {string} segments_json
+ * @param {string} response
+ * @returns {string}
+ */
+export function validate_indexed_review_screen_json(segments_json, response) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(segments_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(response, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.validate_indexed_review_screen_json(ptr0, len0, ptr1, len1);
         deferred3_0 = ret[0];
         deferred3_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
