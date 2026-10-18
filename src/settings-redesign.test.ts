@@ -311,10 +311,7 @@ describe('설정 화면 리디자인 구조', () => {
 
   it('설정 맨 앞에서 새 버전 안내를 보여주고 하루에 한 번만 릴리스를 확인한다', () => {
     const viewStart = settingsSource.indexOf('private renderSettingsView(): void {');
-    const viewEnd = settingsSource.indexOf(
-      'private unregisterRefreshBusSubscriptions',
-      viewStart,
-    );
+    const viewEnd = settingsSource.indexOf('private unregisterRefreshBusSubscriptions', viewStart);
     const view = settingsSource.slice(viewStart, viewEnd);
     expect(viewStart).toBeGreaterThanOrEqual(0);
     expect(view.indexOf('superpower-inside-settings-update')).toBeGreaterThanOrEqual(0);
@@ -356,7 +353,9 @@ describe('설정 화면 리디자인 구조', () => {
     expect(mainSource).toContain('this.updateChecker?.dispose()');
 
     expect(styles).toMatch(/\.superpower-inside-settings-update \{[^}]*display: none;/u);
-    expect(styles).toMatch(/[\s\S]*\.superpower-inside-settings-update \{[^}]*color: var\(--text-warning\);/u);
+    expect(styles).toMatch(
+      /[\s\S]*\.superpower-inside-settings-update \{[^}]*color: var\(--text-warning\);/u,
+    );
     expect(styles).toContain('.superpower-inside-settings-update.is-visible');
   });
 
@@ -381,6 +380,48 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain('createSettingsActionRow');
     expect(methodSource).not.toContain('for (const item of snapshot.attentionItems)');
     expect(settingsSource).toContain('options.value !== options.statusLabel');
+  });
+
+  it('General 상태는 인덱싱 중이면 준비 완료 대신 진행 안내와 이동 동선을 보여준다', () => {
+    const methodStart = settingsSource.indexOf('private renderGeneralStatus(');
+    const methodEnd = settingsSource.indexOf('\n  private buildGeneralBasicsSection', methodStart);
+    const methodSource = settingsSource.slice(methodStart, methodEnd);
+
+    expect(methodStart).toBeGreaterThanOrEqual(0);
+    expect(methodSource).toContain('this.plugin.isRagIndexing()');
+    expect(methodSource).toContain("t('generalIndexingInProgressTitle')");
+    expect(methodSource).toContain("t('generalIndexingInProgressDetail')");
+    expect(methodSource).toContain("this.switchTab('rag')");
+    expect(methodSource).toContain("actionLabel: t('tabRag')");
+    // 조치 필요 항목이 있으면 인덱싱 안내보다 먼저 보여주고, 준비 완료 문구는 마지막에 남습니다.
+    expect(methodSource.indexOf('const primaryAttention')).toBeLessThan(
+      methodSource.indexOf("t('generalIndexingInProgressTitle')"),
+    );
+    expect(methodSource.indexOf("t('generalIndexingInProgressTitle')")).toBeLessThan(
+      methodSource.indexOf("t('generalAllReady')"),
+    );
+  });
+
+  it('인덱싱 시작 경로는 사전 단계를 준비 상태로 표시하고 finally에서 해제한다', () => {
+    const manualStart = mainSource.indexOf("id: 'reindex-vault'");
+    const manualEnd = mainSource.indexOf("id: 'open-agent-diagnostics-view'", manualStart);
+    const manual = mainSource.slice(manualStart, manualEnd);
+    expect(manualStart).toBeGreaterThanOrEqual(0);
+    expect(manual).toContain('beginPreparation()');
+    expect(manual).toContain('endPreparation()');
+    expect(manual.indexOf('beginPreparation()')).toBeLessThan(
+      manual.indexOf('calculateRagStatus('),
+    );
+    expect(manual.indexOf('endPreparation()')).toBeGreaterThan(manual.indexOf('reindexAll()'));
+
+    const autoStart = mainSource.indexOf('private async autoIndex(');
+    const autoEnd = mainSource.indexOf('\n  private async initMCP', autoStart);
+    const auto = mainSource.slice(autoStart, autoEnd);
+    expect(autoStart).toBeGreaterThanOrEqual(0);
+    expect(auto).toContain('beginPreparation()');
+    expect(auto).toContain('endPreparation()');
+    expect(auto.indexOf('beginPreparation()')).toBeLessThan(auto.indexOf('calculateRagStatus('));
+    expect(auto.indexOf('endPreparation()')).toBeGreaterThan(auto.indexOf('indexPending('));
   });
 
   it('General의 세부 설정, 진단, 전체 초기화는 disclosure로 점진 공개한다', () => {

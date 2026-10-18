@@ -166,6 +166,8 @@ export interface I18nKeys {
   generalStatusTitle: string;
   generalStatusDesc: string;
   generalAllReady: string;
+  generalIndexingInProgressTitle: string;
+  generalIndexingInProgressDetail: string;
   generalBasicsTitle: string;
   generalBasicsDesc: string;
   generalDiagnosticsTitle: string;
@@ -1372,6 +1374,11 @@ export interface I18nKeys {
   ragIndexingRunningWithEta: string;
   ragIndexingRunningWithApproxEta: string;
   ragIndexingRunningEtaCalculating: string;
+  ragIndexingRunningElapsedWithEta: string;
+  ragIndexingRunningElapsedWithApproxEta: string;
+  ragIndexingRunningElapsedEtaCalculating: string;
+  ragIndexingRunningElapsedQueued: string;
+  ragIndexingDetailPreparing: string;
   ragIndexingPhaseWithChunks: string;
   ragSourcePageProgress: string;
   ragIndexingResult: string;
@@ -1379,6 +1386,7 @@ export interface I18nKeys {
   ragPhasePending: string;
   ragPhaseAll: string;
   ragPhaseIdle: string;
+  ragPhasePreparing: string;
   ragAutoUpdateAlreadyRunning: string;
   ragAutoUpdatePausedRetry: string;
   ragAutoUpdateNoTargets: string;
@@ -1916,6 +1924,8 @@ const ko: I18nKeys = {
   generalStatusTitle: '현재 상태',
   generalStatusDesc: '채팅과 검색을 바로 사용할 수 있는지 확인하고 필요한 다음 행동만 안내합니다.',
   generalAllReady: '현재 바로 처리할 항목이 없습니다.',
+  generalIndexingInProgressTitle: '노트 검색 인덱싱이 진행 중입니다.',
+  generalIndexingInProgressDetail: '남은 작업과 진행 상황은 노트 검색 탭에서 확인할 수 있습니다.',
   generalBasicsTitle: '기본 설정',
   generalBasicsDesc: '표시 언어와 채팅·명령어에 사용할 기본 모델을 정합니다.',
   generalDiagnosticsTitle: '진단',
@@ -3211,6 +3221,14 @@ const ko: I18nKeys = {
   ragIndexingRunningWithEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA {eta}',
   ragIndexingRunningWithApproxEta: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 약 {eta}',
   ragIndexingRunningEtaCalculating: '인덱싱 중: {phase} - {completed}/{total}개 파일, ETA 계산 중',
+  ragIndexingRunningElapsedWithEta:
+    '인덱싱 중: {phase} - {completed}/{total}개 파일 · {elapsed} 경과, ETA {eta}',
+  ragIndexingRunningElapsedWithApproxEta:
+    '인덱싱 중: {phase} - {completed}/{total}개 파일 · {elapsed} 경과, ETA 약 {eta}',
+  ragIndexingRunningElapsedEtaCalculating:
+    '인덱싱 중: {phase} - {completed}/{total}개 파일 · {elapsed} 경과, ETA 계산 중',
+  ragIndexingRunningElapsedQueued: '인덱싱 중: {phase}, 대기 {queued}개 · {elapsed} 경과',
+  ragIndexingDetailPreparing: '상태 확인 중',
   ragIndexingPhaseWithChunks: '{phase} · 현재 파일 {completed}/{total} 청크',
   ragSourcePageProgress: 'PDF 읽는 중 · {page}/{total}페이지',
   ragIndexingResult: '{documents}개 문서, {vectors}개 벡터',
@@ -3218,6 +3236,7 @@ const ko: I18nKeys = {
   ragPhasePending: '필요 문서 업데이트',
   ragPhaseAll: '전체 재인덱싱',
   ragPhaseIdle: '대기',
+  ragPhasePreparing: '준비',
   ragAutoUpdateAlreadyRunning: '인덱싱이 이미 실행 중입니다.',
   ragAutoUpdatePausedRetry: '성능 보호 대기 중입니다. 약 {seconds}초 후 다시 시도할 수 있습니다.',
   ragAutoUpdateNoTargets: '업데이트 대상 없음',
@@ -3812,6 +3831,8 @@ const en: I18nKeys = {
   generalStatusDesc:
     'See whether chat and search are ready, with only the next useful action surfaced.',
   generalAllReady: 'Nothing needs immediate attention.',
+  generalIndexingInProgressTitle: 'Note search indexing is in progress.',
+  generalIndexingInProgressDetail: 'Check the Note search tab for remaining work and progress.',
   generalBasicsTitle: 'Essentials',
   generalBasicsDesc: 'Choose your display language and the default model for chat and commands.',
   generalDiagnosticsTitle: 'Diagnostics',
@@ -5155,6 +5176,14 @@ const en: I18nKeys = {
   ragIndexingRunningWithApproxEta: 'Indexing: {phase} - {completed}/{total} files, ETA about {eta}',
   ragIndexingRunningEtaCalculating:
     'Indexing: {phase} - {completed}/{total} files, calculating ETA',
+  ragIndexingRunningElapsedWithEta:
+    'Indexing: {phase} - {completed}/{total} files · {elapsed} elapsed, ETA {eta}',
+  ragIndexingRunningElapsedWithApproxEta:
+    'Indexing: {phase} - {completed}/{total} files · {elapsed} elapsed, ETA about {eta}',
+  ragIndexingRunningElapsedEtaCalculating:
+    'Indexing: {phase} - {completed}/{total} files · {elapsed} elapsed, calculating ETA',
+  ragIndexingRunningElapsedQueued: 'Indexing: {phase}, {queued} queued · {elapsed} elapsed',
+  ragIndexingDetailPreparing: 'Checking status',
   ragIndexingPhaseWithChunks: '{phase} · current file {completed}/{total} chunks',
   ragSourcePageProgress: 'Reading PDF · page {page}/{total}',
   ragIndexingResult: '{documents} documents, {vectors} vectors',
@@ -5162,6 +5191,7 @@ const en: I18nKeys = {
   ragPhasePending: 'Update pending documents',
   ragPhaseAll: 'Full reindex',
   ragPhaseIdle: 'Idle',
+  ragPhasePreparing: 'Preparing',
   ragAutoUpdateAlreadyRunning: 'Indexing is already running.',
   ragAutoUpdatePausedRetry:
     'Performance guard paused. You can try again in about {seconds} seconds.',

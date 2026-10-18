@@ -417,6 +417,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           return;
         }
         if (this.isRagIndexing()) return;
+        this.ragIndexingScheduler?.beginPreparation();
         try {
           const status = this.vectorStore
             ? await calculateRagStatus(
@@ -449,6 +450,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
           const msg = err instanceof Error ? err.message : String(err);
           this.getLogger().error('Manual RAG reindex failed.', { source: 'rag', error: err });
           new Notice(t('indexingFailedWithMessage', { message: msg }));
+        } finally {
+          this.ragIndexingScheduler?.endPreparation();
         }
       },
     });
@@ -2565,13 +2568,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
         total: String(progress.sourcePageCount),
       });
     const phaseLabel =
-      phase === 'file'
-        ? t('ragPhaseFile')
-        : phase === 'pending'
-          ? t('ragPhasePending')
-          : phase === 'all'
-            ? t('ragPhaseAll')
-            : t('ragPhaseIdle');
+      phase === 'preparing'
+        ? t('ragPhasePreparing')
+        : phase === 'file'
+          ? t('ragPhaseFile')
+          : phase === 'pending'
+            ? t('ragPhasePending')
+            : phase === 'all'
+              ? t('ragPhaseAll')
+              : t('ragPhaseIdle');
     if (!progress || progress.currentFileTotalChunks <= 0) return phaseLabel;
     return t('ragIndexingPhaseWithChunks', {
       phase: phaseLabel,
@@ -2839,6 +2844,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
       return;
     }
     try {
+      // 상태 계산·고아 정리 구간에도 라벨과 경과가 움직이도록 사전 단계를 먼저 표시합니다.
+      scheduler.beginPreparation();
       const status = await calculateRagStatus(
         this.app.vault,
         vectorStore,
@@ -2895,6 +2902,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.lastAutoUpdateSkippedReason = msg;
       this.getLogger().error('Auto RAG indexing failed.', { source: 'rag.auto', error: err });
       new Notice(`${t('autoUpdateIndexingFailed')}: ${msg}`, 10000);
+    } finally {
+      scheduler.endPreparation();
     }
   }
 

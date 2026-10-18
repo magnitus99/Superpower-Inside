@@ -1996,7 +1996,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       label: string;
       detail: string;
       actionLabel: string;
-      tone: 'warning' | 'danger';
+      tone: 'info' | 'warning' | 'danger';
       onActivate: () => void;
     },
   ): HTMLElement {
@@ -2218,6 +2218,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.switchTab(primaryAttention.target);
           if (primaryAttention.target === 'general') this.defaultModelDropdownEl?.focus();
         },
+      });
+    } else if (
+      this.plugin.isRagIndexing() ||
+      this.plugin.getRagRuntimeState().ragIndexingStatus?.running === true
+    ) {
+      // 인덱싱이 돌아가는 동안은 조치가 없다고 단정하지 않고 진행 안내와 이동 동선을 제공합니다.
+      this.createSettingsActionRow(containerEl, {
+        label: t('generalIndexingInProgressTitle'),
+        detail: t('generalIndexingInProgressDetail'),
+        actionLabel: t('tabRag'),
+        tone: 'info',
+        onActivate: () => this.switchTab('rag'),
       });
     } else {
       this.createSettingsNotice(containerEl, {
@@ -2716,9 +2728,18 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const progress = status.progress;
     const phase = this.formatRagIndexingPhase(status.phase, progress);
     if (!progress || progress.totalFiles <= 0) {
-      return t('settingsAuto079', { v0: phase, v1: status.queuedFiles });
+      if (status.startedAt === null) {
+        return t('settingsAuto079', { v0: phase, v1: status.queuedFiles });
+      }
+      const elapsed = this.formatEtaDuration(Math.max(0, performance.now() - status.startedAt));
+      return t('ragIndexingRunningElapsedQueued', {
+        phase,
+        queued: status.queuedFiles,
+        elapsed,
+      });
     }
     const completed = Math.min(progress.completedFiles, progress.totalFiles);
+    const elapsed = this.formatEtaDuration(Math.max(0, progress.nowMs - progress.startedAtMs));
     const eta = progress.eta;
     if (
       !eta ||
@@ -2726,24 +2747,27 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       eta.confidence === 'calculating' ||
       eta.confidence === 'low'
     ) {
-      return t('ragIndexingRunningEtaCalculating', {
+      return t('ragIndexingRunningElapsedEtaCalculating', {
         phase,
         completed: completed,
         total: progress.totalFiles,
+        elapsed,
       });
     }
     if (eta.confidence === 'medium') {
-      return t('ragIndexingRunningWithApproxEta', {
+      return t('ragIndexingRunningElapsedWithApproxEta', {
         phase,
         completed: completed,
         total: progress.totalFiles,
+        elapsed,
         eta: this.formatEtaDuration(eta.remainingMs),
       });
     }
-    return t('ragIndexingRunningWithEta', {
+    return t('ragIndexingRunningElapsedWithEta', {
       phase,
       completed: completed,
       total: progress.totalFiles,
+      elapsed,
       eta: this.formatEtaDuration(eta.remainingMs),
     });
   }
@@ -2758,13 +2782,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         total: progress.sourcePageCount,
       });
     const phaseLabel =
-      phase === 'file'
-        ? t('ragPhaseFile')
-        : phase === 'pending'
-          ? t('ragPhasePending')
-          : phase === 'all'
-            ? t('ragPhaseAll')
-            : t('ragPhaseIdle');
+      phase === 'preparing'
+        ? t('ragPhasePreparing')
+        : phase === 'file'
+          ? t('ragPhaseFile')
+          : phase === 'pending'
+            ? t('ragPhasePending')
+            : phase === 'all'
+              ? t('ragPhaseAll')
+              : t('ragPhaseIdle');
     if (!progress || progress.currentFileTotalChunks <= 0) return phaseLabel;
     return t('ragIndexingPhaseWithChunks', {
       phase: phaseLabel,
@@ -3545,14 +3571,19 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const detailEl = this.ragStatusGrid?.querySelector<HTMLElement>(
       '.superpower-inside-rag-overview-detail',
     );
-    if (detailEl && progress && progress.totalFiles > 0) {
-      detailEl.setText(
-        t('ragOverviewDetail', {
-          healthy: Math.min(progress.completedFiles, progress.totalFiles),
-          total: progress.totalFiles,
-          auto: this.getAutoUpdateLabel(),
-        }),
-      );
+    if (detailEl) {
+      if (progress && progress.totalFiles > 0) {
+        detailEl.setText(
+          t('ragOverviewDetail', {
+            healthy: Math.min(progress.completedFiles, progress.totalFiles),
+            total: progress.totalFiles,
+            auto: this.getAutoUpdateLabel(),
+          }),
+        );
+      } else if (runtime.ragIndexingStatus?.running) {
+        // 사전 단계에는 이전 통계가 stale로 남지 않도록 현재 확인 중임을 알립니다.
+        detailEl.setText(t('ragIndexingDetailPreparing'));
+      }
     }
     if (this.ragStatusTimestamp) {
       this.ragStatusTimestamp.setText(t('settingsAuto115', { v0: label }));

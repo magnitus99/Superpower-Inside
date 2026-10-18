@@ -1548,7 +1548,7 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex · current file 0/1 chunks - 3/10 files, ETA about 18s',
+      'Indexing: Full reindex · current file 0/1 chunks - 3/10 files · 10s elapsed, ETA about 18s',
     );
   });
 
@@ -1611,8 +1611,166 @@ describe('RAG indexing ETA settings label', () => {
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
 
     expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
-      'Indexing: Full reindex · current file 1/1 chunks - 0/4 files, calculating ETA',
+      'Indexing: Full reindex · current file 1/1 chunks - 0/4 files · 5s elapsed, calculating ETA',
     );
+  });
+
+  it('경과 시간을 표시하고 스냅샷 시계가 움직이면 라벨이 매초 갱신된다', () => {
+    setLanguage('ko');
+    const status = {
+      running: true,
+      phase: 'all',
+      queuedFiles: 0,
+      lastResult: null,
+      progress: {
+        event: 'batch-complete',
+        startedAtMs: 0,
+        nowMs: 90_000,
+        totalFiles: 1,
+        completedFiles: 0,
+        currentFileTotalChunks: 1,
+        currentFileEmbeddedChunks: 0,
+        totalEstimatedChunks: 1,
+        completedEstimatedChunks: 0,
+        currentFileEstimatedChunks: 1,
+        totalPlannedChunks: 0,
+        completedPlannedChunks: 0,
+        currentFilePlannedChunks: 0,
+        planningComplete: false,
+        indexed: 0,
+        vectors: 0,
+        skipped: 0,
+        completedBatchDurationsMs: [],
+        completedBatchChunkCounts: [],
+        completedFileDurationsMs: [],
+        completedFileChunkCounts: [],
+        completedFileEstimatedChunkCounts: [],
+        completedFileActualChunkCounts: [],
+        completedFileOverheadDurationsMs: [],
+        historicalMsPerChunk: null,
+        historicalChunkEstimateRatio: null,
+        historicalVariance: null,
+        eta: null,
+      },
+    };
+    const plugin = { getRagRuntimeState: vi.fn(() => ({ ragIndexingStatus: status })) };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const label = () =>
+      (tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel();
+
+    expect(label()).toBe(
+      '인덱싱 중: 전체 재인덱싱 · 현재 파일 0/1 청크 - 0/1개 파일 · 1m 30s 경과, ETA 계산 중',
+    );
+    status.progress.nowMs = 91_000;
+    expect(label()).toBe(
+      '인덱싱 중: 전체 재인덱싱 · 현재 파일 0/1 청크 - 0/1개 파일 · 1m 31s 경과, ETA 계산 중',
+    );
+  });
+
+  it('progress가 없어도 startedAt 기준 경과를 표시하고 없으면 기존 문구로 돌아간다', () => {
+    vi.useFakeTimers();
+    setLanguage('ko');
+    const status: {
+      running: boolean;
+      phase: string;
+      startedAt: number | null;
+      queuedFiles: number;
+      lastResult: null;
+      progress: null;
+    } = {
+      running: true,
+      phase: 'pending',
+      startedAt: performance.now(),
+      queuedFiles: 0,
+      lastResult: null,
+      progress: null,
+    };
+    const plugin = {
+      getRagRuntimeState: vi.fn(() => ({ ragIndexingStatus: status })),
+      isRagIndexing: () => true,
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const label = () =>
+      (tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel();
+
+    expect(label()).toBe('인덱싱 중: 필요 문서 업데이트, 대기 0개 · 0s 경과');
+    vi.advanceTimersByTime(90_000);
+    expect(label()).toBe('인덱싱 중: 필요 문서 업데이트, 대기 0개 · 1m 30s 경과');
+
+    status.startedAt = null;
+    expect(label()).toBe(t('settingsAuto079', { v0: '필요 문서 업데이트', v1: 0 }));
+    vi.useRealTimers();
+  });
+});
+
+describe('RAG indexing preparation label', () => {
+  it('사전 단계 라벨은 준비 상태와 경과를 보여준다', () => {
+    vi.useFakeTimers();
+    setLanguage('ko');
+    const plugin = {
+      getRagRuntimeState: vi.fn(() => ({
+        ragIndexingStatus: {
+          running: true,
+          phase: 'preparing',
+          startedAt: performance.now(),
+          queuedFiles: 2,
+          lastResult: null,
+          progress: null,
+        },
+      })),
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+
+    expect((tab as unknown as { getIndexingStatusLabel(): string }).getIndexingStatusLabel()).toBe(
+      '인덱싱 중: 준비, 대기 2개 · 0s 경과',
+    );
+    vi.useRealTimers();
+  });
+
+  it('사전 단계에는 이전 통계 대신 상태 확인 중 문구로 detail을 갱신한다', () => {
+    vi.useFakeTimers();
+    setLanguage('ko');
+    const plugin = {
+      getRagRuntimeState: vi.fn(() => ({
+        ragStatus: null,
+        ragIndexingStatus: {
+          running: true,
+          phase: 'preparing',
+          startedAt: performance.now(),
+          queuedFiles: 0,
+          lastResult: null,
+          progress: null,
+        },
+      })),
+      isRagIndexing: () => true,
+      getRagPerformanceGuardState: () => null,
+      settings: { rag: { autoUpdateEnabled: false } },
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const texts = new Map<string, string>();
+    const stub = (key: string) => ({
+      setText: (value: string) => texts.set(key, value),
+      setAttribute: () => undefined,
+    });
+    Object.assign(tab as unknown as Record<string, unknown>, {
+      ragStatusGrid: {
+        querySelector: (selector: string) =>
+          selector.includes('overview-detail') ? stub('detail') : stub('status'),
+      },
+      ragStatusTimestamp: stub('timestamp'),
+    });
+
+    (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
+
+    expect(texts.get('detail')).toBe(t('ragIndexingDetailPreparing'));
+    expect(texts.get('status')).toBe(
+      t('ragIndexingRunningElapsedQueued', {
+        phase: t('ragPhasePreparing'),
+        queued: 0,
+        elapsed: '0s',
+      }),
+    );
+    vi.useRealTimers();
   });
 });
 
@@ -1661,7 +1819,7 @@ describe('RAG indexing progress panel', () => {
 
     (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
 
-    const label = 'Indexing: Full reindex - 3/10 files, ETA about 18s';
+    const label = 'Indexing: Full reindex - 3/10 files · 10s elapsed, ETA about 18s';
     expect(texts.get('status')).toBe(label);
     expect(texts.get('detail')).toBe('3/10 documents current · periodic checks Off');
     expect(texts.get('timestamp')).toBe(`Current status: ${label}`);
