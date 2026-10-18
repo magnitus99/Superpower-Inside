@@ -1379,6 +1379,9 @@ export interface I18nKeys {
   ragIndexingRunningElapsedEtaCalculating: string;
   ragIndexingRunningElapsedQueued: string;
   ragIndexingDetailPreparing: string;
+  ragIndexingPlanningProgress: string;
+  ragIndexingDetailPlanning: string;
+  ragIndexingDetailProgress: string;
   ragIndexingPhaseWithChunks: string;
   ragSourcePageProgress: string;
   ragIndexingResult: string;
@@ -2832,7 +2835,7 @@ const ko: I18nKeys = {
   settingsAuto124: '성능 보호: {v0}',
   settingsAuto125: '진행 중인 인덱싱 확인',
   settingsAuto126: '약 {v0}초 후 재개',
-  settingsAuto127: '필요 문서 업데이트',
+  settingsAuto127: '업데이트 시작',
   settingsAuto128: '필요 시 전체 재인덱싱',
   settingsAuto129: 'RAG 대상 문서 없음',
   settingsAuto130: '인덱싱이 실행 중입니다. 오래 걸리거나 Obsidian이 느려지면 중단할 수 있습니다.',
@@ -3229,6 +3232,9 @@ const ko: I18nKeys = {
     '인덱싱 중: {phase} - {completed}/{total}개 파일 · {elapsed} 경과, ETA 계산 중',
   ragIndexingRunningElapsedQueued: '인덱싱 중: {phase}, 대기 {queued}개 · {elapsed} 경과',
   ragIndexingDetailPreparing: '상태 확인 중',
+  ragIndexingPlanningProgress: '인덱싱 준비: {current}/{total}개 파일 확인 중 · {elapsed} 경과',
+  ragIndexingDetailPlanning: '준비 중 {current}/{total}개 파일 · 인덱싱 완료 {completed}개',
+  ragIndexingDetailProgress: '인덱싱 완료 {completed}/{total}개 파일',
   ragIndexingPhaseWithChunks: '{phase} · 현재 파일 {completed}/{total} 청크',
   ragSourcePageProgress: 'PDF 읽는 중 · {page}/{total}페이지',
   ragIndexingResult: '{documents}개 문서, {vectors}개 벡터',
@@ -4775,7 +4781,7 @@ const en: I18nKeys = {
   settingsAuto124: 'Performance guard: {v0}',
   settingsAuto125: 'Check running indexing',
   settingsAuto126: 'Resume in about {v0} seconds',
-  settingsAuto127: 'Update required documents',
+  settingsAuto127: 'Start update',
   settingsAuto128: 'Full reindex if needed',
   settingsAuto129: 'No RAG target documents',
   settingsAuto130:
@@ -5184,6 +5190,10 @@ const en: I18nKeys = {
     'Indexing: {phase} - {completed}/{total} files · {elapsed} elapsed, calculating ETA',
   ragIndexingRunningElapsedQueued: 'Indexing: {phase}, {queued} queued · {elapsed} elapsed',
   ragIndexingDetailPreparing: 'Checking status',
+  ragIndexingPlanningProgress:
+    'Preparing index: checking file {current}/{total} · {elapsed} elapsed',
+  ragIndexingDetailPlanning: 'Preparing file {current}/{total} · {completed} files indexed',
+  ragIndexingDetailProgress: '{completed}/{total} files indexed',
   ragIndexingPhaseWithChunks: '{phase} · current file {completed}/{total} chunks',
   ragSourcePageProgress: 'Reading PDF · page {page}/{total}',
   ragIndexingResult: '{documents} documents, {vectors} vectors',

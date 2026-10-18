@@ -135,6 +135,7 @@ export class RAGIndexingScheduler {
   private progress: RagIndexingSchedulerProgress | null = null;
   private startedAt: number | null = null;
   private preparing = false;
+  private preparationController: AbortController | null = null;
   private statusHeartbeat: number | null = null;
 
   constructor(operations: SchedulerOperations) {
@@ -157,7 +158,7 @@ export class RAGIndexingScheduler {
   }
 
   isRunning(): boolean {
-    return this.draining || this.parkedJob !== null || this.preparing;
+    return this.preparing || this.parkedJob !== null || (this.draining && !this.cancelled);
   }
 
   scheduleFile(file: TFile, _reason: RagIndexingRequestReason): void {
@@ -199,7 +200,10 @@ export class RAGIndexingScheduler {
 
   reindexAll(): Promise<IndexingResult> {
     this.cancelled = false;
-    if (this.activeJob?.kind === 'all' || this.queue.some((job) => job.kind === 'all')) {
+    if (
+      (this.activeJob?.kind === 'all' && !this.abortController?.signal.aborted) ||
+      this.queue.some((job) => job.kind === 'all')
+    ) {
       return Promise.resolve(this.lastResult ?? createEmptyIndexingResult());
     }
     this.dirtySet.clear();
@@ -213,6 +217,8 @@ export class RAGIndexingScheduler {
   cancel(): void {
     this.cancelled = true;
     this.preparing = false;
+    this.preparationController?.abort();
+    this.preparationController = null;
     this.abortController?.abort();
     for (const timer of this.debounceTimers.values()) {
       window.clearTimeout(timer);
@@ -232,8 +238,8 @@ export class RAGIndexingScheduler {
     }
     this.queue = [];
     this.progress = null;
+    this.phase = 'idle';
     if (!this.draining) {
-      this.phase = 'idle';
       this.resolveIdleIfReady();
     }
     this.emitStatus();
@@ -243,20 +249,24 @@ export class RAGIndexingScheduler {
    * 상태 계산·고아 정리·계획 같은 인덱싱 전 사전 단계를 실행 중으로 표시합니다.
    * 실제 작업이 시작되면 drain이 경과 시간을 이어받습니다.
    */
-  beginPreparation(): void {
-    if (this.isRunning()) return;
+  beginPreparation(): AbortSignal | undefined {
+    if (this.isRunning()) return this.preparationController?.signal;
     this.cancelled = false;
+    this.preparationController = new AbortController();
     this.preparing = true;
     this.phase = 'preparing';
     this.startedAt = performance.now();
     this.startStatusHeartbeat();
     this.emitStatus();
+    return this.preparationController.signal;
   }
 
   /** 사전 단계 표시를 끝내고 실제 작업이 없으면 유휴 상태로 돌립니다. */
-  endPreparation(): void {
+  endPreparation(signal?: AbortSignal): void {
+    if (signal && signal !== this.preparationController?.signal) return;
     if (!this.preparing) return;
     this.preparing = false;
+    this.preparationController = null;
     if (!this.draining && !this.parkedJob) {
       this.stopStatusHeartbeat();
       this.phase = 'idle';
@@ -333,11 +343,12 @@ export class RAGIndexingScheduler {
     } finally {
       this.stopStatusHeartbeat();
       this.draining = false;
-      if (!this.parkedJob) this.phase = 'idle';
+      if (!this.parkedJob && !this.preparing) this.phase = 'idle';
       this.abortController = null;
       this.activeJob = null;
       this.progress = null;
-      this.startedAt = null;
+      if (!this.preparing) this.startedAt = null;
+      else this.startStatusHeartbeat();
       this.emitStatus();
       this.resolveIdleIfReady();
       if (!this.cancelled && !this.parkedJob && (this.queue.length > 0 || this.dirtySet.size > 0)) {
@@ -374,7 +385,11 @@ export class RAGIndexingScheduler {
     options: RagPendingIndexingOptions = {},
     mergeActive = true,
   ): void {
-    if (mergeActive && this.coversPendingRequest(this.activeJob, options)) {
+    if (
+      mergeActive &&
+      !this.abortController?.signal.aborted &&
+      this.coversPendingRequest(this.activeJob, options)
+    ) {
       resolve(this.lastResult ?? createEmptyIndexingResult());
       return;
     }
@@ -410,13 +425,15 @@ export class RAGIndexingScheduler {
   }
 
   private async runJob(job: QueueJob): Promise<'completed' | 'paused'> {
-    this.abortController = new AbortController();
-    const baseOptions = this.operations.createIndexingOptions?.(this.abortController.signal) ?? {
-      signal: this.abortController.signal,
+    const controller = new AbortController();
+    this.abortController = controller;
+    const baseOptions = this.operations.createIndexingOptions?.(controller.signal) ?? {
+      signal: controller.signal,
     };
     const options: IndexingOptions = {
       ...baseOptions,
       onProgress: (progress) => {
+        if (controller.signal.aborted) return;
         baseOptions.onProgress?.(progress);
         this.handleProgress(progress);
       },
@@ -427,6 +444,7 @@ export class RAGIndexingScheduler {
         this.phase = 'file';
         this.emitStatus();
         const result = await this.operations.indexFile(job.file, options);
+        if (controller.signal.aborted) throw new IndexingCancelledError();
         this.lastResult = result;
         job.resolve(result);
         return 'completed';
@@ -435,6 +453,7 @@ export class RAGIndexingScheduler {
         this.phase = 'file';
         this.emitStatus();
         const removed = await this.operations.removeFile(job.filePath);
+        if (controller.signal.aborted) throw new IndexingCancelledError();
         job.resolve(removed);
         return 'completed';
       }
@@ -445,6 +464,7 @@ export class RAGIndexingScheduler {
           ...options,
           automaticRecovery: job.options.automaticRecovery,
         });
+        if (controller.signal.aborted) throw new IndexingCancelledError();
         this.lastResult = result;
         job.resolve(result);
         return 'completed';
@@ -452,6 +472,7 @@ export class RAGIndexingScheduler {
       this.phase = 'all';
       this.emitStatus();
       const result = await this.operations.reindexAll(options);
+      if (controller.signal.aborted) throw new IndexingCancelledError();
       this.lastResult = result;
       job.resolve(result);
       return 'completed';

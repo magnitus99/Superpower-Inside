@@ -61,6 +61,86 @@ vi.mock('obsidian', () => {
 });
 
 describe('SuperpowerInsidePlugin RAG runtime', () => {
+  it.each([false, true])(
+    '중단된 자동 복구는 새 색인이 성공한 뒤에만 유지보수를 재개한다 (성공=%s)',
+    async (completed) => {
+      const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+      const previousResult = { indexed: 1, vectors: 1 };
+      const resume = vi.fn();
+      const runtime = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+      Object.assign(runtime, {
+        ragIndexingStatus: { running: true, lastResult: previousResult },
+        automaticRagRecovery: { resume },
+        getLogger: () => ({ debug: vi.fn() }),
+        refreshBus: { emit: vi.fn() },
+        debouncedRefreshStats: vi.fn(),
+      });
+      (
+        runtime as unknown as { handleRagIndexingStatusChange(status: object): void }
+      ).handleRagIndexingStatusChange({
+        running: false,
+        phase: 'idle',
+        queuedFiles: 0,
+        progress: null,
+        lastResult: completed ? { indexed: 2, vectors: 2 } : previousResult,
+      });
+      expect(resume).toHaveBeenCalledTimes(completed ? 1 : 0);
+    },
+  );
+
+  it('자동 인덱싱 준비 중 취소하면 늦은 상태 계산 뒤 작업을 시작하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const { RAGIndexingScheduler } = await import('./src/rag/indexing-scheduler');
+    let finish = (): void => undefined;
+    const records = new Promise<[]>((resolve) => {
+      finish = () => resolve([]);
+    });
+    const indexPending = vi.fn(() =>
+      Promise.resolve({ indexed: 0, vectors: 0, skipped: 0, documents: [], errors: [] }),
+    );
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: indexPending,
+      removeFile: () => Promise.resolve(0),
+      indexPending,
+      reindexAll: indexPending,
+    });
+    const getFileIndexRecords = vi.fn(() => records);
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      notice: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const runtime = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    const automaticRecovery = { suspend: vi.fn() };
+    Object.assign(runtime, {
+      app: createApp(),
+      settings: DEFAULT_SETTINGS,
+      unloaded: false,
+      vectorStore: { getFileIndexRecords },
+      vaultIndexer: {},
+      ragIndexingScheduler: scheduler,
+      ragPerformanceGuard: null,
+      ragIndexAbortController: null,
+      automaticRagRecovery: automaticRecovery,
+      getLogger: () => logger,
+    });
+    const run = (runtime as unknown as { autoIndex(): Promise<void> }).autoIndex();
+    await vi.waitFor(() => expect(getFileIndexRecords).toHaveBeenCalledOnce());
+    runtime.cancelRagIndexing();
+    expect(automaticRecovery.suspend).toHaveBeenCalledOnce();
+    expect(runtime.isRagIndexing()).toBe(false);
+    Object.assign(runtime, { lastAutoUpdateSkippedReason: 'newer-operation' });
+    finish();
+    await run;
+    expect(indexPending).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(runtime.getRagRuntimeState().lastAutoUpdateSkippedReason).toBe('newer-operation');
+  });
+
   it('RAG 런타임 재초기화가 중간에 실패하면 기존 인덱서를 복구한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
