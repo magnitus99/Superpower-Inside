@@ -49,6 +49,13 @@ export function withModelContext(
   provider: LLMProvider,
   contextBudget: ModelContextBudget,
 ): LLMProvider {
+  // 한도를 공개하지 않은 provider에는 임의 출력 캡을 보내지 않고 서버 기본값에 맡깁니다.
+  // Ollama 계열만 num_predict가 무제한이 되지 않도록 계산된 캡을 유지합니다.
+  const providerKey = provider.capability.providerKey;
+  const keepsOutputCap =
+    contextBudget.outputSource === 'provider' ||
+    providerKey === 'ollama' ||
+    providerKey === 'ollamaCloud';
   const optionsFor = (usedBytes: number, options?: ChatOptions): ChatOptions => {
     const requestBudget = planModelContextRust({
       contextLength: contextBudget.sharedContextTokens,
@@ -60,7 +67,8 @@ export function withModelContext(
     return {
       ...options,
       inputBudgetBytes: contextBudget.inputBytes,
-      maxOutputTokens: contextBudget.nativeOutput ? undefined : requestBudget.outputTokens,
+      maxOutputTokens:
+        contextBudget.nativeOutput || !keepsOutputCap ? undefined : requestBudget.outputTokens,
       contextTokens: contextBudget.contextTokens,
     };
   };
