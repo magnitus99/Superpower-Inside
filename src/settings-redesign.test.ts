@@ -408,20 +408,22 @@ describe('설정 화면 리디자인 구조', () => {
     const manual = mainSource.slice(manualStart, manualEnd);
     expect(manualStart).toBeGreaterThanOrEqual(0);
     expect(manual).toContain('beginPreparation()');
-    expect(manual).toContain('endPreparation()');
+    expect(manual).toContain('endPreparation(signal)');
     expect(manual.indexOf('beginPreparation()')).toBeLessThan(
       manual.indexOf('calculateRagStatus('),
     );
-    expect(manual.indexOf('endPreparation()')).toBeGreaterThan(manual.indexOf('reindexAll()'));
+    expect(manual.indexOf('endPreparation(signal)')).toBeGreaterThan(
+      manual.indexOf('reindexAll()'),
+    );
 
     const autoStart = mainSource.indexOf('private async autoIndex(');
     const autoEnd = mainSource.indexOf('\n  private async initMCP', autoStart);
     const auto = mainSource.slice(autoStart, autoEnd);
     expect(autoStart).toBeGreaterThanOrEqual(0);
     expect(auto).toContain('beginPreparation()');
-    expect(auto).toContain('endPreparation()');
+    expect(auto).toContain('endPreparation(signal)');
     expect(auto.indexOf('beginPreparation()')).toBeLessThan(auto.indexOf('calculateRagStatus('));
-    expect(auto.indexOf('endPreparation()')).toBeGreaterThan(auto.indexOf('indexPending('));
+    expect(auto.indexOf('endPreparation(signal)')).toBeGreaterThan(auto.indexOf('indexPending('));
   });
 
   it('General의 세부 설정, 진단, 전체 초기화는 disclosure로 점진 공개한다', () => {
@@ -663,6 +665,10 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain('superpower-inside-rag-controls-group');
     expect(methodSource).toContain('createRagDisclosure');
     expect(methodSource).toContain('is-danger');
+    expect(methodSource).toContain('this.resetIndexButton = btn');
+    const resetStart = settingsSource.indexOf('private resetRagDomReferences(): void');
+    const resetEnd = settingsSource.indexOf('\n  display()', resetStart);
+    expect(settingsSource.slice(resetStart, resetEnd)).toContain('this.resetIndexButton = null');
     expect(styles).toContain('.superpower-inside-rag-primary-actions');
     expect(styles).toContain('.superpower-inside-rag-controls-group button[hidden]');
   });

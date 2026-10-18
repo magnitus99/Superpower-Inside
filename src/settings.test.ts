@@ -1775,6 +1775,89 @@ describe('RAG indexing preparation label', () => {
 });
 
 describe('RAG indexing progress panel', () => {
+  it('중단과 재시작 전환은 통계 조회나 패널 연결을 기다리지 않고 모든 제어를 갱신한다', () => {
+    let running = true;
+    const plugin = {
+      getRagRuntimeState: () => ({
+        hasIndexer: true,
+        ragStatus: { totalDocuments: 5, updateRequiredDocuments: [{}] },
+      }),
+      isRagIndexing: () => running,
+      getRagPerformanceGuardState: () => null,
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const button = () => ({ disabled: false, hidden: false, title: '' });
+    const buttons = {
+      updatePendingButton: button(),
+      reindexAllButton: button(),
+      cancelIndexingButton: button(),
+      resumeIndexingButton: button(),
+      resetIndexButton: button(),
+    };
+    Object.assign(tab, buttons);
+    for (const isRunning of [true, false, true, false]) {
+      running = isRunning;
+      (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
+      expect(buttons.reindexAllButton.disabled).toBe(running);
+      expect(buttons.resetIndexButton.disabled).toBe(running);
+      expect(buttons.cancelIndexingButton.hidden).toBe(!running);
+      tab.updateRagStats();
+      expect(buttons.updatePendingButton.disabled).toBe(running);
+      expect(buttons.reindexAllButton.disabled).toBe(running);
+      expect(buttons.resetIndexButton.disabled).toBe(running);
+      expect(buttons.cancelIndexingButton.hidden).toBe(!running);
+      expect(buttons.resumeIndexingButton.hidden).toBe(true);
+    }
+  });
+
+  it.each(['ko', 'en'] as const)('계획 진행은 완료 파일과 구분해 표시한다 (%s)', (language) => {
+    setLanguage(language);
+    const plugin = {
+      getRagRuntimeState: () => ({
+        hasIndexer: true,
+        ragStatus: null,
+        ragIndexingStatus: {
+          running: true,
+          phase: 'all',
+          progress: {
+            event: 'plan',
+            totalFiles: 9,
+            completedFiles: 0,
+            currentFileIndex: 3,
+            startedAtMs: 0,
+            nowMs: 2000,
+          },
+        },
+      }),
+      isRagIndexing: () => true,
+      getRagPerformanceGuardState: () => null,
+      settings: { rag: { autoUpdateEnabled: false } },
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const texts = new Map<string, string>();
+    const stub = (key: string) => ({
+      setText: (value: string) => texts.set(key, value),
+      setAttribute: () => undefined,
+    });
+    Object.assign(tab, {
+      ragStatusGrid: {
+        querySelector: (selector: string) =>
+          selector.includes('overview-detail') ? stub('detail') : stub('status'),
+      },
+    });
+    (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
+    expect(texts.get('status')).toBe(
+      language === 'ko'
+        ? '인덱싱 준비: 4/9개 파일 확인 중 · 2s 경과'
+        : 'Preparing index: checking file 4/9 · 2s elapsed',
+    );
+    expect(texts.get('detail')).toBe(
+      language === 'ko'
+        ? '준비 중 4/9개 파일 · 인덱싱 완료 0개'
+        : 'Preparing file 4/9 · 0 files indexed',
+    );
+  });
+
   it('진행 중에는 상태 줄과 바로 아래 숫자 줄을 같은 실행 스냅샷으로 갱신한다', () => {
     setLanguage('en');
     const plugin = {
@@ -1819,9 +1902,12 @@ describe('RAG indexing progress panel', () => {
 
     (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
 
+    Object.assign(tab, { ragStatusAction: stub('action') });
+    (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
+    expect(texts.get('action')).toBe(t('settingsAuto130'));
     const label = 'Indexing: Full reindex - 3/10 files · 10s elapsed, ETA about 18s';
     expect(texts.get('status')).toBe(label);
-    expect(texts.get('detail')).toBe('3/10 documents current · periodic checks Off');
+    expect(texts.get('detail')).toBe('3/10 files indexed');
     expect(texts.get('timestamp')).toBe(`Current status: ${label}`);
   });
 });

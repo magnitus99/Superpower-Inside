@@ -1470,6 +1470,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private reindexAllButton: HTMLButtonElement | null = null;
   private cancelIndexingButton: HTMLButtonElement | null = null;
   private resumeIndexingButton: HTMLButtonElement | null = null;
+  private resetIndexButton: HTMLButtonElement | null = null;
   private providerStatusBody: HTMLElement | null = null;
   private updateNoticeEl: HTMLElement | null = null;
   private disposeLocalModelSettings: (() => void) | null = null;
@@ -1659,6 +1660,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.reindexAllButton = null;
     this.cancelIndexingButton = null;
     this.resumeIndexingButton = null;
+    this.resetIndexButton = null;
     this.providerStatusBody = null;
     this.updateNoticeEl = null;
   }
@@ -2740,6 +2742,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     const completed = Math.min(progress.completedFiles, progress.totalFiles);
     const elapsed = this.formatEtaDuration(Math.max(0, progress.nowMs - progress.startedAtMs));
+    if (progress.event === 'plan') {
+      return t('ragIndexingPlanningProgress', {
+        current: Math.min((progress.currentFileIndex ?? -1) + 1, progress.totalFiles),
+        total: progress.totalFiles,
+        elapsed,
+      });
+    }
     const eta = progress.eta;
     if (
       !eta ||
@@ -3559,6 +3568,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
    */
   private updateRagIndexingProgress(): void {
     const runtime = this.plugin.getRagRuntimeState();
+    this.updateRagControlStates(runtime.ragStatus);
+    this.ragStatusAction?.setText(
+      runtime.ragStatus
+        ? this.getRagActionMessage(runtime.ragStatus, this.plugin.getRagPerformanceGuardState())
+        : t('settingsAuto130'),
+    );
     const label = this.getIndexingStatusLabel();
     const statusEl = this.ragStatusGrid?.querySelector<HTMLElement>(
       '.superpower-inside-rag-overview-status',
@@ -3574,10 +3589,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (detailEl) {
       if (progress && progress.totalFiles > 0) {
         detailEl.setText(
-          t('ragOverviewDetail', {
-            healthy: Math.min(progress.completedFiles, progress.totalFiles),
+          t(progress.event === 'plan' ? 'ragIndexingDetailPlanning' : 'ragIndexingDetailProgress', {
+            current: Math.min((progress.currentFileIndex ?? -1) + 1, progress.totalFiles),
+            completed: Math.min(progress.completedFiles, progress.totalFiles),
             total: progress.totalFiles,
-            auto: this.getAutoUpdateLabel(),
           }),
         );
       } else if (runtime.ragIndexingStatus?.running) {
@@ -3588,11 +3603,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (this.ragStatusTimestamp) {
       this.ragStatusTimestamp.setText(t('settingsAuto115', { v0: label }));
     }
-    this.updateRagControlStates(runtime.ragStatus);
   }
 
   private ragStatusRevision = 0;
   updateRagStats(indexingDetail?: string): void {
+    this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus);
     const revision = ++this.ragStatusRevision;
     const statusGrid = this.ragStatusGrid;
     const timestampEl = this.ragStatusTimestamp;
@@ -3868,6 +3883,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     return t('settingsAuto154');
   }
   private async getRagStatus(signal?: AbortSignal): Promise<RagStatusSummary | null> {
+    signal?.throwIfAborted();
     const runtime = this.plugin.getRagRuntimeState();
     // 캐시된 eventDrivenRagStats가 있으면 우선 사용 (백그라운드 타이머가 자동 갱신)
     if (runtime.ragStatus) {
@@ -3875,11 +3891,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     if (!runtime.vectorStore) {
       const initialized = await this.plugin.ensureRagRuntimeInitialized();
+      signal?.throwIfAborted();
       if (!initialized) {
         return this.plugin.getRagRuntimeState().ragStatus;
       }
     }
     const latestRuntime = this.plugin.getRagRuntimeState();
+    if (latestRuntime.ragStatus) return latestRuntime.ragStatus;
     const vectorStore = latestRuntime.vectorStore;
     if (vectorStore) {
       return calculateRagStatus(
@@ -4035,14 +4053,23 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 notice: t('settingsAuto164') + this.diagnoseRAGInitFailure(),
               };
             }
-            const status = await this.getRagStatus();
-            if (!status || status.updateRequiredDocuments.length === 0) {
-              this.updateRagStats();
-              return { status: 'noop', detail: t('ragNoPendingUpdatesNotice') };
+            if (this.plugin.isRagIndexing()) {
+              return { status: 'noop', detail: t('ragAutoUpdateAlreadyRunning') };
             }
-            new Notice(t('settingsAuto165', { v0: status.updateRequiredDocuments.length }));
+            const scheduler = latestRuntime.ragIndexingScheduler;
+            const signal = scheduler.beginPreparation();
             try {
-              const result = await latestRuntime.ragIndexingScheduler.indexPending();
+              const status = await this.getRagStatus(signal);
+              signal?.throwIfAborted();
+              if (this.getRagRuntimeAccess().ragIndexingScheduler !== scheduler) {
+                return { status: 'partial', detail: t('settingsAuto167') };
+              }
+              if (!status || status.updateRequiredDocuments.length === 0) {
+                this.updateRagStats();
+                return { status: 'noop', detail: t('ragNoPendingUpdatesNotice') };
+              }
+              new Notice(t('settingsAuto165', { v0: status.updateRequiredDocuments.length }));
+              const result = await scheduler.indexPending();
               this.updateRagStats();
               return {
                 status: 'success',
@@ -4062,9 +4089,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 detail: msg,
                 notice: t('settingsAuto168', { v0: String(msg) }),
               };
+            } finally {
+              scheduler.endPreparation(signal);
             }
           },
-        });
+        }).finally(() => this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus));
       });
     });
     const recoveryControls = this.createRagDisclosure(
@@ -4090,14 +4119,23 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 notice: t('settingsAuto164') + this.diagnoseRAGInitFailure(),
               };
             }
-            const status = await this.getRagStatus();
-            if (!status || status.totalDocuments === 0) {
-              this.updateRagStats();
-              return { status: 'noop', detail: t('ragNoDocumentsNotice') };
+            if (this.plugin.isRagIndexing()) {
+              return { status: 'noop', detail: t('ragAutoUpdateAlreadyRunning') };
             }
-            new Notice(t('settingsAuto170'));
+            const scheduler = latestRuntime.ragIndexingScheduler;
+            const signal = scheduler.beginPreparation();
             try {
-              const result = await latestRuntime.ragIndexingScheduler.reindexAll();
+              const status = await this.getRagStatus(signal);
+              signal?.throwIfAborted();
+              if (this.getRagRuntimeAccess().ragIndexingScheduler !== scheduler) {
+                return { status: 'partial', detail: t('settingsAuto167') };
+              }
+              if (!status || status.totalDocuments === 0) {
+                this.updateRagStats();
+                return { status: 'noop', detail: t('ragNoDocumentsNotice') };
+              }
+              new Notice(t('settingsAuto170'));
+              const result = await scheduler.reindexAll();
               this.updateRagStats();
               return {
                 status: 'success',
@@ -4114,9 +4152,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
                 detail: msg,
                 notice: t('settingsAuto172', { v0: String(msg) }),
               };
+            } finally {
+              scheduler.endPreparation(signal);
             }
           },
-        });
+        }).finally(() => this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus));
       });
     });
     primaryControls.createEl('button', { text: t('settingsAuto173') }, (btn) => {
@@ -4135,7 +4175,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             this.updateRagStats();
             return { status: 'success', detail: t('ragIndexCancelRequestedNotice') };
           },
-        });
+        }).finally(() => this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus));
       });
     });
     primaryControls.createEl('button', { text: t('settingsAuto174') }, (btn) => {
@@ -4156,7 +4196,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             this.updateRagStats();
             return { status: 'success', detail: t('ragIndexResumeRequestedNotice') };
           },
-        });
+        }).finally(() => this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus));
       });
     });
     this.ragControlsHint = recoveryControls.createDiv({
@@ -4167,6 +4207,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       cls: 'superpower-inside-rag-controls-group is-danger',
     });
     dangerControls.createEl('button', { text: t('settingsAuto176') }, (btn) => {
+      this.resetIndexButton = btn;
       btn.disabled = isIndexing;
       btn.addEventListener('click', () => {
         void runActionWithFeedback({
@@ -4196,7 +4237,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             this.updateRagStats();
             return { status: 'success', detail: t('settingsAuto178') };
           },
-        });
+        }).finally(() => this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus));
       });
     });
     void this.getRagStatus().then((status) => this.updateRagControlStates(status));
@@ -4215,6 +4256,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.applyButtonState(this.reindexAllButton, state.reindexAll);
     this.applyButtonState(this.cancelIndexingButton, state.cancel);
     this.applyButtonState(this.resumeIndexingButton, state.resume);
+    this.applyButtonState(this.resetIndexButton, state.reset);
     if (this.updatePendingButton) {
       this.updatePendingButton.hidden = state.updatePending.disabled;
     }

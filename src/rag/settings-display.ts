@@ -86,6 +86,7 @@ export interface RagIndexingControlState {
   reindexAll: RagIndexingButtonState;
   cancel: RagIndexingButtonState;
   resume: RagIndexingButtonState;
+  reset: RagIndexingButtonState;
 }
 
 export type RagPerformanceSettings =
@@ -176,6 +177,7 @@ export function getRagIndexingControlState(
     reindexAll: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noDocumentsReason),
     cancel: toButtonState(input.isIndexing ? null : t('ragNoRunningIndexing')),
     resume: toButtonState(input.guardMode === 'paused' ? null : t('ragNotPerformancePaused')),
+    reset: toButtonState(runningReason),
   };
 }
 

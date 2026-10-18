@@ -417,7 +417,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
           return;
         }
         if (this.isRagIndexing()) return;
-        this.ragIndexingScheduler?.beginPreparation();
+        const scheduler = this.ragIndexingScheduler;
+        const signal = scheduler?.beginPreparation();
         try {
           const status = this.vectorStore
             ? await calculateRagStatus(
@@ -425,15 +426,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
                 this.vectorStore,
                 this.settings.rag,
                 this.settings.chat,
+                signal,
               )
             : null;
+          signal?.throwIfAborted();
+          if (this.ragIndexingScheduler !== scheduler) return;
           if (!status || status.totalDocuments === 0) return;
           this.getLogger().info('Manual RAG reindex started.', {
             source: 'rag',
             data: { totalDocuments: status.totalDocuments },
           });
           new Notice(t('vaultIndexingStarted'));
-          const result = await this.ragIndexingScheduler?.reindexAll();
+          const result = await scheduler?.reindexAll();
           if (result) {
             this.getLogger().notice('Manual RAG reindex completed.', {
               source: 'rag',
@@ -451,7 +455,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           this.getLogger().error('Manual RAG reindex failed.', { source: 'rag', error: err });
           new Notice(t('indexingFailedWithMessage', { message: msg }));
         } finally {
-          this.ragIndexingScheduler?.endPreparation();
+          scheduler?.endPreparation(signal);
         }
       },
     });
@@ -591,6 +595,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   cancelRagIndexing(): void {
+    this.automaticRagRecovery?.suspend();
     this.ragIndexAbortController?.abort();
     this.ragIndexingScheduler?.cancel();
   }
@@ -2523,6 +2528,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private handleRagIndexingStatusChange(status: RagIndexingSchedulerStatus): void {
     const wasRunning = this.ragIndexingStatus?.running === true;
+    const previousResult = this.ragIndexingStatus?.lastResult;
     this.ragIndexingStatus = status;
     if (status.running) {
       void this.recordAgentDiagnosticsBreadcrumb({
@@ -2553,6 +2559,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       detail: this.formatRagIndexingStatus(status),
     });
     if (wasRunning && !status.running) {
+      if (status.lastResult && status.lastResult !== previousResult) {
+        this.automaticRagRecovery?.resume();
+      }
       this.debouncedRefreshStats();
     }
   }
@@ -2843,15 +2852,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.refreshBus?.emit('rag', { status: 'partial', detail: t('ragPerformancePaused') });
       return;
     }
+    const signal = scheduler.beginPreparation();
     try {
       // 상태 계산·고아 정리 구간에도 라벨과 경과가 움직이도록 사전 단계를 먼저 표시합니다.
-      scheduler.beginPreparation();
       const status = await calculateRagStatus(
         this.app.vault,
         vectorStore,
         this.settings.rag,
         this.settings.chat,
+        signal,
       );
+      signal?.throwIfAborted();
       if (stopIfRuntimeChanged()) return;
       if (status.updateRequiredDocuments.length === 0) {
         this.lastAutoUpdateSkippedReason = t('ragAutoUpdateNoTargets');
@@ -2879,6 +2890,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
       void this.computeAndEmitRagStats();
     } catch (err) {
+      if (signal?.aborted) return;
       if (stopIfRuntimeChanged()) return;
       if (isIndexingCancelledError(err)) {
         const pausedState = performanceGuard?.getState() ?? null;
@@ -2903,7 +2915,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.getLogger().error('Auto RAG indexing failed.', { source: 'rag.auto', error: err });
       new Notice(`${t('autoUpdateIndexingFailed')}: ${msg}`, 10000);
     } finally {
-      scheduler.endPreparation();
+      scheduler.endPreparation(signal);
     }
   }
 

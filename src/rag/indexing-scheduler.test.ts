@@ -4,6 +4,54 @@ import { IndexingCancelledError, IndexingPerformancePausedError } from './indexe
 import { RAGIndexingScheduler } from './indexing-scheduler';
 
 describe('RAGIndexingScheduler', () => {
+  it('사전 준비를 취소하면 신호와 상태를 즉시 갱신하고 이전 정리가 새 준비를 지우지 않는다', () => {
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => Promise.resolve(createResult()),
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+    const previous = scheduler.beginPreparation();
+    scheduler.cancel();
+    expect(previous?.aborted).toBe(true);
+    expect(scheduler.getStatus()).toMatchObject({ running: false, phase: 'idle' });
+    const next = scheduler.beginPreparation();
+    scheduler.endPreparation(previous);
+    expect(scheduler.isRunning()).toBe(true);
+    expect(next?.aborted).toBe(false);
+    scheduler.endPreparation(next);
+    expect(scheduler.isRunning()).toBe(false);
+  });
+
+  it('응답을 기다리는 작업도 취소 상태를 즉시 표시하고 재요청은 취소된 작업과 합치지 않는다', async () => {
+    let finish = (): void => undefined;
+    const indexPending = vi.fn(() => Promise.resolve(createResult({ indexed: 2 })));
+    indexPending.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve(createResult({ indexed: 1 }));
+        }),
+    );
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()),
+      removeFile: () => Promise.resolve(0),
+      indexPending,
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+    const previous = scheduler.indexPending();
+    const cancelled = expect(previous).rejects.toBeInstanceOf(IndexingCancelledError);
+    scheduler.cancel();
+    expect(scheduler.getStatus()).toMatchObject({ running: false, phase: 'idle' });
+    const next = scheduler.indexPending();
+    finish();
+    await cancelled;
+    await expect(next).resolves.toMatchObject({ indexed: 2 });
+    await scheduler.waitForIdle();
+    expect(indexPending).toHaveBeenCalledTimes(2);
+  });
+
   it('같은 파일의 연속 modify 요청은 마지막 요청 하나만 처리한다', async () => {
     vi.useFakeTimers();
     const indexedPaths: string[] = [];
