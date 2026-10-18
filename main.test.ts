@@ -1513,6 +1513,189 @@ describe('SuperpowerInsidePlugin agent diagnostics view', () => {
   });
 });
 
+describe('SuperpowerInsidePlugin chat view placement', () => {
+  it('포커스된 사이드바 채팅 뷰는 reveal만 하고 새 탭을 만들지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { CHAT_VIEW_TYPE, ChatView } = await import('./src/chat/view');
+    const root = { kind: 'root' };
+    const sidebarParent = { kind: 'right-sidebar' };
+    const chatView = { kind: 'chat-view' };
+    const chatLeaf = createChatPlacementLeaf({
+      root: sidebarParent,
+      parent: sidebarParent,
+      view: chatView,
+    });
+    const workspace = {
+      rootSplit: root,
+      getLeavesOfType: vi.fn(() => [chatLeaf]),
+      getActiveViewOfType: vi.fn(() => chatView),
+      getMostRecentLeaf: vi.fn(() => null),
+      getLeaf: vi.fn(),
+      revealLeaf: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: { workspace: typeof workspace };
+    };
+    plugin.app = { workspace };
+
+    await (plugin as unknown as { openChatView(): Promise<void> }).openChatView();
+
+    expect(workspace.getActiveViewOfType).toHaveBeenCalledWith(ChatView);
+    expect(workspace.getLeavesOfType).toHaveBeenCalledWith(CHAT_VIEW_TYPE);
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(chatLeaf);
+    expect(workspace.getLeaf).not.toHaveBeenCalled();
+    expect(chatLeaf.setViewState).not.toHaveBeenCalled();
+  });
+
+  it('활성 메인 탭 그룹의 기존 채팅 leaf를 재사용하고 setViewState를 다시 호출하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { CHAT_VIEW_TYPE } = await import('./src/chat/view');
+    const root = { kind: 'root' };
+    const activeGroup = { kind: 'root-group' };
+    const contextLeaf = createChatPlacementLeaf({
+      root,
+      parent: activeGroup,
+      view: { kind: 'markdown' },
+    });
+    const existingLeaf = createChatPlacementLeaf({
+      root,
+      parent: activeGroup,
+      view: { kind: 'chat-view' },
+    });
+    const workspace = {
+      rootSplit: root,
+      getLeavesOfType: vi.fn(() => [existingLeaf]),
+      getActiveViewOfType: vi.fn(() => null),
+      getMostRecentLeaf: vi.fn(() => contextLeaf),
+      getLeaf: vi.fn(),
+      revealLeaf: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: { workspace: typeof workspace };
+    };
+    plugin.app = { workspace };
+
+    await (plugin as unknown as { openChatView(): Promise<void> }).openChatView();
+
+    expect(workspace.getMostRecentLeaf).toHaveBeenCalledWith(workspace.rootSplit);
+    expect(workspace.getLeavesOfType).toHaveBeenCalledWith(CHAT_VIEW_TYPE);
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(existingLeaf);
+    expect(workspace.getLeaf).not.toHaveBeenCalled();
+    expect(existingLeaf.setViewState).not.toHaveBeenCalled();
+  });
+
+  it('오른쪽 사이드바 채팅만 있으면 활성 메인 탭 그룹에 새 탭을 연다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { CHAT_VIEW_TYPE } = await import('./src/chat/view');
+    const root = { kind: 'root' };
+    const sidebarRoot = { kind: 'right-sidebar' };
+    const sidebarParent = { kind: 'right-sidebar' };
+    const activeGroup = { kind: 'root-group' };
+    const sidebarChatLeaf = createChatPlacementLeaf({
+      root: sidebarRoot,
+      parent: sidebarParent,
+      view: { kind: 'chat-view' },
+    });
+    const contextLeaf = createChatPlacementLeaf({
+      root,
+      parent: activeGroup,
+      view: { kind: 'markdown' },
+    });
+    const newLeaf = createChatPlacementLeaf({
+      root,
+      parent: activeGroup,
+      view: { kind: 'empty' },
+    });
+    const workspace = {
+      rootSplit: root,
+      getLeavesOfType: vi.fn(() => [sidebarChatLeaf]),
+      getActiveViewOfType: vi.fn(() => null),
+      getMostRecentLeaf: vi.fn(() => contextLeaf),
+      getLeaf: vi.fn(() => newLeaf),
+      revealLeaf: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: { workspace: typeof workspace };
+    };
+    plugin.app = { workspace };
+
+    await (plugin as unknown as { openChatView(): Promise<void> }).openChatView();
+
+    expect(workspace.getLeaf).toHaveBeenCalledWith('tab');
+    expect(newLeaf.setViewState).toHaveBeenCalledWith({ type: CHAT_VIEW_TYPE, active: true });
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(newLeaf);
+    expect(sidebarChatLeaf.setViewState).not.toHaveBeenCalled();
+    expect(sidebarChatLeaf.detach).not.toHaveBeenCalled();
+  });
+
+  it('채팅이 하나도 없고 root leaf가 있으면 그 컨텍스트 그룹에 새 탭을 연다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { CHAT_VIEW_TYPE } = await import('./src/chat/view');
+    const root = { kind: 'root' };
+    const activeGroup = { kind: 'root-group' };
+    const contextLeaf = createChatPlacementLeaf({
+      root,
+      parent: activeGroup,
+      view: { kind: 'markdown' },
+    });
+    const newLeaf = createChatPlacementLeaf({
+      root,
+      parent: activeGroup,
+      view: { kind: 'empty' },
+    });
+    const workspace = {
+      rootSplit: root,
+      getLeavesOfType: vi.fn(() => []),
+      getActiveViewOfType: vi.fn(() => null),
+      getMostRecentLeaf: vi.fn(() => contextLeaf),
+      getLeaf: vi.fn(() => newLeaf),
+      revealLeaf: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: { workspace: typeof workspace };
+    };
+    plugin.app = { workspace };
+
+    await (plugin as unknown as { openChatView(): Promise<void> }).openChatView();
+
+    expect(workspace.getLeavesOfType).toHaveBeenCalledWith(CHAT_VIEW_TYPE);
+    expect(workspace.getLeaf).toHaveBeenCalledWith('tab');
+    expect(newLeaf.setViewState).toHaveBeenCalledWith({ type: CHAT_VIEW_TYPE, active: true });
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(newLeaf);
+  });
+
+  it('컨텍스트 leaf가 없으면 기존 채팅 leaf를 재사용한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { CHAT_VIEW_TYPE } = await import('./src/chat/view');
+    const root = { kind: 'root' };
+    const floatingParent = { kind: 'floating' };
+    const existingLeaf = createChatPlacementLeaf({
+      root,
+      parent: floatingParent,
+      view: { kind: 'chat-view' },
+    });
+    const workspace = {
+      rootSplit: root,
+      getLeavesOfType: vi.fn(() => [existingLeaf]),
+      getActiveViewOfType: vi.fn(() => null),
+      getMostRecentLeaf: vi.fn(() => null),
+      getLeaf: vi.fn(),
+      revealLeaf: vi.fn(() => Promise.resolve()),
+    };
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      app: { workspace: typeof workspace };
+    };
+    plugin.app = { workspace };
+
+    await (plugin as unknown as { openChatView(): Promise<void> }).openChatView();
+
+    expect(workspace.getLeavesOfType).toHaveBeenCalledWith(CHAT_VIEW_TYPE);
+    expect(workspace.revealLeaf).toHaveBeenCalledWith(existingLeaf);
+    expect(workspace.getLeaf).not.toHaveBeenCalled();
+    expect(existingLeaf.setViewState).not.toHaveBeenCalled();
+  });
+});
+
 function createOpenAiEmbeddingProfile(apiKey: string) {
   return {
     id: 'openai',
@@ -1610,6 +1793,16 @@ function createWorkspaceLeaf(root: unknown, width: number) {
         getBoundingClientRect: vi.fn(() => ({ width })),
       },
     },
+    setViewState: vi.fn(() => Promise.resolve()),
+    detach: vi.fn(),
+  };
+}
+
+function createChatPlacementLeaf(options: { root: unknown; parent: unknown; view: unknown }) {
+  return {
+    getRoot: vi.fn(() => options.root),
+    parent: options.parent,
+    view: options.view,
     setViewState: vi.fn(() => Promise.resolve()),
     detach: vi.fn(),
   };
