@@ -1,9 +1,10 @@
 import type { Vault, TFile, DataAdapter } from 'obsidian';
-import { getFrontMatterInfo, parseYaml } from 'obsidian';
+import { getFrontMatterInfo, parseYaml, TFolder } from 'obsidian';
 import { t } from '../i18n';
 import {
   isExcludedPathRust,
   countFilesByExtensionsRust,
+  planExcludePathMetadataRust,
   isExcludedExtRust,
   isRagFrontmatterExcludedRust,
   planRagFileContentProbeIndicesRust,
@@ -30,6 +31,27 @@ export interface RagFileTypeSummary {
   targetTypes: RagFileTypeCount[];
   excludeRecommendations: RagExcludeRecommendation[];
   totalTargetFiles: number;
+}
+
+export type ExcludePathEntryKind = 'folder' | 'pattern';
+
+export interface ExcludePathMatch {
+  path: string;
+  fileCount: number;
+  sizeBytes: number;
+  latestMtimeMs: number | null;
+}
+
+export interface ExcludePathMetadata {
+  entry: string;
+  kind: ExcludePathEntryKind;
+  displayPath: string;
+  exists: boolean;
+  matches: ExcludePathMatch[];
+  matchCount: number;
+  totalFileCount: number;
+  totalSizeBytes: number;
+  latestMtimeMs: number | null;
 }
 
 const DEFAULT_EXCLUDE_PATHS = [
@@ -196,6 +218,43 @@ export function countFilesByExtensions(
   }
 
   return counts;
+}
+
+/**
+ * 설정의 제외 경로 항목 하나에 대해 팝오버가 표시할 메타데이터를 계산합니다.
+ *
+ * 매칭·집계·정렬은 Rust/WASM이 담당하며, 이 함수는 볼트 API 결과를 wire 형식으로
+ * 옮기기만 합니다. Rust 코어를 쓸 수 없으면 계산을 대체하지 않고 빈 결과를 돌려줍니다.
+ */
+export function getExcludePathMetadata(vault: Vault, value: string): ExcludePathMetadata {
+  const folders = vault
+    .getAllLoadedFiles()
+    .filter((entry): entry is TFolder => entry instanceof TFolder)
+    .map((folder) => folder.path);
+  const files = vault.getFiles().map((file) => ({
+    path: file.path,
+    sizeBytes: file.stat.size,
+    mtimeMs: file.stat.mtime,
+  }));
+
+  return (
+    planExcludePathMetadataRust(value, folders, files) ?? createEmptyExcludePathMetadata(value)
+  );
+}
+
+/** Rust 코어를 쓸 수 없을 때 돌려줄 빈 메타데이터입니다. */
+function createEmptyExcludePathMetadata(value: string): ExcludePathMetadata {
+  return {
+    entry: value,
+    kind: value.includes('*') || value.includes('?') ? 'pattern' : 'folder',
+    displayPath: value.trim(),
+    exists: false,
+    matches: [],
+    matchCount: 0,
+    totalFileCount: 0,
+    totalSizeBytes: 0,
+    latestMtimeMs: null,
+  };
 }
 
 function getPathExtension(filePath: string): string {

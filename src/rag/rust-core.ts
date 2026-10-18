@@ -55,6 +55,7 @@ import {
   IvfRuntimeIndex,
   is_protected_rag_document_extension_json,
   count_files_by_extensions_json,
+  plan_exclude_path_metadata_json,
   is_excluded_path,
   is_excluded_ext_json,
   is_rag_frontmatter_excluded_json,
@@ -1558,6 +1559,33 @@ export interface RustExcludeValidationResult {
   normalized: string;
   issues: RustExcludeValidationIssue[];
   valid: boolean;
+}
+
+export interface RustExcludePathMatch {
+  path: string;
+  fileCount: number;
+  sizeBytes: number;
+  latestMtimeMs: number | null;
+}
+
+export type RustExcludePathEntryKind = 'folder' | 'pattern';
+
+export interface RustExcludePathMetadataPlan {
+  entry: string;
+  kind: RustExcludePathEntryKind;
+  displayPath: string;
+  exists: boolean;
+  matches: RustExcludePathMatch[];
+  matchCount: number;
+  totalFileCount: number;
+  totalSizeBytes: number;
+  latestMtimeMs: number | null;
+}
+
+export interface RustExcludePathFileInput {
+  path: string;
+  sizeBytes: number;
+  mtimeMs: number;
 }
 
 export interface RustStructuralLinkEdge {
@@ -6108,6 +6136,25 @@ export function countFilesByExtensionsRust(
   }
 }
 
+export function planExcludePathMetadataRust(
+  entry: string,
+  folders: readonly string[],
+  files: readonly RustExcludePathFileInput[],
+): RustExcludePathMetadataPlan | null {
+  if (!isStringValue(entry) || !folders.every(isStringValue)) return null;
+  if (!files.every(isValidExcludePathFileInput)) return null;
+  if (!ensureRustCore()) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_exclude_path_metadata_json(JSON.stringify({ entry, folders, files })),
+    );
+    return isRustExcludePathMetadataPlan(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeExcludeExtensionRust(extension: string): string | null {
   if (!isStringValue(extension)) return null;
   if (!ensureRustCore()) return null;
@@ -6748,6 +6795,40 @@ function isStringNumberRecord(value: unknown): value is Record<string, number> {
 function isStringStringRecord(value: unknown): value is Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   return Object.values(value).every(isStringValue);
+}
+
+function isValidExcludePathFileInput(input: RustExcludePathFileInput): boolean {
+  return (
+    isStringValue(input.path) && Number.isFinite(input.sizeBytes) && Number.isFinite(input.mtimeMs)
+  );
+}
+
+function isRustExcludePathMatch(value: unknown): value is RustExcludePathMatch {
+  if (!value || typeof value !== 'object') return false;
+  const match = value as Partial<RustExcludePathMatch>;
+  return (
+    isStringValue(match.path) &&
+    Number.isSafeInteger(match.fileCount) &&
+    Number.isFinite(match.sizeBytes) &&
+    (match.latestMtimeMs === null || Number.isFinite(match.latestMtimeMs))
+  );
+}
+
+function isRustExcludePathMetadataPlan(value: unknown): value is RustExcludePathMetadataPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<RustExcludePathMetadataPlan>;
+  return (
+    isStringValue(plan.entry) &&
+    (plan.kind === 'folder' || plan.kind === 'pattern') &&
+    isStringValue(plan.displayPath) &&
+    typeof plan.exists === 'boolean' &&
+    Array.isArray(plan.matches) &&
+    plan.matches.every(isRustExcludePathMatch) &&
+    Number.isSafeInteger(plan.matchCount) &&
+    Number.isSafeInteger(plan.totalFileCount) &&
+    Number.isFinite(plan.totalSizeBytes) &&
+    (plan.latestMtimeMs === null || Number.isFinite(plan.latestMtimeMs))
+  );
 }
 
 function isBm25SearchScore(value: unknown): value is RustBm25SearchScore {
