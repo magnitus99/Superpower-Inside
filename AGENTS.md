@@ -36,6 +36,19 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 - 다음 경우에만 본 채팅 모델로 진행합니다: 서브에이전트가 해당 작업을 수행할 수 없을 때(도구·권한·모델 제약) 또는 적합한 서브에이전트가 없을 때(사용자가 지정한 모델·추론과 맞는 에이전트가 없는 경우 포함). 이때는 폴백 이유를 보고에 남깁니다. 사용자가 지정한 모델·추론은 에이전트 파일의 기본값보다 우선합니다.
 - 제품 철학 검토의 예외 조건은 아래 `제품 철학 검증` 절을 따릅니다.
 
+현재 모델 구성(원본: 각 TOML의 `model`·`model_reasoning_effort`, 모델 변경 시 이 표도 같은 변경에서 갱신):
+
+| 구분 | 실질 역할 | 모델 | 추론 | 도구 경계 |
+| --- | --- | --- | --- | --- |
+| 메인 채팅 | 조율·검증·통합 | `gpt-6.1-sol` | `high` | 웹 검색·병렬 도구 호출 지원 |
+| `ponytail_implementer` | 구현 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 웹 검색·병렬 도구 호출 미지원 |
+| `philosophy_reviewer` | 제품 철학 1차 검토·지적·권고·데모 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 웹 검색·병렬 도구 호출 미지원 |
+| `design_specialist` | 디자인 조사·설계·데모 | `gpt-6.1-sol` | `high` | 웹 검색·병렬 도구 호출 지원 |
+| `design_specialist` 폴백 | 위와 동일 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | sol 스폰 불가 시에만 |
+
+- 웹 검색이나 병렬 도구 호출이 반드시 필요한 작업은 해당 기능을 지원하는 모델(메인 채팅·`design_specialist`)에 맡깁니다. ds 기반 에이전트에는 순차·로컬 근거로 대체 가능한 작업만 맡기고, 대체 사실을 보고에 남깁니다.
+- ds 기반 에이전트의 도구 출력은 10,000바이트에서 잘립니다. 큰 파일은 한 번에 넘기지 말고 범위를 나눠 읽도록 위임 지시에도 적습니다.
+
 ## 제품·화면
 
 - 마케팅·홍보 영상 작업은 [marketing/AGENTS.md](marketing/AGENTS.md)를 함께 따른다. 조사·설득 구조는 `marketing/video-plan.md`, 영상 표현은 `marketing/visual-tone.md`에서 확인하고, 실제 제품 UI는 아래 `design.md`를 단일 기준으로 유지한다.
