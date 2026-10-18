@@ -549,6 +549,11 @@ export function plan_evidence_candidate_order_json(scores_json: string, availabl
 export function plan_evidence_collection_json(input: string): string;
 
 /**
+ * 설정의 제외 경로 항목 하나에 대한 팝오버 메타데이터를 계산한다.
+ */
+export function plan_exclude_path_metadata_json(input_json: string): string;
+
+/**
  * vector entry metadata snapshot에서 file index record JSON plan을 만든다.
  */
 export function plan_file_index_records_json(entries_json: string, updated: number): string;
@@ -1198,6 +1203,7 @@ export interface InitOutput {
     readonly plan_empty_file_index_record_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_evidence_candidate_order_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_evidence_collection_json: (a: number, b: number) => [number, number];
+    readonly plan_exclude_path_metadata_json: (a: number, b: number) => [number, number];
     readonly plan_file_index_records_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_folder_lexical_evidence_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_folder_mention_file_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];

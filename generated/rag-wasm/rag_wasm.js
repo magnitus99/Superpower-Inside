@@ -1987,6 +1987,26 @@ export function plan_evidence_collection_json(input) {
 }
 
 /**
+ * 설정의 제외 경로 항목 하나에 대한 팝오버 메타데이터를 계산한다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_exclude_path_metadata_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_exclude_path_metadata_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * vector entry metadata snapshot에서 file index record JSON plan을 만든다.
  * @param {string} entries_json
  * @param {number} updated
