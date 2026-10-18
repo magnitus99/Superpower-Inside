@@ -122,6 +122,19 @@ pub fn validate_indexed_review_json(segments_json: &str, response: &str) -> Stri
     validate_review(segments_json, response).map_or_else(String::new, |value| value.to_string())
 }
 
+/// 화면 단계의 채택/제외 판정을 검증하고 extract가 사용할 판정 순서를 보존합니다.
+#[wasm_bindgen]
+pub fn validate_indexed_review_screen_json(segments_json: &str, response: &str) -> String {
+    validate_screen_review(segments_json, response)
+        .map_or_else(String::new, |value| value.to_string())
+}
+
+/// 질문 토큰과 겹치는 비율만 계산하고 임계 판정은 호스트에 맡깁니다.
+#[wasm_bindgen]
+pub fn score_indexed_review_segments_json(input: &str) -> String {
+    score_segments(input).map_or_else(String::new, |value| value.to_string())
+}
+
 /// 모든 답변 문단을 검토에서 채택한 실제 출처에 연결한 뒤 Markdown을 만듭니다.
 #[must_use]
 #[wasm_bindgen]
@@ -223,6 +236,71 @@ fn validate_review(segments_json: &str, response: &str) -> Option<Value> {
     Some(
         json!({"findings": findings, "reviewedSegments": segments.len(), "rejectedSegments": rejected}),
     )
+}
+
+/// 조각마다 중복 없이 1:1로 대응하는 채택/제외 판정만 허용합니다.
+fn validate_screen_review(segments_json: &str, response: &str) -> Option<Value> {
+    let value: Value = serde_json::from_str(segments_json).ok()?;
+    let segments = value.get("segments")?.as_array()?;
+    if segments.is_empty() || segments.len() > 16 {
+        return None;
+    }
+    let ids = segments
+        .iter()
+        .map(|segment| segment.get("id")?.as_str())
+        .collect::<Option<BTreeSet<_>>>()?;
+    if ids.len() != segments.len() {
+        return None;
+    }
+    let raw = super::extract_json_object(response)?;
+    let review: Value = serde_json::from_str(raw).ok()?;
+    let decisions = review.get("decisions")?.as_array()?;
+    if decisions.len() != segments.len() {
+        return None;
+    }
+    let mut seen = BTreeSet::new();
+    let mut screened = Vec::with_capacity(decisions.len());
+    for decision in decisions {
+        let id = decision.get("id")?.as_str()?;
+        let relevant = decision.get("relevant")?.as_bool()?;
+        let reason = decision.get("reason")?.as_str()?;
+        if !ids.contains(id)
+            || !seen.insert(id)
+            || reason.trim().is_empty()
+            || reason.chars().count() > 1000
+        {
+            return None;
+        }
+        screened.push(json!({"id": id, "relevant": relevant, "reason": reason}));
+    }
+    Some(json!({"decisions": screened}))
+}
+
+/// 조각마다 질문 토큰 겹침 비율을 계산하고 질문 토큰이 없으면 전부 유지합니다.
+fn score_segments(input: &str) -> Option<Value> {
+    let value: Value = serde_json::from_str(input).ok()?;
+    let question = value.get("question")?.as_str()?;
+    let segments = value.get("segments")?.as_array()?;
+    if segments.is_empty() || segments.len() > 1024 {
+        return None;
+    }
+    let asked = crate::tokenize(question)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let asked_count = crate::usize_to_f64(asked.len())?;
+    let mut rows = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let id = segment.get("id")?.as_str()?;
+        let text = segment.get("text")?.as_str()?;
+        let score = if asked.is_empty() {
+            1.0
+        } else {
+            let found = crate::tokenize(text).into_iter().collect::<BTreeSet<_>>();
+            crate::usize_to_f64(found.intersection(&asked).count())? / asked_count
+        };
+        rows.push(json!({"id": id, "score": score}));
+    }
+    Some(json!({"scores": rows}))
 }
 
 #[cfg(test)]
@@ -342,5 +420,126 @@ mod tests {
             *id = json!("one");
         }
         assert!(validate_review(rows, &invalid.to_string()).is_none());
+    }
+
+    #[test]
+    fn screen_keeps_only_id_relevant_reason_for_mixed_decisions() {
+        let rows = json!({"segments":[{"id":"one","path":"Research/A.md","startLine":2,"endLine":3,"text":"Quartz requires two cooling cycles."},{"id":"two","path":"Research/B.md","startLine":1,"endLine":1,"text":"Unrelated delivery schedule."}]}).to_string();
+        let response = json!({"decisions":[{"id":"one","relevant":true,"reason":"Restart condition","findings":[{"claim":"Wait two cycles.","quote":"two cooling cycles"}]},{"id":"two","relevant":false,"reason":"No restart information."}]}).to_string();
+        let expected = json!({"decisions":[{"id":"one","relevant":true,"reason":"Restart condition"},{"id":"two","relevant":false,"reason":"No restart information."}]});
+        assert_eq!(
+            validate_screen_review(&rows, &response),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&validate_indexed_review_screen_json(&rows, &response))
+                .ok(),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn screen_preserves_decision_order_from_response() {
+        let rows = json!({"segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"Quartz requires two cooling cycles."},{"id":"two","path":"Research/B.md","startLine":1,"endLine":1,"text":"Unrelated delivery schedule."}]}).to_string();
+        let response = json!({"decisions":[{"id":"two","relevant":false,"reason":"No restart information."},{"id":"one","relevant":true,"reason":"Restart condition."}]}).to_string();
+        let result = validate_screen_review(&rows, &response).unwrap_or(Value::Null);
+        assert_eq!(result.pointer("/decisions/0/id"), Some(&json!("two")));
+        assert_eq!(result.pointer("/decisions/1/id"), Some(&json!("one")));
+        assert_eq!(result.pointer("/decisions/1/relevant"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn screen_rejects_segment_without_decision() {
+        let rows = json!({"segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"First."},{"id":"two","path":"Research/B.md","startLine":1,"endLine":1,"text":"Second."}]}).to_string();
+        let response = json!({"decisions":[{"id":"one","relevant":true,"reason":"Match."},{"id":"three","relevant":false,"reason":"Mismatch."}]}).to_string();
+        assert!(validate_screen_review(&rows, &response).is_none());
+        assert_eq!(validate_indexed_review_screen_json(&rows, &response), "");
+    }
+
+    #[test]
+    fn screen_rejects_duplicate_decision_ids() {
+        let rows = json!({"segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"First."},{"id":"two","path":"Research/B.md","startLine":1,"endLine":1,"text":"Second."}]}).to_string();
+        let response = json!({"decisions":[{"id":"one","relevant":true,"reason":"Match."},{"id":"one","relevant":false,"reason":"Mismatch."}]}).to_string();
+        assert!(validate_screen_review(&rows, &response).is_none());
+        assert_eq!(validate_indexed_review_screen_json(&rows, &response), "");
+    }
+
+    #[test]
+    fn screen_rejects_non_boolean_relevance() {
+        let rows = json!({"segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"First."},{"id":"two","path":"Research/B.md","startLine":1,"endLine":1,"text":"Second."}]}).to_string();
+        let response = json!({"decisions":[{"id":"one","relevant":"yes","reason":"Match."},{"id":"two","relevant":false,"reason":"Mismatch."}]}).to_string();
+        assert!(validate_screen_review(&rows, &response).is_none());
+        assert_eq!(validate_indexed_review_screen_json(&rows, &response), "");
+    }
+
+    #[test]
+    fn screen_rejects_more_than_sixteen_segments() {
+        let segments = (0..17)
+            .map(|index| {
+                json!({"id": format!("segment-{index}"), "path": "Research/A.md", "startLine": 1, "endLine": 1, "text": "text"})
+            })
+            .collect::<Vec<_>>();
+        let rows = json!({"segments": segments}).to_string();
+        let decisions = (0..17)
+            .map(|index| json!({"id": format!("segment-{index}"), "relevant": true, "reason": "reason"}))
+            .collect::<Vec<_>>();
+        let response = json!({"decisions": decisions}).to_string();
+        assert!(validate_screen_review(&rows, &response).is_none());
+        assert_eq!(validate_indexed_review_screen_json(&rows, &response), "");
+    }
+
+    #[test]
+    fn score_matches_korean_tokens_partially() {
+        let input = json!({"question":"냉각 주기","segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"냉각이 필요하다."},{"id":"two","path":"Research/B.md","startLine":1,"endLine":1,"text":"무관한 배송 일정입니다."}]}).to_string();
+        let result = score_segments(&input).unwrap_or(Value::Null);
+        let partial = result
+            .pointer("/scores/0/score")
+            .and_then(Value::as_f64)
+            .unwrap_or(-1.0);
+        assert!(partial > 0.0 && partial < 1.0);
+        assert_eq!(result.pointer("/scores/0/id"), Some(&json!("one")));
+        assert_eq!(result.pointer("/scores/1/score"), Some(&json!(0.0)));
+        assert_eq!(result.pointer("/scores/1/id"), Some(&json!("two")));
+    }
+
+    #[test]
+    fn score_ignores_english_letter_case() {
+        let input = json!({"question":"Quartz Cooling","segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"the QUARTZ cooling cycle requires two cycles"}]}).to_string();
+        let result = score_segments(&input).unwrap_or(Value::Null);
+        assert_eq!(result.pointer("/scores/0/score"), Some(&json!(1.0)));
+    }
+
+    #[test]
+    fn score_is_zero_without_token_overlap() {
+        let input = json!({"question":"냉각 주기","segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"Delivery schedule for next week."}]}).to_string();
+        let result = score_segments(&input).unwrap_or(Value::Null);
+        assert_eq!(result.pointer("/scores/0/score"), Some(&json!(0.0)));
+    }
+
+    #[test]
+    fn score_keeps_every_segment_when_question_has_no_tokens() {
+        let input = json!({"question":"가","segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"Quartz requires two cooling cycles."},{"id":"two","path":"Research/B.md","startLine":1,"endLine":1,"text":"전혀 무관한 문장입니다."}]}).to_string();
+        let result = score_segments(&input).unwrap_or(Value::Null);
+        assert_eq!(result.pointer("/scores/0/score"), Some(&json!(1.0)));
+        assert_eq!(result.pointer("/scores/1/score"), Some(&json!(1.0)));
+    }
+
+    #[test]
+    fn score_rejects_empty_segments() {
+        let input = json!({"question":"냉각 주기","segments":[]}).to_string();
+        assert!(score_segments(&input).is_none());
+        assert_eq!(score_indexed_review_segments_json(&input), "");
+    }
+
+    #[test]
+    fn score_rejects_more_than_1024_segments() {
+        let segments = (0..1025)
+            .map(|index| {
+                json!({"id": format!("segment-{index}"), "path": "Research/A.md", "startLine": 1, "endLine": 1, "text": "냉각이 필요하다."})
+            })
+            .collect::<Vec<_>>();
+        let input = json!({"question":"냉각 주기","segments":segments}).to_string();
+        assert!(score_segments(&input).is_none());
+        assert_eq!(score_indexed_review_segments_json(&input), "");
     }
 }

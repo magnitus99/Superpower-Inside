@@ -65,7 +65,8 @@ pub use evidence_collection::plan_evidence_collection_json;
 mod indexed_review;
 pub use indexed_review::{
     plan_indexed_review_inventory_json, plan_indexed_review_segments_json,
-    render_indexed_review_answer_json, validate_indexed_review_json,
+    render_indexed_review_answer_json, score_indexed_review_segments_json,
+    validate_indexed_review_json, validate_indexed_review_screen_json,
 };
 /// 완료된 채팅 세션의 제목 요약 입력과 정규화.
 mod session_title;
