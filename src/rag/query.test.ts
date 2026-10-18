@@ -15,6 +15,31 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('검색별 진단 콜백은 실제 임베딩 상태와 반환 후보를 전달한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('synthetic.md', [1, 0], 'synthetic evidence')]);
+    const onRetrieved = vi.fn();
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]));
+    const results = await engine.query('synthetic', 2, 0, undefined, { onRetrieved });
+    expect(onRetrieved).toHaveBeenCalledWith(
+      results,
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'embedding', status: 'ok' }),
+        expect.objectContaining({ source: 'vector', status: 'ok' }),
+      ]),
+    );
+  });
+
+  it('임베딩이 없는 검색은 실행하지 않은 단계를 건너뜀으로 기록한다', async () => {
+    const onRetrieved = vi.fn();
+    const engine = new RAGQueryEngine(null, null);
+    await engine.query('synthetic', 2, 0, undefined, { onRetrieved });
+    expect(onRetrieved).toHaveBeenCalledWith(
+      [],
+      expect.arrayContaining([expect.objectContaining({ source: 'embedding', status: 'skipped' })]),
+    );
+  });
+
   it('검색 임베딩 대기 중 제외한 문서는 오래된 벡터·BM25가 남아도 반환하지 않는다', async () => {
     const store = new MemoryVectorStore();
     const entry = createEntry('private.md', [1, 0], 'specialterm');
@@ -405,6 +430,7 @@ describe('RAGQueryEngine', () => {
     await engine.query('질문', 1);
 
     expect(engine.getLastRetrievalDiagnostics()).toEqual([
+      expect.objectContaining({ source: 'embedding', status: 'ok' }),
       expect.objectContaining({
         providerId: 'ivf-vector',
         source: 'ann',
@@ -431,6 +457,7 @@ describe('RAGQueryEngine', () => {
     await engine.query('질문', 2);
 
     expect(engine.getLastRetrievalDiagnostics()).toEqual([
+      expect.objectContaining({ source: 'embedding', status: 'ok' }),
       expect.objectContaining({
         providerId: 'exact-vector',
         source: 'vector',

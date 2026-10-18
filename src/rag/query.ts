@@ -73,6 +73,10 @@ export interface RAGQueryEngineOptions {
 
 export interface RAGQueryOptions {
   signal?: AbortSignal;
+  onRetrieved?: (
+    results: readonly QueryResult[],
+    diagnostics: readonly RetrievalProviderDiagnostic[],
+  ) => void;
 }
 
 export interface RAGIndexFileSnapshot {
@@ -167,6 +171,7 @@ export class RAGQueryEngine {
       this.isEntryInQueryScope(entry, filePathPrefixes);
     let qVector: number[] = [];
     let embeddingFailure = false;
+    const embeddingStarted = performance.now();
     if (this.embeddingProvider) {
       try {
         qVector = await this.embeddingProvider.embed(question, { signal: options.signal });
@@ -180,6 +185,7 @@ export class RAGQueryEngine {
       }
     }
     throwIfQueryAborted(options.signal);
+    const embeddingDurationMs = performance.now() - embeddingStarted;
     const retrieval = await this.retrievalPipeline.retrieve(
       {
         question,
@@ -205,23 +211,24 @@ export class RAGQueryEngine {
       options.signal,
     );
     throwIfQueryAborted(options.signal);
-    this.lastRetrievalDiagnostics = [
-      ...(embeddingFailure
-        ? [
-            {
-              providerId: 'query-embedding',
-              source: 'embedding' as const,
-              status: 'error' as const,
-              durationMs: 0,
-              candidateCount: 0,
-              readiness: 'degraded' as const,
-              estimatedCost: 'medium' as const,
-              skippedReason: 'query-embedding-failed',
-            },
-          ]
-        : []),
+    const diagnostics: RetrievalProviderDiagnostic[] = [
+      {
+        providerId: 'query-embedding',
+        source: 'embedding',
+        status: embeddingFailure ? 'error' : qVector.length > 0 ? 'ok' : 'skipped',
+        durationMs: embeddingDurationMs,
+        candidateCount: 0,
+        readiness: embeddingFailure ? 'degraded' : qVector.length > 0 ? 'ready' : 'cold',
+        estimatedCost: 'medium',
+        skippedReason: embeddingFailure
+          ? 'query-embedding-failed'
+          : qVector.length > 0
+            ? undefined
+            : 'embedding-unavailable',
+      },
       ...retrieval.diagnostics,
     ];
+    this.lastRetrievalDiagnostics = diagnostics;
     const queryTokens = tokenizeRust(question) ?? [];
 
     const scored: QueryResult[] = [];
@@ -286,12 +293,14 @@ export class RAGQueryEngine {
     // 네트워크·작업자 대기 중 바뀐 제외 정책도 응답 직전에 적용합니다.
     const currentPaths = await this.getCandidatePaths?.();
     throwIfQueryAborted(options.signal);
-    return selectDiverseResults(
+    const results = selectDiverseResults(
       currentPaths
         ? relevantResults.filter((result) => currentPaths.has(result.sourcePath))
         : relevantResults,
       topK,
     );
+    options.onRetrieved?.(results, diagnostics);
+    return results;
   }
 
   getLastRetrievalDiagnostics(): RetrievalProviderDiagnostic[] {
