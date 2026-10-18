@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import type { DataAdapter, TFile, Vault } from 'obsidian';
+import { createRequire } from 'node:module';
+import { describe, expect, it, vi } from 'vitest';
+import { TFolder, type DataAdapter, type TFile, type Vault } from 'obsidian';
 import { t } from '../i18n';
 import type { ChatConfig, RAGConfig } from '../settings';
 import {
@@ -12,8 +13,23 @@ import {
   countFilesByExtensions,
   isExcludedExt,
   isExcludedPath,
+  getExcludePathMetadata,
   writeJsonToVault,
 } from './vault';
+
+vi.mock('obsidian', () => {
+  // 테스트에서는 설치된 YAML 파서와 폴더 클래스를 호스트 API 대신 사용합니다.
+  const yaml = createRequire(import.meta.url)('js-yaml') as { load: (source: string) => unknown };
+  class MockTFolder {}
+  return {
+    TFolder: MockTFolder,
+    getFrontMatterInfo: (content: string) => {
+      const match = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/.exec(content);
+      return { exists: match !== null, frontmatter: match?.[1] ?? '' };
+    },
+    parseYaml: yaml.load,
+  };
+});
 
 const baseRagConfig: RAGConfig = {
   excludePaths: ['Archive'],
@@ -379,6 +395,138 @@ describe('RAG 제외 확장자 판정', () => {
   });
 });
 
+describe('제외 경로 메타데이터', () => {
+  it('folder 항목은 정규화한 실제 폴더 표기로 하위 일치 파일을 집계한다', () => {
+    const vault = createVault(
+      [
+        createFile('Archive/a.md', 10),
+        createFile('Archive/Sub/b.md', 20),
+        createFile('Archive.md', 30),
+        createFile('Notes/c.md', 40),
+      ],
+      new Map(),
+      [createFolder('Archive'), createFolder('Notes')],
+    );
+
+    expect(getExcludePathMetadata(vault, ' ./Archive/ ')).toEqual({
+      entry: ' ./Archive/ ',
+      kind: 'folder',
+      displayPath: 'Archive',
+      exists: true,
+      matches: [{ path: 'Archive', fileCount: 2, sizeBytes: 30, latestMtimeMs: 1000 }],
+      matchCount: 1,
+      totalFileCount: 2,
+      totalSizeBytes: 30,
+      latestMtimeMs: 1000,
+    });
+  });
+
+  it('folder 항목은 대소문자가 다르면 실제 표기 폴더 경로로 폴백한다', () => {
+    const file = createFile('Archive/a.md', 10);
+    file.stat.mtime = 2000;
+    const vault = createVault([file], new Map(), [createFolder('Archive')]);
+
+    const metadata = getExcludePathMetadata(vault, 'archive');
+
+    expect(metadata.displayPath).toBe('archive');
+    expect(metadata.matches).toEqual([
+      { path: 'Archive', fileCount: 1, sizeBytes: 10, latestMtimeMs: 2000 },
+    ]);
+  });
+
+  it('pattern 항목은 일치 폴더를 중복 없이 경로 오름차순으로 집계한다', () => {
+    const atlasFile = createFile('Projects/Atlas/drafts/a.md', 20);
+    atlasFile.stat.mtime = 2000;
+    const nestedFile = createFile('Projects/Atlas/drafts/nested/b.md', 30);
+    nestedFile.stat.mtime = 3000;
+    const vault = createVault(
+      [
+        atlasFile,
+        nestedFile,
+        createFile('Projects/Zeta/drafts/z.md', 10),
+        createFile('Projects/Atlas/notes/c.md', 40),
+      ],
+      new Map(),
+      [
+        createFolder('Projects/Atlas/drafts/nested'),
+        createFolder('Projects/Zeta/drafts'),
+        createFolder('Projects/Atlas/drafts'),
+        createFolder('Projects/Atlas/notes'),
+      ],
+    );
+
+    const metadata = getExcludePathMetadata(vault, '**/drafts/**');
+
+    expect(metadata.kind).toBe('pattern');
+    expect(metadata.displayPath).toBe('**/drafts/**');
+    expect(metadata.exists).toBe(true);
+    expect(metadata.matches).toEqual([
+      { path: 'Projects/Atlas/drafts', fileCount: 2, sizeBytes: 50, latestMtimeMs: 3000 },
+      { path: 'Projects/Zeta/drafts', fileCount: 1, sizeBytes: 10, latestMtimeMs: 1000 },
+    ]);
+    expect(metadata.matchCount).toBe(2);
+    expect(metadata.totalFileCount).toBe(3);
+    expect(metadata.totalSizeBytes).toBe(60);
+    expect(metadata.latestMtimeMs).toBe(3000);
+  });
+
+  it('일치가 없으면 예외 없이 빈 메타데이터를 돌려준다', () => {
+    const vault = createVault([createFile('Notes/a.md')], new Map(), [createFolder('Notes')]);
+
+    expect(getExcludePathMetadata(vault, 'Missing')).toEqual({
+      entry: 'Missing',
+      kind: 'folder',
+      displayPath: 'Missing',
+      exists: false,
+      matches: [],
+      matchCount: 0,
+      totalFileCount: 0,
+      totalSizeBytes: 0,
+      latestMtimeMs: null,
+    });
+    expect(getExcludePathMetadata(vault, '**/drafts/**')).toMatchObject({
+      kind: 'pattern',
+      exists: false,
+      matches: [],
+      totalFileCount: 0,
+      totalSizeBytes: 0,
+      latestMtimeMs: null,
+    });
+  });
+
+  it('일치 폴더에 파일이 없어도 존재로 집계한다', () => {
+    const vault = createVault([], new Map(), [createFolder('Projects/Atlas/drafts')]);
+
+    expect(getExcludePathMetadata(vault, '**/drafts/**')).toEqual({
+      entry: '**/drafts/**',
+      kind: 'pattern',
+      displayPath: '**/drafts/**',
+      exists: true,
+      matches: [{ path: 'Projects/Atlas/drafts', fileCount: 0, sizeBytes: 0, latestMtimeMs: null }],
+      matchCount: 1,
+      totalFileCount: 0,
+      totalSizeBytes: 0,
+      latestMtimeMs: null,
+    });
+  });
+
+  it('볼트가 비어 있으면 빈 메타데이터를 돌려준다', () => {
+    const vault = createVault([], new Map(), []);
+
+    expect(getExcludePathMetadata(vault, 'Archive')).toEqual({
+      entry: 'Archive',
+      kind: 'folder',
+      displayPath: 'Archive',
+      exists: false,
+      matches: [],
+      matchCount: 0,
+      totalFileCount: 0,
+      totalSizeBytes: 0,
+      latestMtimeMs: null,
+    });
+  });
+});
+
 describe('Vault JSON 쓰기', () => {
   it('기존 JSON 파일을 삭제 후 재작성하지 않고 temp 파일 rename으로 교체한다', async () => {
     const adapter = new RecordingAdapter();
@@ -419,10 +567,19 @@ function createFile(path: string, size = 10): TFile {
   } as unknown as TFile;
 }
 
-function createVault(files: TFile[], contents = new Map<string, string>()): Vault {
+function createFolder(path: string): TFolder {
+  return Object.assign(Object.create(TFolder.prototype), { path }) as TFolder;
+}
+
+function createVault(
+  files: TFile[],
+  contents = new Map<string, string>(),
+  folders: TFolder[] = [],
+): Vault {
   return {
     configDir: '.config/obsidian',
     getFiles: () => files,
+    getAllLoadedFiles: () => [...files, ...folders],
     getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),
     cachedRead: (file: TFile) => Promise.resolve(contents.get(file.path) ?? 'text'),
   } as unknown as Vault;
