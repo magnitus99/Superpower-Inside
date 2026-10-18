@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ChatMessage, LLMProvider } from '../llm/providers';
+import { t } from '../i18n';
+import { LLMProviderHttpError, type ChatMessage, type LLMProvider } from '../llm/providers';
+import { planModelContextRust } from '../rag/rust-core';
 import type { NativeVaultToolRuntimeLike } from './native-vault-tool';
 import { reviewIndexedVault } from './indexed-vault-review';
 
@@ -106,7 +108,7 @@ function fixture(count: number) {
 }
 
 describe('임베딩 문서 전체 검토', () => {
-  it('한 문서를 읽지 못해도 나머지 전체를 검토하고 완료 답변은 차단한다', async () => {
+  it('한 문서를 읽지 못해도 나머지 전체를 검토하고 미완료 고지와 함께 검토된 근거로 답한다', async () => {
     const test = fixture(20);
     const original = test.execute.getMockImplementation()!;
     test.execute.mockImplementation((raw, signal, name) => {
@@ -115,24 +117,38 @@ describe('임베딩 문서 전체 검토', () => {
         return Promise.reject(new Error('Synthetic read failure.'));
       return original(raw, signal, name);
     });
-    await expect(
-      reviewIndexedVault({
-        question: 'Quartz restart condition',
-        indexedPaths: [...test.files.keys()],
-        scopes: [],
-        nativeTool: test.nativeTool,
-        provider: { streamChat: test.streamChat },
-      }),
-    ).rejects.toThrow();
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat: test.streamChat },
+    });
     const reads = test.execute.mock.calls
       .map(([raw]) => JSON.parse(raw) as { action: string; path?: string })
       .filter((request) => request.action === 'read');
     expect(reads).toHaveLength(20);
     expect(new Set(test.reviewed).size).toBe(19);
+    expect(result.totalFiles).toBe(20);
+    expect(result.processedFiles).toBe(19);
     expect(
-      test.streamChat.mock.calls.every(([messages]) => {
-        const packet: unknown = JSON.parse(messages.at(-1)?.content ?? '{}');
-        return packet !== null && typeof packet === 'object' && Object.hasOwn(packet, 'segments');
+      result.content.startsWith(
+        t('indexedReviewIncompleteNotice', {
+          total: 20,
+          reviewed: 19,
+          unreadable: 1,
+          undecided: 0,
+        }),
+      ),
+    ).toBe(true);
+    expect(result.content).toContain('[vault:Synthetic/Source-19.txt:1-1]');
+    expect(result.citations).toContainEqual(
+      expect.objectContaining({ filePath: 'Synthetic/Source-19.txt', status: 'verified' }),
+    );
+    expect(
+      test.streamChat.mock.calls.some(([messages]) => {
+        const packet = JSON.parse(messages.at(-1)?.content ?? '{}') as { evidence?: unknown };
+        return Array.isArray(packet.evidence);
       }),
     ).toBe(true);
   });
@@ -258,7 +274,12 @@ describe('임베딩 문서 전체 검토', () => {
     });
     expect(result.rejectedFiles).toBe(10);
     expect(result.citations).toEqual([]);
-    expect(test.streamChat).toHaveBeenCalledTimes(2);
+    expect(
+      test.streamChat.mock.calls.every(([messages]) => {
+        const packet = JSON.parse(messages.at(-1)?.content ?? '{}') as { segments?: unknown };
+        return Array.isArray(packet.segments);
+      }),
+    ).toBe(true);
   });
 
   it('취소를 무시하는 provider도 중단하고 늦은 응답으로 답변을 만들지 않는다', async () => {
@@ -315,12 +336,119 @@ describe('임베딩 문서 전체 검토', () => {
     expect(result.totalFiles).toBe(1);
   });
 
-  it('판정 누락이나 가짜 인용을 재검토해도 복구하지 못하면 답변 생성 전에 실패한다', async () => {
+  it('검증에 실패한 판정은 같은 묶음을 반복하지 않고 절반으로 나눠 복구한다', async () => {
     const test = fixture(2);
-    const streamChat = vi.fn<LLMProvider['streamChat']>((_messages, consume) => {
-      consume({ content: '{"decisions":[]}', done: true });
-      return Promise.resolve();
+    const base = test.streamChat.getMockImplementation()!;
+    const streamChat = vi.fn(
+      (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+        const packet = JSON.parse(messages.at(-1)?.content ?? '{}') as { segments?: unknown[] };
+        if (Array.isArray(packet.segments) && packet.segments.length > 1) {
+          consume({ content: '{"decisions":[]}' });
+          return Promise.resolve();
+        }
+        return base(messages, consume);
+      },
+    );
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat },
     });
+    const judgedSizes = streamChat.mock.calls
+      .map(
+        ([messages]) =>
+          JSON.parse(messages.at(-1)?.content ?? '{}') as { segments?: unknown[] },
+      )
+      .filter((packet) => Array.isArray(packet.segments))
+      .map((packet) => (packet.segments ?? []).length);
+    expect(judgedSizes).toEqual([2, 1, 1]);
+    expect(
+      result.content.startsWith(
+        t('indexedReviewCoverage', { total: 2, accepted: 1, rejected: 1 }),
+      ),
+    ).toBe(true);
+    expect(result.citations).toHaveLength(1);
+  });
+
+  it('큰 묶음 판정이 비어도 절반으로 나눠 검토를 끝내고 답변을 생성한다', async () => {
+    const test = fixture(10);
+    const budget = planModelContextRust({ contextLength: 128_000, maxOutputTokens: 8_192 });
+    if (!budget) throw new Error('Synthetic context budget unavailable.');
+    const base = test.streamChat.getMockImplementation()!;
+    const judgedSizes: number[] = [];
+    const streamChat = vi.fn(
+      (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+        const packet = JSON.parse(messages.at(-1)?.content ?? '{}') as { segments?: unknown[] };
+        if (Array.isArray(packet.segments)) {
+          judgedSizes.push(packet.segments.length);
+          if (packet.segments.length >= 3) {
+            consume({ content: '' });
+            return Promise.resolve();
+          }
+        }
+        return base(messages, consume);
+      },
+    );
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat, contextBudget: budget },
+    });
+    expect(judgedSizes[0]).toBe(8);
+    expect(judgedSizes).toContain(4);
+    expect(judgedSizes).toContain(2);
+    expect(new Set(test.reviewed).size).toBe(10);
+    expect(result.processedFiles).toBe(10);
+    expect(result.rejectedFiles).toBe(9);
+    expect(
+      result.content.startsWith(
+        t('indexedReviewCoverage', { total: 10, accepted: 1, rejected: 9 }),
+      ),
+    ).toBe(true);
+    expect(result.content).toContain('[vault:Synthetic/Source-9.txt:1-1]');
+    expect(result.citations).toHaveLength(1);
+  });
+
+  it('판정이 계속 비어도 전체를 죽이지 않고 미완료 고지만 남기고 인용을 만들지 않는다', async () => {
+    const test = fixture(2);
+    const streamChat = vi.fn(
+      (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+        const packet = JSON.parse(messages.at(-1)?.content ?? '{}') as { segments?: unknown[] };
+        consume({ content: Array.isArray(packet.segments) ? '' : '{"paragraphs":[]}' });
+        return Promise.resolve();
+      },
+    );
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat },
+    });
+    expect(result.content).toBe(
+      t('indexedReviewIncompleteNotice', {
+        total: 2,
+        reviewed: 0,
+        unreadable: 0,
+        undecided: 2,
+      }),
+    );
+    expect(result.citations).toEqual([]);
+    expect(result.processedFiles).toBe(0);
+    expect(result.rejectedFiles).toBe(0);
+    expect(test.reviewed).toEqual([]);
+    expect(streamChat.mock.calls).toHaveLength(5);
+  });
+
+  it('provider HTTP 오류는 미완료로 삼키지 않고 분할 없이 즉시 전파한다', async () => {
+    const test = fixture(4);
+    const streamChat = vi.fn<LLMProvider['streamChat']>(() =>
+      Promise.reject(new LLMProviderHttpError('Synthetic 401', 401)),
+    );
     await expect(
       reviewIndexedVault({
         question: 'Quartz restart condition',
@@ -329,8 +457,98 @@ describe('임베딩 문서 전체 검토', () => {
         nativeTool: test.nativeTool,
         provider: { streamChat },
       }),
-    ).rejects.toThrow();
-    expect(streamChat).toHaveBeenCalledTimes(2);
+    ).rejects.toThrow(LLMProviderHttpError);
+    expect(streamChat).toHaveBeenCalledOnce();
+  });
+
+  it('판정이 계속 비면 회로를 차단해 같은 실패를 반복하지 않는다', async () => {
+    const test = fixture(40);
+    const judgeCalls: number[] = [];
+    const streamChat = vi.fn(
+      (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+        const packet = JSON.parse(messages.at(-1)?.content ?? '{}') as { segments?: unknown[] };
+        if (Array.isArray(packet.segments)) {
+          judgeCalls.push(packet.segments.length);
+          consume({ content: '' });
+          return Promise.resolve();
+        }
+        consume({ content: '{"paragraphs":[]}' });
+        return Promise.resolve();
+      },
+    );
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat },
+    });
+    const reads = test.execute.mock.calls.filter(
+      ([raw]) => (JSON.parse(raw) as { action: string }).action === 'read',
+    );
+    expect(reads).toHaveLength(40);
+    expect(judgeCalls.length).toBeLessThanOrEqual(8);
+    expect(streamChat).toHaveBeenCalledTimes(judgeCalls.length);
+    expect(result.content).toBe(
+      t('indexedReviewIncompleteNotice', {
+        total: 40,
+        reviewed: 0,
+        unreadable: 0,
+        undecided: 40,
+      }),
+    );
+    expect(result.citations).toEqual([]);
+    expect(result.processedFiles).toBe(0);
+  });
+
+  it('출력 한도를 모르면 판정 묶음을 4조각 이하로 보낸다', async () => {
+    const test = fixture(10);
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat: test.streamChat },
+    });
+    const judgedSizes = test.streamChat.mock.calls
+      .map(
+        ([messages]) =>
+          JSON.parse(messages.at(-1)?.content ?? '{}') as { segments?: unknown[] },
+      )
+      .filter((packet) => Array.isArray(packet.segments))
+      .map((packet) => (packet.segments ?? []).length);
+    expect(judgedSizes).toEqual([4, 4, 2]);
+    expect(result.processedFiles).toBe(10);
+  });
+
+  it('최종 답변 생성이 두 번 실패하면 미완료 고지와 안내 문구로 끝낸다', async () => {
+    const test = fixture(2);
+    const base = test.streamChat.getMockImplementation()!;
+    const streamChat = vi.fn(
+      (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+        const packet = JSON.parse(messages.at(-1)?.content ?? '{}') as { segments?: unknown[] };
+        if (Array.isArray(packet.segments)) return base(messages, consume);
+        consume({ content: 'not json' });
+        return Promise.resolve();
+      },
+    );
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat },
+    });
+    expect(result.content).toBe(
+      `${t('indexedReviewIncompleteNotice', {
+        total: 2,
+        reviewed: 2,
+        unreadable: 0,
+        undecided: 0,
+      })}\n\n${t('indexedReviewAnswerUnavailable')}`,
+    );
+    expect(result.citations).toEqual([]);
+    expect(streamChat.mock.calls).toHaveLength(3);
   });
 
   it('검토 중 취소하면 남은 문서를 읽거나 최종 답변을 생성하지 않는다', async () => {

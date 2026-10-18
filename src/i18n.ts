@@ -1510,8 +1510,9 @@ export interface I18nKeys {
   evidenceAnswerReviewWarning: string;
   indexedReviewEmpty: string;
   indexedReviewIncomplete: string;
-  indexedReviewReadIncomplete: string;
   indexedReviewCoverage: string;
+  indexedReviewIncompleteNotice: string;
+  indexedReviewAnswerUnavailable: string;
   indexedReviewNoEvidence: string;
   llmIndexedReviewJudge: string;
   llmIndexedReviewReduce: string;
@@ -3357,10 +3358,12 @@ const ko: I18nKeys = {
     '현재 범위에 검토할 색인 문서가 없습니다. 문서 근거 없이 답변을 생성하지 않았습니다. 색인 상태와 검색 범위를 확인하세요.',
   indexedReviewIncomplete:
     '문서 전체 검토를 완료하지 못해 최종 답변을 생성하지 않았습니다. 누락된 판정·원문 인용·문맥 예산 또는 읽기 상태를 확인한 뒤 다시 시도하세요.',
-  indexedReviewReadIncomplete:
-    '대상 {total}개 중 {completed}개를 검토했지만 {unreadable}개는 읽지 못했습니다. 전체 검토가 끝나지 않아 최종 답변을 생성하지 않았습니다.',
   indexedReviewCoverage:
     '색인 문서 {total}개 전체 검토: 관련 근거 채택 {accepted}개, 질문과 관련 없어 제외 {rejected}개.',
+  indexedReviewIncompleteNotice:
+    '검토 미완료: 색인 문서 {total}개 중 {reviewed}개를 검토했습니다. 읽기 실패 {unreadable}개, 미판정 조각 {undecided}개. 답변은 검토된 범위의 근거에 한정됩니다.',
+  indexedReviewAnswerUnavailable:
+    '검토한 근거로 최종 답변을 생성하지 못했습니다. 잠시 뒤 다시 시도하거나 모델 출력 설정을 확인하세요.',
   indexedReviewNoEvidence:
     '검토한 문서에서 이 질문을 뒷받침할 원문 근거를 확보하지 못했습니다. 일반 지식으로 답을 채우지 않았습니다.',
   llmIndexedReviewJudge:
@@ -5287,10 +5290,12 @@ const en: I18nKeys = {
     'There are no indexed documents to review in this scope. No answer was generated without document evidence. Check indexing and scope.',
   indexedReviewIncomplete:
     'The complete document review could not finish, so no final answer was generated. Check missing decisions, original quotations, context budget, or read failures before retrying.',
-  indexedReviewReadIncomplete:
-    'Reviewed {completed} of {total} target documents, but {unreadable} could not be read. No final answer was generated because the complete review did not finish.',
   indexedReviewCoverage:
     'Reviewed all {total} indexed documents: accepted relevant evidence from {accepted}; excluded {rejected} as unrelated to the question.',
+  indexedReviewIncompleteNotice:
+    'Review incomplete: reviewed {reviewed} of {total} indexed documents. Read failures: {unreadable}; undecided segments: {undecided}. Any answer is limited to evidence from the reviewed range.',
+  indexedReviewAnswerUnavailable:
+    'The reviewed evidence could not be turned into a final answer. Retry later or check the model output settings.',
   indexedReviewNoEvidence:
     'The reviewed documents did not supply original evidence supporting an answer to this question. No answer was filled in from general knowledge.',
   llmIndexedReviewJudge:
