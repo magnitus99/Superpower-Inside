@@ -2,6 +2,7 @@ import { requestUrl } from 'obsidian';
 import { desktopFetch, consumeDesktopStream, streamHeaders } from '../utils/desktop-stream';
 import { ChatGPTProvider } from './chatgpt-provider';
 import { prepareProviderRequest } from './request-budget';
+import { normalizeProviderUsageRust } from '../rag/rust-core';
 import type { CustomOpenAIProviderConfig, ProviderConfig, ProviderStrategyKey } from '../settings';
 import {
   REASONING_EXTRACTORS,
@@ -327,6 +328,8 @@ class OpenAICompatibleProvider implements LLMProvider {
     };
     this.observedModel = data.model?.trim() || this.observedModel;
     throwIfChatAborted(options?.signal);
+    const usage = normalizeProviderUsageRust('openai', data);
+    if (usage) options?.onUsage?.(usage);
     return data.choices?.[0]?.message?.content ?? '';
   }
 
@@ -347,6 +350,9 @@ class OpenAICompatibleProvider implements LLMProvider {
       messages: this.normalizeMessages(messages),
       temperature,
       stream,
+      ...(stream && ['openai', 'openRouter'].includes(this.capability.providerKey)
+        ? { stream_options: { include_usage: true } }
+        : {}),
       ...(options?.maxOutputTokens
         ? this.capability.providerKey === 'openai'
           ? { max_completion_tokens: options.maxOutputTokens }
@@ -379,7 +385,7 @@ class OpenAICompatibleProvider implements LLMProvider {
     await consumeDesktopStream(
       res,
       'sse',
-      (data) => this.processSSELine(`data: ${data}`, onChunk),
+      (data) => this.processSSELine(`data: ${data}`, onChunk, options),
       options?.signal,
     );
   }
@@ -394,7 +400,11 @@ class OpenAICompatibleProvider implements LLMProvider {
     return h;
   }
 
-  private processSSELine(line: string, onChunk: (chunk: StreamChunk) => void): boolean {
+  private processSSELine(
+    line: string,
+    onChunk: (chunk: StreamChunk) => void,
+    options?: ChatOptions,
+  ): boolean {
     if (!line.startsWith('data: ')) return false;
     const data = line.slice(6).trim();
     if (data === '[DONE]') {
@@ -424,6 +434,8 @@ class OpenAICompatibleProvider implements LLMProvider {
         chunk.error.status ?? chunk.error.code ?? 502,
       );
     }
+    const usage = normalizeProviderUsageRust('openai', chunk);
+    if (usage) options?.onUsage?.(usage);
     const delta = chunk.choices?.[0]?.delta;
     const normalized = {
       content: delta?.content ?? '',
@@ -441,10 +453,11 @@ class OpenAICompatibleProvider implements LLMProvider {
           : undefined,
       }),
     );
-    if (content || reasoning || (toolCalls && toolCalls.length > 0)) {
+    if (content || reasoning || usage || (toolCalls && toolCalls.length > 0)) {
       onChunk({
         content,
         done: false,
+        ...(usage ? { usage } : {}),
         ...(reasoning ? { reasoning } : {}),
         ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
       });
@@ -538,6 +551,8 @@ class ClaudeProvider implements LLMProvider {
     };
     this.observedModel = data.model?.trim() || this.observedModel;
     throwIfChatAborted(options?.signal);
+    const usage = normalizeProviderUsageRust('claude', data);
+    if (usage) options?.onUsage?.(usage);
     return data.content?.find((c) => c.type === 'text')?.text ?? '';
   }
 
@@ -609,6 +624,11 @@ class ClaudeProvider implements LLMProvider {
             event.error?.message ?? 'Claude stream failed',
             event.error?.type === 'overloaded_error' ? 529 : 502,
           );
+        }
+        const usage = normalizeProviderUsageRust('claude', event);
+        if (usage) {
+          options?.onUsage?.(usage);
+          onChunk({ content: '', done: false, usage });
         }
         if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
           const toolCall: ToolCallDelta = {
@@ -735,6 +755,8 @@ class OllamaProvider implements LLMProvider {
     const data = res.json as { model?: string; message?: { content?: string } };
     this.observedModel = data.model?.trim() || this.observedModel;
     throwIfChatAborted(options?.signal);
+    const usage = normalizeProviderUsageRust('ollama', data);
+    if (usage) options?.onUsage?.(usage);
     return data.message?.content ?? '';
   }
 
@@ -779,6 +801,11 @@ class OllamaProvider implements LLMProvider {
         const data = JSON.parse(trimmed) as OllamaChatResponse;
         if (data.error) {
           throw new Error(`Ollama chat failed: ${data.error}`);
+        }
+        const usage = normalizeProviderUsageRust('ollama', data);
+        if (usage) {
+          options?.onUsage?.(usage);
+          onChunk({ content: '', done: false, usage });
         }
         const chunk = toOllamaStreamChunk(data);
         if (chunk) {

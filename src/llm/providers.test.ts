@@ -24,6 +24,146 @@ import {
 
 const requestUrlMock = vi.mocked(requestUrl);
 
+it.each([
+  [
+    'openai',
+    {
+      usage: {
+        prompt_tokens: 20,
+        completion_tokens: 8,
+        total_tokens: 28,
+        prompt_tokens_details: { cached_tokens: 4 },
+        completion_tokens_details: { reasoning_tokens: 3 },
+      },
+    },
+    { inputTokens: 20, outputTokens: 8, totalTokens: 28, cacheReadTokens: 4, reasoningTokens: 3 },
+  ],
+  [
+    'claude',
+    {
+      usage: {
+        input_tokens: 10,
+        cache_read_input_tokens: 4,
+        cache_creation_input_tokens: 2,
+        output_tokens: 8,
+      },
+    },
+    { inputTokens: 16, outputTokens: 8, cacheReadTokens: 4 },
+  ],
+  ['ollama', { prompt_eval_count: 20, eval_count: 8 }, { inputTokens: 20, outputTokens: 8 }],
+] as const)('%s의 실제 buffered 사용량을 전달한다', async (key, usage, expected) => {
+  requestUrlMock.mockResolvedValueOnce({
+    status: 200,
+    text: '',
+    json: { ...usage, choices: [], content: [], message: {} },
+    headers: {},
+    arrayBuffer: new ArrayBuffer(0),
+  });
+  const onUsage = vi.fn();
+  await createProvider(key, { enabled: true, apiKey: '', models: ['synthetic'] }).chat(
+    [],
+    0.2,
+    undefined,
+    { onUsage },
+  );
+  expect(onUsage).toHaveBeenCalledWith(expected);
+});
+
+it.each([
+  [
+    'openai',
+    'data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":8,"total_tokens":28}}\n\ndata: [DONE]\n\n',
+    { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+  ],
+  [
+    'claude',
+    'data: {"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":4,"output_tokens":0}}}\n\ndata: {"type":"message_delta","usage":{"output_tokens":8}}\n\ndata: {"type":"message_stop"}\n\n',
+    { outputTokens: 8 },
+  ],
+  [
+    'ollama',
+    '{"done":true,"prompt_eval_count":20,"eval_count":8}\n',
+    { inputTokens: 20, outputTokens: 8 },
+  ],
+] as const)('%s의 내용 없는 usage 이벤트도 전달한다', async (key, text, expected) => {
+  requestUrlMock.mockResolvedValueOnce({
+    status: 200,
+    text,
+    json: {},
+    headers: {},
+    arrayBuffer: new ArrayBuffer(0),
+  });
+  const onUsage = vi.fn();
+  const chunks: import('./providers').StreamChunk[] = [];
+  await createProvider(key, { enabled: true, apiKey: '', models: ['synthetic'] }).streamChat(
+    [],
+    (chunk) => chunks.push(chunk),
+    0.2,
+    undefined,
+    { onUsage },
+  );
+  expect(onUsage).toHaveBeenLastCalledWith(expected);
+  expect(chunks).toContainEqual(expect.objectContaining({ usage: expected }));
+  if (key === 'claude')
+    expect(onUsage).toHaveBeenNthCalledWith(1, {
+      inputTokens: 14,
+      outputTokens: 0,
+      cacheReadTokens: 4,
+    });
+});
+
+it.each(['chat', 'streamChat'] as const)(
+  'ChatGPT %s의 완료 이벤트 사용량을 전달한다',
+  async (method) => {
+    connectTestChatGPT();
+    const provider = createProviderForStrategy('openAIChatGPT', {
+      enabled: true,
+      apiKey: '',
+      models: ['synthetic'],
+    });
+    const text = `data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [], usage: { input_tokens: 20, output_tokens: 8, total_tokens: 28, input_tokens_details: { cached_tokens: 4 }, output_tokens_details: { reasoning_tokens: 3 } } } })}\n\n`;
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text,
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const onUsage = vi.fn();
+    if (method === 'chat') await provider.chat([], 0.2, undefined, { onUsage });
+    else await provider.streamChat([], vi.fn(), 0.2, undefined, { onUsage });
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({
+      inputTokens: 20,
+      outputTokens: 8,
+      totalTokens: 28,
+      cacheReadTokens: 4,
+      reasoningTokens: 3,
+    });
+  },
+);
+
+it('사용량이 없는 호환 서버는 0으로 보고하지 않고 추가 요청 옵션도 보내지 않는다', async () => {
+  const provider = createCustomOpenAIProvider({
+    id: 'synthetic',
+    name: 'synthetic',
+    enabled: true,
+    apiKey: '',
+    models: ['synthetic'],
+    baseUrl: 'http://localhost:1234/v1',
+  });
+  requestUrlMock.mockResolvedValueOnce({
+    status: 200,
+    text: 'data: [DONE]\n\n',
+    json: {},
+    headers: {},
+    arrayBuffer: new ArrayBuffer(0),
+  });
+  const onUsage = vi.fn();
+  await provider.streamChat([], vi.fn(), 0.2, undefined, { onUsage });
+  expect(onUsage).not.toHaveBeenCalled();
+  expect(parseRequestUrlBody()).not.toHaveProperty('stream_options');
+});
+
 it.each(['openai', 'openRouter', 'claude', 'ollama'] as const)(
   '동적 모델 예산을 %s 실제 HTTP 요청과 출력 예약에 전달한다',
   async (key) => {

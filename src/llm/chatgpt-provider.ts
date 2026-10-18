@@ -232,6 +232,7 @@ export class ChatGPTProvider implements LLMProvider {
       ...emitted?.(),
     });
     if (!result) throw new Error(t('chatGPTResponseInvalid'));
+    if (result.usage) options?.onUsage?.(result.usage);
     this.observedModel = result.model ?? this.observedModel;
     return result;
   }
