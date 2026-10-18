@@ -21,6 +21,7 @@ import {
   type Events,
 } from 'obsidian';
 import { McpServerDraftModal } from './settings-mcp-modal';
+import { ExcludePathPopoverController } from './settings-exclude-popover';
 import { validateMcpJson } from './utils/mcp-json';
 import type { MCPRegistry } from './mcp/registry';
 import {
@@ -87,9 +88,11 @@ import {
 } from './utils/rag-exclude-validation';
 import {
   countFilesByExtensions,
+  getExcludePathMetadata,
   getFrontmatterExcludedFiles,
   getEffectiveExcludePaths,
   getRagFileTypeSummary,
+  type ExcludePathMetadata,
 } from './utils/vault';
 import { TOGGLE_DOCUMENT_EXCLUSION_COMMAND_ID } from './utils/document-exclusion';
 import {
@@ -1454,6 +1457,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   // RefreshAction 인스턴스 (생명주기 == 탭 활성화 기간)
   private mcpStatusRefresh: RefreshAction | null = null;
   private excludeCountRenderer: (() => void) | null = null;
+  private excludePathPopover: ExcludePathPopoverController | null = null;
   private frontmatterExclusionRenderer: (() => void) | null = null;
   private fileScopeRenderer: (() => void) | null = null;
   // RAG 상태 패널의 DOM 참조 (부분 업데이트용)
@@ -1637,6 +1641,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private resetRagDomReferences(): void {
     this.disposeLocalModelSettings?.();
+    this.excludePathPopover?.destroy();
+    this.excludePathPopover = null;
     this.disposeLocalModelSettings = null;
     this.disposeEmbeddingCaution?.();
     this.disposeEmbeddingCaution = null;
@@ -4217,6 +4223,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       getSummaryLabel: (count: number) => string;
       refreshLabel: string;
     };
+    getMetadata?: (value: string) => ExcludePathMetadata;
   }): void {
     const setting = new Setting(input.containerEl).setName(input.name).setDesc(input.description);
     setting.settingEl.addClass('superpower-inside-settings-block');
@@ -4260,7 +4267,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       addButton.disabled = !result.valid || result.normalized.length === 0;
       return result;
     };
+    let rowPopover: ExcludePathPopoverController | null = null;
     const renderList = (): void => {
+      if (rowPopover) {
+        rowPopover.destroy();
+        rowPopover = null;
+        this.excludePathPopover = null;
+      }
       listEl.empty();
       if (countMetaEl && input.countMeta) {
         countMetaEl.empty();
@@ -4285,11 +4298,20 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         });
         return;
       }
+      if (input.getMetadata) {
+        rowPopover = new ExcludePathPopoverController({
+          doc: listEl.ownerDocument,
+          container: listEl.ownerDocument.body,
+          boundsEl: editor,
+          getMetadata: input.getMetadata,
+        });
+        this.excludePathPopover = rowPopover;
+      }
       input.values.forEach((value, index) => {
         const item = listEl.createDiv({ cls: 'superpower-inside-exclude-item' });
         const content = item.createDiv({ cls: 'superpower-inside-exclude-item-content' });
         const valueRow = content.createDiv({ cls: 'superpower-inside-exclude-value-row' });
-        valueRow.createDiv({ cls: 'superpower-inside-exclude-value', text: value });
+        const valueEl = valueRow.createDiv({ cls: 'superpower-inside-exclude-value', text: value });
         if (input.countMeta) {
           const count = itemCounts[value.trim().toLowerCase()] ?? 0;
           valueRow.createDiv({
@@ -4314,6 +4336,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           input.onChange([...input.values]);
           renderInputValidation();
           renderList();
+        });
+        rowPopover?.attachRow({
+          rowEl: item,
+          valueEl,
+          removeButtonEl: removeButton,
+          value: value,
         });
       });
     };
@@ -4380,6 +4408,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.plugin.settings.rag.excludePaths = values;
         this.debouncedRagSave();
       },
+      getMetadata: (value) => getExcludePathMetadata(this.app.vault, value),
     });
     new Setting(section)
       .setName(t('excludeChatFolder'))
