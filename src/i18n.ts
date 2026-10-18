@@ -420,6 +420,20 @@ export interface I18nKeys {
   excludeListEmpty: string;
   excludeExtFileCount: string;
   excludeExtTotalFileCount: string;
+  excludePopoverTitle: string;
+  excludePopoverKindFolder: string;
+  excludePopoverKindPattern: string;
+  excludePopoverRoot: string;
+  excludePopoverFolderStatus: string;
+  excludePopoverPatternStatus: string;
+  excludePopoverMissing: string;
+  excludePopoverMatchesLabel: string;
+  excludePopoverCountValue: string;
+  excludePopoverMatchesMore: string;
+  excludePopoverStatDocuments: string;
+  excludePopoverStatSize: string;
+  excludePopoverStatModified: string;
+  excludePopoverNote: string;
   excludePathPlaceholder: string;
   excludeExtPlaceholder: string;
   excludeInputEmpty: string;
@@ -2150,6 +2164,20 @@ const ko: I18nKeys = {
   excludeListEmpty: '등록된 항목이 없습니다.',
   excludeExtFileCount: '{count}개',
   excludeExtTotalFileCount: '경로 제외 후 확장자로 추가 제외되는 파일 {count}개',
+  excludePopoverTitle: '볼트 안의 위치',
+  excludePopoverKindFolder: '폴더',
+  excludePopoverKindPattern: '경로 패턴',
+  excludePopoverRoot: '볼트 루트',
+  excludePopoverFolderStatus: '폴더 있음 · 문서 {count}개',
+  excludePopoverPatternStatus: '{count}개 위치 매칭',
+  excludePopoverMissing: '일치하는 위치가 없습니다',
+  excludePopoverMatchesLabel: '일치하는 위치',
+  excludePopoverCountValue: '{count}개',
+  excludePopoverMatchesMore: '+{count}곳 더',
+  excludePopoverStatDocuments: '제외 문서',
+  excludePopoverStatSize: '전체 용량',
+  excludePopoverStatModified: '최근 수정',
+  excludePopoverNote: '임베딩·BM25 기준 집계이며, 두 검색에서 이 경로를 제외합니다.',
   excludePathPlaceholder: '예: Code, ./Code/ 또는 **/drafts/**',
   excludeExtPlaceholder: '예: log 또는 .csv',
   excludeInputEmpty: '값을 입력하세요.',
@@ -4066,6 +4094,20 @@ const en: I18nKeys = {
   excludeListEmpty: 'No items registered.',
   excludeExtFileCount: '{count} files',
   excludeExtTotalFileCount: '{count} additional files excluded by extension after path exclusions',
+  excludePopoverTitle: 'Location in vault',
+  excludePopoverKindFolder: 'Folder',
+  excludePopoverKindPattern: 'Path pattern',
+  excludePopoverRoot: 'Vault root',
+  excludePopoverFolderStatus: 'Folder found · {count} documents',
+  excludePopoverPatternStatus: 'Matched in {count} locations',
+  excludePopoverMissing: 'No matching location yet',
+  excludePopoverMatchesLabel: 'Matching locations',
+  excludePopoverCountValue: '{count}',
+  excludePopoverMatchesMore: '+{count} more',
+  excludePopoverStatDocuments: 'Excluded documents',
+  excludePopoverStatSize: 'Total size',
+  excludePopoverStatModified: 'Last modified',
+  excludePopoverNote: 'Counted for embeddings and BM25; this path is excluded from both.',
   excludePathPlaceholder: 'e.g. Archive or **/drafts',
   excludeExtPlaceholder: 'e.g. log or .csv',
   excludeInputEmpty: 'Enter a value.',
