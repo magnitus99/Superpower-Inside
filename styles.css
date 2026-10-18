@@ -8033,3 +8033,133 @@ button.superpower-inside-prompt-danger-btn:disabled {
   > span:last-child {
   display: inline;
 }
+
+/* 답변의 검색 기록은 기존 작업 패널에서 단계별 행으로 읽습니다. */
+.superpower-inside-answer-diagnostics {
+  margin-block-end: var(--superpower-inside-section-gap);
+  min-width: 0;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+}
+
+.superpower-inside-answer-diagnostics .superpower-inside-answer-diagnostics-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+  width: 100%;
+  height: auto;
+  padding: var(--superpower-inside-row-padding) 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: normal;
+  text-align: start;
+}
+
+.superpower-inside-answer-diagnostics-icon {
+  display: flex;
+  flex: 0 0 14px;
+}
+
+.superpower-inside-answer-diagnostics-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.superpower-inside-answer-diagnostics-toggle:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.superpower-inside-answer-diagnostics-summary,
+.superpower-inside-answer-diagnostics-note {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-answer-diagnostics-summary {
+  font-variant-numeric: tabular-nums;
+}
+
+.superpower-inside-answer-diagnostics-content > .superpower-inside-answer-diagnostics-note {
+  margin-block-start: var(--superpower-inside-row-padding);
+}
+
+.superpower-inside-answer-diagnostics-content[hidden] {
+  display: none;
+}
+
+.superpower-inside-answer-diagnostics-flow {
+  margin: var(--superpower-inside-section-padding) 0 0;
+  padding-inline-start: 24px;
+}
+
+.superpower-inside-answer-diagnostics-step {
+  position: relative;
+  padding-inline-start: 8px;
+  padding-block-end: var(--superpower-inside-section-padding);
+}
+
+.superpower-inside-answer-diagnostics-step::marker {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.superpower-inside-answer-diagnostics-step:last-child {
+  padding-block-end: 0;
+}
+
+.superpower-inside-answer-diagnostics-heading {
+  margin-block-end: var(--superpower-inside-row-padding);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-answer-diagnostics-query {
+  margin-block: var(--superpower-inside-section-padding);
+}
+
+.superpower-inside-answer-diagnostics-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding-block: var(--superpower-inside-row-padding);
+  min-width: 0;
+}
+
+.superpower-inside-answer-diagnostics-row > .superpower-inside-answer-diagnostics-note {
+  flex-basis: 100%;
+}
+
+.superpower-inside-answer-diagnostics-label,
+.superpower-inside-answer-diagnostics-path {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-answer-diagnostics-value {
+  flex: 0 1 auto;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-answer-diagnostics-row.is-error .superpower-inside-answer-diagnostics-value,
+.superpower-inside-answer-diagnostics-row.is-timeout .superpower-inside-answer-diagnostics-value {
+  color: var(--text-error);
+}
+
+.superpower-inside-answer-diagnostics-result {
+  margin-block: var(--superpower-inside-row-padding);
+}

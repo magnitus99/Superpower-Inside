@@ -58,6 +58,8 @@ interface MessagePersistMeta {
   toolRoundLogs?: ChatMessageWithMeta['toolRoundLogs'];
   contextBudgetSnapshot?: ChatMessageWithMeta['contextBudgetSnapshot'];
   dataBoundarySnapshot?: ChatMessageWithMeta['dataBoundarySnapshot'];
+  usageSnapshot?: ChatMessageWithMeta['usageSnapshot'];
+  retrievalTrace?: ChatMessageWithMeta['retrievalTrace'];
   errorKind?: ChatMessageWithMeta['errorKind'];
   errorRetryAt?: string;
   actionHistory?: ChatMessageWithMeta['actionHistory'];
@@ -396,6 +398,8 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     toolRoundLogs: message.toolRoundLogs,
     contextBudgetSnapshot: message.contextBudgetSnapshot,
     dataBoundarySnapshot: message.dataBoundarySnapshot,
+    usageSnapshot: message.usageSnapshot,
+    retrievalTrace: message.retrievalTrace,
     errorKind: message.errorKind,
     errorRetryAt: message.errorRetryAt,
     actionHistory: message.actionHistory,
@@ -533,6 +537,8 @@ function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta
     contextBudgetSnapshot:
       plan.contextBudgetSnapshot as ChatMessageWithMeta['contextBudgetSnapshot'],
     dataBoundarySnapshot: plan.dataBoundarySnapshot as ChatMessageWithMeta['dataBoundarySnapshot'],
+    usageSnapshot: plan.usageSnapshot,
+    retrievalTrace: plan.retrievalTrace as ChatMessageWithMeta['retrievalTrace'],
     errorKind: plan.errorKind as ChatMessageWithMeta['errorKind'],
     errorRetryAt: plan.errorRetryAt,
     actionHistory: plan.actionHistory as ChatMessageWithMeta['actionHistory'],
