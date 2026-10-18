@@ -9,12 +9,16 @@ import {
 import type { PerformanceGuardState } from './performance-guard';
 import { planRagIndexingEtaRust, type RustRagIndexingEtaPlan } from './rust-core';
 
+/** 실행 중인 인덱싱 상태를 1초마다 다시 알려 경과 시간 표시를 갱신합니다. */
+const STATUS_HEARTBEAT_MS = 1000;
+
 export type RagIndexingRequestReason = 'modify' | 'rename' | 'manual' | 'auto';
-export type RagIndexingPhase = 'idle' | 'file' | 'pending' | 'all' | 'paused';
+export type RagIndexingPhase = 'idle' | 'preparing' | 'file' | 'pending' | 'all' | 'paused';
 
 export interface RagIndexingSchedulerStatus {
   running: boolean;
   phase: RagIndexingPhase;
+  startedAt: number | null;
   queuedFiles: number;
   lastResult: IndexingResult | null;
   progress: RagIndexingSchedulerProgress | null;
@@ -129,6 +133,9 @@ export class RAGIndexingScheduler {
   private activeJob: QueueJob | null = null;
   private lastResult: IndexingResult | null = null;
   private progress: RagIndexingSchedulerProgress | null = null;
+  private startedAt: number | null = null;
+  private preparing = false;
+  private statusHeartbeat: number | null = null;
 
   constructor(operations: SchedulerOperations) {
     this.operations = operations;
@@ -139,6 +146,7 @@ export class RAGIndexingScheduler {
     return {
       running: this.isRunning(),
       phase: this.phase,
+      startedAt: this.startedAt,
       queuedFiles:
         this.dirtySet.size +
         this.queue.filter((job) => job.kind === 'file').length +
@@ -149,7 +157,7 @@ export class RAGIndexingScheduler {
   }
 
   isRunning(): boolean {
-    return this.draining || this.parkedJob !== null;
+    return this.draining || this.parkedJob !== null || this.preparing;
   }
 
   scheduleFile(file: TFile, _reason: RagIndexingRequestReason): void {
@@ -204,6 +212,7 @@ export class RAGIndexingScheduler {
 
   cancel(): void {
     this.cancelled = true;
+    this.preparing = false;
     this.abortController?.abort();
     for (const timer of this.debounceTimers.values()) {
       window.clearTimeout(timer);
@@ -211,6 +220,8 @@ export class RAGIndexingScheduler {
     this.debounceTimers.clear();
     this.dirtySet.clear();
     this.clearPauseTimer();
+    this.stopStatusHeartbeat();
+    this.startedAt = null;
     const cancellation = new IndexingCancelledError();
     if (this.parkedJob) {
       this.parkedJob.reject(cancellation);
@@ -224,6 +235,32 @@ export class RAGIndexingScheduler {
     if (!this.draining) {
       this.phase = 'idle';
       this.resolveIdleIfReady();
+    }
+    this.emitStatus();
+  }
+
+  /**
+   * 상태 계산·고아 정리·계획 같은 인덱싱 전 사전 단계를 실행 중으로 표시합니다.
+   * 실제 작업이 시작되면 drain이 경과 시간을 이어받습니다.
+   */
+  beginPreparation(): void {
+    if (this.isRunning()) return;
+    this.cancelled = false;
+    this.preparing = true;
+    this.phase = 'preparing';
+    this.startedAt = performance.now();
+    this.startStatusHeartbeat();
+    this.emitStatus();
+  }
+
+  /** 사전 단계 표시를 끝내고 실제 작업이 없으면 유휴 상태로 돌립니다. */
+  endPreparation(): void {
+    if (!this.preparing) return;
+    this.preparing = false;
+    if (!this.draining && !this.parkedJob) {
+      this.stopStatusHeartbeat();
+      this.phase = 'idle';
+      this.startedAt = null;
     }
     this.emitStatus();
   }
@@ -275,6 +312,9 @@ export class RAGIndexingScheduler {
   private async drain(): Promise<void> {
     if (this.draining || this.parkedJob) return;
     this.draining = true;
+    this.preparing = false;
+    this.startedAt = this.startedAt ?? performance.now();
+    this.startStatusHeartbeat();
     this.emitStatus();
     try {
       while (!this.cancelled) {
@@ -291,11 +331,13 @@ export class RAGIndexingScheduler {
         if (outcome === 'paused') break;
       }
     } finally {
+      this.stopStatusHeartbeat();
       this.draining = false;
       if (!this.parkedJob) this.phase = 'idle';
       this.abortController = null;
       this.activeJob = null;
       this.progress = null;
+      this.startedAt = null;
       this.emitStatus();
       this.resolveIdleIfReady();
       if (!this.cancelled && !this.parkedJob && (this.queue.length > 0 || this.dirtySet.size > 0)) {
@@ -344,10 +386,7 @@ export class RAGIndexingScheduler {
   }
 
   /** 실행 중인 작업이 같은 범위를 처음부터 다시 도는 요청인지 판정합니다. */
-  private coversPendingRequest(
-    job: QueueJob | null,
-    options: RagPendingIndexingOptions,
-  ): boolean {
+  private coversPendingRequest(job: QueueJob | null, options: RagPendingIndexingOptions): boolean {
     if (!job) return false;
     if (job.kind === 'all') return true;
     if (job.kind !== 'pending') return false;
@@ -512,6 +551,22 @@ export class RAGIndexingScheduler {
     }
     const resolvers = this.idleResolvers.splice(0);
     for (const resolve of resolvers) resolve();
+  }
+
+  private startStatusHeartbeat(): void {
+    if (this.statusHeartbeat !== null) return;
+    this.statusHeartbeat = window.setInterval(() => {
+      if (!this.draining && !this.preparing) return;
+      // 마지막 progress는 유지하고 시계만 갱신해 경과 시간이 매초 움직이게 합니다.
+      if (this.progress) this.progress = { ...this.progress, nowMs: performance.now() };
+      this.emitStatus();
+    }, STATUS_HEARTBEAT_MS);
+  }
+
+  private stopStatusHeartbeat(): void {
+    if (this.statusHeartbeat === null) return;
+    window.clearInterval(this.statusHeartbeat);
+    this.statusHeartbeat = null;
   }
 
   private emitStatus(): void {
