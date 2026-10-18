@@ -5,6 +5,8 @@ import type {
 } from '../storage/retired-artifacts';
 import type { GeneratedArtifactRecord } from '../storage/generated-artifacts';
 import type { MCPServerConfig } from '../settings';
+import type { TurnUsageSnapshot } from '../chat/types';
+import type { TokenUsage } from '../llm/providers';
 import {
   update_generated_artifact_registry_json,
   plan_retired_artifacts_json,
@@ -20,6 +22,8 @@ import {
   plan_embedding_inputs_json,
   local_model_range_matches,
   plan_chatgpt_json,
+  plan_turn_usage_json,
+  normalize_provider_usage_json,
   plan_chat_evidence_json,
   plan_chat_request_json,
   plan_tool_result_summary_json,
@@ -1236,6 +1240,8 @@ export interface RustChatMessagePlan {
   toolRoundLogs?: unknown[];
   contextBudgetSnapshot?: unknown;
   dataBoundarySnapshot?: unknown;
+  usageSnapshot?: TurnUsageSnapshot;
+  retrievalTrace?: unknown[];
   errorKind?: string;
   errorRetryAt?: string;
   actionHistory?: unknown[];
@@ -3643,6 +3649,62 @@ export function planChatMessagesRust(
   } catch {
     return null;
   }
+}
+
+export function planTurnUsageRust(input: {
+  base?: TurnUsageSnapshot;
+  requests: readonly (readonly TokenUsage[])[];
+}): TurnUsageSnapshot | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_turn_usage_json(JSON.stringify(input));
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isTurnUsageSnapshot(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeProviderUsageRust(
+  format: 'openai' | 'responses' | 'claude' | 'ollama' | 'gemini',
+  payload: unknown,
+): TokenUsage | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = normalize_provider_usage_json(format, JSON.stringify(payload));
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const usage = parsed as Record<string, unknown>;
+    if (!Object.values(usage).every((value) => Number.isSafeInteger(value) && Number(value) >= 0))
+      return null;
+    return usage;
+  } catch {
+    return null;
+  }
+}
+
+function isTurnUsageSnapshot(value: unknown): value is TurnUsageSnapshot {
+  if (typeof value !== 'object' || value === null) return false;
+  const snapshot = value as Partial<TurnUsageSnapshot>;
+  const fields = value as Record<string, unknown>;
+  return (
+    Number.isSafeInteger(snapshot.requests) &&
+    snapshot.requests !== undefined &&
+    snapshot.requests >= 0 &&
+    Number.isSafeInteger(snapshot.reportedRequests) &&
+    snapshot.reportedRequests !== undefined &&
+    snapshot.reportedRequests >= 0 &&
+    snapshot.reportedRequests <= snapshot.requests &&
+    (snapshot.partial === undefined || snapshot.partial === true) &&
+    ['inputTokens', 'outputTokens', 'totalTokens', 'cacheReadTokens', 'reasoningTokens'].every(
+      (key) => {
+        const count = fields[key];
+        return count === undefined || (Number.isSafeInteger(count) && Number(count) >= 0);
+      },
+    )
+  );
 }
 
 export function planChatMetaRust(
@@ -7470,6 +7532,8 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
     (message.dataBoundarySnapshot === undefined ||
       (typeof message.dataBoundarySnapshot === 'object' &&
         message.dataBoundarySnapshot !== null)) &&
+    (message.usageSnapshot === undefined || isTurnUsageSnapshot(message.usageSnapshot)) &&
+    (message.retrievalTrace === undefined || Array.isArray(message.retrievalTrace)) &&
     (message.errorKind === undefined || isStringValue(message.errorKind)) &&
     (message.errorRetryAt === undefined || isStringValue(message.errorRetryAt)) &&
     (message.actionHistory === undefined || Array.isArray(message.actionHistory))

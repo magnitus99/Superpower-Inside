@@ -111,6 +111,21 @@ export interface SourceCitation {
   selectionReason?: SourceSelectionReason;
 }
 
+/** 검색 당시의 후보와 진단만 보존하며 원문 확인·답변 인용과 구분합니다. */
+export interface ChatRetrievalRecord {
+  query: string;
+  status?: 'error';
+  diagnostics: import('../rag/retrieval-pipeline').RetrievalProviderDiagnostic[];
+  results: {
+    filePath: string;
+    line?: number;
+    endLine?: number;
+    bm25Score?: number;
+    vectorScore?: number;
+    selectionReason?: SourceSelectionReason;
+  }[];
+}
+
 export interface SourceValidationWarning {
   id: string;
   label: string;
@@ -209,6 +224,17 @@ export interface ToolExecutionPolicy {
   dangerousToolNamePatterns?: string[];
 }
 
+export interface TurnUsageSnapshot {
+  requests: number;
+  reportedRequests: number;
+  partial?: true;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cacheReadTokens?: number;
+  reasoningTokens?: number;
+}
+
 /** 메시지 메타데이터를 포함한 채팅 메시지 */
 export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   id: string;
@@ -239,6 +265,8 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   toolRoundLogs?: ToolRoundLog[];
   contextBudgetSnapshot?: ContextBudgetSnapshot;
   dataBoundarySnapshot?: DataBoundarySnapshot;
+  retrievalTrace?: ChatRetrievalRecord[];
+  usageSnapshot?: TurnUsageSnapshot;
   errorKind?: ChatErrorKind;
   errorRetryAt?: string;
   actionHistory?: ChatActionHistoryEntry[];

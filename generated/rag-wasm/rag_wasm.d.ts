@@ -373,6 +373,11 @@ export function normalize_exclude_extension_json(extension: string): string;
 export function normalize_mcp_tool_result_json(result_json: string): string;
 
 /**
+ * 공급자가 실제로 제공한 안전한 정수 토큰만 공통 형식으로 옮깁니다.
+ */
+export function normalize_provider_usage_json(format: string, payload_json: string): string;
+
+/**
  * 구조화 reasoning과 태그 reasoning을 병합해 content/reasoning을 만들고 JSON으로 반환한다.
  */
 export function normalize_reasoning_chunk_json(content: string, reasoning: string): string;
@@ -904,6 +909,11 @@ export function plan_tool_result_source_references_json(citations_json: string):
 export function plan_tool_result_summary_json(content: string, question: string, max_bytes: number): string;
 
 /**
+ * 요청 안의 누적 보고는 덮어쓰고 서로 다른 요청의 사용량만 합산합니다.
+ */
+export function plan_turn_usage_json(input_json: string): string;
+
+/**
  * vault link target의 path candidate와 basename fallback을 `JSON` 문자열로 반환한다.
  */
 export function plan_vault_link_candidates_json(source_path: string, raw_target: string): string;
@@ -1145,6 +1155,7 @@ export interface InitOutput {
     readonly migrate_stored_mcp_servers_json: (a: number, b: number) => [number, number];
     readonly normalize_exclude_extension_json: (a: number, b: number) => [number, number];
     readonly normalize_mcp_tool_result_json: (a: number, b: number) => [number, number];
+    readonly normalize_provider_usage_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly normalize_reasoning_chunk_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly normalize_reasoning_stream_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly normalize_vault_link_target_json: (a: number, b: number) => [number, number];
@@ -1246,6 +1257,7 @@ export interface InitOutput {
     readonly plan_tag_mentions_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_tool_result_source_references_json: (a: number, b: number) => [number, number];
     readonly plan_tool_result_summary_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_turn_usage_json: (a: number, b: number) => [number, number];
     readonly plan_vault_link_candidates_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_vault_link_fallback_index_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_vault_query_expansion_json: (a: number, b: number, c: number, d: number) => [number, number];

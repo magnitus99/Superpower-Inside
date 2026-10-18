@@ -75,10 +75,16 @@ pub use tag_mentions::plan_tag_mentions_json;
 mod model_context;
 pub use model_context::{plan_model_context_json, plan_provider_model_details_json};
 mod chatgpt;
+/// 공급자별 토큰 보고의 안전한 정규화입니다.
+mod provider_usage;
+/// 응답별 공급자 토큰 보고의 누적과 요청 간 집계입니다.
+mod turn_usage;
 pub use chat_input::{
     plan_chat_evidence_json, plan_chat_request_json, plan_chat_unique_result_indices_json,
     plan_tool_result_summary_json, plan_vault_query_expansion_json,
 };
+pub use provider_usage::normalize_provider_usage_json;
+pub use turn_usage::plan_turn_usage_json;
 /// 프로바이더 연결 상태와 채팅 모델 선택 정책.
 mod provider_state;
 pub use chatgpt::plan_chatgpt_json;
@@ -9995,6 +10001,7 @@ fn parse_chat_message_plan(
     copy_optional_chat_value(object, &mut message, "toolRoundLogs");
     copy_optional_chat_value(object, &mut message, "contextBudgetSnapshot");
     copy_optional_chat_value(object, &mut message, "dataBoundarySnapshot");
+    copy_optional_chat_diagnostics(object, &mut message);
     copy_optional_chat_string(object, &mut message, "errorKind");
     copy_optional_chat_string(object, &mut message, "errorRetryAt");
     copy_optional_chat_value(object, &mut message, "actionHistory");
@@ -10012,6 +10019,106 @@ fn parse_chat_message_plan(
     }
 
     Some(JsonValue::Object(message))
+}
+
+/// 새 진단 메타의 손상 때문에 기존 답변까지 버리지 않습니다.
+fn copy_optional_chat_diagnostics(
+    source: &JsonMap<String, JsonValue>,
+    target: &mut JsonMap<String, JsonValue>,
+) {
+    if let Some(snapshot) = source
+        .get("usageSnapshot")
+        .and_then(turn_usage::validated_snapshot)
+    {
+        target.insert("usageSnapshot".to_owned(), snapshot);
+    }
+    if let Some(trace) = source
+        .get("retrievalTrace")
+        .filter(|value| valid_chat_retrieval_trace(value))
+    {
+        target.insert("retrievalTrace".to_owned(), trace.clone());
+    }
+}
+
+/// 저장된 검색 진단이 화면의 반복문·번역 키·점수 표시 계약을 충족하는지 확인합니다.
+fn valid_chat_retrieval_trace(value: &JsonValue) -> bool {
+    value.as_array().is_some_and(|records| {
+        records.iter().all(|record| {
+            record.get("query").is_some_and(JsonValue::is_string)
+                && record
+                    .get("status")
+                    .is_none_or(|value| value.as_str() == Some("error"))
+                && record
+                    .get("diagnostics")
+                    .and_then(JsonValue::as_array)
+                    .is_some_and(|values| values.iter().all(valid_chat_retrieval_diagnostic))
+                && record
+                    .get("results")
+                    .and_then(JsonValue::as_array)
+                    .is_some_and(|values| {
+                        values.iter().all(|result| {
+                            result.get("filePath").is_some_and(JsonValue::is_string)
+                                && ["line", "endLine"].iter().all(|key| {
+                                    result.get(key).is_none_or(|value| {
+                                        value.as_u64().is_some_and(|number| {
+                                            number > 0 && number <= 9_007_199_254_740_991
+                                        })
+                                    })
+                                })
+                                && ["bm25Score", "vectorScore"].iter().all(|key| {
+                                    result.get(key).is_none_or(|value| {
+                                        value.as_f64().is_some_and(f64::is_finite)
+                                    })
+                                })
+                                && result.get("selectionReason").is_none_or(|value| {
+                                    matches!(
+                                        value.as_str(),
+                                        Some(
+                                            "strong-structural-evidence"
+                                                | "structural-evidence"
+                                                | "keyword-vector"
+                                                | "keyword"
+                                                | "vector"
+                                                | "hybrid"
+                                        )
+                                    )
+                                })
+                        })
+                    })
+        })
+    })
+}
+
+/// 저장 파일의 임의 문자열이 번역 키나 상태 클래스가 되지 않도록 합니다.
+fn valid_chat_retrieval_diagnostic(value: &JsonValue) -> bool {
+    value.get("providerId").is_some_and(JsonValue::is_string)
+        && matches!(
+            value.get("source").and_then(JsonValue::as_str),
+            Some("embedding" | "bm25" | "vector" | "ann" | "structural" | "reranker")
+        )
+        && matches!(
+            value.get("status").and_then(JsonValue::as_str),
+            Some("ok" | "timeout" | "error" | "skipped")
+        )
+        && value
+            .get("durationMs")
+            .and_then(JsonValue::as_f64)
+            .is_some_and(|number| number.is_finite() && number >= 0.0)
+        && value
+            .get("candidateCount")
+            .and_then(JsonValue::as_u64)
+            .is_some_and(|number| number <= 9_007_199_254_740_991)
+        && matches!(
+            value.get("readiness").and_then(JsonValue::as_str),
+            Some("cold" | "partial" | "ready" | "stale" | "degraded")
+        )
+        && matches!(
+            value.get("estimatedCost").and_then(JsonValue::as_str),
+            Some("free" | "low" | "medium" | "high")
+        )
+        && ["skippedReason", "error"]
+            .iter()
+            .all(|key| value.get(key).is_none_or(JsonValue::is_string))
 }
 
 /// chat role 값이 런타임에서 허용되는 role인지 확인한다.
@@ -13457,6 +13564,72 @@ mod tests {
             ),
             "[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":\"원본 답변 내용\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"providerKey\":\"openai\",\"providerCapability\":{\"providerKey\":\"openai\",\"model\":\"gpt-test\",\"streaming\":true,\"transport\":\"fetch-sse\",\"toolCalling\":true,\"reasoning\":true,\"abort\":\"native\",\"fileReference\":true,\"maxToolRounds\":10,\"knownLimitations\":[]},\"turnStage\":\"streaming-answer\",\"toolRound\":2,\"errorRetryAt\":\"2026-01-01T00:05:00.000Z\",\"reasoning\":\"생각의 과정입니다.\"},{\"id\":\"msg-2\",\"role\":\"assistant\",\"content\":\"생각의 과정입니다.\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"reasoning\":\"생각의 과정입니다.\"}]",
         );
+    }
+
+    /// 잘못된 진단 메타데이터가 답변을 삭제하거나 화면 반복문에 도달하지 않아야 합니다.
+    #[test]
+    fn malformed_chat_diagnostics_preserve_answer_without_unsafe_metadata() {
+        for metadata in [
+            r#"{"usageSnapshot":{"requests":1,"reportedRequests":2}}"#,
+            r#"{"usageSnapshot":{"requests":1,"reportedRequests":1,"inputTokens":"bad"}}"#,
+            r#"{"retrievalTrace":[null]}"#,
+            r#"{"retrievalTrace":[{"query":"synthetic","diagnostics":null,"results":[]}]}"#,
+            r#"{"retrievalTrace":[{"query":"synthetic","diagnostics":[{"providerId":"x","source":"unknown","status":"ok","durationMs":1,"candidateCount":1,"readiness":"ready","estimatedCost":"free"}],"results":[]}]}"#,
+            r#"{"retrievalTrace":[{"query":"synthetic","diagnostics":[],"results":[{"filePath":null}]}]}"#,
+        ] {
+            let body = format!(
+                "<!-- superpower-inside-message\n{{\"id\":\"diagnostics\",\"role\":\"assistant\",{}}}\n-->\n<!-- superpower-inside-content-start -->\nSynthetic answer\n<!-- superpower-inside-content-end -->\n<!-- /superpower-inside-message -->",
+                metadata
+                    .strip_prefix('{')
+                    .and_then(|value| value.strip_suffix('}'))
+                    .unwrap_or(""),
+            );
+            let messages: serde_json::Value = serde_json::from_str(&plan_chat_messages_json(
+                &body,
+                1_700_000_000_000.0,
+                "2026-01-01T00:00:00.000Z",
+                "[decoding failed]",
+            ))
+            .unwrap_or(serde_json::Value::Null);
+            let message = messages.get(0);
+            assert_eq!(
+                message
+                    .and_then(|value| value.get("content"))
+                    .and_then(JsonValue::as_str),
+                Some("Synthetic answer")
+            );
+            assert!(message.is_some_and(|value| value.get("usageSnapshot").is_none()));
+            assert!(message.is_some_and(|value| value.get("retrievalTrace").is_none()));
+        }
+    }
+
+    /// 정상 검색 진단은 유지하고 잘못된 enum·수치·후보 필드만 차단합니다.
+    #[test]
+    fn chat_retrieval_diagnostics_validate_nested_display_contract() {
+        let valid = serde_json::json!([{
+            "query": "synthetic", "status": "error",
+            "diagnostics": [{"providerId":"local", "source":"bm25", "status":"ok",
+                "durationMs":1.5, "candidateCount":2, "readiness":"ready", "estimatedCost":"free"}],
+            "results": [{"filePath":"Synthetic.md", "line":1, "endLine":3,
+                "bm25Score":2.3, "vectorScore":0.8, "selectionReason":"keyword-vector"}]
+        }]);
+        assert!(valid_chat_retrieval_trace(&valid));
+        for (pointer, invalid) in [
+            ("/0/diagnostics/0/status", serde_json::json!("invalid")),
+            ("/0/diagnostics/0/durationMs", serde_json::json!(-1)),
+            ("/0/diagnostics/0/candidateCount", serde_json::json!(1.5)),
+            ("/0/diagnostics/0/readiness", serde_json::json!("invalid")),
+            ("/0/diagnostics/0/estimatedCost", serde_json::json!(null)),
+            ("/0/results/0/line", serde_json::json!(0)),
+            ("/0/results/0/bm25Score", serde_json::json!("invalid")),
+            ("/0/results/0/selectionReason", serde_json::json!({})),
+        ] {
+            let mut candidate = valid.clone();
+            if let Some(value) = candidate.pointer_mut(pointer) {
+                *value = invalid;
+            }
+            assert!(!valid_chat_retrieval_trace(&candidate));
+        }
     }
 
     /// 채팅 목록 metadata는 frontmatter, 날짜 정규화, 메시지 수, preview를 Rust에서 계산해야 한다.
