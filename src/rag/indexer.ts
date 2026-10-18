@@ -169,6 +169,26 @@ function throwIfIndexingCancelled(signal?: AbortSignal): void {
   }
 }
 
+async function awaitEmbeddingBatch(
+  request: Promise<number[][]>,
+  signal?: AbortSignal,
+): Promise<number[][]> {
+  if (!signal) return request;
+  let onAbort: () => void = () => undefined;
+  try {
+    return await Promise.race([
+      request,
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(new IndexingCancelledError());
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      }),
+    ]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 function throwIfPerformanceGuardPaused(options: IndexingOptions): void {
   if (options.getPerformanceGuardState?.()?.mode === 'paused') {
     throw new IndexingPerformancePausedError();
@@ -670,12 +690,14 @@ export class VaultIndexer {
     let totalPlannedChunks = 0;
     for (const [index, file] of files.entries()) {
       throwIfIndexingCancelled(options.signal);
+      tracker.currentFilePath = file.path;
+      tracker.currentFileIndex = index;
+      if (index === 0) emitIndexingProgress(options, tracker, 'plan');
       let plannedChunks = 1;
       try {
         const source = await readSourceText(this.vault, file, {
           signal: options.signal,
           onProgress: (page, pageCount) => {
-            tracker.currentFilePath = file.path;
             tracker.sourcePage = page;
             tracker.sourcePageCount = pageCount;
             emitIndexingProgress(options, tracker, 'plan');
@@ -700,8 +722,6 @@ export class VaultIndexer {
       tracker.plannedChunkCountsByPath.set(file.path, plannedChunks);
       totalPlannedChunks += plannedChunks;
       if ((index + 1) % PLAN_PROGRESS_EMIT_INTERVAL === 0) {
-        tracker.currentFilePath = file.path;
-        tracker.currentFileIndex = index;
         emitIndexingProgress(options, tracker, 'plan');
       }
     }
@@ -821,7 +841,7 @@ export class VaultIndexer {
     file = snapshot.file;
     throwIfIndexingCancelled(options.signal);
     const sourceHash = createContentHash(content);
-    await this.documentCorpus?.refreshFile(currentFile);
+    await this.documentCorpus?.refreshFile(currentFile, options.signal);
     if (await this.isCurrentFileIndexRecord(file, sourceHash)) {
       const skipped = finishIndexingResult(
         { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
@@ -929,7 +949,7 @@ export class VaultIndexer {
 
     const latestFile = this.vault.getAbstractFileByPath(file.path);
     const currentSnapshot = isCurrentVaultFile(latestFile)
-      ? await readSourceFileSnapshot(this.vault, latestFile)
+      ? await readSourceFileSnapshot(this.vault, latestFile, { signal: options.signal })
       : null;
     if (
       !currentSnapshot ||
@@ -1163,9 +1183,11 @@ export class VaultIndexer {
           total: texts.length,
         },
       });
-      const batchVectors = await this.embeddingProvider.embedBatch(batch, {
-        signal: options.signal,
-      });
+      const batchVectors = await awaitEmbeddingBatch(
+        this.embeddingProvider.embedBatch(batch, { signal: options.signal }),
+        options.signal,
+      );
+      throwIfIndexingCancelled(options.signal);
       expectedDimension = assertValidEmbeddingBatch(
         batchVectors,
         batch.length,

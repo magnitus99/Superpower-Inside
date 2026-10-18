@@ -178,6 +178,103 @@ const DOCUMENT_CASES: readonly {
 ];
 
 describe('readSourceText', () => {
+  it('공유 추출 소비자가 모두 취소되면 pending을 해제하고 새 요청을 독립 실행한다', async () => {
+    const bytes = buildStoredZip([
+      [
+        'word/document.xml',
+        '<w:document><w:p><w:r><w:t>합성 공유 본문</w:t></w:r></w:p></w:document>',
+      ],
+    ]);
+    const vault = createVault(bytes);
+    const file = createFile('synthetic/shared-cancel.docx');
+    const owner = new AbortController();
+    const consumer = new AbortController();
+    let resolveRead!: (bytes: ArrayBuffer) => void;
+    const readBinary = vi.spyOn(vault, 'readBinary').mockReturnValueOnce(
+      new Promise<ArrayBuffer>((resolve) => {
+        resolveRead = resolve;
+      }),
+    );
+    let ownerOutcome: unknown;
+    let consumerOutcome: unknown;
+    const ownerRead = readSourceText(vault, file, { signal: owner.signal });
+    const consumerRead = readSourceText(vault, file, { signal: consumer.signal });
+    const observed = Promise.all([
+      ownerRead.catch((error: unknown) => {
+        ownerOutcome = error;
+      }),
+      consumerRead.catch((error: unknown) => {
+        consumerOutcome = error;
+      }),
+    ]);
+    try {
+      expect(readBinary).toHaveBeenCalledOnce();
+      consumer.abort();
+      await vi.waitFor(() => expect(consumerOutcome).toMatchObject({ name: 'AbortError' }));
+      expect(ownerOutcome).toBeUndefined();
+      owner.abort();
+      await vi.waitFor(() => expect(ownerOutcome).toMatchObject({ name: 'AbortError' }));
+      let freshText: string | undefined;
+      const freshRead = readSourceText(vault, file).then((source) => {
+        freshText = source.text;
+      });
+      try {
+        await vi.waitFor(() => expect(freshText).toContain('합성 공유 본문'));
+        expect(readBinary).toHaveBeenCalledTimes(2);
+      } finally {
+        resolveRead(bytes.slice().buffer);
+        await freshRead.catch(() => undefined);
+      }
+    } finally {
+      resolveRead(bytes.slice().buffer);
+      await observed;
+    }
+    expect((await readSourceText(vault, file)).text).toContain('합성 공유 본문');
+    expect(readBinary).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['resolve', 'reject'] as const)(
+    'Markdown 읽기를 즉시 취소하고 늦은 %s 응답이 새 읽기에 영향을 주지 않는다',
+    async (settlement) => {
+      const file = createFile('synthetic/cancel.md');
+      const vault = createVault(null, 'fresh content');
+      const controller = new AbortController();
+      let resolveRead!: (text: string) => void;
+      let rejectRead!: (error: Error) => void;
+      const pendingRead = new Promise<string>((resolve, reject) => {
+        resolveRead = resolve;
+        rejectRead = reject;
+      });
+      const cachedRead = vi.spyOn(vault, 'cachedRead').mockReturnValueOnce(pendingRead);
+      let outcome: unknown;
+      const read = readSourceText(vault, file, { signal: controller.signal });
+      const observed = read.catch((error: unknown) => {
+        outcome = error;
+      });
+      try {
+        expect(cachedRead).toHaveBeenCalledOnce();
+        controller.abort();
+        await vi.waitFor(() => expect(outcome).toMatchObject({ name: 'AbortError' }));
+        await expect(
+          readSourceText(vault, file, { signal: controller.signal }),
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(cachedRead).toHaveBeenCalledOnce();
+        await expect(
+          readSourceText(vault, file, { signal: new AbortController().signal }),
+        ).resolves.toEqual({ text: 'fresh content', segments: [] });
+      } finally {
+        if (settlement === 'resolve') resolveRead('stale content');
+        else rejectRead(new Error('late read failure'));
+        await observed;
+      }
+      await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+      await expect(readSourceText(vault, file)).resolves.toEqual({
+        text: 'fresh content',
+        segments: [],
+      });
+    },
+  );
+
   beforeEach(() => {
     clearSourceTextCache();
     vi.stubGlobal('Worker', XlsxTestWorker);

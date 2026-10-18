@@ -71,20 +71,30 @@ export async function readSourceText(
 ): Promise<SourceText> {
   options.signal?.throwIfAborted();
   const extractor = selectSourceExtractor(file.extension ?? '');
-  if (extractor === null) return { text: await vault.cachedRead(file), segments: [] };
+  if (extractor === null)
+    return waitForRead(
+      vault.cachedRead(file).then((text) => ({ text, segments: [] })),
+      options,
+      false,
+    );
 
   const key = sourceCacheKey(vault, file);
   const owner = cacheGeneration;
   const cached = recentReads.get(key);
   if (cached) return cached;
-  let observers = readObservers.get(key);
-  if (!observers) {
-    observers = new Set();
-    readObservers.set(key, observers);
-  }
+  const observers = readObservers.get(key) ?? new Set<PdfReadOptions>();
+  readObservers.set(key, observers);
   observers.add(options);
+  const waitForSharedRead = (read: Promise<SourceText>): Promise<SourceText> =>
+    waitForRead(read, options, extractor === 'pdf').finally(() => {
+      observers.delete(options);
+      if (observers.size === 0 && pendingReads.get(key) === read) {
+        pendingReads.delete(key);
+        readObservers.delete(key);
+      }
+    });
   const pending = pendingReads.get(key);
-  if (pending) return waitForRead(pending, options, extractor === 'pdf');
+  if (pending) return waitForSharedRead(pending);
 
   const read = extractSourceText(extractor, vault, file, {
     signal: options.signal,
@@ -104,10 +114,10 @@ export async function readSourceText(
       }
     });
   pendingReads.set(key, read);
-  return waitForRead(read, options, extractor === 'pdf');
+  return waitForSharedRead(read);
 }
 
-/** 공유된 PDF 추출을 기다리는 소비자의 취소도 실제 worker에 전달합니다. */
+/** 원문 I/O 대기를 취소하고, PDF 추출은 실제 worker에도 취소를 전달합니다. */
 function waitForRead(
   read: Promise<SourceText>,
   options: PdfReadOptions,

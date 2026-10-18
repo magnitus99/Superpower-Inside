@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { TFile, Vault } from 'obsidian';
 import { readSourceFileSnapshot } from './source-snapshot';
 
@@ -40,6 +40,53 @@ class ObsidianLikeVault {
 }
 
 describe('readSourceFileSnapshot', () => {
+  it.each(['initial', 'reread'] as const)(
+    '%s 스냅샷을 같은 signal로 읽는 도중 취소하면 즉시 종료하고 늦은 본문은 반영하지 않는다',
+    async (phase) => {
+      const file = new ObsidianLikeFile('notes/cancel.md', 'cancel.md', 'cancel', 'md', CONTENT, 1);
+      const vault = new ObsidianLikeVault(file);
+      const controller = new AbortController();
+      const options = { signal: controller.signal };
+      if (phase === 'reread') {
+        expect(
+          (
+            await readSourceFileSnapshot(
+              vault as unknown as Vault,
+              file as unknown as TFile,
+              options,
+            )
+          )?.content,
+        ).toBe(CONTENT);
+      }
+      let resolveRead!: (text: string) => void;
+      vi.spyOn(vault, 'cachedRead').mockReturnValueOnce(
+        new Promise<string>((resolve) => {
+          resolveRead = resolve;
+        }),
+      );
+      const lookup = vi.spyOn(vault, 'getAbstractFileByPath');
+      let outcome: unknown;
+      const reading = readSourceFileSnapshot(
+        vault as unknown as Vault,
+        file as unknown as TFile,
+        options,
+      );
+      const observed = reading.catch((error: unknown) => {
+        outcome = error;
+      });
+      try {
+        controller.abort();
+        await vi.waitFor(() => expect(outcome).toMatchObject({ name: 'AbortError' }));
+        expect(lookup).not.toHaveBeenCalled();
+      } finally {
+        resolveRead('late content');
+        await observed;
+      }
+      await expect(reading).rejects.toMatchObject({ name: 'AbortError' });
+      expect(lookup).not.toHaveBeenCalled();
+    },
+  );
+
   it('프로토타입 메서드를 유지한 파일로 읽어 cachedRead가 실패하지 않는다', async () => {
     const file = new ObsidianLikeFile('notes/source.md', 'source.md', 'source', 'md', CONTENT, 1);
     const vault = new ObsidianLikeVault(file);

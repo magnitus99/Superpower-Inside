@@ -43,8 +43,9 @@ export class VaultDocumentCorpus {
     return this.failedPaths.has(path);
   }
 
-  async refreshFile(file: TFile): Promise<void> {
+  async refreshFile(file: TFile, signal?: AbortSignal): Promise<void> {
     if (this.suspended) return;
+    signal?.throwIfAborted();
     const path = file.path;
     const owner = Symbol(path);
     this.ownership.set(path, owner);
@@ -52,9 +53,14 @@ export class VaultDocumentCorpus {
     this.failedPaths.delete(path);
     const isCurrent = (): boolean => !this.suspended && this.ownership.get(path) === owner;
     try {
-      if (
-        !(await isRagCandidateFile(this.vault, file, this.getRagConfig(), this.getChatConfig()))
-      ) {
+      const candidate = await isRagCandidateFile(
+        this.vault,
+        file,
+        this.getRagConfig(),
+        this.getChatConfig(),
+      );
+      signal?.throwIfAborted();
+      if (!candidate) {
         if (isCurrent()) {
           this.candidatePaths.delete(path);
           this.failedPaths.delete(path);
@@ -62,7 +68,8 @@ export class VaultDocumentCorpus {
         }
         return;
       }
-      const snapshot = await readSourceFileSnapshot(this.vault, file);
+      const snapshot = await readSourceFileSnapshot(this.vault, file, { signal });
+      signal?.throwIfAborted();
       if (!snapshot || !isCurrent()) return;
       this.candidatePaths.add(path);
       const documents = buildSourceDocuments(
@@ -74,6 +81,7 @@ export class VaultDocumentCorpus {
       if (isCurrent()) await this.store.replaceFileDocuments(path, documents);
       if (isCurrent()) this.failedPaths.delete(path);
     } catch (error) {
+      if (signal?.aborted) throw error;
       if (isCurrent()) {
         this.candidatePaths.delete(path);
         this.failedPaths.add(path);
