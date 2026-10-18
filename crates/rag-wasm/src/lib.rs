@@ -29,6 +29,10 @@ pub use source_metadata::{
 mod source_processing;
 pub use source_processing::plan_source_processing_json;
 
+/// 제외 경로 항목의 팝오버 메타데이터 planner.
+mod exclude_path_metadata;
+pub use exclude_path_metadata::plan_exclude_path_metadata_json;
+
 mod settings_ui;
 pub use settings_ui::{
     find_reusable_prompt, is_local_settings_provider, is_valid_settings_folder,
@@ -10961,7 +10965,7 @@ fn push_mention_candidate(
 }
 
 /// path가 제외 pattern 목록에 매칭되는지 확인한다.
-fn is_vault_path_excluded<'a>(
+pub(crate) fn is_vault_path_excluded<'a>(
     file_path: &str,
     patterns: impl IntoIterator<Item = &'a str>,
 ) -> bool {
@@ -11007,7 +11011,7 @@ fn is_vault_path_excluded<'a>(
 }
 
 /// `TypeScript` exclude path normalization과 같은 규칙을 적용한다.
-fn normalize_exclude_path(path: &str) -> String {
+pub(crate) fn normalize_exclude_path(path: &str) -> String {
     let replaced = path.trim().replace('\\', "/");
     replaced
         .split('/')
