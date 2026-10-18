@@ -151,21 +151,40 @@ describe('모델 정보와 실제 전송 예산', () => {
     expect(streamChat.mock.calls[0]?.[4]?.maxOutputTokens).toBeUndefined();
   });
 
-  it('최종 모델 요청에 한도를 전달하고 필수 입력 초과를 네트워크 전에 막는다', async () => {
-    const chat = vi.fn().mockResolvedValue('answer');
-    const streamChat = vi.fn().mockResolvedValue(undefined);
+  it('출력 한도를 모르면 임의 캡을 보내지 않고 필수 입력 초과를 네트워크 전에 막는다', async () => {
+    const chat = vi.fn<LLMProvider['chat']>().mockResolvedValue('answer');
+    const streamChat = vi.fn<LLMProvider['streamChat']>().mockResolvedValue(undefined);
     const underlying = { chat, streamChat, capability: {} } as unknown as LLMProvider;
     const budget = planModelContextRust({ contextLength: 8192 })!;
     const provider = withModelContext(underlying, budget);
     await provider.chat([{ role: 'user', content: '질문' }]);
     expect(chat.mock.calls[0]?.[3]).toMatchObject({
       inputBudgetBytes: budget.inputBytes,
-      maxOutputTokens: budget.outputTokens,
       contextTokens: 8192,
     });
+    expect(chat.mock.calls[0]?.[3]?.maxOutputTokens).toBeUndefined();
     await expect(provider.chat([{ role: 'user', content: 'a'.repeat(8192) }])).rejects.toThrow();
     expect(chat).toHaveBeenCalledTimes(1);
     await provider.streamChat([{ role: 'user', content: '질문' }], vi.fn());
     expect(streamChat.mock.calls[0]?.[4]).toMatchObject({ inputBudgetBytes: budget.inputBytes });
+    expect(streamChat.mock.calls[0]?.[4]?.maxOutputTokens).toBeUndefined();
+  });
+
+  it('출력 한도를 공개하지 않은 Ollama 계열만 계산된 캡을 유지한다', async () => {
+    const chat = vi.fn<LLMProvider['chat']>().mockResolvedValue('answer');
+    const streamChat = vi.fn<LLMProvider['streamChat']>().mockResolvedValue(undefined);
+    const budget = planModelContextRust({ contextLength: 8192 })!;
+    expect(budget.outputSource).toBe('fallback');
+    const wrap = (providerKey: string) =>
+      withModelContext(
+        { chat, streamChat, capability: { providerKey } } as unknown as LLMProvider,
+        budget,
+      );
+    await wrap('ollama').chat([{ role: 'user', content: '질문' }]);
+    await wrap('ollamaCloud').chat([{ role: 'user', content: '질문' }]);
+    await wrap('customOpenAI:synthetic').chat([{ role: 'user', content: '질문' }]);
+    expect(chat.mock.calls[0]?.[3]?.maxOutputTokens).toBe(budget.outputTokens);
+    expect(chat.mock.calls[1]?.[3]?.maxOutputTokens).toBe(budget.outputTokens);
+    expect(chat.mock.calls[2]?.[3]?.maxOutputTokens).toBeUndefined();
   });
 });
