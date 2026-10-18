@@ -17,5 +17,7 @@ Never:
 - Change product logic, data, or permissions; never run a large redesign without approval.
 - Hand-roll CSS against `design.md` or add inline styles; never claim "improved" without verification.
 
+Demo artifacts: keep demos and prototypes in git-ignored temporary paths (for example `simulations/`); never commit them, and delete them when the review or the user no longer needs them.
+
 Model fallback: use `gpt-6.1-sol` with `high` first. If it cannot be spawned, ask the parent to respawn this agent with `ccs-commandcode/deepseek/deepseek-v4.1-flash` and `max` reasoning (the only effort this client lists for it). Do not use claude haiku.
 """
