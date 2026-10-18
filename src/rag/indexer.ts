@@ -144,6 +144,8 @@ interface RagEtaCalibrationSummary {
 }
 
 const RAG_ETA_CALIBRATION_META_PREFIX = 'rag-indexing-eta-calibration:v1';
+/** 계획 단계가 길어도 라벨이 멈추지 않도록 진행 이벤트를 주기적으로 보냅니다. */
+const PLAN_PROGRESS_EMIT_INTERVAL = 100;
 
 export interface IndexingResult {
   indexed: number;
@@ -666,7 +668,7 @@ export class VaultIndexer {
     await this.loadEtaCalibration(tracker);
     tracker.plannedChunkCountsByPath.clear();
     let totalPlannedChunks = 0;
-    for (const file of files) {
+    for (const [index, file] of files.entries()) {
       throwIfIndexingCancelled(options.signal);
       let plannedChunks = 1;
       try {
@@ -697,6 +699,11 @@ export class VaultIndexer {
       tracker.sourcePageCount = undefined;
       tracker.plannedChunkCountsByPath.set(file.path, plannedChunks);
       totalPlannedChunks += plannedChunks;
+      if ((index + 1) % PLAN_PROGRESS_EMIT_INTERVAL === 0) {
+        tracker.currentFilePath = file.path;
+        tracker.currentFileIndex = index;
+        emitIndexingProgress(options, tracker, 'plan');
+      }
     }
     tracker.totalPlannedChunks = totalPlannedChunks;
     tracker.completedPlannedChunks = 0;

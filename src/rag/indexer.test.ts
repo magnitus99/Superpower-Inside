@@ -871,6 +871,37 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(finalProgress?.completedFileOverheadDurationsMs.length).toBeGreaterThan(0);
   });
 
+  it('계획 단계에서도 100개 파일마다 plan 진행 이벤트를 보낸다', async () => {
+    const contents = new Map<string, string>();
+    for (let index = 0; index < 250; index++) {
+      contents.set(`plan/${String(index).padStart(3, '0')}.md`, `plan body ${index}`);
+    }
+    const indexer = new VaultIndexer(
+      createVault(contents),
+      new MemoryVectorStore(),
+      {
+        embed: () => Promise.resolve([1, 0]),
+        embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+      },
+      createRagConfig(),
+      createChatConfig(),
+    );
+    const planIndices: Array<number | undefined> = [];
+
+    const result = await indexer.indexPending({
+      maxEmbeddingBatchSize: 128,
+      onProgress: (snapshot) => {
+        if (snapshot.event === 'plan' && !snapshot.planningComplete) {
+          planIndices.push(snapshot.currentFileIndex);
+        }
+      },
+    });
+
+    expect(result.indexed).toBe(250);
+    // 계획 루프가 100개 파일을 마칠 때마다 진행 이벤트를 보내고, 초기 plan 이벤트는 index가 없습니다.
+    expect(planIndices).toEqual([undefined, 99, 199]);
+  });
+
   it('limits automatic recovery to one Rust-planned background batch', async () => {
     const contents = new Map<string, string>();
     for (let index = 0; index < 35; index++) {
@@ -1016,9 +1047,9 @@ describe('VaultIndexer 배치 인덱싱', () => {
 
     await indexer.indexPending();
 
-    const target = (vault.getFiles() as Array<TFile & { stat: { mtime: number; size: number } }>).find(
-      (file) => file.path === 'b.md',
-    );
+    const target = (
+      vault.getFiles() as Array<TFile & { stat: { mtime: number; size: number } }>
+    ).find((file) => file.path === 'b.md');
     expect(target).toBeDefined();
     contents.set('b.md', 'bravo 문서 내용 변경');
     if (target) {
@@ -1352,13 +1383,7 @@ describe('압축 문서 인덱싱', () => {
       embed: () => Promise.resolve([1, 0]),
       embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => [1, 0])),
     };
-    const indexer = new VaultIndexer(
-      vault,
-      store,
-      provider,
-      createRagConfig(),
-      createChatConfig(),
-    );
+    const indexer = new VaultIndexer(vault, store, provider, createRagConfig(), createChatConfig());
 
     const result = await indexer.indexVault();
     const indexedPaths = await store.getIndexedFilePaths();
@@ -1384,13 +1409,7 @@ describe('압축 문서 인덱싱', () => {
       embed: () => Promise.resolve([1, 0]),
       embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => [1, 0])),
     };
-    const indexer = new VaultIndexer(
-      vault,
-      store,
-      provider,
-      createRagConfig(),
-      createChatConfig(),
-    );
+    const indexer = new VaultIndexer(vault, store, provider, createRagConfig(), createChatConfig());
 
     const result = await indexer.indexPending();
     const indexedPaths = await store.getIndexedFilePaths();
