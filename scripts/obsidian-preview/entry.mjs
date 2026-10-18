@@ -141,10 +141,82 @@ async function start() {
     );
     view.addMessage('assistant', reference.markdown[lang], undefined, undefined, {
       status: state === 'running' ? 'streaming' : state === 'error' ? 'error' : 'complete',
-      turnStage: state === 'running' ? 'streaming' : state === 'error' ? 'error' : 'complete',
+      turnStage: state === 'running' ? 'streaming-answer' : state === 'error' ? 'error' : 'complete',
       errorKind: state === 'error' ? 'network' : undefined,
       errorMessage: state === 'error' ? '합성 네트워크 오류' : undefined,
       stopReason: state === 'cancelled' ? 'cancelled' : undefined,
+      usageSnapshot:
+        params.get('diagnostics') === 'missing'
+          ? undefined
+          : {
+              requests: 3,
+              reportedRequests: state === 'partial' ? 2 : 3,
+              inputTokens: 12450,
+              outputTokens: 690,
+              totalTokens: 13140,
+              cacheReadTokens: 2048,
+              reasoningTokens: 240,
+            },
+      retrievalTrace:
+        params.get('diagnostics') === 'missing'
+          ? undefined
+          : [
+              {
+                query:
+                  lang === 'en'
+                    ? 'Compare topic-based and chronological organization'
+                    : '주제별 정리와 시간순 정리 비교',
+                diagnostics: [
+                  {
+                    providerId: 'query-embedding',
+                    source: 'embedding',
+                    status: state === 'error' ? 'error' : 'ok',
+                    durationMs: 36,
+                    candidateCount: 0,
+                    readiness: state === 'error' ? 'degraded' : 'ready',
+                    estimatedCost: 'free',
+                    error:
+                      state === 'error'
+                        ? '합성 임베딩 요청 실패 / Synthetic embedding failure'
+                        : undefined,
+                  },
+                  {
+                    providerId: 'bm25',
+                    source: 'bm25',
+                    status: 'ok',
+                    durationMs: 8,
+                    candidateCount: 5,
+                    readiness: 'ready',
+                    estimatedCost: 'free',
+                  },
+                  {
+                    providerId: 'exact-vector',
+                    source: 'vector',
+                    status: state === 'partial' ? 'timeout' : 'ok',
+                    durationMs: 19,
+                    candidateCount: state === 'partial' ? 0 : 4,
+                    readiness: state === 'partial' ? 'degraded' : 'ready',
+                    estimatedCost: 'free',
+                  },
+                ],
+                results: [
+                  {
+                    filePath: 'Examples/Topic.md',
+                    line: 1,
+                    bm25Score: 3.42,
+                    vectorScore: 0.81,
+                    selectionReason: 'keyword-vector',
+                  },
+                  {
+                    filePath: 'Examples/Daily.md',
+                    line: 2,
+                    bm25Score: 1.7,
+                    vectorScore: 0.72,
+                    selectionReason: 'keyword-vector',
+                  },
+                ],
+              },
+            ],
       citations: [
         {
           id: 'source-1',
@@ -152,6 +224,9 @@ async function start() {
           status: 'verified',
           preview: '관련된 생각을 모아 비교합니다. / Group related ideas.',
           line: 1,
+          bm25Score: 3.42,
+          vectorScore: 0.81,
+          selectionReason: 'keyword-vector',
         },
         {
           id: 'source-2',
@@ -159,6 +234,9 @@ async function start() {
           status: 'verified',
           preview: '시간에 따른 변화를 살핍니다. / Follow changes over time.',
           line: 2,
+          bm25Score: 1.7,
+          vectorScore: 0.72,
+          selectionReason: 'keyword-vector',
         },
       ],
       sourceWarnings:
