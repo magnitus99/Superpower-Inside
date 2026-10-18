@@ -5,6 +5,7 @@ import {
   chunkMarkdown,
   chunkPlainText,
   buildSearchText,
+  IndexingCancelledError,
   IndexingPerformancePausedError,
   registerModifyEvent,
   VaultIndexer,
@@ -19,6 +20,8 @@ import { planIndexPendingFilesRust } from './rust-core';
 import { createContentHash } from './hash';
 import { RAGQueryEngine } from './query';
 import { getRagCandidateFiles } from '../utils/vault';
+import * as sourceAccess from './source-access';
+import * as sourceSnapshot from './source-snapshot';
 
 const bm25DbNames = new Set<string>();
 
@@ -453,6 +456,75 @@ describe('VaultIndexer 배치 인덱싱', () => {
       indexer.indexFile(file, { signal: controller.signal, maxEmbeddingBatchSize: 1 }),
     ).rejects.toThrow();
     expect(await store.getEntries()).toEqual([]);
+  });
+
+  it.each(['resolve', 'reject'] as const)(
+    'signal을 무시하는 임베딩도 즉시 취소하고 늦은 %s 결과를 저장하지 않는다',
+    async (settlement) => {
+      const file = createFile('cancel.md', 1000, 120);
+      const vault = createVault(new Map([[file.path, 'synthetic cancellation content']]));
+      const store = new MemoryVectorStore();
+      const controller = new AbortController();
+      let resolveBatch!: (vectors: number[][]) => void;
+      let rejectBatch!: (error: Error) => void;
+      const pendingBatch = new Promise<number[][]>((resolve, reject) => {
+        resolveBatch = resolve;
+        rejectBatch = reject;
+      });
+      const embedBatch = vi.fn(() => pendingBatch);
+      const onBatchComplete = vi.fn();
+      const replaceEntries = vi.spyOn(store, 'replaceFileEntries');
+      const indexer = new VaultIndexer(
+        vault,
+        store,
+        { embed: () => Promise.resolve([1, 0]), embedBatch },
+        createRagConfig(),
+        createChatConfig(),
+      );
+      let outcome: unknown;
+      const indexing = indexer.indexFile(file, { signal: controller.signal, onBatchComplete });
+      const observed = indexing.catch((error: unknown) => {
+        outcome = error;
+      });
+      try {
+        await vi.waitFor(() => expect(embedBatch).toHaveBeenCalledOnce());
+        controller.abort();
+        await vi.waitFor(() => expect(outcome).toBeInstanceOf(IndexingCancelledError));
+      } finally {
+        if (settlement === 'resolve') resolveBatch([[1, 0]]);
+        else rejectBatch(new Error('late provider failure'));
+        await observed;
+      }
+      await expect(indexing).rejects.toBeInstanceOf(IndexingCancelledError);
+      expect(onBatchComplete).not.toHaveBeenCalled();
+      expect(replaceEntries).not.toHaveBeenCalled();
+      expect(await store.getEntries()).toEqual([]);
+    },
+  );
+
+  it('임베딩 이후 원문 재읽기에도 같은 취소 signal을 전달한다', async () => {
+    const file = createFile('snapshot.md', 1000, 120);
+    const controller = new AbortController();
+    const readSnapshot = vi.spyOn(sourceSnapshot, 'readSourceFileSnapshot');
+    try {
+      const indexer = new VaultIndexer(
+        createVault(new Map([[file.path, 'synthetic snapshot content']])),
+        new MemoryVectorStore(),
+        {
+          embed: () => Promise.resolve([1, 0]),
+          embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+        },
+        createRagConfig(),
+        createChatConfig(),
+      );
+      await indexer.indexFile(file, { signal: controller.signal });
+      expect(readSnapshot).toHaveBeenCalledTimes(2);
+      expect(readSnapshot).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), {
+        signal: controller.signal,
+      });
+    } finally {
+      readSnapshot.mockRestore();
+    }
   });
 
   it('임베딩 batch 결과 개수가 입력 개수와 다르면 벡터를 저장하지 않는다', async () => {
@@ -898,8 +970,48 @@ describe('VaultIndexer 배치 인덱싱', () => {
     });
 
     expect(result.indexed).toBe(250);
-    // 계획 루프가 100개 파일을 마칠 때마다 진행 이벤트를 보내고, 초기 plan 이벤트는 index가 없습니다.
-    expect(planIndices).toEqual([undefined, 99, 199]);
+    // 첫 파일을 읽기 전과 100개 파일마다 알리고, 초기 이벤트는 index가 없습니다.
+    expect(planIndices).toEqual([undefined, 0, 99, 199]);
+  });
+
+  it('계획의 각 파일을 읽기 전에 현재 파일과 순번을 갱신한다', async () => {
+    const contents = new Map([
+      ['plan/first.md', 'synthetic first content'],
+      ['plan/second.md', 'synthetic second content'],
+    ]);
+    const readSourceText = sourceAccess.readSourceText;
+    const read = vi
+      .spyOn(sourceAccess, 'readSourceText')
+      .mockImplementation((vault, file, options) => {
+        options?.onProgress?.(1, 1);
+        return readSourceText(vault, file, options);
+      });
+    const currentFiles: Array<[string | undefined, number | undefined]> = [];
+    try {
+      const indexer = new VaultIndexer(
+        createVault(contents),
+        new MemoryVectorStore(),
+        {
+          embed: () => Promise.resolve([1, 0]),
+          embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+        },
+        createRagConfig(),
+        createChatConfig(),
+      );
+      await indexer.indexPending({
+        onProgress: (snapshot) => {
+          if (snapshot.event === 'plan' && snapshot.sourcePage === 1) {
+            currentFiles.push([snapshot.currentFilePath, snapshot.currentFileIndex]);
+          }
+        },
+      });
+      expect(currentFiles).toEqual([
+        ['plan/first.md', 0],
+        ['plan/second.md', 1],
+      ]);
+    } finally {
+      read.mockRestore();
+    }
   });
 
   it('limits automatic recovery to one Rust-planned background batch', async () => {

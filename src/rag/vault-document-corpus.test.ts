@@ -74,6 +74,93 @@ function fixture(path = 'notes/source.txt') {
 }
 
 describe('파일 중심 문서 생명주기', () => {
+  it.each(['resolve', 'reject'] as const)(
+    '원문 갱신 취소는 기존 문서를 보존하고 늦은 %s 결과가 새 갱신을 덮지 않는다',
+    async (settlement) => {
+      const source = fixture('notes/cancel.txt');
+      await source.corpus.refreshFile(source.file);
+      const previous = await source.store.getDocuments();
+      source.update('합성 새 본문');
+      const controller = new AbortController();
+      let resolveRead!: (text: string) => void;
+      let rejectRead!: (error: Error) => void;
+      source.read.mockReturnValueOnce(
+        new Promise<string>((resolve, reject) => {
+          resolveRead = resolve;
+          rejectRead = reject;
+        }),
+      );
+      let outcome: unknown;
+      const refresh = source.corpus.refreshFile(source.file, controller.signal);
+      const observed = refresh.catch((error: unknown) => {
+        outcome = error;
+      });
+      try {
+        await vi.waitFor(() => expect(source.read).toHaveBeenCalledTimes(2));
+        controller.abort();
+        await vi.waitFor(() => expect(outcome).toMatchObject({ name: 'AbortError' }));
+        expect(source.corpus.isReadingPath(source.file.path)).toBe(false);
+        expect(source.corpus.hasFailedPath(source.file.path)).toBe(false);
+        expect(source.corpus.hasCandidatePath(source.file.path)).toBe(true);
+        expect(await source.store.getDocuments()).toEqual(previous);
+        await source.corpus.refreshFile(source.file);
+      } finally {
+        if (settlement === 'resolve') resolveRead('합성 이전 응답');
+        else rejectRead(new Error('late corpus read failure'));
+        await observed;
+      }
+      await expect(refresh).rejects.toMatchObject({ name: 'AbortError' });
+      expect((await source.store.getDocuments())[0]?.text).toContain('합성 새 본문');
+      expect(source.corpus.isReadingPath(source.file.path)).toBe(false);
+      expect(source.corpus.hasFailedPath(source.file.path)).toBe(false);
+    },
+  );
+
+  it('인덱서가 corpus의 추가 원문 읽기에 signal을 전달하여 임베딩 전에 취소된다', async () => {
+    const source = fixture('notes/index-cancel.txt');
+    const controller = new AbortController();
+    let resolveRead!: (text: string) => void;
+    source.read
+      .mockResolvedValueOnce('합성 본문')
+      .mockResolvedValueOnce('합성 본문')
+      .mockReturnValueOnce(
+        new Promise<string>((resolve) => {
+          resolveRead = resolve;
+        }),
+      );
+    const refreshFile = vi.spyOn(source.corpus, 'refreshFile');
+    const embedBatch = vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0])));
+    const vectors = new MemoryVectorStore();
+    const indexer = new VaultIndexer(
+      source.vault,
+      vectors,
+      { embed: () => Promise.resolve([1, 0]), embedBatch },
+      source.config,
+      DEFAULT_SETTINGS.chat,
+      undefined,
+      appLogger,
+      source.corpus,
+    );
+    let outcome: unknown;
+    const indexing = indexer.indexFile(source.file, { signal: controller.signal });
+    const observed = indexing.catch((error: unknown) => {
+      outcome = error;
+    });
+    try {
+      await vi.waitFor(() => expect(source.read).toHaveBeenCalledTimes(3));
+      controller.abort();
+      await vi.waitFor(() => expect(outcome).toMatchObject({ name: 'AbortError' }));
+      expect(refreshFile).toHaveBeenCalledWith(source.file, controller.signal);
+      expect(source.corpus.isReadingPath(source.file.path)).toBe(false);
+      expect(source.corpus.hasFailedPath(source.file.path)).toBe(false);
+    } finally {
+      resolveRead('합성 본문');
+      await observed;
+    }
+    expect(embedBatch).not.toHaveBeenCalled();
+    expect(await vectors.getEntries()).toEqual([]);
+  });
+
   it('파일 읽기 실패는 기록하고 성공한 재시도에서는 실패·진행 상태를 해제한다', async () => {
     const source = fixture();
     source.read.mockRejectedValueOnce(new Error('read failed'));
