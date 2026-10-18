@@ -2376,18 +2376,20 @@ button.superpower-inside-prompt-danger-btn:disabled {
 
 .superpower-inside-exclude-input-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
 }
 
 .superpower-inside-exclude-input {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 180px;
+  min-width: 120px;
 }
 
 .superpower-inside-exclude-add-btn,
 .superpower-inside-exclude-remove-btn {
   white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .superpower-inside-exclude-list {
@@ -2507,6 +2509,7 @@ button.superpower-inside-prompt-danger-btn:disabled {
 
 .superpower-inside-exclude-message.is-warning {
   color: var(--text-warning);
+  color: color-mix(in srgb, var(--text-warning) 60%, var(--text-normal));
 }
 
 .superpower-inside-exclude-empty {
