@@ -38,3 +38,6 @@ simulations/
 # 로컬 제품 철학 기준
 /product-philosophy.md
 /product-philosophy/
+
+# CodeGraph 로컬 인덱스(기기 전용)
+.codegraph/
