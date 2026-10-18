@@ -143,6 +143,9 @@ import { renderChatVariantNav } from './chat-variant-nav';
 import { createProviderWaitStatus } from './provider-wait';
 import { SourcePanel } from './source-panel';
 import { ToolCallPanel } from './tool-call-panel';
+import { renderAnswerDiagnostics, hasAnswerDiagnostics } from './answer-diagnostics';
+import { observeChatRetrieval } from './retrieval-trace';
+import { withTurnUsage } from './turn-usage';
 import {
   createCompatibilityToolPrompt,
   createToolEvidencePrompt,
@@ -215,6 +218,8 @@ function renderPlainTextWithBreaks(container: HTMLElement, text: string): void {
 }
 
 interface MessageMetaInput {
+  usageSnapshot?: ChatMessageWithMeta['usageSnapshot'];
+  retrievalTrace?: ChatMessageWithMeta['retrievalTrace'];
   providerKey?: ChatMessageWithMeta['providerKey'];
   providerLabel?: string;
   model?: string;
@@ -288,6 +293,10 @@ export class ChatView extends ItemView {
     AssistantResponseLayoutController
   >();
   private readonly nativeVaultTool: NativeVaultToolRuntimeLike;
+  private retrievalObserver?: {
+    run: ChatRunHandle<AbortController>;
+    record: (record: import('./types').ChatRetrievalRecord) => void;
+  };
   private readonly compatibilityToolModels: Set<string>;
   private lastStreamingMarkdownAt: number;
   private localToolCallSequence: number;
@@ -349,7 +358,7 @@ export class ChatView extends ItemView {
           () => this.plugin.settings.rag,
           () => this.plugin.settings.chat,
         ),
-        () => this.plugin.ragEngine,
+        () => this.getChatQueryEngine(),
         this.plugin.getSourceFileProcessingStatus
           ? (files) => this.plugin.getSourceFileProcessingStatus?.(files) ?? Promise.resolve(null)
           : undefined,
@@ -1184,6 +1193,8 @@ export class ChatView extends ItemView {
     const nowIso = now.toISOString();
     const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const msg: ChatMessageWithMeta = {
+      usageSnapshot: metaInput?.usageSnapshot,
+      retrievalTrace: metaInput?.retrievalTrace,
       id,
       role,
       content,
@@ -1291,6 +1302,8 @@ export class ChatView extends ItemView {
       message.providerKey = metaInput?.providerKey ?? message.providerKey;
       message.providerLabel = metaInput?.providerLabel ?? message.providerLabel;
       message.model = metaInput?.model ?? message.model;
+      message.usageSnapshot = metaInput?.usageSnapshot ?? message.usageSnapshot;
+      message.retrievalTrace = metaInput?.retrievalTrace ?? message.retrievalTrace;
       message.providerCapability = metaInput?.providerCapability ?? message.providerCapability;
       message.turnStage = metaInput?.turnStage ?? message.turnStage;
       message.toolRound = metaInput?.toolRound ?? message.toolRound;
@@ -1389,7 +1402,7 @@ export class ChatView extends ItemView {
   ): AssistantResponseLayoutState {
     return {
       hasAnswer: Boolean(msg.content.trim() || msg.assistantQuestion),
-      hasWork: Boolean(msg.reasoning?.trim() || msg.toolCalls?.length),
+      hasWork: Boolean(msg.reasoning?.trim() || msg.toolCalls?.length || hasAnswerDiagnostics(msg)),
       sourceCount: this.getAssistantResponseSourceCount(msg),
       isComplete:
         msg.turnStage === 'complete' || (msg.turnStage === undefined && msg.status === 'complete'),
@@ -1956,6 +1969,7 @@ export class ChatView extends ItemView {
   ): void {
     if (msg.role !== 'assistant') return;
     const layout = this.assistantResponseLayouts.get(bubbleContainer);
+    if (layout) renderAnswerDiagnostics(layout.panels.work, msg);
     const sourcesPanel = layout?.panels.sources ?? bubbleContainer;
     this.sourcePanel.renderContextAttachmentsSection(sourcesPanel, msg.contextAttachments ?? []);
     this.sourcePanel.renderContextBudgetSection(sourcesPanel, msg.contextBudgetSnapshot);
@@ -2806,6 +2820,21 @@ export class ChatView extends ItemView {
     let modelName: string;
     let providerLabel: string;
     let provider: LLMProvider;
+    const diagnosticsTarget: { messageId?: string } = {};
+    let usageSnapshot: ChatMessageWithMeta['usageSnapshot'];
+    const retrievalTrace: NonNullable<ChatMessageWithMeta['retrievalTrace']> = [];
+    const updateDiagnostics = (): void => {
+      if (!diagnosticsTarget.messageId || !isChatRunActive(this.activeRun, run)) return;
+      const message = this.messages.find((item) => item.id === diagnosticsTarget.messageId);
+      if (!message) return;
+      message.usageSnapshot = usageSnapshot;
+      message.retrievalTrace = [...retrievalTrace];
+      const wrapper = this.messageEls.get(diagnosticsTarget.messageId);
+      const container = wrapper?.querySelector('.superpower-inside-chat-bubble-container');
+      if (isDomInstance(container, HTMLElement))
+        this.renderMessageContextSections(container, message);
+      this.markDirtyAndAutoSave();
+    };
 
     try {
       const resolved = await prepareChatProviderForModel(this.plugin.settings, selectedModel);
@@ -2818,7 +2847,19 @@ export class ChatView extends ItemView {
       key = resolved.providerKey;
       modelName = resolved.model;
       providerLabel = resolved.providerLabel;
-      provider = resolved.provider;
+      provider = withTurnUsage(resolved.provider, (snapshot) => {
+        if (!isChatRunActive(this.activeRun, run)) return;
+        usageSnapshot = snapshot;
+        updateDiagnostics();
+      });
+      this.retrievalObserver = {
+        run,
+        record: (record) => {
+          if (!isChatRunActive(this.activeRun, run)) return;
+          retrievalTrace.push(record);
+          updateDiagnostics();
+        },
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       new Notice(t('chatProviderInitializationFailed', { message }), 7000);
@@ -3012,6 +3053,8 @@ export class ChatView extends ItemView {
       undefined,
       {
         providerKey: key,
+        usageSnapshot,
+        retrievalTrace: [...retrievalTrace],
         providerLabel,
         model: modelName,
         providerCapability,
@@ -3020,6 +3063,7 @@ export class ChatView extends ItemView {
         ...assistantVariantMeta,
       },
     );
+    diagnosticsTarget.messageId = assistantId;
     const assistantWrapper = this.messageEls.get(assistantId);
     if (assistantWrapper) {
       assistantWrapper.classList.add('generating');
@@ -3243,7 +3287,8 @@ export class ChatView extends ItemView {
           {
             recentConversationMessages: Math.max(
               0,
-              providerConversationMessages.filter((message) => message.role !== 'system').length - 1,
+              providerConversationMessages.filter((message) => message.role !== 'system').length -
+                1,
             ),
             toolResultCount: evidenceToolCalls.length,
           },
@@ -3803,6 +3848,7 @@ export class ChatView extends ItemView {
       if (finalization.saveSession) {
         await this.saveCurrentSession();
         await this.summarizeCurrentSessionTitle(provider, run);
+        await this.saveCurrentSession();
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
         this.activeRun = null;
@@ -4728,6 +4774,14 @@ export class ChatView extends ItemView {
     };
     this.activeRun = run;
     this.abortController = abortController;
+    this.retrievalObserver = {
+      run,
+      record: (record) => {
+        if (!isChatRunActive(this.activeRun, run)) return;
+        message.retrievalTrace = [...(message.retrievalTrace ?? []), record];
+        this.markDirtyAndAutoSave();
+      },
+    };
     this.setLoading(true);
     setHidden(this.typingIndicator, false);
     let titleProvider: LLMProvider | undefined;
@@ -4790,7 +4844,15 @@ export class ChatView extends ItemView {
           buildStoredChatModelRef(message.providerKey, message.model),
         );
         if (!resumedProvider) throw new Error(t('noActiveProviderNotice'));
-        const provider = resumedProvider.provider;
+        const provider = withTurnUsage(
+          resumedProvider.provider,
+          (snapshot) => {
+            if (!isChatRunActive(this.activeRun, run)) return;
+            message.usageSnapshot = snapshot;
+            this.markDirtyAndAutoSave();
+          },
+          message.usageSnapshot,
+        );
         titleProvider = provider;
         const promptContext = await this.buildPromptContext(
           currentQuestion,
@@ -4946,6 +5008,7 @@ export class ChatView extends ItemView {
       if (finalization.saveSession) {
         await this.saveCurrentSession();
         if (titleProvider) await this.summarizeCurrentSessionTitle(titleProvider, run);
+        await this.saveCurrentSession();
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
         setHidden(this.typingIndicator, true);
@@ -4958,6 +5021,15 @@ export class ChatView extends ItemView {
     }
   }
 
+  private getChatQueryEngine(
+    observer: ChatView['retrievalObserver'] | null = this.retrievalObserver,
+  ): ReturnType<typeof observeChatRetrieval> | null {
+    const engine = this.plugin.ragEngine;
+    if (!engine) return null;
+    if (!observer || !isChatRunActive(this.activeRun, observer.run)) return engine;
+    return observeChatRetrieval(engine, observer.record);
+  }
+
   private async buildPromptContext(
     lastUserText: string,
     previousUserQuestions: readonly string[] = [],
@@ -4966,6 +5038,7 @@ export class ChatView extends ItemView {
     provider?: LLMProvider,
     signal?: AbortSignal,
   ): Promise<ContextBuildResult> {
+    const retrievalObserver = this.retrievalObserver ?? null;
     const parts: string[] = [];
     const systemPrompt = getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt);
     if (systemPrompt) parts.push(systemPrompt);
@@ -4999,7 +5072,7 @@ export class ChatView extends ItemView {
         pluginDocumentation !== null ||
         this.parseMentions(lastUserText).some((mention) => mention.type === 'tag'),
       () => this.plugin.prepareRagForChat(),
-      () => this.plugin.ragEngine,
+      () => this.getChatQueryEngine(retrievalObserver),
     );
     const { getRagCandidateFiles, isExplicitRagReadAllowed } = await import('../utils/vault');
     const candidateFiles = await getRagCandidateFiles(

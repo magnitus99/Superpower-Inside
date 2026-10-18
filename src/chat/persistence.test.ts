@@ -166,6 +166,8 @@ describe('chat persistence', () => {
       status: 'complete',
     });
     expect(loaded.messages[0].errorRetryAt).toBeUndefined();
+    expect(loaded.messages[0].usageSnapshot).toBeUndefined();
+    expect(loaded.messages[0].retrievalTrace).toBeUndefined();
   });
 
   it('assistantQuestion 메타를 저장하고 복원한다', async () => {
@@ -316,6 +318,21 @@ describe('chat persistence', () => {
         branchOf: 'Chats/root.md',
         branchRoot: 'Chats/root.md',
         variantOf: 'msg-root',
+        usageSnapshot: {
+          requests: 3,
+          reportedRequests: 2,
+          partial: true,
+          inputTokens: 200,
+          outputTokens: 40,
+          totalTokens: 240,
+        },
+        retrievalTrace: [
+          {
+            query: 'synthetic topic',
+            diagnostics: [],
+            results: [{ filePath: 'Synthetic.md', bm25Score: 2, vectorScore: 0.8 }],
+          },
+        ],
         contextBudgetSnapshot: {
           modelContext: planModelContextRust({ contextLength: 128000 })!,
           maxChars: 12_000,
@@ -396,6 +413,21 @@ describe('chat persistence', () => {
       branchOf: 'Chats/root.md',
       branchRoot: 'Chats/root.md',
       variantOf: 'msg-root',
+      usageSnapshot: {
+        requests: 3,
+        reportedRequests: 2,
+        partial: true,
+        inputTokens: 200,
+        outputTokens: 40,
+        totalTokens: 240,
+      },
+      retrievalTrace: [
+        {
+          query: 'synthetic topic',
+          diagnostics: [],
+          results: [{ filePath: 'Synthetic.md', bm25Score: 2, vectorScore: 0.8 }],
+        },
+      ],
       contextBudgetSnapshot: {
         modelContext: planModelContextRust({ contextLength: 128000 })!,
         maxChars: 12_000,

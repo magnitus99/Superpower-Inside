@@ -4,6 +4,7 @@ import type { ChatMessageWithMeta, SourceValidationWarning } from './types';
 import { prepareChatProviderForModel } from '../llm/provider-resolution';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
 import type { LLMProvider } from '../llm/providers';
+import { RAGQueryEngine } from '../rag/query';
 
 vi.mock('obsidian', () => ({
   ItemView: class {},
@@ -147,6 +148,24 @@ describe('메시지 행동의 작성 중 질문 보존', () => {
 });
 
 describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
+  it('이전 실행의 컨텍스트 준비는 새 실행의 검색 기록에 연결되지 않는다', () => {
+    const observer = { run: { token: 1, controller: new AbortController() }, record: vi.fn() };
+    const nextObserver = { run: { token: 2, controller: new AbortController() }, record: vi.fn() };
+    const engine = new RAGQueryEngine(null, null);
+    const view = Object.create(ChatView.prototype) as {
+      getChatQueryEngine(captured: typeof observer | null): unknown;
+    };
+    Object.assign(view, {
+      plugin: { ragEngine: engine },
+      activeRun: nextObserver.run,
+      retrievalObserver: nextObserver,
+    });
+    expect(view.getChatQueryEngine(observer)).toBe(engine);
+    expect(view.getChatQueryEngine(null)).toBe(engine);
+    expect(observer.record).not.toHaveBeenCalled();
+    expect(nextObserver.record).not.toHaveBeenCalled();
+  });
+
   function createView() {
     vi.stubGlobal('HTMLElement', class {});
     const view = Object.create(ChatView.prototype) as ActionView;
@@ -155,13 +174,14 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       onChunk({ content: '합성 응답', done: true });
       return Promise.resolve();
     });
+    const chat = vi.fn<LLMProvider['chat']>().mockResolvedValue('합성 응답');
     const provider: LLMProvider = {
       capability: resolveProviderCapability({
         providerKey: 'ollama',
         model: 'synthetic',
         overrides: { maxToolRounds: 0 },
       }),
-      chat: vi.fn().mockResolvedValue('합성 응답'),
+      chat,
       streamChat: stream,
     };
     vi.mocked(prepareChatProviderForModel).mockResolvedValue({
@@ -204,14 +224,48 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
         return message.id;
       },
       updateMessage: vi.fn(),
+      markDirtyAndAutoSave: vi.fn(),
       validateAssistantSources: () => [],
       saveCurrentSession: vi.fn(),
       summarizeCurrentSessionTitle: vi.fn(),
       formatErrorDetail: () => '합성 실패',
       cancelRunningToolCalls: () => [],
     });
-    return { view, stream, context };
+    return { view, stream, context, chat, storedMessages };
   }
+
+  it('준비 과정과 최종 응답의 실제 사용량을 같은 답변에 연결한다', async () => {
+    const { view, chat, stream, context, storedMessages } = createView();
+    chat.mockImplementation((_messages, _temperature, _tools, options) => {
+      options?.onUsage?.({ inputTokens: 10, outputTokens: 3, totalTokens: 13 });
+      return Promise.resolve('합성 준비 결과');
+    });
+    context.mockImplementation(
+      async (
+        _text: string,
+        _previous: readonly string[],
+        _defer: boolean,
+        _workspace: unknown,
+        trackedProvider: LLMProvider,
+      ) => {
+        await trackedProvider.chat([]);
+        return { systemPrompt: null, attachments: [], citations: [], warnings: [] };
+      },
+    );
+    stream.mockImplementation((_messages, onChunk, _temperature, _tools, options) => {
+      options?.onUsage?.({ inputTokens: 20, outputTokens: 7, totalTokens: 27 });
+      onChunk({ content: '합성 최종 응답', done: true });
+      return Promise.resolve();
+    });
+    await view.handleSend('합성 검색 질문');
+    expect(storedMessages.at(-1)?.usageSnapshot).toEqual({
+      requests: 2,
+      reportedRequests: 2,
+      inputTokens: 30,
+      outputTokens: 10,
+      totalTokens: 40,
+    });
+  });
 
   it.each(['complete', 'error', 'cancelled'] as const)(
     '행동 전송의 %s 이후에도 작성 중 질문을 보존한다',

@@ -1,6 +1,49 @@
 export type Language = 'ko' | 'en';
 
 export interface I18nKeys {
+  answerDiagnosticsSearchFailed: string;
+  answerDiagnosticsProviderSkipped: string;
+  answerDiagnosticsProviderFailed: string;
+  answerDiagnosticsTitle: string;
+  answerDiagnosticsEmbedding: string;
+  answerDiagnosticsBm25: string;
+  answerDiagnosticsVector: string;
+  answerDiagnosticsAnn: string;
+  answerDiagnosticsStructural: string;
+  answerDiagnosticsReranker: string;
+  answerDiagnosticsSuccess: string;
+  answerDiagnosticsTimeout: string;
+  answerDiagnosticsError: string;
+  answerDiagnosticsSkipped: string;
+  answerDiagnosticsInput: string;
+  answerDiagnosticsOutput: string;
+  answerDiagnosticsTotal: string;
+  answerDiagnosticsUsageMissing: string;
+  answerDiagnosticsCollecting: string;
+  answerDiagnosticsUsagePartial: string;
+  answerDiagnosticsUsageFieldsPartial: string;
+  answerDiagnosticsUsageReported: string;
+  answerDiagnosticsCached: string;
+  answerDiagnosticsReasoning: string;
+  answerDiagnosticsEmbeddingUsageMissing: string;
+  answerDiagnosticsSearch: string;
+  answerDiagnosticsSearchHelp: string;
+  answerDiagnosticsSearchMissing: string;
+  answerDiagnosticsSearchNotRun: string;
+  answerDiagnosticsQuery: string;
+  answerDiagnosticsCandidates: string;
+  answerDiagnosticsDuration: string;
+  answerDiagnosticsReturned: string;
+  answerDiagnosticsCandidate: string;
+  answerDiagnosticsVectorScore: string;
+  answerDiagnosticsBm25Score: string;
+  answerDiagnosticsScoreHelp: string;
+  answerDiagnosticsSources: string;
+  answerDiagnosticsSourcesMissing: string;
+  answerDiagnosticsAnswer: string;
+  answerDiagnosticsCitationsEmpty: string;
+  answerDiagnosticsCitationsUnavailable: string;
+  answerDiagnosticsAnswerHelp: string;
   xlsxMemoryBudgetError: string;
   xlsxXmlTokenBudgetError: string;
   xlsxTimeBudgetError: string;
@@ -1633,6 +1676,54 @@ export interface I18nKeys {
 }
 
 const ko: I18nKeys = {
+  answerDiagnosticsSearchFailed: '검색을 완료하지 못했습니다. 이미 수집된 결과만 표시합니다.',
+  answerDiagnosticsProviderSkipped: '이 검색 단계는 실행하지 않았습니다.',
+  answerDiagnosticsProviderFailed: '이 검색 단계에서 결과를 확보하지 못했습니다.',
+  answerDiagnosticsTitle: '검색 및 토큰 사용량',
+  answerDiagnosticsEmbedding: '질문 임베딩',
+  answerDiagnosticsBm25: 'BM25 키워드 검색',
+  answerDiagnosticsVector: '벡터 의미 검색',
+  answerDiagnosticsAnn: '근사 벡터 검색',
+  answerDiagnosticsStructural: '문서 구조 검색',
+  answerDiagnosticsReranker: '검색 결과 재정렬',
+  answerDiagnosticsSuccess: '완료',
+  answerDiagnosticsTimeout: '시간 초과',
+  answerDiagnosticsError: '실패',
+  answerDiagnosticsSkipped: '건너뜀',
+  answerDiagnosticsInput: '입력 {count}',
+  answerDiagnosticsOutput: '출력 {count}',
+  answerDiagnosticsTotal: '합계 {count}',
+  answerDiagnosticsUsageMissing: '제공자가 토큰 사용량을 제공하지 않았습니다.',
+  answerDiagnosticsCollecting: '진행 중인 요청의 검색 기록과 사용량을 수집 중입니다.',
+  answerDiagnosticsUsagePartial:
+    '요청 {requests}회 중 {reported}회의 사용량입니다. 일부 요청은 사용량을 제공하지 않았습니다.',
+  answerDiagnosticsUsageFieldsPartial: '일부 토큰 항목이 제공되지 않아 집계도 일부일 수 있습니다.',
+  answerDiagnosticsUsageReported: '요청 {requests}회 중 {reported}회의 제공자 보고 사용량입니다.',
+  answerDiagnosticsCached: '캐시 읽기 {count} 토큰 · 입력에 포함',
+  answerDiagnosticsReasoning: '추론 {count} 토큰 · 출력에 포함',
+  answerDiagnosticsEmbeddingUsageMissing: '임베딩 토큰 사용량은 집계하지 않습니다.',
+  answerDiagnosticsSearch: '질문 임베딩과 검색 후보',
+  answerDiagnosticsSearchHelp:
+    'BM25는 키워드로, 임베딩은 질문과의 의미 유사도로 후보를 찾습니다. 아래는 실제 기록된 검색 결과입니다.',
+  answerDiagnosticsSearchMissing:
+    '이 답변의 검색 기록이 없습니다. 검색을 실행하지 않았는지는 확인할 수 없습니다.',
+  answerDiagnosticsSearchNotRun: '이번 응답에서는 BM25·임베딩 검색을 실행하지 않았습니다.',
+  answerDiagnosticsQuery: '검색 질의: {query}',
+  answerDiagnosticsCandidates: '후보 {count}개',
+  answerDiagnosticsDuration: '{count}ms',
+  answerDiagnosticsReturned: '이 검색에서 반환된 구간 {count}개',
+  answerDiagnosticsCandidate: '검색 후보',
+  answerDiagnosticsVectorScore: '벡터 {score}',
+  answerDiagnosticsBm25Score: 'BM25 {score}',
+  answerDiagnosticsScoreHelp:
+    'BM25와 벡터 점수는 서로 다른 척도이며 답변의 정확도 확률이 아닙니다. 검색 후보는 원문 확인이나 답변 인용을 뜻하지 않습니다.',
+  answerDiagnosticsSources: '원문 확인 상태',
+  answerDiagnosticsSourcesMissing: '기록된 출처가 없습니다.',
+  answerDiagnosticsAnswer: '답변 근거 확인',
+  answerDiagnosticsCitationsEmpty: '답변 본문에 연결된 인용이 없습니다.',
+  answerDiagnosticsCitationsUnavailable: '답변 인용을 확인할 수 없습니다.',
+  answerDiagnosticsAnswerHelp:
+    '답변 본문의 인용을 눌러 사용된 원문을 확인하세요. 원문 확인 상태만으로 답변에 인용되었다고 판단하지 않습니다.',
   xlsxMemoryBudgetError:
     '엑셀 문서가 추출 작업의 메모리 예산을 초과했습니다. 일부 본문은 사용하지 않습니다.',
   xlsxXmlTokenBudgetError:
@@ -3487,6 +3578,55 @@ const ko: I18nKeys = {
 };
 
 const en: I18nKeys = {
+  answerDiagnosticsSearchFailed: 'Search did not finish. Only recorded results are shown.',
+  answerDiagnosticsProviderSkipped: 'This search step did not run.',
+  answerDiagnosticsProviderFailed: 'This search step did not return a result.',
+  answerDiagnosticsTitle: 'Search and token usage',
+  answerDiagnosticsEmbedding: 'Query embedding',
+  answerDiagnosticsBm25: 'BM25 keyword search',
+  answerDiagnosticsVector: 'Vector semantic search',
+  answerDiagnosticsAnn: 'Approximate vector search',
+  answerDiagnosticsStructural: 'Document structure search',
+  answerDiagnosticsReranker: 'Result reranking',
+  answerDiagnosticsSuccess: 'Complete',
+  answerDiagnosticsTimeout: 'Timed out',
+  answerDiagnosticsError: 'Failed',
+  answerDiagnosticsSkipped: 'Skipped',
+  answerDiagnosticsInput: 'Input {count}',
+  answerDiagnosticsOutput: 'Output {count}',
+  answerDiagnosticsTotal: 'Total {count}',
+  answerDiagnosticsUsageMissing: 'The provider did not report token usage.',
+  answerDiagnosticsCollecting: 'Collecting search records and usage for the current requests.',
+  answerDiagnosticsUsagePartial:
+    'Usage reported for {reported} of {requests} requests. Some requests did not report usage.',
+  answerDiagnosticsUsageFieldsPartial:
+    'Some token fields were not reported; these totals may be partial.',
+  answerDiagnosticsUsageReported: 'Provider-reported usage for {reported} of {requests} requests.',
+  answerDiagnosticsCached: 'Cache read {count} tokens · included in input',
+  answerDiagnosticsReasoning: 'Reasoning {count} tokens · included in output',
+  answerDiagnosticsEmbeddingUsageMissing: 'Embedding token usage is not tracked.',
+  answerDiagnosticsSearch: 'Query embedding and search candidates',
+  answerDiagnosticsSearchHelp:
+    'BM25 finds keyword matches; embeddings find semantic matches to the query. The results below are recorded search operations.',
+  answerDiagnosticsSearchMissing:
+    'No search record is available for this answer. This does not establish that no search ran.',
+  answerDiagnosticsSearchNotRun: 'BM25 and embedding search were not run for this response.',
+  answerDiagnosticsQuery: 'Search query: {query}',
+  answerDiagnosticsCandidates: '{count} candidates',
+  answerDiagnosticsDuration: '{count}ms',
+  answerDiagnosticsReturned: '{count} passages returned by this search',
+  answerDiagnosticsCandidate: 'Search candidate',
+  answerDiagnosticsVectorScore: 'Vector {score}',
+  answerDiagnosticsBm25Score: 'BM25 {score}',
+  answerDiagnosticsScoreHelp:
+    'BM25 and vector scores use different scales and are not answer accuracy probabilities. A search candidate does not establish source verification or citation in the answer.',
+  answerDiagnosticsSources: 'Source verification',
+  answerDiagnosticsSourcesMissing: 'No sources were recorded.',
+  answerDiagnosticsAnswer: 'Check answer sources',
+  answerDiagnosticsCitationsEmpty: 'No citations are linked in the answer text.',
+  answerDiagnosticsCitationsUnavailable: 'Answer citations could not be checked.',
+  answerDiagnosticsAnswerHelp:
+    'Use the citations in the answer to inspect the source passages. Source verification alone does not establish that the answer cites a source.',
   xlsxMemoryBudgetError:
     'This spreadsheet exceeds the extraction memory budget. Partial text will not be used.',
   xlsxXmlTokenBudgetError:

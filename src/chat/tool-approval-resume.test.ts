@@ -128,7 +128,9 @@ describe('승인 대기 도구 provider 재개 계약', () => {
     );
     expect(approvalSource).toContain('citations: promptContext.citations,');
     expect(approvalSource).toContain('contextAttachments: promptContext.attachments,');
-    expect(approvalSource.match(/saveCurrentSession\(\)/g)).toHaveLength(2);
+    expect(approvalSource.lastIndexOf('saveCurrentSession()')).toBeGreaterThan(
+      approvalSource.indexOf('summarizeCurrentSessionTitle(titleProvider, run)'),
+    );
   });
 
   it('초기·승인 데이터 경계는 후보 MCP가 아니라 실제 실행 서버만 나중에 기록한다', () => {
