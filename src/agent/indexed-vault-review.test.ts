@@ -3,7 +3,9 @@ import { t } from '../i18n';
 import { LLMProviderHttpError, type ChatMessage, type LLMProvider } from '../llm/providers';
 import { planModelContextRust } from '../rag/rust-core';
 import type { NativeVaultToolRuntimeLike } from './native-vault-tool';
-import { reviewIndexedVault } from './indexed-vault-review';
+import { reviewIndexedVault, type IndexedReviewDiagnostics } from './indexed-vault-review';
+import { withTurnUsage } from '../chat/turn-usage';
+import { resolveProviderCapability } from '../llm/provider-capabilities';
 
 function fixture(count: number) {
   const files = new Map(
@@ -123,6 +125,332 @@ function fixture(count: number) {
 }
 
 describe('임베딩 문서 전체 검토', () => {
+  it('예산 안의 추출 근거는 다시 요약하지 않고 독립 판정은 두 배치까지 병렬 실행한다', async () => {
+    const test = fixture(20);
+    for (const path of test.files.keys())
+      test.files.set(path, 'Quartz restarts only after two cooling cycles.');
+    const base = test.streamChat.getMockImplementation()!;
+    const active = { screen: 0, extract: 0 };
+    const peak = { screen: 0, extract: 0 };
+    const streamChat: LLMProvider['streamChat'] = async (messages, consume) => {
+      const instruction = messages[0]?.content ?? '';
+      const phase = instruction.includes(t('llmIndexedReviewScreen'))
+        ? 'screen'
+        : instruction.includes(t('llmIndexedReviewJudge'))
+          ? 'extract'
+          : null;
+      if (phase) {
+        active[phase] += 1;
+        peak[phase] = Math.max(peak[phase], active[phase]);
+        const first = messages.at(-1)?.content.includes('Source-0.txt');
+        await new Promise<void>((resolve) => setTimeout(resolve, first ? 10 : 1));
+      }
+      try {
+        await base(messages, (chunk) => consume({ ...chunk, done: false }));
+      } finally {
+        if (phase) active[phase] -= 1;
+      }
+    };
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat },
+    });
+    expect(peak).toEqual({ screen: 2, extract: 2 });
+    expect(result.content).toContain(`[vault:${[...test.files.keys()].sort().at(-1)}:1-1]`);
+    expect(
+      test.streamChat.mock.calls.filter(([messages]) =>
+        (messages[0]?.content ?? '').includes(t('llmIndexedReviewReduce')),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('단계별 사용량을 중복 없이 집계하고 전체 응답 사용량 콜백을 보존한다', async () => {
+    const test = fixture(1);
+    const base = test.streamChat.getMockImplementation()!;
+    const snapshots: unknown[] = [];
+    const streamChat: LLMProvider['streamChat'] = async (
+      messages,
+      consume,
+      _temperature,
+      _tools,
+      options,
+    ) => {
+      options?.onUsage?.({ inputTokens: 10, outputTokens: 0 });
+      options?.onUsage?.({ outputTokens: 2 });
+      options?.onUsage?.({ outputTokens: 2 });
+      await base(messages, (chunk) => consume({ ...chunk, done: false }));
+    };
+    const tracked = withTurnUsage(
+      {
+        streamChat,
+        chat: vi.fn(),
+        capability: resolveProviderCapability({ providerKey: 'openai', model: 'synthetic' }),
+      },
+      (snapshot) => snapshots.push(snapshot),
+    );
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: tracked,
+    });
+    expect(result.diagnostics.phases.screen).toMatchObject({
+      requests: 1,
+      inputTokens: 10,
+      outputTokens: 2,
+    });
+    expect(result.diagnostics.phases.extract).toMatchObject({
+      requests: 1,
+      inputTokens: 10,
+      outputTokens: 2,
+    });
+    expect(result.diagnostics.phases.answer).toMatchObject({
+      requests: 1,
+      inputTokens: 10,
+      outputTokens: 2,
+    });
+    expect(snapshots.at(-1)).toMatchObject({ requests: 3, inputTokens: 30, outputTokens: 6 });
+    expect(result.diagnostics.counts).toMatchObject({
+      candidateSegments: 1,
+      screenAcceptedSegments: 1,
+      extractedSegments: 1,
+      reduceRequests: 0,
+    });
+  });
+
+  it('현재 원문·질문·모델 범위가 같은 검증된 판정만 메모리에서 재사용한다', async () => {
+    const test = fixture(1);
+    const reviewCache = new Map<string, string>();
+    const run = (cacheScope: string, question = 'Quartz restart condition') =>
+      reviewIndexedVault({
+        question,
+        indexedPaths: [...test.files.keys()],
+        scopes: [],
+        nativeTool: test.nativeTool,
+        provider: { streamChat: test.streamChat },
+        reviewCache,
+        cacheScope,
+      });
+    await run('model-a');
+    const second = await run('model-a');
+    expect(second.diagnostics.counts.cacheHits).toBe(2);
+    expect(test.streamChat.mock.calls).toHaveLength(4);
+    await run('model-b');
+    expect(test.streamChat.mock.calls).toHaveLength(7);
+    await run('model-a', 'Quartz cooling exception');
+    expect(test.streamChat.mock.calls).toHaveLength(10);
+    test.files.set('Synthetic/Source-0.txt', 'Delivery schedule changed.');
+    const changed = await run('model-a');
+    expect(changed.diagnostics.counts.cacheHits).toBe(0);
+    expect(changed.citations).toEqual([]);
+    expect(changed.rejectedFiles).toBe(1);
+  });
+
+  it('검증된 판정 캐시는 항목 수와 UTF-8 바이트 한도를 모두 지킨다', async () => {
+    const test = fixture(1);
+    const reviewCache = new Map<string, string>(
+      Array.from({ length: 70 }, (_, index) => [`old-${index}`, '한'.repeat(12_000)]),
+    );
+    await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat: test.streamChat },
+      reviewCache,
+      cacheScope: 'model-a',
+    });
+    const encoder = new TextEncoder();
+    const bytes = [...reviewCache].reduce(
+      (total, [key, value]) =>
+        total + encoder.encode(key).byteLength + encoder.encode(value).byteLength,
+      0,
+    );
+    expect(reviewCache.size).toBeLessThanOrEqual(64);
+    expect(bytes).toBeLessThanOrEqual(2 * 1024 * 1024);
+  });
+
+  it('캐시에서 제외 판정만 재사용한 문서는 공급자 전송 수에 포함하지 않는다', async () => {
+    const test = fixture(1);
+    test.files.set('Synthetic/Source-0.txt', 'Only a delivery schedule.');
+    const reviewCache = new Map<string, string>();
+    const options = {
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat: test.streamChat },
+      reviewCache,
+      cacheScope: 'model-a',
+    };
+    const first = await reviewIndexedVault(options);
+    const second = await reviewIndexedVault(options);
+    expect(first.providerTransfer.sentFiles).toBe(1);
+    expect(second.providerTransfer.sentFiles).toBe(0);
+    expect(second.diagnostics.counts.cacheHits).toBe(1);
+    expect(test.streamChat).toHaveBeenCalledOnce();
+  });
+
+  it('예산을 넘긴 근거만 추출 완료 뒤 압축하고 단독 근거는 재요약하지 않는다', async () => {
+    const test = fixture(9);
+    const budget = planModelContextRust({ contextLength: 128_000, maxOutputTokens: 8_192 });
+    if (!budget) throw new Error('Synthetic context budget unavailable.');
+    for (const path of test.files.keys())
+      test.files.set(path, 'Quartz restarts only after two cooling cycles.');
+    const base = test.streamChat.getMockImplementation()!;
+    const reduceSizes: number[] = [];
+    let extracted = 0;
+    const streamChat: LLMProvider['streamChat'] = async (messages, consume) => {
+      const instruction = messages[0]?.content ?? '';
+      const packet = JSON.parse(messages.at(-1)?.content ?? '{}') as {
+        segments?: { id: string; path: string }[];
+        evidence?: string[];
+      };
+      if (instruction.includes(t('llmIndexedReviewJudge')) && packet.segments) {
+        extracted += packet.segments.length;
+        consume({
+          content: JSON.stringify({
+            decisions: packet.segments.map((row) => ({
+              id: row.id,
+              relevant: true,
+              reason: 'Synthetic condition.',
+              findings: Array.from({ length: row.path.endsWith('Source-8.txt') ? 1 : 8 }, () => ({
+                claim: 'Synthetic condition. '.repeat(45),
+                quote: 'two cooling cycles',
+              })),
+            })),
+          }),
+          done: true,
+        });
+      } else if (instruction.includes(t('llmIndexedReviewReduce'))) {
+        expect(extracted).toBe(9);
+        reduceSizes.push(packet.evidence?.length ?? 0);
+        consume({ content: 'Synthetic condition [vault:Synthetic/Source-0.txt:1-1]', done: true });
+      } else {
+        await base(messages, (chunk) => consume({ ...chunk, done: false }));
+      }
+    };
+    const result = await reviewIndexedVault({
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat, contextBudget: { ...budget, evidenceChars: 12_000 } },
+    });
+    expect(reduceSizes).toHaveLength(8);
+    expect(reduceSizes.every((size) => size > 1)).toBe(true);
+    expect(result.diagnostics.counts.reduceRequests).toBe(8);
+    expect(result.content).toContain('[vault:Synthetic/Source-8.txt:1-1]');
+  });
+
+  it('외부 조사에 넘길 때 최종 답변을 생성하지 않고 검수 고지와 검증 근거를 보존한다', async () => {
+    const test = fixture(1);
+    const options = {
+      question: 'Quartz restart condition',
+      indexedPaths: [...test.files.keys()],
+      scopes: [],
+      nativeTool: test.nativeTool,
+      provider: { streamChat: test.streamChat },
+      deferAnswer: true,
+      reviewCache: new Map<string, string>(),
+      cacheScope: 'model-a',
+    };
+    const result = await reviewIndexedVault(options);
+    expect(test.streamChat).toHaveBeenCalledTimes(2);
+    expect(result.diagnostics.phases.answer.requests).toBe(0);
+    expect(result.content).toContain('two cooling cycles');
+    expect(result.content.startsWith(result.coverageNotice)).toBe(true);
+    expect(result.citations).toHaveLength(1);
+    expect(result.providerTransfer).toEqual({
+      sentFiles: 1,
+      sentPaths: ['Synthetic/Source-0.txt'],
+    });
+    const cached = await reviewIndexedVault(options);
+    expect(test.streamChat).toHaveBeenCalledTimes(2);
+    expect(cached.providerTransfer).toEqual({ sentFiles: 0, sentPaths: [] });
+    expect(cached.citations).toHaveLength(1);
+    expect(cached.diagnostics.counts.cacheHits).toBe(2);
+  });
+
+  it('병렬 판정의 치명적 실패 뒤 늦은 응답은 새 호출이나 진단 갱신을 만들지 않는다', async () => {
+    const test = fixture(20);
+    for (const path of test.files.keys())
+      test.files.set(path, 'Quartz restarts only after two cooling cycles.');
+    const snapshots: IndexedReviewDiagnostics[] = [];
+    let completeLate: (() => void) | undefined;
+    let consumeLate: Parameters<LLMProvider['streamChat']>[1] | undefined;
+    let usageLate: Parameters<LLMProvider['streamChat']>[4] | undefined;
+    const streamChat = vi.fn<LLMProvider['streamChat']>(
+      (_messages, consume, _temperature, _tools, options) => {
+        if (streamChat.mock.calls.length === 1)
+          return Promise.reject(new LLMProviderHttpError('Synthetic 401', 401));
+        consumeLate = consume;
+        usageLate = options;
+        return new Promise<void>((resolve) => {
+          completeLate = resolve;
+        });
+      },
+    );
+    const onProgress = vi.fn();
+    const onAnswer = vi.fn();
+    await expect(
+      reviewIndexedVault({
+        question: 'Quartz restart condition',
+        indexedPaths: [...test.files.keys()],
+        scopes: [],
+        nativeTool: test.nativeTool,
+        provider: { streamChat },
+        onDiagnostics: (snapshot) => snapshots.push(snapshot),
+        onProgress,
+        onAnswer,
+      }),
+    ).rejects.toThrow(LLMProviderHttpError);
+    const snapshotCount = snapshots.length;
+    const progressCount = onProgress.mock.calls.length;
+    expect(streamChat).toHaveBeenCalledTimes(2);
+    expect(usageLate?.signal?.aborted).toBe(true);
+    expect(snapshots.at(-1)?.phases.screen).toMatchObject({ requests: 2, partial: true });
+    consumeLate?.({ content: '{"decisions":[]}', done: true });
+    usageLate?.onUsage?.({ inputTokens: 99, outputTokens: 99 });
+    completeLate?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(streamChat).toHaveBeenCalledTimes(2);
+    expect(snapshots).toHaveLength(snapshotCount);
+    expect(onProgress).toHaveBeenCalledTimes(progressCount);
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it('취소된 판정도 누락된 사용량과 진행 중 단계 시간을 진단에 남긴다', async () => {
+    const test = fixture(1);
+    const controller = new AbortController();
+    const snapshots: IndexedReviewDiagnostics[] = [];
+    const streamChat: LLMProvider['streamChat'] = () => {
+      controller.abort();
+      return new Promise<void>(() => {});
+    };
+    await expect(
+      reviewIndexedVault({
+        question: 'Quartz restart condition',
+        indexedPaths: [...test.files.keys()],
+        scopes: [],
+        nativeTool: test.nativeTool,
+        provider: { streamChat },
+        signal: controller.signal,
+        onDiagnostics: (snapshot) => snapshots.push(snapshot),
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(snapshots.at(-1)?.phases.screen).toMatchObject({
+      requests: 1,
+      reportedRequests: 0,
+      partial: true,
+    });
+    expect(snapshots.at(-1)?.phases.screen.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
   it('한 문서를 읽지 못해도 나머지 전체를 검토하고 미완료 고지와 함께 검토된 근거로 답한다', async () => {
     const test = fixture(20);
     const original = test.execute.getMockImplementation()!;
