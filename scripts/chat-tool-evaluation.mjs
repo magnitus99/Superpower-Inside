@@ -100,45 +100,14 @@ function createNative(runtime, vault) {
   );
 }
 
-// 모델의 도구 선택 없이 실제 native 실행기로 양쪽 원문을 확보합니다.
-export async function evaluateEvidenceCollection(runtime, test, vault, provider) {
+// 원문 수집은 결정적 plan만 수행합니다. 모델 판정·provider 호출 계약은 제거되었습니다.
+export async function evaluateEvidenceCollection(runtime, test, vault) {
   let sequence = 0;
-  // 오프라인에서는 의미 판정 대신 추가 질의와 인용 검증의 실행 계약만 검사합니다.
-  const reviewer =
-    test.reviewQuery && !provider
-      ? {
-          streamChat: async (messages, onChunk) => {
-            const packet = JSON.parse(messages.at(-1).content);
-            const complete = test.requiredSources.every((path) =>
-              packet.evidence.some((row) => row.path === path),
-            );
-            const checks = packet.facets.map((question, facetId) => ({
-              facetId,
-              question,
-              status: 'supported',
-              evidence: [
-                { id: packet.evidence[0].id, quote: packet.evidence[0].text.slice(0, 200) },
-              ],
-            }));
-            checks.push({
-              facetId: null,
-              question: test.reviewQuery,
-              status: complete ? 'supported' : 'missing',
-              query: test.reviewQuery,
-              evidence: complete
-                ? [{ id: packet.evidence[0].id, quote: packet.evidence[0].text.slice(0, 200) }]
-                : [],
-            });
-            onChunk({ content: JSON.stringify({ checks }), done: true });
-          },
-        }
-      : provider;
   const result = await runtime.collectVaultEvidence({
     question: test.question,
     scopes: test.scopes ?? [],
     nativeTool: createNative(runtime, vault),
     createId: () => `evidence-${++sequence}`,
-    provider: reviewer,
   });
   const reads = result.toolCalls.filter(
     (call) => call.name === 'superpower_inside_read' && call.status === 'success',
@@ -151,12 +120,11 @@ export async function evaluateEvidenceCollection(runtime, test, vault, provider)
       test.requiredSources.every((source) => paths.has(source)) &&
       result.toolCalls.length <= result.plan.maxCalls,
     toolCalls: result.toolCalls.length,
-    providerCalls: provider ? result.reviewRequests : 0,
-    modelRequests: provider ? result.reviewRequests : 0,
-    reviewRequests: result.reviewRequests,
     coverage: result.plan.coverage,
     verifiedSources: result.plan.verifiedSources,
     stopReason: result.plan.reason,
+    // 필수 출처 중 남은 개수만 집계한다(합성 fixture 경로도 내용은 보고하지 않는다).
+    missingRequiredSources: test.requiredSources.filter((source) => !paths.has(source)).length,
     semanticQualityAssessed: false,
   };
 }

@@ -20,6 +20,8 @@
     "test:e2e": "vitest run src/e2e/product-journeys.test.ts",
     "chat:ux-gate": "node scripts/check-chat-ux-fixtures.mjs",
     "rag:perf-gate": "node scripts/bench-rag-wrapper.mjs",
+    "search:eval": "node scripts/search-eval/run.mjs",
+    "search:bench": "node scripts/search-eval/run.mjs --scale 10k --split heldout --repeat 3",
     "check:i18n": "node scripts/check-i18n.mjs",
     "wasm:build": "node scripts/run-fish.mjs scripts/build-rag-wasm.fish && node scripts/build-workers.mjs",
     "ternlight:assets": "node scripts/run-fish.mjs scripts/copy-ternlight-assets.fish",

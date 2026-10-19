@@ -29,7 +29,6 @@ export function createEvidenceCollectionCases() {
     },
     {
       question: 'How does the mica relay restart safely, including its waiting period?',
-      reviewQuery: 'quartz handshake',
       sources: [
         {
           path: 'Research/Introduction.md',
@@ -41,11 +40,10 @@ export function createEvidenceCollectionCases() {
         },
       ],
     },
-  ].map(({ question, sources, reviewQuery }, index) => ({
+  ].map(({ question, sources }, index) => ({
     id: `managed-evidence-${index}`,
     workflow: 'evidence-collection',
     question,
-    reviewQuery,
     scopes: ['Research'],
     requiredSources: sources.map((source) => source.path),
     files: [

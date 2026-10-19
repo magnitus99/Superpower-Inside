@@ -140,7 +140,7 @@ async function evaluate(runtime, settings) {
     const start = performance.now();
     const { files, app } = syntheticVault(runtime, test);
     if (test.workflow === 'evidence-collection') {
-      results.push(await evaluateEvidenceCollection(runtime, test, { files, app }, provider));
+      results.push(await evaluateEvidenceCollection(runtime, test, { files, app }));
       continue;
     }
     if (test.workflow === 'tool-loop') {
