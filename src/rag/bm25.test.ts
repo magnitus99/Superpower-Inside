@@ -325,6 +325,59 @@ describe('IndexedDbBM25Index', () => {
     }
   });
 
+  it('증분 작업 대기 중 취소한 검색을 worker에 뒤늦게 보내지 않는다', async () => {
+    const operations: string[] = [];
+    let respond: ((event: MessageEvent<BM25WorkerResponse>) => void) | undefined;
+    const workerFactory: BM25WorkerFactory = () => ({
+      worker: {
+        postMessage: (message) => {
+          operations.push(message.operation);
+          if (message.operation === 'add') return;
+          queueMicrotask(() =>
+            respond?.({
+              data: {
+                id: message.id,
+                ready: true,
+                tokenizerCurrent: true,
+                totalDocs: 0,
+              },
+            } as unknown as MessageEvent<BM25WorkerResponse>),
+          );
+        },
+        terminate: vi.fn(),
+        setOnMessage: (handler) => {
+          respond = handler;
+        },
+        setOnError: vi.fn(),
+      },
+      dispose: vi.fn(),
+    });
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter(), undefined, {
+      workerFactory,
+    });
+    try {
+      await bm25.load();
+      bm25.addDocument('synthetic::0', 'synthetic pending mutation', 'synthetic.md');
+      await vi.waitFor(() => expect(operations).toContain('add'));
+      const controller = new AbortController();
+      let outcome = 'pending';
+      const execution = bm25.searchTopWithSources('synthetic', 1, controller.signal).then(
+        () => {
+          outcome = 'resolved';
+        },
+        (error: unknown) => {
+          outcome = error instanceof DOMException ? error.name : 'other-error';
+        },
+      );
+      controller.abort();
+      await vi.waitFor(() => expect(outcome).toBe('AbortError'), { timeout: 100 });
+      await execution;
+      expect(operations).not.toContain('search-top');
+    } finally {
+      bm25.close();
+    }
+  });
+
   it('worker hydration 중에도 검색을 막지 않고 증분 변경은 순서대로 적용한다', async () => {
     const operations: string[] = [];
     const workerControl: {

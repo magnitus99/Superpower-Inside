@@ -430,12 +430,15 @@ export class IndexedDbBM25Index {
     limit: number,
     signal?: AbortSignal,
   ): Promise<BM25WorkerHit[]> {
+    signal?.throwIfAborted();
     const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
     if (normalizedLimit === 0) return [];
     if (this.workerRuntime) {
       // 초기 적재가 끝나기 전에는 결과만 비우고 채팅·검색을 기다리게 하지 않습니다.
       if (!this.loaded) return [];
-      await this.workerQueue;
+      // 적재·변경의 순서는 유지하되 취소한 검색은 작업자 대기열 뒤에 남기지 않습니다.
+      await awaitBm25SearchQueue(this.workerQueue, signal);
+      signal?.throwIfAborted();
       if (this.workerFailure) return [];
       return this.workerRuntime.searchTop(query, normalizedLimit, signal);
     }
@@ -805,5 +808,15 @@ function normalizeOperationOrder(record: { order?: number; updated: number }): n
 async function yieldToHost(): Promise<void> {
   await new Promise<void>((resolve) => {
     window.setTimeout(resolve, 0);
+  });
+}
+
+function awaitBm25SearchQueue(operation: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return operation;
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => reject(new DOMException('BM25 search cancelled.', 'AbortError'));
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+    void operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
   });
 }
