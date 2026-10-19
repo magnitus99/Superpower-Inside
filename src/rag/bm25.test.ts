@@ -6,6 +6,7 @@ import { IndexedDbBM25Index, tokenize, type BM25DocumentInput } from './bm25';
 import type {
   BM25WorkerAdapter,
   BM25WorkerFactory,
+  BM25WorkerRequest,
   BM25WorkerResponse,
 } from './bm25-worker-runtime';
 import { RustBm25RuntimeIndex } from './rust-core';
@@ -36,6 +37,96 @@ describe('BM25 tokenizer', () => {
 });
 
 describe('IndexedDbBM25Index', () => {
+  it('위치 없는 snapshot과 저장 원문이 있으면 비 worker 시작도 원문에서 자동 복구한다', async () => {
+    const dbName = createDbName();
+    const index = new IndexedDbBM25Index(dbName);
+    await index.load();
+    index.addCorpusDocument({
+      id: 'raw',
+      text: 'alpha beta',
+      sourcePath: 'ledger.md',
+      title: 'Quarterly',
+    });
+    await index.persist();
+    index.close();
+    const legacy = {
+      tokenizerVersion: 2,
+      inverted: { wrong: { stale: 1 } },
+      docLengths: { stale: 1 },
+      docSources: { stale: 'stale.md' },
+      totalDocs: 1,
+      avgDocLength: 1,
+    };
+    const db = new Dexie(dbName);
+    await db.open();
+    await db
+      .table('meta')
+      .put({ key: 'bm25-runtime-snapshot:v1', value: JSON.stringify(legacy), updated: Date.now() });
+    db.close();
+    const restored = new IndexedDbBM25Index(dbName);
+    try {
+      await restored.load();
+      expect(restored.isTokenizerCurrent).toBe(true);
+      expect([...restored.search('wrong').keys()]).toEqual([]);
+      expect([...restored.search('"alpha beta"').keys()]).toEqual(['raw']);
+      expect([...restored.search('title:quarterly').keys()]).toEqual(['raw']);
+      expect([...restored.search('path:ledger').keys()]).toEqual(['raw']);
+    } finally {
+      restored.close();
+    }
+  });
+  it('필드는 저장·재시작 후에도 유지하고 경로 필드는 항상 원본 경로를 사용한다', async () => {
+    const dbName = createDbName();
+    const index = new IndexedDbBM25Index(dbName);
+    await index.load();
+    const document = {
+      id: 'fielded',
+      text: 'alpha beta gamma',
+      sourcePath: 'reports/ledger.md',
+      title: 'Quarterly Ledger',
+      headings: ['Deployment Guide'],
+      tags: ['finance'],
+    };
+    index.addCorpusDocument(document);
+    await index.persist();
+    expect(await index.getCorpusDocumentsByIds(['fielded'])).toEqual([
+      expect.objectContaining(document),
+    ]);
+    index.close();
+    const restored = new IndexedDbBM25Index(dbName);
+    try {
+      await restored.load();
+      expect(await restored.getCorpusDocumentsByIds(['fielded'])).toEqual([
+        expect.objectContaining(document),
+      ]);
+      for (const query of [
+        'title:quarterly',
+        'heading:deployment',
+        'tag:finance',
+        'path:ledger',
+        '"alpha beta"',
+        '"alpha gamma"~1',
+        'alph*',
+        'alphx',
+      ]) {
+        expect([...restored.search(query).keys()], query).toEqual(['fielded']);
+      }
+    } finally {
+      restored.close();
+    }
+  });
+  it('sourcePath가 없는 문서는 런타임 path 필드로 id를 사용한다', async () => {
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
+    await bm25.load();
+    try {
+      bm25.addDocument('standalone::0', 'alpha 베타');
+
+      expect([...bm25.search('path:standalone').keys()]).toEqual(['standalone::0']);
+      expect([...bm25.search('alpha').keys()]).toEqual(['standalone::0']);
+    } finally {
+      bm25.close();
+    }
+  });
   it('현행 WASM 런타임에서 문서 교체와 원문별 삭제 후 검색·저장을 보존한다', () => {
     const runtime = RustBm25RuntimeIndex.empty(2);
     if (!runtime) throw new Error('WASM 초기화 실패');
@@ -544,6 +635,189 @@ describe('IndexedDbBM25Index', () => {
     expect([...bm25.search('baseline').keys()]).toEqual(['baseline.md::0']);
   });
 
+  it('재시작은 스냅샷과 tombstone 델타만으로 런타임을 복구한다', async () => {
+    const dbName = createDbName();
+    const snapshotRaw = '{"schemaVersion":3,"tokenizerVersion":2,"docs":["canned"]}';
+    const first = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
+      workerFactory: createScriptedWorker(snapshotRaw).factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await first.load();
+    expect(first.recoveryMode).toBe('full');
+    first.addDocument('note.md::0', 'alpha 원문', 'note.md');
+    await first.persist();
+
+    const captured = await readSnapshotState(dbName);
+    expect(captured.manifest?.tokenizerVersion).toBe(2);
+    expect(captured.manifest?.docCount).toBe(1);
+    expect(captured.manifest?.lastOrder).toBeGreaterThan(0);
+    expect(captured.blockCount).toBeGreaterThan(0);
+    expect(captured.manifest?.byteLength).toBe(snapshotRaw.length);
+    first.removeDocumentsBySource('note.md');
+    await first.persist();
+    // 두 번째 persist는 캡처 주기 안이라 tombstone 로그를 지우지 않는다.
+    const afterRemoval = await readSnapshotState(dbName);
+    expect(afterRemoval.manifest?.lastOrder).toBe(captured.manifest?.lastOrder);
+    expect(afterRemoval.removals.map((record) => record.kind)).toEqual(['remove-source']);
+    expect(afterRemoval.removals[0]?.order).toBeGreaterThan(captured.manifest?.lastOrder ?? 0);
+
+    const secondWorker = createScriptedWorker(snapshotRaw);
+    const second = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
+      workerFactory: secondWorker.factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await second.load();
+
+    const initialize = secondWorker.requests.find((request) => request.operation === 'initialize');
+    expect(initialize?.snapshot).toBe(snapshotRaw);
+    expect(initialize?.sinceOrder).toBe(captured.manifest?.lastOrder);
+    expect(initialize?.expectedDocs).toBe(captured.manifest?.docCount);
+    expect(second.recoveryMode).toBe('snapshot+delta');
+    second.close();
+    first.close();
+  });
+
+  it('블록이 사라진 스냅샷은 폐기하고 원문에서 전량 복구한다', async () => {
+    const dbName = createDbName();
+    const first = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
+      workerFactory: createScriptedWorker('{"docs":[]}').factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await first.load();
+    first.addDocument('note.md::0', 'alpha 원문', 'note.md');
+    await first.persist();
+    await deleteSnapshotBlocks(dbName);
+
+    const secondWorker = createScriptedWorker('{"docs":[]}');
+    const second = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
+      workerFactory: secondWorker.factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await second.load();
+
+    const initialize = secondWorker.requests.find((request) => request.operation === 'initialize');
+    expect(initialize?.snapshot).toBe('');
+    expect(initialize?.sinceOrder).toBeUndefined();
+    expect(second.recoveryMode).toBe('full');
+    expect((await readSnapshotState(dbName)).manifest).toBeNull();
+    second.close();
+    first.close();
+  });
+
+  it('블록 기록이 quota로 실패해도 색인은 계속되고 다음 시작은 전량 복구한다', async () => {
+    const dbName = createDbName();
+    const failing = new QuotaFailingBm25Index(dbName, createAdapter(), undefined, {
+      workerFactory: createScriptedWorker('{"docs":[]}').factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await failing.load();
+    failing.addDocument('note.md::0', 'alpha 원문', 'note.md');
+    await failing.persist();
+
+    expect(failing.isReady).toBe(true);
+    expect(failing.recoveryMode).toBe('full');
+    const state = await readSnapshotState(dbName);
+    expect(state.manifest).toBeNull();
+    expect(state.blockCount).toBe(0);
+
+    const secondWorker = createScriptedWorker('{"docs":[]}');
+    const second = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
+      workerFactory: secondWorker.factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await second.load();
+    expect(second.recoveryMode).toBe('full');
+    expect((await second.getCorpusDocumentsByIds(['note.md::0'])).length).toBe(1);
+    second.close();
+    failing.close();
+  });
+
+  it('스냅샷 직렬화 중 들어온 변경은 다음 델타로 남겨 유실하지 않는다', async () => {
+    const dbName = createDbName();
+    const gated = createScriptedWorker('{"docs":[]}', { holdSerialize: true });
+    const bm25 = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
+      workerFactory: gated.factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await bm25.load();
+    bm25.addDocument('early.md::0', 'early 원문', 'early.md');
+    const persisting = bm25.persist();
+    await waitForRequest(gated.requests, 'serialize');
+    bm25.addDocument('late.md::0', 'late 원문', 'late.md');
+    gated.releaseSerialize();
+    await persisting;
+    // 캡처 뒤 들어온 변경은 다음 persist에서 저장되어 델타로 남는다.
+    await bm25.persist();
+
+    const state = await readSnapshotState(dbName);
+    const late = await readDocumentOrder(dbName, 'late.md::0');
+    expect(late).toBeGreaterThan(state.manifest?.lastOrder ?? 0);
+    expect(await readDocumentOrder(dbName, 'early.md::0')).toBeLessThanOrEqual(
+      state.manifest?.lastOrder ?? 0,
+    );
+    bm25.close();
+  });
+
+  it('토크나이저 계약이 바뀐 스냅샷은 쓰지 않고 폐기한다', async () => {
+    const dbName = createDbName();
+    await seedSnapshotManifest(dbName, {
+      generation: 'legacy-generation',
+      tokenizerVersion: 1,
+      lastOrder: 100,
+      docCount: 1,
+      byteLength: 8,
+      blockCount: 1,
+    });
+
+    const worker = createScriptedWorker('{"docs":[]}');
+    const bm25 = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
+      workerFactory: worker.factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await bm25.load();
+
+    const initialize = worker.requests.find((request) => request.operation === 'initialize');
+    expect(initialize?.snapshot).toBe('');
+    expect(bm25.recoveryMode).toBe('full');
+    expect((await readSnapshotState(dbName)).manifest).toBeNull();
+    bm25.close();
+  });
+
+  it('재시작 sweep은 활성 세대가 아닌 고아 스냅샷 블록만 지운다', async () => {
+    const dbName = createDbName();
+    const first = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
+      workerFactory: createScriptedWorker('{"docs":[]}').factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await first.load();
+    first.addDocument('note.md::0', 'alpha 원문', 'note.md');
+    await first.persist();
+    const captured = await readSnapshotState(dbName);
+    await seedOrphanSnapshotBlock(dbName, 'dead-generation', '{}');
+
+    const secondWorker = createScriptedWorker('{"docs":[]}');
+    const second = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
+      workerFactory: secondWorker.factory,
+      snapshotMinOrders: 1,
+      snapshotIntervalMs: 60_000,
+    });
+    await second.load();
+
+    expect(second.recoveryMode).toBe('snapshot+delta');
+    expect(await readSnapshotBlockKeys(dbName)).toEqual([`${captured.manifest?.generation}:0`]);
+    second.close();
+    first.close();
+  });
+
   it('deleteDatabase는 BM25 문서와 mutation DB를 통째로 삭제한다', async () => {
     const dbName = createDbName();
     const bm25 = new IndexedDbBM25Index(dbName, createAdapter());
@@ -689,4 +963,186 @@ function createInspectableAdapter(rawJson?: string): InspectableAdapter {
     readCount: () => reads,
     writeCount: () => writes,
   };
+}
+
+class QuotaFailingBm25Index extends IndexedDbBM25Index {
+  protected override writeSnapshotBlock(_key: string, _data: string): Promise<void> {
+    return Promise.reject(new DOMException('quota exceeded', 'QuotaExceededError'));
+  }
+}
+
+interface ScriptedWorkerHandle {
+  factory: BM25WorkerFactory;
+  requests: BM25WorkerRequest[];
+  releaseSerialize(): void;
+}
+
+function createScriptedWorker(
+  snapshot: string,
+  options: { holdSerialize?: boolean } = {},
+): ScriptedWorkerHandle {
+  const requests: BM25WorkerRequest[] = [];
+  let respond: ((event: MessageEvent<BM25WorkerResponse>) => void) | undefined;
+  let release: (() => void) | undefined;
+  const gate = options.holdSerialize
+    ? new Promise<void>((resolve) => {
+        release = resolve;
+      })
+    : undefined;
+  const factory: BM25WorkerFactory = () => ({
+    worker: {
+      postMessage: (message) => {
+        requests.push(message);
+        const deliver = async (): Promise<void> => {
+          let response: BM25WorkerResponse = {
+            id: message.id,
+            ready: true,
+            tokenizerCurrent: true,
+            totalDocs: message.snapshot ? 1 : 2,
+          };
+          if (message.operation === 'serialize') {
+            await gate;
+            response = { ...response, snapshot };
+          }
+          respond?.({ data: response } as MessageEvent<BM25WorkerResponse>);
+        };
+        void deliver();
+      },
+      terminate: vi.fn(),
+      setOnMessage: (handler) => {
+        respond = handler;
+      },
+      setOnError: () => undefined,
+    },
+    dispose: vi.fn(),
+  });
+  return { factory, requests, releaseSerialize: () => release?.() };
+}
+
+async function waitForRequest(
+  requests: readonly BM25WorkerRequest[],
+  operation: BM25WorkerRequest['operation'],
+): Promise<void> {
+  for (let attempt = 0; attempt < 400; attempt++) {
+    if (requests.some((request) => request.operation === operation)) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error(`BM25 worker request ${operation} was not sent.`);
+}
+
+interface SnapshotManifestRecord {
+  generation: string;
+  tokenizerVersion: number;
+  lastOrder: number;
+  docCount: number;
+  byteLength: number;
+  blockCount: number;
+}
+
+interface SnapshotRemovalRecord {
+  order: number;
+  kind: string;
+  target: string;
+}
+
+interface SnapshotState {
+  manifest: SnapshotManifestRecord | null;
+  blockCount: number;
+  removals: SnapshotRemovalRecord[];
+}
+
+interface StoredSnapshotMeta {
+  key: string;
+  value: string;
+  updated: number;
+}
+
+function openSnapshotDb(dbName: string): Dexie {
+  const db = new Dexie(dbName);
+  db.version(3).stores({
+    meta: 'key',
+    documents: 'id, sourcePath, updated, order',
+    mutations: 'id, kind, target, updated, order',
+    removals: 'order, target',
+    snapshotBlocks: 'key',
+  });
+  return db;
+}
+
+async function seedOrphanSnapshotBlock(
+  dbName: string,
+  generation: string,
+  data: string,
+): Promise<void> {
+  const db = openSnapshotDb(dbName);
+  try {
+    await db.table('snapshotBlocks').put({ key: `${generation}:0`, data });
+  } finally {
+    db.close();
+  }
+}
+
+async function readSnapshotBlockKeys(dbName: string): Promise<string[]> {
+  const db = openSnapshotDb(dbName);
+  try {
+    const keys = await db
+      .table<{ key: string }, string>('snapshotBlocks')
+      .toCollection()
+      .primaryKeys();
+    return [...keys].sort((a, b) => a.localeCompare(b));
+  } finally {
+    db.close();
+  }
+}
+
+async function readSnapshotState(dbName: string): Promise<SnapshotState> {
+  const db = openSnapshotDb(dbName);
+  try {
+    const stored = await db
+      .table<StoredSnapshotMeta, string>('meta')
+      .get('bm25-snapshot-manifest:v1');
+    const value = stored?.value;
+    return {
+      manifest: typeof value === 'string' ? (JSON.parse(value) as SnapshotManifestRecord) : null,
+      blockCount: await db.table('snapshotBlocks').count(),
+      removals: await db.table<SnapshotRemovalRecord, number>('removals').toArray(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function readDocumentOrder(dbName: string, id: string): Promise<number | undefined> {
+  const db = openSnapshotDb(dbName);
+  try {
+    const record = await db.table<{ id: string; order?: number }, string>('documents').get(id);
+    return record?.order;
+  } finally {
+    db.close();
+  }
+}
+
+async function deleteSnapshotBlocks(dbName: string): Promise<void> {
+  const db = openSnapshotDb(dbName);
+  try {
+    await db.table('snapshotBlocks').clear();
+  } finally {
+    db.close();
+  }
+}
+
+async function seedSnapshotManifest(
+  dbName: string,
+  manifest: SnapshotManifestRecord,
+): Promise<void> {
+  const db = openSnapshotDb(dbName);
+  try {
+    await db.table('meta').put({
+      key: 'bm25-snapshot-manifest:v1',
+      value: JSON.stringify(manifest),
+      updated: 1000,
+    });
+  } finally {
+    db.close();
+  }
 }

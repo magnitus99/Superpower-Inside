@@ -13,7 +13,7 @@ import {
 import type { DataAdapter, TFile, Vault } from 'obsidian';
 import type { ChatConfig, RAGConfig } from '../settings';
 import type { EmbeddingProvider } from '../llm/embedding';
-import { MemoryVectorStore, type VectorEntry } from './store';
+import { IndexedDbVectorStore, MemoryVectorStore, type VectorEntry } from './store';
 import { calculateRagStatus } from './status';
 import { IndexedDbBM25Index } from './bm25';
 import { planIndexPendingFilesRust } from './rust-core';
@@ -24,8 +24,47 @@ import * as sourceAccess from './source-access';
 import * as sourceSnapshot from './source-snapshot';
 
 const bm25DbNames = new Set<string>();
+const vectorDbNames = new Set<string>();
 
 describe('인덱싱 제외 정책', () => {
+  it('기존 메타데이터와 Rust 청크 헤딩을 BM25 필드로 전달한다', async () => {
+    const vault = createVault(new Map([['reports/ledger.md', '# Deployment\nalpha beta body']]));
+    const file = vault.getFiles()[0];
+    const dbName = `metadata-fields-${crypto.randomUUID()}`;
+    bm25DbNames.add(dbName);
+    const bm25 = new IndexedDbBM25Index(dbName);
+    await bm25.load();
+    try {
+      const indexer = new VaultIndexer(
+        vault,
+        new MemoryVectorStore(),
+        {
+          embed: () => Promise.resolve([1, 0]),
+          embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+        },
+        createRagConfig(),
+        createChatConfig(),
+        bm25,
+        undefined,
+        undefined,
+        {
+          getFileCache: () => ({
+            frontmatter: { title: 'Quarterly Report', tags: ['finance', 'planning'] },
+          }),
+        },
+      );
+      await indexer.indexFile(file);
+      const documents = await bm25.getCorpusDocumentsBySourcePaths([file.path]);
+      expect(documents).not.toHaveLength(0);
+      expect(documents[0]).toMatchObject({
+        title: 'Quarterly Report',
+        tags: ['finance', 'planning'],
+        headings: ['Deployment'],
+      });
+    } finally {
+      bm25.close();
+    }
+  });
   it.each(
     ['vector', 'bm25', 'hybrid', 'ann'].flatMap((mode) =>
       ['true', '"true"', '0', '1', '트루', '""', 'null', '', '[]', '{}'].map((value) => ({
@@ -146,6 +185,28 @@ describe('인덱싱 제외 정책', () => {
       bm25.close();
     },
   );
+  it('중단된 파일 쓰기 복구 요청은 재색인 성공 뒤 완료 처리된다', async () => {
+    const vault = createVault(new Map([['recovered.md', 'recovery alpha evidence']]));
+    const file = vault.getFiles()[0];
+    if (!file) throw new Error('테스트 파일이 없습니다.');
+    const dbName = `write-recovery-${crypto.randomUUID()}`;
+    vectorDbNames.add(dbName);
+    const store = new IndexedDbVectorStore(dbName);
+    const provider: EmbeddingProvider = {
+      embed: () => Promise.resolve([1, 0]),
+      embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+    };
+    const indexer = new VaultIndexer(vault, store, provider, createRagConfig(), createChatConfig());
+    await store.setMetaValue('write-recovery-requests:v1', ['recovered.md']);
+    expect(await store.readPendingWriteRecovery()).toEqual(['recovered.md']);
+
+    const result = await indexer.indexFile(file);
+
+    expect(result.indexed).toBe(1);
+    expect(await store.readPendingWriteRecovery()).toEqual([]);
+    store.close();
+  });
+
   it('임베딩 응답을 기다리는 동안 YAML로 제외하면 늦은 벡터와 BM25를 모두 제거한다', async () => {
     const contents = new Map([['private.md', 'private secret']]);
     const vault = createVault(contents);
@@ -176,6 +237,8 @@ describe('인덱싱 제외 정책', () => {
 afterEach(async () => {
   await Promise.all([...bm25DbNames].map((name) => Dexie.delete(name)));
   bm25DbNames.clear();
+  await Promise.all([...vectorDbNames].map((name) => Dexie.delete(name)));
+  vectorDbNames.clear();
 });
 
 vi.mock('./rust-core', async () => {

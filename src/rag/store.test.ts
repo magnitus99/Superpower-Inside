@@ -203,6 +203,179 @@ describe('IndexedDbVectorStore', () => {
     );
   });
 
+  it('쓰기는 작업자를 종료하지 않고 revision으로 색인 세대를 무효화한다', async () => {
+    const search = vi.fn<VectorSearchWorkerLike['search']>(() =>
+      Promise.resolve([{ id: 'a.md::0', score: 1 }]),
+    );
+    const close = vi.fn();
+    const factory = vi.fn(() => ({ search, close }));
+    const store = createStore(createDbName(), {
+      hydrateAllEntryLimit: 2,
+      vectorSearchWorkerFactory: factory,
+    });
+    await store.add([
+      createEntry('a.md', 0, [1, 0], 'a'),
+      createEntry('b.md', 0, [0.8, 0.2], 'b'),
+      createEntry('c.md', 0, [0, 1], 'c'),
+    ]);
+    await store.search({ queryVector: [1, 0], topK: 1 });
+    const firstRevision = search.mock.calls[0]?.[0]?.revision;
+    expect(typeof firstRevision).toBe('number');
+
+    await store.add([createEntry('d.md', 0, [0.6, 0.4], 'd')]);
+    await store.search({ queryVector: [1, 0], topK: 1 });
+
+    expect(factory).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    expect(search.mock.calls[1]?.[0]?.revision).toBeGreaterThan(firstRevision ?? 0);
+  });
+
+  it('검색 중 쓰기가 끼어들면 구세대 결과를 버리고 재시도한다', async () => {
+    let calls = 0;
+    const holder: { store: IndexedDbVectorStore | null } = { store: null };
+    const search = vi.fn<VectorSearchWorkerLike['search']>(async () => {
+      calls += 1;
+      if (calls === 1) await holder.store?.removeByFilePath('b.md');
+      return calls === 1
+        ? [{ id: 'b.md::0', score: 1 }]
+        : [{ id: 'a.md::0', score: 0.9 }];
+    });
+    const store = createStore(createDbName(), {
+      hydrateAllEntryLimit: 2,
+      vectorSearchWorkerFactory: () => ({ search, close: vi.fn() }),
+    });
+    holder.store = store;
+    await store.add([
+      createEntry('a.md', 0, [1, 0], 'a'),
+      createEntry('b.md', 0, [0.8, 0.2], 'b'),
+      createEntry('c.md', 0, [0, 1], 'c'),
+    ]);
+
+    const results = await store.search({ queryVector: [1, 0], topK: 2 });
+
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(results.map((result) => result.entry.id)).toEqual(['a.md::0']);
+    expect(store.getRuntimeCacheStats()).toEqual(
+      expect.objectContaining({ searchStale: false, workerSearchActive: true }),
+    );
+  });
+
+  it('재시도 중에도 세대가 계속 바뀌면 결과에 불완전 표시를 남긴다', async () => {
+    const holder: { store: IndexedDbVectorStore | null } = { store: null };
+    const search = vi.fn<VectorSearchWorkerLike['search']>(async () => {
+      await holder.store?.add([createEntry('live.md', 0, [0.5, 0.5], 'live')]);
+      return [{ id: 'a.md::0', score: 1 }];
+    });
+    const store = createStore(createDbName(), {
+      hydrateAllEntryLimit: 2,
+      vectorSearchWorkerFactory: () => ({ search, close: vi.fn() }),
+    });
+    holder.store = store;
+    await store.add([
+      createEntry('a.md', 0, [1, 0], 'a'),
+      createEntry('b.md', 0, [0.8, 0.2], 'b'),
+      createEntry('c.md', 0, [0, 1], 'c'),
+    ]);
+
+    const results = await store.search({ queryVector: [1, 0], topK: 2 });
+
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(results.map((result) => result.entry.id)).toEqual(['a.md::0']);
+    expect(store.getRuntimeCacheStats()).toEqual(
+      expect.objectContaining({ searchStale: true }),
+    );
+  });
+
+  it('성공한 파일 쓰기는 원장에 흔적을 남기지 않는다', async () => {
+    const dbName = createDbName();
+    const store = createStore(dbName);
+    await store.add([createEntry('a.md', 0, [1, 0], 'a'), createEntry('b.md', 0, [0, 1], 'b')]);
+    await store.replaceFileEntries('b.md', [createEntry('b.md', 0, [0.5, 0.5], 'b2')]);
+
+    expect(await store.probePendingFileWrites()).toEqual([]);
+  });
+
+  it('중단된 파일 쓰기는 재시작 뒤 재색인 대상으로 한 번만 보고된다', async () => {
+    const dbName = createDbName();
+    const store = createStore(dbName);
+    await store.add([createEntry('a.md', 0, [1, 0], 'a')]);
+    store.close();
+    await seedPendingWrite(dbName, 'broken.md');
+
+    const reopened = createStore(dbName);
+
+    expect(await reopened.probePendingFileWrites()).toEqual(['broken.md']);
+    expect(await reopened.probePendingFileWrites()).toEqual([]);
+  });
+
+  it('복구 요청은 원장을 비우기 전에 내구 기록되고 완료 시 제거된다', async () => {
+    const dbName = createDbName();
+    const store = createStore(dbName);
+    await store.add([createEntry('a.md', 0, [1, 0], 'a')]);
+    store.close();
+    await seedPendingWrite(dbName, 'broken.md');
+
+    const reopened = createStore(dbName);
+    expect(await reopened.probePendingFileWrites()).toEqual(['broken.md']);
+    expect(await reopened.readPendingWriteRecovery()).toEqual(['broken.md']);
+    expect(await reopened.probePendingFileWrites()).toEqual([]);
+    expect(await reopened.readPendingWriteRecovery()).toEqual(['broken.md']);
+
+    await reopened.completePendingWriteRecovery(['broken.md']);
+
+    expect(await reopened.readPendingWriteRecovery()).toEqual([]);
+  });
+
+  it('복구 요청 기록이 실패하면 원장을 지우지 않는다', async () => {
+    const dbName = createDbName();
+    await seedPendingWrite(dbName, 'broken.md');
+    const failing = new FailingRecoveryVectorStore(dbName);
+
+    await expect(failing.probePendingFileWrites()).rejects.toThrow('recovery request write failed');
+
+    const healthy = createStore(dbName);
+    expect(await healthy.probePendingFileWrites()).toEqual(['broken.md']);
+  });
+
+  it('paged 정확 검색도 검색 중 쓰기가 끼어들면 구세대 결과를 버리고 재시도한다', async () => {
+    const dbName = createDbName();
+    const store = new RacingVectorStore(dbName, { hydrateAllEntryLimit: 2, pageSize: 1 });
+    await store.add([
+      createEntry('a.md', 0, [1, 0], 'a'),
+      createEntry('b.md', 0, [0.8, 0.2], 'b'),
+      createEntry('c.md', 0, [0, 1], 'c'),
+    ]);
+    store.afterRead = async () => {
+      store.afterRead = null;
+      await store.removeByFilePath('b.md');
+    };
+
+    const results = await store.search({ queryVector: [1, 0], topK: 3 });
+
+    expect(store.afterReadCount).toBe(2);
+    expect(results.map((result) => result.entry.id)).toEqual(['a.md::0', 'c.md::0']);
+    expect(store.getRuntimeCacheStats()).toEqual(expect.objectContaining({ searchStale: false }));
+    await expectIdsExist(store, results);
+  });
+
+  it('작은 인덱스 캐시 검색도 세대가 계속 바뀌면 유령 id 없이 불완전을 표시한다', async () => {
+    const dbName = createDbName();
+    const store = new RacingVectorStore(dbName, { hydrateAllEntryLimit: 100 });
+    await store.add([
+      createEntry('a.md', 0, [1, 0], 'a'),
+      createEntry('b.md', 0, [0.8, 0.2], 'b'),
+      createEntry('c.md', 0, [0, 1], 'c'),
+    ]);
+    store.afterRead = () => store.removeByFilePath('b.md').then(() => undefined);
+
+    const results = await store.search({ queryVector: [1, 0], topK: 3 });
+
+    expect(store.afterReadCount).toBe(2);
+    expect(results.map((result) => result.entry.id)).not.toContain('b.md::0');
+    expect(store.getRuntimeCacheStats()).toEqual(expect.objectContaining({ searchStale: true }));
+    await expectIdsExist(store, results);
+  });
+
   it('대형 볼트 검색은 사용 가능한 worker에서 id와 점수만 받아 결과를 복원한다', async () => {
     const search = vi.fn<VectorSearchWorkerLike['search']>(() =>
       Promise.resolve([{ id: 'd.md::0', score: 0.99 }]),
@@ -656,6 +829,44 @@ describe('legacy JSON vector import', () => {
 
 function createDbName(): string {
   return `SuperpowerInsideVectorStoreTest-${crypto.randomUUID()}`;
+}
+
+class RacingVectorStore extends IndexedDbVectorStore {
+  afterRead: (() => Promise<void>) | null = null;
+  afterReadCount = 0;
+
+  protected override afterSearchRead(): Promise<void> {
+    this.afterReadCount += 1;
+    return this.afterRead ? this.afterRead() : Promise.resolve();
+  }
+}
+
+class FailingRecoveryVectorStore extends IndexedDbVectorStore {
+  protected override persistWriteRecoveryRequests(): Promise<void> {
+    return Promise.reject(new Error('recovery request write failed'));
+  }
+}
+
+async function expectIdsExist(
+  store: IndexedDbVectorStore,
+  results: readonly { entry: { id: string } }[],
+): Promise<void> {
+  const ids = results.map((result) => result.entry.id);
+  const records = await store.getEntriesByIds(ids);
+  expect(records.map((record) => record.id).sort()).toEqual([...ids].sort());
+}
+
+async function seedPendingWrite(dbName: string, filePath: string): Promise<void> {
+  const db = new Dexie(dbName);
+  db.version(4).stores({
+    vectors:
+      'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
+    fileIndex: 'filePath, updated',
+    meta: 'key',
+    pendingWrites: 'filePath, updated',
+  });
+  await db.table('pendingWrites').put({ filePath, updated: 1 });
+  db.close();
 }
 
 function createStore(

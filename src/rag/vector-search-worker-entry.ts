@@ -20,6 +20,10 @@ interface VectorSearchWorkerRequest {
   queryVector: number[];
   topK: number;
   filter?: VectorSearchFilter;
+  /** 스토어 변경 세대. 색인 캐시 키에 포함되어 쓰기 뒤 구세대를 재사용하지 않습니다. */
+  revision?: number;
+  /** 단일 색인이 차지할 수 있는 최대 바이트. 초과하면 명시 오류로 정확 검색에 위임합니다. */
+  maxIndexBytes?: number;
   records?: PersistedVectorRecord[];
 }
 
@@ -32,6 +36,9 @@ interface VectorSearchWorkerResponse {
   id: number;
   hits?: VectorSearchWorkerHit[];
   indexedCount?: number;
+  revision?: number;
+  cacheHit?: boolean;
+  indexBytes?: number;
   error?: string;
 }
 
@@ -54,9 +61,12 @@ interface CachedVectorIndex {
   ids: string[];
   dimension: number;
   runtime: VectorRuntimeIndex;
+  indexBytes: number;
 }
 
+/** 작업자가 만든 색인을 유지하는 세대 수입니다. 쓰기마다 세대가 바뀌므로 최근 세대만 남깁니다. */
 const MAX_INDEX_CACHE_SIZE = 2;
+const DEFAULT_MAX_INDEX_BYTES = 192 * 1024 * 1024;
 const indexCache = new Map<string, CachedVectorIndex>();
 let initialized = false;
 let queue = Promise.resolve();
@@ -77,7 +87,14 @@ async function handleMessage(request: VectorSearchWorkerRequest): Promise<void> 
     const query = Float32Array.from(request.queryVector);
     if (query.length === 0) throw new Error('Vector search query is empty.');
     const filter = { ...request.filter, dimension: request.filter?.dimension ?? query.length };
-    const index = await getOrBuildIndex(request.dbName, filter, request.records);
+    const cache = await getOrBuildIndex(
+      request.dbName,
+      filter,
+      request.revision,
+      request.maxIndexBytes,
+      request.records,
+    );
+    const index = cache.index;
     if (index.dimension !== query.length) {
       throw new Error('Vector search query dimension does not match the index.');
     }
@@ -103,6 +120,9 @@ async function handleMessage(request: VectorSearchWorkerRequest): Promise<void> 
       id: request.id,
       hits,
       indexedCount: index.ids.length,
+      revision: request.revision,
+      cacheHit: cache.cacheHit,
+      indexBytes: index.indexBytes,
     } satisfies VectorSearchWorkerResponse);
   } catch (error) {
     self.postMessage({
@@ -115,14 +135,16 @@ async function handleMessage(request: VectorSearchWorkerRequest): Promise<void> 
 async function getOrBuildIndex(
   dbName: string,
   filter: VectorSearchFilter,
+  revision: number | undefined,
+  requestedMaxIndexBytes: number | undefined,
   providedRecords?: PersistedVectorRecord[],
-): Promise<CachedVectorIndex> {
-  const key = createIndexKey(dbName, filter);
+): Promise<{ index: CachedVectorIndex; cacheHit: boolean }> {
+  const key = createIndexKey(dbName, filter, revision);
   const cached = indexCache.get(key);
   if (cached) {
     indexCache.delete(key);
     indexCache.set(key, cached);
-    return cached;
+    return { index: cached, cacheHit: true };
   }
   const matchingRecords =
     providedRecords?.filter((record) => matchesFilter(record, filter)) ??
@@ -148,6 +170,13 @@ async function getOrBuildIndex(
   });
   const dimension = filter.dimension ?? records[0]?.dimension ?? 0;
   if (dimension <= 0) throw new Error('Vector search index dimension is invalid.');
+  const vectorBytes = records.length * dimension * 4;
+  const maxIndexBytes = normalizeMaxIndexBytes(requestedMaxIndexBytes);
+  if (vectorBytes > maxIndexBytes) {
+    throw new Error(
+      `Vector search index requires ${vectorBytes} bytes above the ${maxIndexBytes} byte budget.`,
+    );
+  }
   const ids: string[] = [];
   const matrix = new Float32Array(records.length * dimension);
   let rowCount = 0;
@@ -160,15 +189,33 @@ async function getOrBuildIndex(
   }
   const compactMatrix =
     rowCount === records.length ? matrix : matrix.slice(0, rowCount * dimension);
-  const next = { ids, dimension, runtime: new VectorRuntimeIndex(compactMatrix, dimension) };
+  const next: CachedVectorIndex = {
+    ids,
+    dimension,
+    runtime: new VectorRuntimeIndex(compactMatrix, dimension),
+    indexBytes: rowCount * dimension * 4,
+  };
   indexCache.set(key, next);
-  while (indexCache.size > MAX_INDEX_CACHE_SIZE) {
+  evictIndexesAboveBudget(maxIndexBytes);
+  return { index: next, cacheHit: false };
+}
+
+/** 캐시된 색인 총량이 예산을 넘으면 가장 오래된 세대부터 해제합니다. */
+function evictIndexesAboveBudget(maxIndexBytes: number): void {
+  while (indexCache.size > 1) {
+    let totalBytes = 0;
+    for (const entry of indexCache.values()) totalBytes += entry.indexBytes;
+    if (totalBytes <= maxIndexBytes && indexCache.size <= MAX_INDEX_CACHE_SIZE) return;
     const oldestKey = indexCache.keys().next().value;
-    if (!oldestKey) break;
+    if (!oldestKey) return;
     indexCache.get(oldestKey)?.runtime.free();
     indexCache.delete(oldestKey);
   }
-  return next;
+}
+
+function normalizeMaxIndexBytes(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_MAX_INDEX_BYTES;
+  return Math.max(4, Math.floor(value));
 }
 
 async function readMatchingVectors(
@@ -199,9 +246,14 @@ function readVector(record: PersistedVectorRecord): Float32Array {
   return Float32Array.from(record.vector ?? []);
 }
 
-function createIndexKey(dbName: string, filter: VectorSearchFilter): string {
+function createIndexKey(
+  dbName: string,
+  filter: VectorSearchFilter,
+  revision: number | undefined,
+): string {
   return [
     dbName,
+    String(revision ?? 0),
     filter.embeddingProvider ?? '',
     filter.embeddingModel ?? '',
     String(filter.dimension ?? 0),

@@ -1,4 +1,4 @@
-import type { TAbstractFile, TFile, Vault } from 'obsidian';
+import type { MetadataCache, TAbstractFile, TFile, Vault } from 'obsidian';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { assertValidEmbeddingBatch } from '../llm/embedding-validation';
 import type { VectorStore, VectorEntry, FileIndexRecord } from './store';
@@ -11,7 +11,7 @@ import {
 } from '../utils/vault';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
-import type { IndexedDbBM25Index } from './bm25';
+import { getBM25DocumentFields, type IndexedDbBM25Index } from './bm25';
 import { createContentHash } from './hash';
 import {
   planEmptyFileIndexRecordRust,
@@ -574,6 +574,7 @@ export class VaultIndexer {
     private bm25Index?: IndexedDbBM25Index,
     logger?: AppLogger | ScopedLogger,
     private readonly documentCorpus?: Pick<VaultDocumentCorpus, 'refreshFile' | 'removeFile'>,
+    private readonly metadataCache?: Pick<MetadataCache, 'getFileCache'>,
   ) {
     this.chatConfig = chatConfig;
     this.vault = vault;
@@ -880,6 +881,7 @@ export class VaultIndexer {
         this.bm25Index.removeDocumentsBySource(file.path);
         await this.bm25Index.persist();
       }
+      await this.vectorStore.completePendingWriteRecovery?.([file.path]);
       throwIfIndexingCancelled(options.signal);
       const skipped = finishIndexingResult(
         { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
@@ -905,6 +907,7 @@ export class VaultIndexer {
     const texts = chunks.map((chunk) => buildSearchText(file, chunk));
     if (this.bm25Index) {
       this.bm25Index.removeDocumentsBySource(file.path);
+      const metadata = this.metadataCache?.getFileCache(file);
       for (let index = 0; index < chunks.length; index++) {
         const chunk = chunks[index];
         const text = texts[index];
@@ -913,6 +916,7 @@ export class VaultIndexer {
           id: chunk.id,
           text,
           sourcePath: file.path,
+          ...getBM25DocumentFields(file, metadata, chunk.metadata.heading),
           heading: chunk.metadata.heading,
           startLine: chunk.metadata.startLine,
           endLine: chunk.metadata.endLine,
@@ -987,6 +991,8 @@ export class VaultIndexer {
     }
     throwIfIndexingCancelled(options.signal);
     await this.vectorStore.replaceFileEntries(file.path, entries);
+    // 중단된 쓰기로 등록된 복구 요청은 재색인이 끝난 시점에 완료 처리한다.
+    await this.vectorStore.completePendingWriteRecovery?.([file.path]);
 
     const finished = finishIndexingResult(
       { indexed: 1, vectors: entries.length, skipped: 0, documents: [file.path] },
@@ -1081,7 +1087,17 @@ export class VaultIndexer {
       this.bm25Index.removeDocumentsBySource(filePath);
       await this.bm25Index.persist();
     }
+    // 삭제까지 끝난 경로는 재색인 대상이 아니므로 복구 요청에서 제거한다.
+    await this.vectorStore.completePendingWriteRecovery?.([filePath]);
     return removed;
+  }
+
+  /**
+   * 중단된 파일 쓰기 원장을 보고하고 내구 복구 요청으로 등록합니다.
+   * 반환된 경로를 다시 색인하거나 삭제하면 요청이 자동으로 완료됩니다.
+   */
+  async listPendingWriteRecovery(): Promise<string[]> {
+    return (await this.vectorStore.probePendingFileWrites?.()) ?? [];
   }
 
   async indexPending(options: IndexingOptions = {}): Promise<IndexingResult> {

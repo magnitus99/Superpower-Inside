@@ -81,6 +81,13 @@ export interface IndexedDbVectorStoreOptions {
   vectorSearchWorkerFactory?: () => VectorSearchWorkerLike;
 }
 
+export interface VectorSearchWorkerSearchStats {
+  revision: number | null;
+  cacheHit: boolean;
+  indexBytes: number;
+  indexedCount: number;
+}
+
 export interface VectorSearchWorkerLike {
   search(input: {
     dbName: string;
@@ -88,7 +95,10 @@ export interface VectorSearchWorkerLike {
     topK: number;
     filter?: VectorSearchFilter;
     signal?: AbortSignal;
+    /** 스토어 변경 세대. 작업자 색인 캐시 키에 포함된다. */
+    revision?: number;
   }): Promise<Array<{ id: string; score: number }>>;
+  readonly lastSearchStats?: VectorSearchWorkerSearchStats | null;
   close(reason?: Error): void;
 }
 
@@ -98,6 +108,15 @@ export interface VectorRuntimeCacheStats {
   filteredRuntimeIndexCount: number;
   ivfRuntimeIndexCount: number;
   workerSearchActive: boolean;
+  /** 마지막 작업자 검색이 색인 세대를 재사용했는지(cold/warm)와 메모리 사용량입니다. */
+  searchCacheHit: boolean;
+  searchIndexBytes: number;
+  searchRevision: number;
+  /** 마지막 검색이 세대 불일치로 구세대 결과를 버렸는지(불완전 표시)입니다. */
+  searchStale: boolean;
+  /** 작업자 검색이 실패해 정확 검색으로 내려갔는지와 이유입니다. */
+  searchDegraded: boolean;
+  searchFallbackReason: string | null;
 }
 
 export interface VectorSearchFilter {
@@ -143,6 +162,12 @@ export interface VectorStore {
   getEntries(): Promise<VectorEntry[]>;
   getMetaValue?<T>(key: string): Promise<T | undefined>;
   setMetaValue?(key: string, value: unknown): Promise<void>;
+  /** 중단된 파일 쓰기 원장을 읽고 내구 복구 요청으로 등록한 뒤 비웁니다. */
+  probePendingFileWrites?(): Promise<string[]>;
+  /** 아직 완료되지 않은 내구 복구 요청입니다. */
+  readPendingWriteRecovery?(): Promise<string[]>;
+  /** 재색인·삭제가 끝난 경로를 복구 요청에서 제거합니다. */
+  completePendingWriteRecovery?(filePaths: readonly string[]): Promise<void>;
   close(): void;
 }
 
@@ -180,8 +205,11 @@ const DEFAULT_VECTOR_SEARCH_PAGE_SIZE = 256;
 const DEFAULT_RUNTIME_PAYLOAD_BUDGET_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SEARCH_CACHE_LIMIT = 4;
 const DEFAULT_RUNTIME_INDEX_CACHE_LIMIT = 2;
+const WORKER_SEARCH_REVISION_ATTEMPTS = 2;
 const DEFAULT_IVF_RUNTIME_INDEX_CACHE_LIMIT = 2;
 const DEFAULT_RECONCILIATION_PAGE_SIZE = 64;
+/** 중단된 파일 쓰기의 내구 복구 요청을 담는 meta 키입니다. */
+const VECTOR_WRITE_RECOVERY_KEY = 'write-recovery-requests:v1';
 
 interface IndexedDbVectorRecord {
   id: string;
@@ -201,10 +229,17 @@ interface VectorStoreMetaRecord {
   updated: number;
 }
 
+/** 파일 단위 벡터 쓰기의 시작/완료를 남기는 원장입니다. */
+interface VectorPendingWriteRecord {
+  filePath: string;
+  updated: number;
+}
+
 class VectorStoreDB extends GeneratedArtifactDatabase {
   vectors!: Dexie.Table<IndexedDbVectorRecord, string>;
   fileIndex!: Dexie.Table<FileIndexRecord, string>;
   meta!: Dexie.Table<VectorStoreMetaRecord, string>;
+  pendingWrites!: Dexie.Table<VectorPendingWriteRecord, string>;
 
   constructor(name: string, ownership?: GeneratedArtifactBinding) {
     super(name, ownership);
@@ -220,6 +255,13 @@ class VectorStoreDB extends GeneratedArtifactDatabase {
         'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
       fileIndex: 'filePath, updated',
       meta: 'key',
+    });
+    this.version(4).stores({
+      vectors:
+        'id, filePath, embeddingProvider, embeddingModel, dimension, [embeddingProvider+embeddingModel+dimension], updated',
+      fileIndex: 'filePath, updated',
+      meta: 'key',
+      pendingWrites: 'filePath, updated',
     });
   }
 }
@@ -544,6 +586,11 @@ export class IndexedDbVectorStore implements VectorStore {
   private ivfRuntimeIndexes: BoundedLruCache<string, RustIvfRuntimeIndex>;
   private vectorSearchWorker: VectorSearchWorkerLike | null = null;
   private readonly vectorSearchWorkerFactory: () => VectorSearchWorkerLike;
+  private mutationRevision = 0;
+  private lastWorkerSearchStats: VectorSearchWorkerSearchStats | null = null;
+  private lastSearchStale = false;
+  private lastSearchDegraded = false;
+  private lastSearchFallbackReason: string | null = null;
   private readonly vectorSearchWorkerAvailable: boolean;
   private readonly hydrateAllEntryLimit: number;
   private readonly pageSize: number;
@@ -585,15 +632,20 @@ export class IndexedDbVectorStore implements VectorStore {
 
   async add(newEntries: VectorEntry[]): Promise<void> {
     const now = Date.now();
+    const filePaths = uniqueFilePaths(newEntries);
     const records = newEntries.map((entry) => vectorRecordFromEntry(entry, now));
+    await this.beginFileWrites(filePaths, now);
     await this.db.vectors.bulkPut(records);
     await this.upsertFileIndexRecords(newEntries, now);
+    await this.finishFileWrites(filePaths);
+    this.noteVectorMutation();
     this.invalidateRuntimeCache();
   }
 
   async replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
     const now = Date.now();
     const records = entries.map((entry) => vectorRecordFromEntry(entry, now));
+    await this.beginFileWrites([filePath], now);
     await this.db.transaction('rw', this.db.vectors, async () => {
       await this.db.vectors.where('filePath').equals(filePath).delete();
       if (records.length > 0) {
@@ -610,34 +662,42 @@ export class IndexedDbVectorStore implements VectorStore {
     } else {
       await this.db.fileIndex.delete(filePath);
     }
+    await this.finishFileWrites([filePath]);
     if (this.entriesCache) {
       this.entriesCache = [
         ...this.entriesCache.filter((entry) => entry.metadata.filePath !== filePath),
         ...copyEntries(entries),
       ];
     }
+    this.noteVectorMutation();
     this.invalidateRuntimeIndex();
   }
 
   async markFileIndexedWithoutVectors(record: Omit<FileIndexRecord, 'vectorCount'>): Promise<void> {
+    await this.beginFileWrites([record.filePath], Date.now());
     await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
       await this.db.vectors.where('filePath').equals(record.filePath).delete();
       await this.db.fileIndex.put({ ...record, vectorCount: 0 });
     });
+    await this.finishFileWrites([record.filePath]);
     if (this.entriesCache) {
       this.entriesCache = this.entriesCache.filter(
         (entry) => entry.metadata.filePath !== record.filePath,
       );
     }
+    this.noteVectorMutation();
     this.invalidateRuntimeIndex();
   }
 
   async removeByFilePath(filePath: string): Promise<number> {
+    await this.beginFileWrites([filePath], Date.now());
     const removed = await this.db.vectors.where('filePath').equals(filePath).delete();
     await this.db.fileIndex.delete(filePath);
+    await this.finishFileWrites([filePath]);
     if (this.entriesCache) {
       this.entriesCache = this.entriesCache.filter((entry) => entry.metadata.filePath !== filePath);
     }
+    this.noteVectorMutation();
     this.invalidateRuntimeIndex();
     return removed;
   }
@@ -652,6 +712,9 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   async search(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
+    this.lastSearchStale = false;
+    this.lastSearchDegraded = false;
+    this.lastSearchFallbackReason = null;
     const totalEntries = await this.db.vectors.count();
     if (totalEntries > this.hydrateAllEntryLimit) {
       if (this.vectorSearchWorkerAvailable) {
@@ -661,19 +724,37 @@ export class IndexedDbVectorStore implements VectorStore {
           if (error instanceof DOMException && error.name === 'AbortError') throw error;
           this.vectorSearchWorker?.close();
           this.vectorSearchWorker = null;
+          // 예산·작업자 실패로 정확 검색에 위임할 때는 조용히 넘기지 않고 불완전/저하를 표시한다.
+          this.lastSearchDegraded = true;
+          this.lastSearchFallbackReason = error instanceof Error ? error.message : String(error);
         }
       }
       return this.searchPagedExact(request);
     }
-    const key = vectorSearchFilterKey(request.filter);
-    const entries = await this.getSearchEntries(key, request.filter);
-    const mode =
-      request.mode === 'ann' && entries.length >= Math.max(1, request.annMinEntryCount ?? 1)
-        ? 'ann'
-        : 'exact';
-    const runtimeIndex = mode === 'exact' ? this.getRuntimeIndexForKey(key, entries) : null;
-    const ivfIndex = mode === 'ann' ? this.getIvfRuntimeIndexForKey(key, entries, request) : null;
-    return scoredSearch(entries, { ...request, filter: undefined }, runtimeIndex, ivfIndex);
+    return this.searchCachedExact(request);
+  }
+
+  private async searchCachedExact(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
+    let results: VectorSearchResult[] = [];
+    let stale = false;
+    for (let attempt = 0; attempt < WORKER_SEARCH_REVISION_ATTEMPTS; attempt++) {
+      const revision = this.mutationRevision;
+      const key = vectorSearchFilterKey(request.filter);
+      const entries = await this.getSearchEntries(key, request.filter);
+      const mode =
+        request.mode === 'ann' && entries.length >= Math.max(1, request.annMinEntryCount ?? 1)
+          ? 'ann'
+          : 'exact';
+      const runtimeIndex = mode === 'exact' ? this.getRuntimeIndexForKey(key, entries) : null;
+      const ivfIndex =
+        mode === 'ann' ? this.getIvfRuntimeIndexForKey(key, entries, request) : null;
+      results = await scoredSearch(entries, { ...request, filter: undefined }, runtimeIndex, ivfIndex);
+      await this.afterSearchRead();
+      stale = this.mutationRevision !== revision;
+      if (!stale) break;
+    }
+    this.lastSearchStale = stale;
+    return stale ? await this.dropRemovedSearchResults(results) : results;
   }
 
   getRuntimeCacheStats(): VectorRuntimeCacheStats {
@@ -683,6 +764,12 @@ export class IndexedDbVectorStore implements VectorStore {
       filteredRuntimeIndexCount: this.filteredRuntimeIndexes.size,
       ivfRuntimeIndexCount: this.ivfRuntimeIndexes.size,
       workerSearchActive: this.vectorSearchWorker !== null,
+      searchCacheHit: this.lastWorkerSearchStats?.cacheHit ?? false,
+      searchIndexBytes: this.lastWorkerSearchStats?.indexBytes ?? 0,
+      searchRevision: this.lastWorkerSearchStats?.revision ?? this.mutationRevision,
+      searchStale: this.lastSearchStale,
+      searchDegraded: this.lastSearchDegraded,
+      searchFallbackReason: this.lastSearchFallbackReason,
     };
   }
 
@@ -693,12 +780,14 @@ export class IndexedDbVectorStore implements VectorStore {
     });
     this.entriesCache = [];
     this.reconciliationState = null;
+    this.noteVectorMutation();
     this.invalidateRuntimeIndex();
   }
 
   async deleteDatabase(): Promise<void> {
     this.entriesCache = null;
     this.reconciliationState = null;
+    this.closeVectorSearchWorker();
     this.invalidateRuntimeIndex();
     this.db.close({ disableAutoOpen: true });
     await Dexie.delete(this.db.name);
@@ -707,6 +796,7 @@ export class IndexedDbVectorStore implements VectorStore {
   close(): void {
     this.entriesCache = null;
     this.reconciliationState = null;
+    this.closeVectorSearchWorker();
     this.invalidateRuntimeIndex();
     this.db.close({ disableAutoOpen: true });
   }
@@ -979,6 +1069,22 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   private async searchPagedExact(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
+    let results: VectorSearchResult[] = [];
+    let stale = false;
+    for (let attempt = 0; attempt < WORKER_SEARCH_REVISION_ATTEMPTS; attempt++) {
+      const revision = this.mutationRevision;
+      results = await this.searchPagedExactOnce(request);
+      await this.afterSearchRead();
+      stale = this.mutationRevision !== revision;
+      if (!stale) break;
+    }
+    this.lastSearchStale = stale;
+    // 구세대 페이지 결과는 현재 DB에 없는 id를 버려 삭제·rename 근거를 남기지 않는다.
+    return stale ? await this.dropRemovedSearchResults(results) : results;
+  }
+
+  /** 중단된 쓰기 없이 읽는 단일 시도입니다. 세대 판정은 호출부가 합니다. */
+  private async searchPagedExactOnce(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
     throwIfAborted(request.signal);
     const topK = Math.max(0, Math.floor(request.topK));
     if (topK <= 0) return [];
@@ -1038,15 +1144,41 @@ export class IndexedDbVectorStore implements VectorStore {
     return selected;
   }
 
+  /** 검색이 저장소를 모두 읽은 직후 호출되는 확장점으로, 테스트가 쓰기를 주입합니다. */
+  protected afterSearchRead(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /** 구세대 결과에서 현재 DB에 없는 id를 제거합니다. */
+  private async dropRemovedSearchResults(
+    results: readonly VectorSearchResult[],
+  ): Promise<VectorSearchResult[]> {
+    if (results.length === 0) return [];
+    const records = await this.db.vectors.bulkGet(results.map((result) => result.entry.id));
+    return results.filter((_, index) => records[index] !== undefined);
+  }
+
   private async searchInWorker(request: VectorSearchRequest): Promise<VectorSearchResult[]> {
-    this.vectorSearchWorker ??= this.vectorSearchWorkerFactory();
-    const hits = await this.vectorSearchWorker.search({
-      dbName: this.db.name,
-      queryVector: request.queryVector,
-      topK: request.topK,
-      filter: request.filter,
-      signal: request.signal,
-    });
+    const worker = (this.vectorSearchWorker ??= this.vectorSearchWorkerFactory());
+    let hits: Array<{ id: string; score: number }> = [];
+    let stale = false;
+    // 색인 세대가 검색 중 바뀌면 구세대 결과를 버리고 최신 세대로 한 번 더 시도한다.
+    for (let attempt = 0; attempt < WORKER_SEARCH_REVISION_ATTEMPTS; attempt++) {
+      const revision = this.mutationRevision;
+      hits = await worker.search({
+        dbName: this.db.name,
+        queryVector: request.queryVector,
+        topK: request.topK,
+        filter: request.filter,
+        signal: request.signal,
+        revision,
+      });
+      const stats = worker.lastSearchStats ?? null;
+      this.lastWorkerSearchStats = stats;
+      stale = this.mutationRevision !== revision;
+      if (!stale) break;
+    }
+    this.lastSearchStale = stale;
     throwIfAborted(request.signal);
     const records = await this.db.vectors.bulkGet(hits.map((hit) => hit.id));
     return hits.flatMap((hit, index) => {
@@ -1106,9 +1238,87 @@ export class IndexedDbVectorStore implements VectorStore {
     this.invalidateRuntimeIndex();
   }
 
-  private invalidateRuntimeIndex(): void {
+  /**
+   * 파일 쓰기 전에 원장에 시작을 남깁니다. 완료 기록 없이 재시작되면 그 파일은 재색인 대상입니다.
+   * 완료 기록은 성공 경로에서만 지우므로 중단·실패가 남습니다.
+   */
+  private async beginFileWrites(filePaths: readonly string[], updated: number): Promise<void> {
+    if (filePaths.length === 0) return;
+    await this.db.pendingWrites.bulkPut(
+      filePaths.map((filePath) => ({ filePath, updated })),
+    );
+  }
+
+  private async finishFileWrites(filePaths: readonly string[]): Promise<void> {
+    if (filePaths.length === 0) return;
+    await this.db.pendingWrites.bulkDelete([...filePaths]);
+  }
+
+  /**
+   * 중단된 파일 쓰기 원장을 읽고 내구 복구 요청으로 등록한 뒤 비웁니다.
+   * 요청 기록이 먼저 성공해야 원장을 지우므로, 중간에 죽어도 복구 대상이 사라지지 않습니다.
+   */
+  async probePendingFileWrites(): Promise<string[]> {
+    const records = await this.db.pendingWrites.toArray();
+    if (records.length === 0) return [];
+    const interrupted = [...new Set(records.map((record) => record.filePath))].sort((a, b) =>
+      a.localeCompare(b),
+    );
+    await this.persistWriteRecoveryRequests(interrupted);
+    await this.db.pendingWrites.clear();
+    return interrupted;
+  }
+
+  /** 테스트에서 복구 요청 기록 실패를 주입할 수 있게 분리한 기록입니다. */
+  protected async persistWriteRecoveryRequests(filePaths: readonly string[]): Promise<void> {
+    const existing = await this.readPendingWriteRecovery();
+    const merged = [...new Set([...existing, ...filePaths])].sort((a, b) => a.localeCompare(b));
+    await this.db.meta.put({
+      key: VECTOR_WRITE_RECOVERY_KEY,
+      value: merged,
+      updated: Date.now(),
+    });
+  }
+
+  async readPendingWriteRecovery(): Promise<string[]> {
+    const stored = await this.db.meta.get(VECTOR_WRITE_RECOVERY_KEY);
+    const value = stored?.value;
+    if (!Array.isArray(value)) return [];
+    return value.filter((entry): entry is string => typeof entry === 'string');
+  }
+
+  async completePendingWriteRecovery(filePaths: readonly string[]): Promise<void> {
+    if (filePaths.length === 0) return;
+    const completed = new Set(filePaths);
+    const remaining = (await this.readPendingWriteRecovery()).filter(
+      (filePath) => !completed.has(filePath),
+    );
+    if (remaining.length === 0) {
+      await this.db.meta.delete(VECTOR_WRITE_RECOVERY_KEY);
+      return;
+    }
+    await this.db.meta.put({
+      key: VECTOR_WRITE_RECOVERY_KEY,
+      value: remaining,
+      updated: Date.now(),
+    });
+  }
+
+  private noteVectorMutation(): void {
+    this.mutationRevision += 1;
+    this.lastSearchStale = false;
+  }
+
+  private closeVectorSearchWorker(): void {
     this.vectorSearchWorker?.close();
     this.vectorSearchWorker = null;
+  }
+
+  /**
+   * 작업자는 쓰기마다 종료하지 않고 살려 두고 revision으로 색인 세대를 무효화합니다.
+   * 작업자 재기동과 WASM 재초기화가 사라져 대형 볼트의 첫 검색 비용만 남습니다.
+   */
+  private invalidateRuntimeIndex(): void {
     this.runtimeIndex?.dispose();
     this.runtimeIndex = null;
     this.filteredRuntimeIndexes.clear();
@@ -1188,8 +1398,13 @@ export class IndexedDbVectorStore implements VectorStore {
         .delete();
       await this.db.fileIndex.bulkDelete([...filePaths]);
     });
+    this.noteVectorMutation();
     this.invalidateRuntimeCache();
   }
+}
+
+function uniqueFilePaths(entries: readonly VectorEntry[]): string[] {
+  return [...new Set(entries.map((entry) => entry.metadata.filePath))];
 }
 
 function isCompleteVectorMetadata(record: IndexedDbVectorRecord): boolean {

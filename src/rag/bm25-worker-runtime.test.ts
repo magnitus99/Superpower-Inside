@@ -2,6 +2,7 @@ import { Worker as NodeWorker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BM25_WORKER_SOURCE } from '../../generated/bm25-worker-source';
 import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
+import { RustBm25RuntimeIndex } from './rust-core';
 import {
   BM25WorkerRuntime,
   type BM25WorkerAdapter,
@@ -13,7 +14,7 @@ afterEach(() => vi.useRealTimers());
 
 describe('BM25 worker runtime', () => {
   it('저장 문서가 WASM 묶음 한도를 넘더라도 생성된 작업자가 전부 복원한다', async () => {
-    const worker = createNodeWorker(true);
+    const worker = createNodeWorker({ persistedFixture: true });
     try {
       const initialized = waitForNodeWorkerResponse(worker, 1);
       worker.postMessage({
@@ -59,6 +60,106 @@ describe('BM25 worker runtime', () => {
         expect.objectContaining({
           id: 2,
           hits: [expect.objectContaining({ docId: 'alpha::0', sourcePath: 'alpha.md' })],
+        }),
+      );
+    } finally {
+      await worker.terminate();
+    }
+  });
+
+  it('생성된 worker 번들이 단건 추가 필드와 제목 전용 토큰을 스냅샷 복원 뒤에도 유지한다', async () => {
+    const worker = createNodeWorker();
+    try {
+      const rebuilt = waitForNodeWorkerResponse(worker, 1);
+      worker.postMessage({ id: 1, operation: 'rebuild', wasmBase64: RAG_WASM_BASE64, documents: [] });
+      await expect(rebuilt).resolves.toEqual(expect.objectContaining({ totalDocs: 0 }));
+
+      const indexed = waitForNodeWorkerResponse(worker, 2);
+      worker.postMessage({
+        id: 2,
+        operation: 'add',
+        document: {
+          id: 'fielded::0',
+          text: 'alpha beta body',
+          sourcePath: 'reports/ledger.md',
+          title: 'Quarterly Ledger',
+          headings: ['Deployment Guide'],
+          tags: ['finance'],
+        },
+      });
+      await expect(indexed).resolves.toEqual(
+        expect.objectContaining({ ready: true, totalDocs: 1 }),
+      );
+
+      for (const [id, query] of [
+        [3, 'title:quarterly'],
+        [4, 'headings:deployment'],
+        [5, 'tags:finance'],
+        [6, 'path:ledger'],
+      ] as const) {
+        const searched = waitForNodeWorkerResponse(worker, id);
+        worker.postMessage({ id, operation: 'search-top', query, limit: 5 });
+        await expect(searched).resolves.toEqual(
+          expect.objectContaining({
+            hits: [
+              expect.objectContaining({ docId: 'fielded::0', sourcePath: 'reports/ledger.md' }),
+            ],
+          }),
+        );
+      }
+
+      const serialized = waitForNodeWorkerResponse(worker, 7);
+      worker.postMessage({ id: 7, operation: 'serialize' });
+      const snapshot = (await serialized).snapshot;
+      expect(typeof snapshot).toBe('string');
+
+      const restored = waitForNodeWorkerResponse(worker, 8);
+      worker.postMessage({ id: 8, operation: 'initialize', wasmBase64: RAG_WASM_BASE64, snapshot });
+      await expect(restored).resolves.toEqual(
+        expect.objectContaining({ ready: true, totalDocs: 1 }),
+      );
+
+      const titleOnly = waitForNodeWorkerResponse(worker, 9);
+      worker.postMessage({ id: 9, operation: 'search-top', query: 'title:quarterly', limit: 5 });
+      await expect(titleOnly).resolves.toEqual(
+        expect.objectContaining({
+          hits: [expect.objectContaining({ docId: 'fielded::0', sourcePath: 'reports/ledger.md' })],
+        }),
+      );
+    } finally {
+      await worker.terminate();
+    }
+  });
+
+  it('생성된 worker 번들이 위치 정보 없는 스냅샷을 거절하고 저장 원문에서 전량 복구한다', async () => {
+    const dbName = 'legacy-snapshot-fixture';
+    const legacySnapshot = createLegacySnapshotWithoutPosition();
+    const worker = createNodeWorker({
+      legacyFixture: {
+        dbName,
+        documents: [{ id: 'legacy::0', text: 'alpha beta', sourcePath: 'legacy.md', order: 1 }],
+      },
+    });
+    try {
+      const initialized = waitForNodeWorkerResponse(worker, 1);
+      worker.postMessage({
+        id: 1,
+        operation: 'initialize',
+        wasmBase64: RAG_WASM_BASE64,
+        dbName,
+        snapshot: legacySnapshot,
+        sinceOrder: 100,
+        expectedDocs: 1,
+      });
+      await expect(initialized).resolves.toEqual(
+        expect.objectContaining({ ready: true, totalDocs: 1, snapshotRejected: true }),
+      );
+
+      const recovered = waitForNodeWorkerResponse(worker, 2);
+      worker.postMessage({ id: 2, operation: 'search-top', query: '"alpha beta"', limit: 5 });
+      await expect(recovered).resolves.toEqual(
+        expect.objectContaining({
+          hits: [expect.objectContaining({ docId: 'legacy::0', sourcePath: 'legacy.md' })],
         }),
       );
     } finally {
@@ -157,36 +258,86 @@ interface NodeWorkerResponse {
   id: number;
   ready?: boolean;
   totalDocs?: number;
+  snapshot?: string;
+  snapshotRejected?: boolean;
   hits?: Array<{ docId: string; sourcePath: string; score: number }>;
   progress?: { processedDocuments: number };
   error?: string;
 }
 
-function createNodeWorker(persistedFixture = false): NodeWorker {
+interface NodeWorkerFixture {
+  dbName: string;
+  documents: Array<Record<string, unknown>>;
+}
+
+function createNodeWorker(
+  options: { persistedFixture?: boolean; legacyFixture?: NodeWorkerFixture } = {},
+): NodeWorker {
+  const persistedSeed = options.persistedFixture
+    ? `
+      await new Promise((resolve, reject) => {
+        const opened = indexedDB.open('persisted-worker-test', 1);
+        opened.onupgradeneeded = () => opened.result.createObjectStore('documents', { keyPath: 'id' });
+        opened.onerror = () => reject(opened.error);
+        opened.onsuccess = () => {
+          const db = opened.result;
+          const transaction = db.transaction('documents', 'readwrite');
+          for (let index = 0; index < 300; index++) transaction.objectStore('documents').put({ id: 'doc-' + index, text: index === 299 ? 'lastdocument' : 'ordinary document', sourcePath: 'a.md' });
+          transaction.oncomplete = () => { db.close(); resolve(); };
+          transaction.onerror = () => reject(transaction.error);
+        };
+      });
+    `
+    : '';
+  const legacySeed = options.legacyFixture
+    ? `
+      await new Promise((resolve, reject) => {
+        const opened = indexedDB.open(${JSON.stringify(options.legacyFixture.dbName)}, 1);
+        opened.onupgradeneeded = () => opened.result.createObjectStore('documents', { keyPath: 'id' });
+        opened.onerror = () => reject(opened.error);
+        opened.onsuccess = () => {
+          const db = opened.result;
+          const transaction = db.transaction('documents', 'readwrite');
+          for (const document of ${JSON.stringify(options.legacyFixture.documents)}) transaction.objectStore('documents').put(document);
+          transaction.oncomplete = () => { db.close(); resolve(); };
+          transaction.onerror = () => reject(transaction.error);
+        };
+      });
+    `
+    : '';
   const bootstrap = `
     const { parentPort } = require('node:worker_threads');
     require('fake-indexeddb/auto');
-    const ready = ${persistedFixture} ? new Promise((resolve, reject) => {
-      const opened = indexedDB.open('persisted-worker-test', 1);
-      opened.onupgradeneeded = () => opened.result.createObjectStore('documents', { keyPath: 'id' });
-      opened.onerror = () => reject(opened.error);
-      opened.onsuccess = () => {
-        const db = opened.result;
-        const transaction = db.transaction('documents', 'readwrite');
-        for (let index = 0; index < 300; index++) transaction.objectStore('documents').put({ id: 'doc-' + index, text: index === 299 ? 'lastdocument' : 'ordinary document', sourcePath: 'a.md' });
-        transaction.oncomplete = () => { db.close(); resolve(); };
-        transaction.onerror = () => reject(transaction.error);
-      };
-    }) : Promise.resolve();
     globalThis.self = {
       postMessage(message) {
         parentPort.postMessage(message);
       },
     };
     ${BM25_WORKER_SOURCE}
+    const ready = (async () => {
+      ${persistedSeed}
+      ${legacySeed}
+    })();
     parentPort.on('message', (data) => { void ready.then(() => globalThis.self.onmessage({ data })); });
   `;
   return new NodeWorker(bootstrap, { eval: true });
+}
+
+function createLegacySnapshotWithoutPosition(): string {
+  const runtime = RustBm25RuntimeIndex.empty(2);
+  if (!runtime) throw new Error('WASM 초기화 실패');
+  try {
+    runtime.addDocument('legacy::0', 'alpha beta', 'legacy.md', 2);
+    const snapshot = JSON.parse(runtime.toJson()) as {
+      docs: Array<Record<string, unknown>>;
+      terms: Array<Record<string, unknown>>;
+    };
+    for (const document of snapshot.docs) delete document.runs;
+    for (const term of snapshot.terms) delete term.pos;
+    return JSON.stringify(snapshot);
+  } finally {
+    runtime.dispose();
+  }
 }
 
 function waitForNodeWorkerResponse(worker: NodeWorker, id: number): Promise<NodeWorkerResponse> {

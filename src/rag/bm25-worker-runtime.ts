@@ -5,6 +5,10 @@ export interface BM25WorkerDocument {
   id: string;
   text: string;
   sourcePath: string;
+  title?: string;
+  headings?: string[];
+  tags?: string[];
+  path?: string;
 }
 
 export interface BM25WorkerHit {
@@ -13,7 +17,7 @@ export interface BM25WorkerHit {
   score: number;
 }
 
-interface BM25WorkerRequest {
+export interface BM25WorkerRequest {
   id: number;
   operation:
     | 'initialize'
@@ -22,10 +26,13 @@ interface BM25WorkerRequest {
     | 'remove-doc'
     | 'remove-source'
     | 'clear'
+    | 'serialize'
     | 'search-top';
   wasmBase64?: string;
   dbName?: string;
   snapshot?: string;
+  sinceOrder?: number;
+  expectedDocs?: number;
   documents?: readonly BM25WorkerDocument[];
   document?: BM25WorkerDocument;
   target?: string;
@@ -38,6 +45,8 @@ export interface BM25WorkerResponse {
   ready?: boolean;
   tokenizerCurrent?: boolean;
   totalDocs?: number;
+  snapshot?: string;
+  snapshotRejected?: boolean;
   hits?: BM25WorkerHit[];
   progress?: {
     processedDocuments: number;
@@ -89,8 +98,25 @@ export class BM25WorkerRuntime {
     );
   }
 
-  initialize(dbName: string, snapshot: string): Promise<BM25WorkerResponse> {
-    return this.request({ operation: 'initialize', wasmBase64: RAG_WASM_BASE64, dbName, snapshot });
+  initialize(
+    dbName: string,
+    snapshot: string,
+    sinceOrder?: number,
+    expectedDocs?: number,
+  ): Promise<BM25WorkerResponse> {
+    return this.request({
+      operation: 'initialize',
+      wasmBase64: RAG_WASM_BASE64,
+      dbName,
+      snapshot,
+      sinceOrder,
+      expectedDocs,
+    });
+  }
+
+  async serialize(): Promise<string> {
+    const response = await this.request({ operation: 'serialize' });
+    return response.snapshot ?? '';
   }
 
   rebuild(documents: readonly BM25WorkerDocument[]): Promise<BM25WorkerResponse> {
