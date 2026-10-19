@@ -35,7 +35,7 @@ import type {
   NativeVaultToolPort,
 } from './native-vault-tool';
 import { truncateUtf8Text } from '../utils/text-budget';
-import { readSourceFileSnapshot } from '../rag/source-snapshot';
+import { readSourceFileSnapshot, type SourceFileSnapshot } from '../rag/source-snapshot';
 import { readSourceText } from '../rag/source-access';
 import type { SourceProcessingSummary } from '../rag/source-processing';
 import { appLogger } from '../utils/logger';
@@ -46,6 +46,8 @@ const MAX_RETRIEVAL_SOURCES = 8;
 const MAX_RELATED_SEED_LINES = 80;
 const MAX_RELATED_SEED_BYTES = 12 * 1024;
 const MAX_INDEXED_EVIDENCE_LINES = 80;
+const MAX_SNAPSHOT_CACHE_FILES = 128;
+const MAX_SNAPSHOT_CACHE_CHARS = 4 * 1024 * 1024;
 
 export interface NativeVaultQueryEngineLike {
   query(
@@ -93,15 +95,17 @@ interface LexicalSearchCandidate {
   hit: NativeVaultSearchHit;
 }
 
+interface NativeVaultReadSnapshot {
+  file: TFile;
+  source: SourceFileSnapshot;
+  lines?: string[];
+  metadata?: NativeVaultReadResult['metadata'];
+}
+
 export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
   private listSnapshot: NativeVaultListSnapshot | null = null;
-  private readSnapshot: {
-    path: string;
-    mtime: number;
-    size: number;
-    lines: string[];
-    metadata: NativeVaultReadResult['metadata'];
-  } | null = null;
+  private readonly sourceSnapshots = new Map<string, NativeVaultReadSnapshot>();
+  private snapshotChars = 0;
 
   constructor(
     private readonly app: App,
@@ -182,27 +186,10 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       throw new Error(t('nativeVaultFileUnreadable', { path: request.path }));
     }
     throwIfAborted(signal);
-    let snapshot = this.readSnapshot;
-    if (
-      !snapshot ||
-      snapshot.path !== file.path ||
-      snapshot.mtime !== file.stat.mtime ||
-      snapshot.size !== file.stat.size
-    ) {
-      // 한 문서만 보관해 긴 본문을 400줄마다 다시 추출·분할·분석하지 않습니다.
-      this.readSnapshot = null;
-      const source = await awaitWithAbort(readSourceFileSnapshot(this.app.vault, file), signal);
-      throwIfAborted(signal);
-      if (!source) throw new Error(t('nativeVaultFileUnreadable', { path: request.path }));
-      snapshot = {
-        path: source.revision.filePath,
-        mtime: source.revision.sourceMtime,
-        size: source.revision.sourceSize,
-        lines: source.content.split('\n'),
-        metadata: planSourceMetadataRust(source.content) ?? undefined,
-      };
-      this.readSnapshot = snapshot;
-    }
+    const snapshot = await this.getSourceSnapshot(file, signal);
+    if (!snapshot) throw new Error(t('nativeVaultFileUnreadable', { path: request.path }));
+    snapshot.lines ??= snapshot.source.content.split('\n');
+    snapshot.metadata ??= planSourceMetadataRust(snapshot.source.content) ?? undefined;
     const { lines, metadata } = snapshot;
     const range = planNativeVaultReadRangeRust(
       lines.length,
@@ -530,9 +517,10 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
     const file = this.resolveVaultFile(hit.path);
     if (!file) return hit;
     try {
-      const snapshot = await awaitWithAbort(readSourceFileSnapshot(this.app.vault, file), signal);
+      const cached = await this.getSourceSnapshot(file, signal);
       throwIfAborted(signal);
-      if (!snapshot) return hit;
+      if (!cached) return hit;
+      const snapshot = cached.source;
       const source = candidates.find(
         (candidate) =>
           candidate.result.sourcePath === hit.path &&
@@ -553,7 +541,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       )
         return hit;
       const content = snapshot.content;
-      const lines = content.split('\n');
+      const lines = (cached.lines ??= content.split('\n'));
       const range = planNativeVaultReadRangeRust(
         lines.length,
         hit.startLine,
@@ -570,7 +558,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
         startLine: range.startLine,
         endLine: range.endLine,
         preview,
-        metadata: planSourceMetadataRust(content) ?? undefined,
+        metadata: (cached.metadata ??= planSourceMetadataRust(content) ?? undefined),
         recommendedReadRange: {
           startLine: range.startLine,
           endLine: range.endLine,
@@ -631,7 +619,7 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
               content:
                 request.field === 'path'
                   ? ''
-                  : (await awaitWithAbort(readSourceText(this.app.vault, file), signal)).text,
+                  : (await this.getSourceSnapshot(file, signal))?.source.content ?? null,
             };
           } catch {
             return { path, content: null };
@@ -705,6 +693,60 @@ export class ObsidianNativeVaultToolPort implements NativeVaultToolPort {
       ...(request.mode ? { mode: request.mode } : {}),
       ...(request.field ? { field: request.field } : {}),
     });
+  }
+
+  /** 캐시 적중에도 현재 접근 정책을 적용하고 변경·실패·취소된 원문은 보존하지 않습니다. */
+  private async getSourceSnapshot(
+    file: TFile,
+    signal?: AbortSignal,
+  ): Promise<NativeVaultReadSnapshot | null> {
+    throwIfAborted(signal);
+    if (
+      !this.fileScope.isPathVisible(file.path) ||
+      !(await this.fileScope.isExplicitReadAllowed(file)) ||
+      this.app.vault.getAbstractFileByPath(file.path) !== file
+    ) {
+      const denied = this.sourceSnapshots.get(file.path);
+      this.sourceSnapshots.delete(file.path);
+      this.snapshotChars -= denied?.source.content.length ?? 0;
+      return null;
+    }
+    throwIfAborted(signal);
+    const cached = this.sourceSnapshots.get(file.path);
+    if (cached) {
+      this.sourceSnapshots.delete(file.path);
+      this.snapshotChars -= cached.source.content.length;
+      if (
+        cached.file === file &&
+        cached.source.revision.sourceMtime === file.stat.mtime &&
+        cached.source.revision.sourceSize === file.stat.size
+      ) {
+        this.sourceSnapshots.set(file.path, cached);
+        this.snapshotChars += cached.source.content.length;
+        return cached;
+      }
+    }
+    const source = await awaitWithAbort(readSourceFileSnapshot(this.app.vault, file), signal);
+    throwIfAborted(signal);
+    if (!source) return null;
+    const snapshot: NativeVaultReadSnapshot = { file, source };
+    if (source.content.length > MAX_SNAPSHOT_CACHE_CHARS) return snapshot;
+    // 검색과 후속 검수 사이에 필요한 최근 원문만 유지해 볼트 크기만큼 메모리가 늘지 않습니다.
+    while (
+      this.sourceSnapshots.size >= MAX_SNAPSHOT_CACHE_FILES ||
+      this.snapshotChars + source.content.length > MAX_SNAPSHOT_CACHE_CHARS
+    ) {
+      const oldest = this.sourceSnapshots.keys().next().value;
+      if (oldest === undefined) break;
+      const removed = this.sourceSnapshots.get(oldest);
+      this.sourceSnapshots.delete(oldest);
+      this.snapshotChars -= removed?.source.content.length ?? 0;
+    }
+    const replaced = this.sourceSnapshots.get(source.revision.filePath);
+    this.snapshotChars -= replaced?.source.content.length ?? 0;
+    this.sourceSnapshots.set(source.revision.filePath, snapshot);
+    this.snapshotChars += source.content.length;
+    return snapshot;
   }
 
   private filterFiles(
