@@ -20,6 +20,7 @@ export function withTurnUsage(
     return {
       ...options,
       onUsage: (usage) => {
+        if (options?.signal?.aborted) return;
         updates.push({ ...usage });
         publish();
         options?.onUsage?.(usage);
@@ -31,19 +32,21 @@ export function withTurnUsage(
     contextBudget: provider.contextBudget,
     getObservedModel: () => provider.getObservedModel?.(),
     chat: async (messages, temperature, tools, options) => {
+      options?.signal?.throwIfAborted();
       const trackedOptions = optionsFor(options);
       try {
         return await provider.chat(messages, temperature, tools, trackedOptions);
       } finally {
-        publish();
+        if (!options?.signal?.aborted) publish();
       }
     },
     streamChat: async (messages, onChunk, temperature, tools, options) => {
+      options?.signal?.throwIfAborted();
       const trackedOptions = optionsFor(options);
       try {
         await provider.streamChat(messages, onChunk, temperature, tools, trackedOptions);
       } finally {
-        publish();
+        if (!options?.signal?.aborted) publish();
       }
     },
   };
