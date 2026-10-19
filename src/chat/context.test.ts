@@ -55,7 +55,11 @@ describe('buildChatContext RAG 출처 검증', () => {
   });
 
   it('플러그인 코드 질문은 명시한 자료만 읽고 자동 검색과 질의 확장을 건너뛴다', async () => {
-    const explicit = createFile('Example.md', '명시적으로 제공한 합성 자료 [[archive/Other]]', 1000);
+    const explicit = createFile(
+      'Example.md',
+      '명시적으로 제공한 합성 자료 [[archive/Other]]',
+      1000,
+    );
     const unrelated = createFile('archive/Other.md', '자동 첨부되면 안 되는 합성 자료', 1000);
     const app = createApp(
       new Map([
@@ -202,7 +206,13 @@ describe('buildChatContext RAG 출처 검증', () => {
       queryExpander: () => Promise.resolve({ query: question, variants }),
     });
     for (const variant of variants)
-      expect(query).toHaveBeenCalledWith(variant, expect.any(Number), undefined, ['fixtures']);
+      expect(query).toHaveBeenCalledWith(
+        variant,
+        expect.any(Number),
+        undefined,
+        ['fixtures'],
+        expect.any(Object),
+      );
     expect(query.mock.calls.every((args) => args[3]?.[0] === 'fixtures')).toBe(true);
   });
   it('현재 문서와 열린 문서의 원문을 함께 컨텍스트에 전달한다', async () => {
@@ -397,6 +407,104 @@ describe('buildChatContext RAG 출처 검증', () => {
     );
   });
 
+  it('시간 초과 복구는 실패 provider만 제외하고 정상 검색은 다시 허용한다', async () => {
+    const app = createApp(new Map());
+    const query = vi.fn<RagQueryLike['query']>((_question, _topK, minScore, _prefixes, options) => {
+      options?.onRetrieved?.(
+        [],
+        [
+          {
+            providerId: 'bm25',
+            source: 'bm25',
+            status: minScore === 0 ? 'skipped' : 'timeout',
+            durationMs: 2,
+            candidateCount: 0,
+            readiness: 'ready',
+            estimatedCost: 'low',
+          },
+        ],
+      );
+      return Promise.resolve([]);
+    });
+    const context = await buildChatContext('synthetic query', { app, ragEngine: { query } });
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1]?.[4]).toMatchObject({ excludedProviderIds: ['bm25'] });
+    expect(context.attachments.find((item) => item.id === 'rag:auto')?.detail).toContain('timeout');
+  });
+
+  it('초기 검색 취소를 빈 검색 결과로 삼아 확대 재시도하지 않는다', async () => {
+    const controller = new AbortController();
+    const query = vi.fn<RagQueryLike['query']>(() => {
+      controller.abort();
+      return Promise.reject(new DOMException('cancelled', 'AbortError'));
+    });
+    await expect(
+      buildChatContext('synthetic query', {
+        app: createApp(new Map()),
+        ragEngine: { query },
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(query).toHaveBeenCalledOnce();
+    expect(query.mock.calls[0]?.[4]?.signal).toBe(controller.signal);
+  });
+
+  it('전수 검토에 위임해도 검색 활성 상태와 확장 질의를 보존하며 초기 검색은 반복하지 않는다', async () => {
+    const query = vi.fn<RagQueryLike['query']>(() => Promise.resolve([]));
+    const queryExpander = vi.fn(() =>
+      Promise.resolve({ query: 'expanded question', variants: ['alternative evidence'] }),
+    );
+    const context = await buildChatContext('synthetic query', {
+      app: createApp(new Map()),
+      ragEngine: { query },
+      queryExpander,
+      deferAutoRagToReview: true,
+    });
+    expect(query).not.toHaveBeenCalled();
+    expect(queryExpander).toHaveBeenCalledOnce();
+    expect(context.vaultSearchEnabled).toBe(true);
+    expect(context.searchQueries).toEqual(['expanded question', 'alternative evidence']);
+    expect(context.scoringQuestion).toBe(
+      JSON.stringify(['expanded question', 'alternative evidence']),
+    );
+    expect(context.attachments).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'rag:auto', status: 'missing' })]),
+    );
+  });
+
+  it('병렬 질의의 실패 provider를 다른 질의의 복구에 섞지 않는다', async () => {
+    const app = createApp(new Map());
+    const query = vi.fn<RagQueryLike['query']>((question, _topK, minScore, _prefixes, options) => {
+      options?.onRetrieved?.(
+        [],
+        [
+          {
+            providerId: question === 'alpha' ? 'bm25' : 'ivf-vector',
+            source: 'bm25',
+            status: minScore === 0 ? 'skipped' : 'timeout',
+            durationMs: 2,
+            candidateCount: 0,
+            readiness: 'ready',
+            estimatedCost: 'low',
+          },
+        ],
+      );
+      return Promise.resolve([]);
+    });
+    await buildChatContext('synthetic query', {
+      app,
+      ragEngine: { query },
+      queryExpander: () => Promise.resolve({ query: 'alpha', variants: ['alpha', 'beta'] }),
+    });
+    const retries = query.mock.calls.filter((call) => call[2] === 0);
+    expect(retries.find((call) => call[0] === 'alpha')?.[4]).toMatchObject({
+      excludedProviderIds: ['bm25'],
+    });
+    expect(retries.find((call) => call[0] === 'beta')?.[4]).toMatchObject({
+      excludedProviderIds: ['ivf-vector'],
+    });
+  });
+
   it('기본 점수 검색이 비면 확장된 주제어로 로컬 lexical 후보를 다시 선별한다', async () => {
     const genesis = createFile('Genesis.md', '창세기 본문과 상징 해석', 1000);
     const unrelated = createFile('Shopping.md', '주말 장보기 목록', 1000);
@@ -429,8 +537,22 @@ describe('buildChatContext RAG 출처 검증', () => {
       queryExpander: () => Promise.resolve('네빌 Neville Goddard 창세기 Genesis'),
     });
 
-    expect(query).toHaveBeenNthCalledWith(1, '네빌 Neville Goddard 창세기 Genesis', 5, 0.75);
-    expect(query).toHaveBeenNthCalledWith(2, '네빌 Neville Goddard 창세기 Genesis', 15, 0);
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      '네빌 Neville Goddard 창세기 Genesis',
+      5,
+      0.75,
+      undefined,
+      expect.any(Object),
+    );
+    expect(query).toHaveBeenNthCalledWith(
+      2,
+      '네빌 Neville Goddard 창세기 Genesis',
+      15,
+      0,
+      undefined,
+      expect.any(Object),
+    );
     expect(context.citations.map((citation) => citation.filePath)).toEqual(['Genesis.md']);
   });
 
@@ -543,7 +665,13 @@ describe('buildChatContext RAG 출처 검증', () => {
       deferImplicitFolderEvidenceToTools: true,
     });
 
-    expect(query).toHaveBeenCalledWith('Aurora migration plan', 5, undefined);
+    expect(query).toHaveBeenCalledWith(
+      'Aurora migration plan',
+      5,
+      undefined,
+      undefined,
+      expect.any(Object),
+    );
     expect(context.attachments.some((attachment) => attachment.id.startsWith('folder:auto:'))).toBe(
       false,
     );

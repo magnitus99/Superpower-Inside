@@ -24,6 +24,48 @@ afterEach(async () => {
 });
 
 describe('RagRetrievalPipeline', () => {
+  it('같은 검색의 복구 시 실패한 provider는 다시 호출하지 않고 건너뜀을 기록한다', async () => {
+    const getCandidates = vi.fn(() => Promise.resolve([]));
+    const provider: CandidateProvider = {
+      id: 'slow-provider',
+      source: 'bm25',
+      deadlineMs: 5,
+      getCandidates,
+    };
+    const result = await new RagRetrievalPipeline([provider]).retrieve({
+      ...createRequest([1, 0], 5),
+      excludedProviderIds: ['slow-provider'],
+    });
+    expect(getCandidates).not.toHaveBeenCalled();
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        providerId: 'slow-provider',
+        status: 'skipped',
+        readiness: 'degraded',
+        skippedReason: 'previous-attempt-failed',
+      }),
+    ]);
+  });
+
+  it('최신성 검사 전후의 후보 수를 별도로 남긴다', async () => {
+    const entry = createEntry('current.md', [1, 0], 'synthetic');
+    const provider: CandidateProvider = {
+      id: 'synthetic-provider',
+      source: 'vector',
+      deadlineMs: 100,
+      getCandidates: () => Promise.resolve([{ entry, source: 'vector' }]),
+    };
+    const result = await new RagRetrievalPipeline([provider]).retrieve({
+      ...createRequest([1, 0], 5),
+      filterCurrentCandidates: () => Promise.resolve([]),
+    });
+    expect(result.diagnostics[0]).toMatchObject({
+      receivedCandidateCount: 1,
+      revisionRejectedCount: 1,
+      candidateCount: 0,
+    });
+  });
+
   it('ExactVectorCandidateProvider는 저장소의 벡터 후보를 공통 후보 계약으로 반환한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

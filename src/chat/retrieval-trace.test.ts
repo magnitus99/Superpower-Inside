@@ -4,6 +4,27 @@ import { MemoryVectorStore } from '../rag/store';
 import { observeChatRetrieval } from './retrieval-trace';
 
 describe('채팅 검색 기록', () => {
+  it('요청별 진단 콜백과 실패 공급자 제외 옵션을 관찰 래퍼가 보존한다', async () => {
+    const engine = new RAGQueryEngine(null, null);
+    const query = vi.spyOn(engine, 'query');
+    const callback = vi.fn();
+    const onRecord = vi.fn();
+    const observed = observeChatRetrieval(engine, onRecord);
+    await observed.query('independent synthetic query', 2, 0, undefined, {
+      onRetrieved: callback,
+      excludedProviderIds: ['ivf-vector'],
+    });
+    expect(callback).toHaveBeenCalledOnce();
+    expect(onRecord).toHaveBeenCalledOnce();
+    expect(query).toHaveBeenCalledWith(
+      'independent synthetic query',
+      2,
+      0,
+      undefined,
+      expect.objectContaining({ excludedProviderIds: ['ivf-vector'] }),
+    );
+  });
+
   it('검색 결과의 점수·줄 위치만 전달하고 원문·벡터를 복제하지 않는다', async () => {
     const store = new MemoryVectorStore();
     await store.add([
