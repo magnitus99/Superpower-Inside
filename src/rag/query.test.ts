@@ -12,6 +12,7 @@ const bm25DbNames = new Set<string>();
 afterEach(async () => {
   await Promise.all([...bm25DbNames].map((name) => Dexie.delete(name)));
   bm25DbNames.clear();
+  vi.restoreAllMocks();
 });
 
 describe('RAGQueryEngine', () => {
@@ -83,6 +84,60 @@ describe('RAGQueryEngine', () => {
     );
   });
 
+  it('준비 전 첫 호출은 짧게 기다렸다가 BM25 후보를 반환한다', async () => {
+    const entry = createEntry('ready.md', [], 'synthetic ready query');
+    const store = new MemoryVectorStore();
+    await store.add([entry]);
+    const bm25 = await createBm25([]);
+    bm25.addCorpusDocument({
+      id: entry.id,
+      sourcePath: entry.metadata.filePath,
+      text: entry.metadata.text,
+      sourceMtime: entry.metadata.sourceMtime,
+      sourceSize: entry.metadata.sourceSize,
+      contentHash: entry.metadata.contentHash,
+    });
+    let ready = false;
+    vi.spyOn(bm25, 'isReady', 'get').mockImplementation(() => ready);
+    window.setTimeout(() => {
+      ready = true;
+    }, 30);
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0, {
+      corpusStore: store,
+      indexReadinessTimeoutMs: 200,
+    });
+
+    const results = await engine.query('synthetic', 3, 0);
+
+    expect(results.map((result) => result.sourcePath)).toEqual(['ready.md']);
+    expect(engine.getCandidateReadiness()).toBe('ready');
+  });
+
+  it('준비 상한 뒤에도 후보 색인이 초기화 중이면 provider를 더 호출하지 않고 끝낸다', async () => {
+    const store = new MemoryVectorStore();
+    const search = vi.spyOn(store, 'search');
+    const bm25 = await createBm25([]);
+    vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(false);
+    const engine = new RAGQueryEngine(
+      store,
+      createEmbeddingProvider([1, 0]),
+      bm25,
+      1,
+      0,
+      { indexReadinessTimeoutMs: 20 },
+    );
+
+    const startedAt = performance.now();
+    const results = await engine.query('synthetic', 3, 0);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(500);
+    expect(results).toEqual([]);
+    expect(search).not.toHaveBeenCalled();
+    expect(engine.getCandidateReadiness()).toBe('initializing');
+    expect(engine.getLastRetrievalDiagnostics()).toEqual([]);
+  });
+
   it('검색 임베딩 대기 중 제외한 문서는 오래된 벡터·BM25가 남아도 반환하지 않는다', async () => {
     const store = new MemoryVectorStore();
     const entry = createEntry('private.md', [1, 0], 'specialterm');
@@ -149,6 +204,39 @@ describe('RAGQueryEngine', () => {
     const results = await engine.query('accident', 3, 0);
     expect(results).toHaveLength(3);
     expect(results.every((result) => result.bm25Score > 0)).toBe(true);
+  });
+
+  it('BM25-only 경로는 상위 K 안에서 관련 합성 문서 recall 1을 유지한다', async () => {
+    const store = new MemoryVectorStore();
+    const relevant = [
+      createEntry('relevant-1.md', [], 'synthetic alpha guide'),
+      createEntry('relevant-2.md', [], 'alpha synthetic example'),
+      createEntry('relevant-3.md', [], 'reference alpha synthetic'),
+    ];
+    const noise = [
+      createEntry('noise-1.md', [], 'unrelated beta guide'),
+      createEntry('noise-2.md', [], 'unrelated gamma example'),
+    ];
+    await store.add([...relevant, ...noise]);
+    const bm25 = await createBm25([]);
+    for (const entry of [...relevant, ...noise]) {
+      bm25.addCorpusDocument({
+        id: entry.id,
+        sourcePath: entry.metadata.filePath,
+        text: entry.metadata.text,
+        sourceMtime: entry.metadata.sourceMtime,
+        sourceSize: entry.metadata.sourceSize,
+        contentHash: entry.metadata.contentHash,
+      });
+    }
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0, { corpusStore: store });
+
+    const results = await engine.query('alpha', relevant.length, 0);
+    const relevantIds = new Set(relevant.map((entry) => entry.id));
+    const recalled = results.filter((result) => relevantIds.has(result.entry.id)).length;
+
+    expect(recalled / relevant.length).toBe(1);
+    expect(results.every((result) => result.retrievalSources?.includes('bm25'))).toBe(true);
   });
 
   it('구조 그래프 후보는 벡터 근거가 약하면 seed 벡터 후보를 앞지르지 않는다', async () => {
@@ -285,6 +373,188 @@ describe('RAGQueryEngine', () => {
           skippedReason: 'query-embedding-unavailable',
         }),
         expect.objectContaining({ providerId: 'bm25', status: 'ok' }),
+      ]),
+    );
+  });
+
+  it('질의 임베딩이 정체되어도 상한 시간 안에 lexical 결과로 반환한다', async () => {
+    const store = new MemoryVectorStore();
+    const bm25 = await createBm25([['keyword.md', '정체 복구 키워드']]);
+    let embedSignal: AbortSignal | undefined;
+    const engine = new RAGQueryEngine(
+      store,
+      {
+        embed: (_text, options) => {
+          embedSignal = options?.signal;
+          return new Promise<number[]>(() => undefined);
+        },
+        embedBatch: () => new Promise<number[][]>(() => undefined),
+      },
+      bm25,
+      1,
+      0,
+      { queryEmbeddingTimeoutMs: 20 },
+    );
+
+    const startedAt = performance.now();
+    const results = await engine.query('정체 복구 키워드', 5, 0);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(500);
+    expect(results.map((result) => result.sourcePath)).toEqual(['keyword.md']);
+    expect(embedSignal?.aborted).toBe(true);
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'query-embedding',
+          status: 'timeout',
+          skippedReason: 'embedding-timeout',
+        }),
+        expect.objectContaining({
+          providerId: 'exact-vector',
+          status: 'skipped',
+          skippedReason: 'query-embedding-unavailable',
+        }),
+        expect.objectContaining({ providerId: 'bm25', status: 'ok' }),
+      ]),
+    );
+  });
+
+  it('정상 임베딩에서는 vector와 BM25 hybrid 결과를 유지한다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('semantic.md', [1, 0], '일반 의미 검색 문서'),
+      createEntry('keyword.md', [0, 1], '정상 hybrid 키워드'),
+    ]);
+    const bm25 = await createBm25([
+      ['semantic.md', '일반 의미 검색 문서'],
+      ['keyword.md', '정상 hybrid 키워드'],
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), bm25, 0.5, 0, {
+      queryEmbeddingTimeoutMs: 20,
+    });
+
+    const results = await engine.query('정상 hybrid 키워드', 2, 0);
+
+    expect(
+      results.find((result) => result.sourcePath === 'semantic.md')?.retrievalSources,
+    ).toContain('vector');
+    expect(
+      results.find((result) => result.sourcePath === 'keyword.md')?.retrievalSources,
+    ).toContain('bm25');
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ providerId: 'query-embedding', status: 'ok' }),
+      ]),
+    );
+  });
+
+  it('외부 취소는 timeout fallback으로 숨기지 않고 AbortError로 전파한다', async () => {
+    const bm25 = await createBm25([['keyword.md', '취소 키워드']]);
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const engine = new RAGQueryEngine(
+      null,
+      {
+        embed: () => {
+          markStarted?.();
+          return new Promise<number[]>(() => undefined);
+        },
+        embedBatch: () => new Promise<number[][]>(() => undefined),
+      },
+      bm25,
+      1,
+      0,
+      { queryEmbeddingTimeoutMs: 5_000 },
+    );
+    const controller = new AbortController();
+    const query = engine.query('취소 키워드', 5, 0, undefined, { signal: controller.signal });
+    await started;
+
+    controller.abort();
+
+    await expect(query).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('반복 임베딩 timeout 뒤 쿨다운 동안 질의 임베딩 호출을 생략한다', async () => {
+    const bm25 = await createBm25([['keyword.md', '쿨다운 복구 키워드']]);
+    let embeddingCalls = 0;
+    const engine = new RAGQueryEngine(
+      null,
+      {
+        embed: () => {
+          embeddingCalls++;
+          return new Promise<number[]>(() => undefined);
+        },
+        embedBatch: () => new Promise<number[][]>(() => undefined),
+      },
+      bm25,
+      1,
+      0,
+      { queryEmbeddingTimeoutMs: 10, queryEmbeddingCooldownMs: 5_000 },
+    );
+
+    await engine.query('쿨다운 복구 키워드', 5, 0);
+    await engine.query('쿨다운 복구 키워드', 5, 0);
+    const results = await engine.query('쿨다운 복구 키워드', 5, 0);
+
+    expect(embeddingCalls).toBe(2);
+    expect(results.map((result) => result.sourcePath)).toEqual(['keyword.md']);
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'query-embedding',
+          status: 'skipped',
+          skippedReason: 'embedding-cooldown',
+        }),
+        expect.objectContaining({ providerId: 'bm25', status: 'ok' }),
+      ]),
+    );
+  });
+
+  it('늦게 resolve된 이전 임베딩이 새 검색의 벡터 선택을 덮지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('stale-vector.md', [1, 0], '지연 임베딩 키워드'),
+      createEntry('fresh-vector.md', [0, 1], '지연 임베딩 키워드'),
+    ]);
+    const bm25 = await createBm25([
+      ['stale-vector.md', '지연 임베딩 키워드'],
+      ['fresh-vector.md', '지연 임베딩 키워드'],
+    ]);
+    let resolveLate: ((vector: number[]) => void) | undefined;
+    let embeddingCalls = 0;
+    const engine = new RAGQueryEngine(
+      store,
+      {
+        embed: () => {
+          embeddingCalls++;
+          if (embeddingCalls === 1) {
+            return new Promise<number[]>((resolve) => {
+              resolveLate = resolve;
+            });
+          }
+          return Promise.resolve([0, 1]);
+        },
+        embedBatch: () => Promise.resolve([]),
+      },
+      bm25,
+      0.5,
+      0,
+      { queryEmbeddingTimeoutMs: 10 },
+    );
+
+    await engine.query('지연 임베딩 키워드', 1, 0);
+    const freshQuery = engine.query('지연 임베딩 키워드', 1, 0);
+    resolveLate?.([1, 0]);
+    const results = await freshQuery;
+
+    expect(results.map((result) => result.sourcePath)).toEqual(['fresh-vector.md']);
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ providerId: 'query-embedding', status: 'ok' }),
       ]),
     );
   });

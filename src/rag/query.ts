@@ -31,6 +31,11 @@ import { selectByRustIndices } from '../utils/rust-index-plan';
 import { appLogger } from '../utils/logger';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
+const DEFAULT_QUERY_EMBEDDING_TIMEOUT_MS = 10_000;
+const DEFAULT_QUERY_EMBEDDING_COOLDOWN_MS = 30_000;
+const QUERY_EMBEDDING_TIMEOUT_THRESHOLD = 2;
+const DEFAULT_INDEX_READINESS_TIMEOUT_MS = 1_000;
+const INDEX_READINESS_POLL_MS = 25;
 const INDEX_READINESS_REASONS = {
   missing: 'missing',
   legacy: 'legacy',
@@ -69,7 +74,12 @@ export interface RAGQueryEngineOptions {
   structuralMetadataContext?: StructuralMetadataContext;
   embeddingModel?: string;
   embeddingProvider?: string;
+  queryEmbeddingTimeoutMs?: number;
+  queryEmbeddingCooldownMs?: number;
+  indexReadinessTimeoutMs?: number;
 }
+
+export type RAGCandidateReadiness = 'ready' | 'initializing' | 'unavailable';
 
 export interface RAGQueryOptions {
   signal?: AbortSignal;
@@ -86,6 +96,16 @@ export interface RAGIndexFileSnapshot {
   size: number;
 }
 
+interface QueryEmbeddingResolution {
+  vector: number[];
+  status: RetrievalProviderDiagnostic['status'];
+  durationMs: number;
+  readiness: RetrievalProviderDiagnostic['readiness'];
+  estimatedCost: RetrievalProviderDiagnostic['estimatedCost'];
+  skippedReason?: string;
+  error?: string;
+}
+
 export class RAGQueryEngine {
   private readonly corpusStore: import('./corpus-store').RetrievalCorpusStore | undefined;
   private readonly getCandidatePaths: RAGQueryEngineOptions['getCandidatePaths'];
@@ -97,6 +117,11 @@ export class RAGQueryEngine {
   private retrievalPipeline: RagRetrievalPipeline;
   private embeddingModel: string | undefined;
   private embeddingProviderId: string | undefined;
+  private readonly queryEmbeddingTimeoutMs: number;
+  private readonly queryEmbeddingCooldownMs: number;
+  private readonly indexReadinessTimeoutMs: number;
+  private consecutiveQueryEmbeddingTimeouts = 0;
+  private queryEmbeddingCooldownUntil = 0;
   private lastRetrievalDiagnostics: RetrievalProviderDiagnostic[] = [];
 
   constructor(
@@ -116,6 +141,18 @@ export class RAGQueryEngine {
     this.minScore = minScore;
     this.embeddingModel = options.embeddingModel;
     this.embeddingProviderId = options.embeddingProvider;
+    this.queryEmbeddingTimeoutMs = normalizePositiveDuration(
+      options.queryEmbeddingTimeoutMs,
+      DEFAULT_QUERY_EMBEDDING_TIMEOUT_MS,
+    );
+    this.queryEmbeddingCooldownMs = normalizeNonNegativeDuration(
+      options.queryEmbeddingCooldownMs,
+      DEFAULT_QUERY_EMBEDDING_COOLDOWN_MS,
+    );
+    this.indexReadinessTimeoutMs = normalizeNonNegativeDuration(
+      options.indexReadinessTimeoutMs,
+      DEFAULT_INDEX_READINESS_TIMEOUT_MS,
+    );
     const providers: CandidateProvider[] = [];
     if (vectorStore && embeddingProvider) {
       providers.push(
@@ -165,29 +202,19 @@ export class RAGQueryEngine {
     options: RAGQueryOptions = {},
   ): Promise<QueryResult[]> {
     throwIfQueryAborted(options.signal);
+    await this.waitForIndexReadiness(options.signal);
+    if (this.getCandidateReadiness() === 'initializing') {
+      this.lastRetrievalDiagnostics = [];
+      options.onRetrieved?.([], this.lastRetrievalDiagnostics);
+      return [];
+    }
     const threshold = minScore ?? this.minScore;
     const candidatePaths = await this.getCandidatePaths?.();
     const isInScope = (entry: VectorEntry): boolean =>
       (!candidatePaths || candidatePaths.has(entry.metadata.filePath)) &&
       this.isEntryInQueryScope(entry, filePathPrefixes);
-    let qVector: number[] = [];
-    let embeddingFailure = false;
-    const embeddingStarted = performance.now();
-    const embeddingExcluded = options.excludedProviderIds?.includes('query-embedding') === true;
-    if (this.embeddingProvider && !embeddingExcluded) {
-      try {
-        qVector = await this.embeddingProvider.embed(question, { signal: options.signal });
-      } catch (error) {
-        if (options.signal?.aborted) throw error;
-        embeddingFailure = true;
-        appLogger.warn('Query embedding failed; continuing with lexical retrieval.', {
-          source: 'rag.query',
-          error,
-        });
-      }
-    }
-    throwIfQueryAborted(options.signal);
-    const embeddingDurationMs = performance.now() - embeddingStarted;
+    const embeddingResolution = await this.resolveQueryEmbedding(question, options);
+    const qVector = embeddingResolution.vector;
     const retrieval = await this.retrievalPipeline.retrieve(
       {
         question,
@@ -218,23 +245,13 @@ export class RAGQueryEngine {
       {
         providerId: 'query-embedding',
         source: 'embedding',
-        status: embeddingFailure ? 'error' : qVector.length > 0 ? 'ok' : 'skipped',
-        durationMs: embeddingDurationMs,
+        status: embeddingResolution.status,
+        durationMs: embeddingResolution.durationMs,
         candidateCount: 0,
-        readiness:
-          embeddingExcluded || embeddingFailure
-            ? 'degraded'
-            : qVector.length > 0
-              ? 'ready'
-              : 'cold',
-        estimatedCost: embeddingExcluded ? 'free' : 'medium',
-        skippedReason: embeddingExcluded
-          ? 'previous-attempt-failed'
-          : embeddingFailure
-            ? 'query-embedding-failed'
-            : qVector.length > 0
-              ? undefined
-              : 'embedding-unavailable',
+        readiness: embeddingResolution.readiness,
+        estimatedCost: embeddingResolution.estimatedCost,
+        skippedReason: embeddingResolution.skippedReason,
+        error: embeddingResolution.error,
       },
       ...retrieval.diagnostics,
     ];
@@ -338,6 +355,133 @@ export class RAGQueryEngine {
 
   getLastRetrievalDiagnostics(): RetrievalProviderDiagnostic[] {
     return [...this.lastRetrievalDiagnostics];
+  }
+
+  getCandidateReadiness(): RAGCandidateReadiness {
+    if (this.bm25Index) return this.bm25Index.isReady ? 'ready' : 'initializing';
+    return this.vectorStore && this.embeddingProvider ? 'ready' : 'unavailable';
+  }
+
+  private async waitForIndexReadiness(signal?: AbortSignal): Promise<void> {
+    if (!this.bm25Index || this.bm25Index.isReady || this.indexReadinessTimeoutMs === 0) return;
+    const deadline = Date.now() + this.indexReadinessTimeoutMs;
+    while (!this.bm25Index.isReady && Date.now() < deadline) {
+      await waitForQueryDelay(
+        Math.min(INDEX_READINESS_POLL_MS, Math.max(1, deadline - Date.now())),
+        signal,
+      );
+      throwIfQueryAborted(signal);
+    }
+  }
+
+  private async resolveQueryEmbedding(
+    question: string,
+    options: RAGQueryOptions,
+  ): Promise<QueryEmbeddingResolution> {
+    throwIfQueryAborted(options.signal);
+    const startedAt = performance.now();
+    const elapsed = (): number => performance.now() - startedAt;
+    const embeddingProvider = this.embeddingProvider;
+    if (!embeddingProvider) {
+      return {
+        vector: [],
+        status: 'skipped',
+        durationMs: elapsed(),
+        readiness: 'cold',
+        estimatedCost: 'free',
+        skippedReason: 'embedding-unavailable',
+      };
+    }
+    if (options.excludedProviderIds?.includes('query-embedding') === true) {
+      return {
+        vector: [],
+        status: 'skipped',
+        durationMs: elapsed(),
+        readiness: 'degraded',
+        estimatedCost: 'free',
+        skippedReason: 'previous-attempt-failed',
+      };
+    }
+    if (Date.now() < this.queryEmbeddingCooldownUntil) {
+      return {
+        vector: [],
+        status: 'skipped',
+        durationMs: elapsed(),
+        readiness: 'degraded',
+        estimatedCost: 'medium',
+        skippedReason: 'embedding-cooldown',
+      };
+    }
+
+    const abortController = new AbortController();
+    const detachAbort = forwardAbortSignal(options.signal, abortController);
+    try {
+      throwIfQueryAborted(options.signal);
+      const operation = embeddingProvider.embed(question, { signal: abortController.signal });
+      const vector = await withQueryEmbeddingDeadline(
+        operation,
+        this.queryEmbeddingTimeoutMs,
+        abortController,
+        options.signal,
+      );
+      throwIfQueryAborted(options.signal);
+      if (vector.length === 0) {
+        throw new Error('Query embedding provider returned an empty vector.');
+      }
+      this.consecutiveQueryEmbeddingTimeouts = 0;
+      this.queryEmbeddingCooldownUntil = 0;
+      return {
+        vector,
+        status: 'ok',
+        durationMs: elapsed(),
+        readiness: 'ready',
+        estimatedCost: 'medium',
+      };
+    } catch (error) {
+      if (options.signal?.aborted) {
+        throw new DOMException('RAG query cancelled', 'AbortError');
+      }
+      const durationMs = elapsed();
+      if (error instanceof QueryEmbeddingTimeoutError) {
+        this.consecutiveQueryEmbeddingTimeouts++;
+        if (this.consecutiveQueryEmbeddingTimeouts >= QUERY_EMBEDDING_TIMEOUT_THRESHOLD) {
+          this.queryEmbeddingCooldownUntil = Date.now() + this.queryEmbeddingCooldownMs;
+        }
+        appLogger.warn('Query embedding timed out; continuing with lexical retrieval.', {
+          source: 'rag.query',
+          data: {
+            timeoutMs: this.queryEmbeddingTimeoutMs,
+            durationMs,
+            consecutiveTimeouts: this.consecutiveQueryEmbeddingTimeouts,
+          },
+        });
+        return {
+          vector: [],
+          status: 'timeout',
+          durationMs,
+          readiness: 'degraded',
+          estimatedCost: 'medium',
+          skippedReason: 'embedding-timeout',
+        };
+      }
+      this.consecutiveQueryEmbeddingTimeouts = 0;
+      appLogger.warn('Query embedding failed; continuing with lexical retrieval.', {
+        source: 'rag.query',
+        data: { durationMs },
+        error,
+      });
+      return {
+        vector: [],
+        status: 'error',
+        durationMs,
+        readiness: 'degraded',
+        estimatedCost: 'medium',
+        skippedReason: 'query-embedding-failed',
+        error: formatQueryError(error),
+      };
+    } finally {
+      detachAbort();
+    }
   }
 
   private async filterCurrentCandidates(
@@ -558,6 +702,98 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, 0);
   });
+}
+
+function waitForQueryDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  throwIfQueryAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, delayMs);
+    const abort = (): void => {
+      window.clearTimeout(timeoutId);
+      reject(new DOMException('RAG query cancelled', 'AbortError'));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
+function withQueryEmbeddingDeadline(
+  operation: Promise<number[]>,
+  timeoutMs: number,
+  abortController: AbortController,
+  signal?: AbortSignal,
+): Promise<number[]> {
+  let timeoutId: number | undefined;
+  let removeAbortListener = (): void => undefined;
+  const operations: Promise<number[]>[] = [operation];
+  operations.push(
+    new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        abortController.abort();
+        reject(new QueryEmbeddingTimeoutError(timeoutMs));
+      }, timeoutMs);
+    }),
+  );
+  if (signal) {
+    operations.push(
+      new Promise<never>((_, reject) => {
+        const abort = (): void => {
+          reject(new DOMException('RAG query cancelled', 'AbortError'));
+        };
+        if (signal.aborted) {
+          abort();
+          return;
+        }
+        signal.addEventListener('abort', abort, { once: true });
+        removeAbortListener = () => signal.removeEventListener('abort', abort);
+      }),
+    );
+  }
+
+  return Promise.race(operations).finally(() => {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    removeAbortListener();
+  });
+}
+
+function forwardAbortSignal(
+  signal: AbortSignal | undefined,
+  controller: AbortController,
+): () => void {
+  if (!signal) return () => undefined;
+  const abort = (): void => controller.abort();
+  if (signal.aborted) {
+    abort();
+    return () => undefined;
+  }
+  signal.addEventListener('abort', abort, { once: true });
+  return () => signal.removeEventListener('abort', abort);
+}
+
+function normalizePositiveDuration(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.floor(value))
+    : fallback;
+}
+
+function normalizeNonNegativeDuration(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.max(0, Math.floor(value))
+    : fallback;
+}
+
+function formatQueryError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+class QueryEmbeddingTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super('Query embedding timed out after ' + String(timeoutMs) + 'ms.');
+    this.name = 'QueryEmbeddingTimeoutError';
+  }
 }
 
 function throwIfQueryAborted(signal?: AbortSignal): void {

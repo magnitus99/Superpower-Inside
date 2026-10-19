@@ -136,6 +136,169 @@ describe('RagRetrievalPipeline', () => {
     expect(signals[0]?.aborted).toBe(true);
   });
 
+  it('연속 timeout provider는 두 번 뒤 서킷으로 건너뛰고 BM25 결과를 유지한다', async () => {
+    const calls = new Map<string, number>();
+    const timeoutProvider = (id: string, source: CandidateProvider['source']): CandidateProvider => ({
+      id,
+      source,
+      deadlineMs: 10,
+      getCandidates: (_request, signal) => {
+        calls.set(id, (calls.get(id) ?? 0) + 1);
+        return new Promise<RetrievalCandidate[]>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {
+            once: true,
+          });
+        });
+      },
+    });
+    const bm25Entry = createEntry('bm25.md', [], 'synthetic keyword');
+    const bm25Calls = vi.fn(() =>
+      Promise.resolve([{ entry: bm25Entry, source: 'bm25' as const, sourceScore: 1 }]),
+    );
+    const bm25: CandidateProvider = {
+      id: 'bm25',
+      source: 'bm25',
+      deadlineMs: 1_000,
+      getCandidates: bm25Calls,
+    };
+    const pipeline = new RagRetrievalPipeline(
+      [
+        timeoutProvider('ivf-vector', 'ann'),
+        timeoutProvider('structural-graph', 'structural'),
+        bm25,
+      ],
+      { timeoutThreshold: 2, cooldownMs: 30_000 },
+    );
+
+    await pipeline.retrieve(createRequest([1, 0], 5));
+    await pipeline.retrieve(createRequest([1, 0], 5));
+    const startedAt = performance.now();
+    const result = await pipeline.retrieve(createRequest([1, 0], 5));
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(500);
+    expect(result.candidates.map((candidate) => candidate.entry.id)).toEqual([bm25Entry.id]);
+    expect(bm25Calls).toHaveBeenCalledTimes(3);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'ivf-vector',
+          status: 'skipped',
+          skippedReason: 'provider-cooldown',
+          consecutiveTimeouts: 2,
+          lastStatus: 'timeout',
+        }),
+        expect.objectContaining({
+          providerId: 'structural-graph',
+          status: 'skipped',
+          skippedReason: 'provider-cooldown',
+          consecutiveTimeouts: 2,
+          lastStatus: 'timeout',
+        }),
+        expect.objectContaining({ providerId: 'bm25', status: 'ok' }),
+      ]),
+    );
+    expect(
+      result.diagnostics.find((diagnostic) => diagnostic.providerId === 'ivf-vector')
+        ?.cooldownRemainingMs,
+    ).toBeGreaterThan(0);
+    expect(calls).toEqual(
+      new Map([
+        ['ivf-vector', 2],
+        ['structural-graph', 2],
+      ]),
+    );
+  });
+
+  it('한 provider가 timeout되어도 정상 provider와 BM25 결과는 유지한다', async () => {
+    const fallbackEntry = createEntry('fallback.md', [], 'synthetic fallback');
+    const normalEntry = createEntry('normal.md', [1, 0], 'synthetic normal');
+    const timeoutProvider: CandidateProvider = {
+      id: 'timeout-vector',
+      source: 'vector',
+      deadlineMs: 10,
+      getCandidates: (_request, signal) =>
+        new Promise<RetrievalCandidate[]>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {
+            once: true,
+          });
+        }),
+    };
+    const normalProvider: CandidateProvider = {
+      id: 'normal-vector',
+      source: 'vector',
+      deadlineMs: 1_000,
+      getCandidates: () => Promise.resolve([{ entry: normalEntry, source: 'vector' }]),
+    };
+    const bm25Provider: CandidateProvider = {
+      id: 'bm25',
+      source: 'bm25',
+      deadlineMs: 1_000,
+      getCandidates: () => Promise.resolve([{ entry: fallbackEntry, source: 'bm25' }]),
+    };
+
+    const result = await new RagRetrievalPipeline([
+      timeoutProvider,
+      normalProvider,
+      bm25Provider,
+    ]).retrieve(createRequest([1, 0], 5));
+
+    expect(result.candidates.map((candidate) => candidate.entry.id)).toEqual(
+      expect.arrayContaining([normalEntry.id, fallbackEntry.id]),
+    );
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ providerId: 'timeout-vector', status: 'timeout' }),
+        expect.objectContaining({ providerId: 'normal-vector', status: 'ok' }),
+        expect.objectContaining({ providerId: 'bm25', status: 'ok' }),
+      ]),
+    );
+  });
+
+  it('쿨다운이 끝나면 서킷을 닫고 provider를 한 번 재시도한다', async () => {
+    const recoveredEntry = createEntry('recovered.md', [1, 0], 'synthetic recovered');
+    let calls = 0;
+    const provider: CandidateProvider = {
+      id: 'recovering-vector',
+      source: 'vector',
+      deadlineMs: 10,
+      getCandidates: (_request, signal) => {
+        calls += 1;
+        if (calls > 2) {
+          return Promise.resolve([{ entry: recoveredEntry, source: 'vector' }]);
+        }
+        return new Promise<RetrievalCandidate[]>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {
+            once: true,
+          });
+        });
+      },
+    };
+    const pipeline = new RagRetrievalPipeline([provider], {
+      timeoutThreshold: 2,
+      cooldownMs: 20,
+    });
+
+    await pipeline.retrieve(createRequest([1, 0], 5));
+    await pipeline.retrieve(createRequest([1, 0], 5));
+    const skipped = await pipeline.retrieve(createRequest([1, 0], 5));
+    expect(skipped.diagnostics[0]?.skippedReason).toBe('provider-cooldown');
+    await new Promise((resolve) => window.setTimeout(resolve, 30));
+
+    const recovered = await pipeline.retrieve(createRequest([1, 0], 5));
+
+    expect(calls).toBe(3);
+    expect(recovered.candidates.map((candidate) => candidate.entry.id)).toEqual([
+      recoveredEntry.id,
+    ]);
+    expect(recovered.diagnostics[0]).toMatchObject({
+      status: 'ok',
+      consecutiveTimeouts: 0,
+      cooldownRemainingMs: 0,
+      lastStatus: 'ok',
+    });
+  });
+
   it('외부 취소는 응답하지 않는 provider deadline을 기다리지 않고 즉시 전파한다', async () => {
     const providerSignal = vi.fn();
     const hangingProvider: CandidateProvider = {

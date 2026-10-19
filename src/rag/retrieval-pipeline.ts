@@ -73,6 +73,7 @@ export interface CandidateProvider {
 }
 
 export type RetrievalProviderStatus = 'ok' | 'timeout' | 'error' | 'skipped';
+export type RetrievalProviderCircuitStatus = RetrievalProviderStatus | 'idle';
 
 export interface RetrievalProviderDiagnostic {
   providerId: string;
@@ -84,6 +85,9 @@ export interface RetrievalProviderDiagnostic {
   estimatedCost: RetrievalEstimatedCost;
   skippedReason?: string;
   error?: string;
+  consecutiveTimeouts?: number;
+  cooldownRemainingMs?: number;
+  lastStatus?: RetrievalProviderCircuitStatus;
   receivedCandidateCount?: number;
   revisionRejectedCount?: number;
   ranking?: {
@@ -102,6 +106,20 @@ export interface RagRetrievalResult {
   candidates: MergedRetrievalCandidate[];
   diagnostics: RetrievalProviderDiagnostic[];
 }
+
+export interface RetrievalCircuitBreakerOptions {
+  timeoutThreshold?: number;
+  cooldownMs?: number;
+}
+
+interface ProviderCircuitState {
+  consecutiveTimeouts: number;
+  cooldownUntil: number;
+  lastStatus: RetrievalProviderCircuitStatus;
+}
+
+const DEFAULT_PROVIDER_TIMEOUT_THRESHOLD = 2;
+const DEFAULT_PROVIDER_COOLDOWN_MS = 30_000;
 
 export class ExactVectorCandidateProvider implements CandidateProvider {
   readonly id = 'exact-vector';
@@ -527,7 +545,20 @@ export class StructuralGraphCandidateProvider implements CandidateProvider {
 }
 
 export class RetrievalOrchestrator {
-  constructor(private readonly providers: readonly CandidateProvider[]) {}
+  private readonly providerCircuits = new Map<string, ProviderCircuitState>();
+  private readonly timeoutThreshold: number;
+  private readonly cooldownMs: number;
+
+  constructor(
+    private readonly providers: readonly CandidateProvider[],
+    options: RetrievalCircuitBreakerOptions = {},
+  ) {
+    this.timeoutThreshold = normalizePositiveInteger(
+      options.timeoutThreshold,
+      DEFAULT_PROVIDER_TIMEOUT_THRESHOLD,
+    );
+    this.cooldownMs = normalizeNonNegativeInteger(options.cooldownMs, DEFAULT_PROVIDER_COOLDOWN_MS);
+  }
 
   async retrieve(request: RagRetrievalRequest, signal?: AbortSignal): Promise<RagRetrievalResult> {
     throwIfAborted(signal);
@@ -547,6 +578,7 @@ export class RetrievalOrchestrator {
     signal?: AbortSignal,
   ): Promise<{ candidates: RetrievalCandidate[]; diagnostic: RetrievalProviderDiagnostic }> {
     const startedAt = Date.now();
+    const circuitDiagnostic = this.getCircuitDiagnostic(provider, Date.now());
     if (request.excludedProviderIds?.includes(provider.id)) {
       return {
         candidates: [],
@@ -559,6 +591,23 @@ export class RetrievalOrchestrator {
           readiness: 'degraded',
           estimatedCost: 'free',
           skippedReason: 'previous-attempt-failed',
+          ...circuitDiagnostic,
+        },
+      };
+    }
+    if (this.isCircuitOpen(provider, Date.now())) {
+      return {
+        candidates: [],
+        diagnostic: {
+          providerId: provider.id,
+          source: provider.source,
+          status: 'skipped',
+          durationMs: Date.now() - startedAt,
+          candidateCount: 0,
+          readiness: 'degraded',
+          estimatedCost: 'free',
+          skippedReason: 'provider-cooldown',
+          ...circuitDiagnostic,
         },
       };
     }
@@ -577,6 +626,7 @@ export class RetrievalOrchestrator {
           readiness: 'degraded',
           estimatedCost: 'low',
           skippedReason: 'query-embedding-unavailable',
+          ...circuitDiagnostic,
         },
       };
     }
@@ -587,6 +637,7 @@ export class RetrievalOrchestrator {
       throwIfAborted(signal);
     } catch (error) {
       if (signal?.aborted) throw error;
+      this.recordProviderError(provider);
       return {
         candidates: [],
         diagnostic: {
@@ -598,6 +649,7 @@ export class RetrievalOrchestrator {
           readiness: 'degraded',
           estimatedCost: 'high',
           error: stringifyError(error),
+          ...this.getCircuitDiagnostic(provider, Date.now()),
         },
       };
     }
@@ -613,6 +665,7 @@ export class RetrievalOrchestrator {
           readiness: readiness.readiness,
           estimatedCost: readiness.estimatedCost,
           skippedReason: readiness.reason ?? defaultSkippedReason(readiness.readiness),
+          ...this.getCircuitDiagnostic(provider, Date.now()),
         },
       };
     }
@@ -647,6 +700,7 @@ export class RetrievalOrchestrator {
         ...candidate,
         rank: candidate.rank ?? index + 1,
       }));
+      this.recordProviderSuccess(provider);
       return {
         candidates: rankedCandidates,
         diagnostic: {
@@ -659,11 +713,17 @@ export class RetrievalOrchestrator {
           revisionRejectedCount: receivedCandidateCount - rankedCandidates.length,
           readiness: readiness.readiness,
           estimatedCost: readiness.estimatedCost,
+          ...this.getCircuitDiagnostic(provider, Date.now()),
         },
       };
     } catch (error) {
       if (signal?.aborted) throw error;
       const isTimeout = error instanceof ProviderTimeoutError;
+      if (isTimeout) {
+        this.recordProviderTimeout(provider, Date.now());
+      } else {
+        this.recordProviderError(provider);
+      }
       return {
         candidates: [],
         diagnostic: {
@@ -675,9 +735,66 @@ export class RetrievalOrchestrator {
           readiness: readiness.readiness,
           estimatedCost: readiness.estimatedCost,
           error: isTimeout ? undefined : stringifyError(error),
+          ...this.getCircuitDiagnostic(provider, Date.now()),
         },
       };
     }
+  }
+
+  private getProviderCircuit(provider: CandidateProvider): ProviderCircuitState {
+    const existing = this.providerCircuits.get(provider.id);
+    if (existing) return existing;
+    const created: ProviderCircuitState = {
+      consecutiveTimeouts: 0,
+      cooldownUntil: 0,
+      lastStatus: 'idle',
+    };
+    this.providerCircuits.set(provider.id, created);
+    return created;
+  }
+
+  private isCircuitOpen(provider: CandidateProvider, now: number): boolean {
+    if (provider.source === 'bm25') return false;
+    const state = this.getProviderCircuit(provider);
+    return state.cooldownUntil > now;
+  }
+
+  private recordProviderSuccess(provider: CandidateProvider): void {
+    const state = this.getProviderCircuit(provider);
+    state.consecutiveTimeouts = 0;
+    state.cooldownUntil = 0;
+    state.lastStatus = 'ok';
+  }
+
+  private recordProviderTimeout(provider: CandidateProvider, now: number): void {
+    const state = this.getProviderCircuit(provider);
+    state.consecutiveTimeouts += 1;
+    state.lastStatus = 'timeout';
+    if (state.consecutiveTimeouts >= this.timeoutThreshold) {
+      state.cooldownUntil = now + this.cooldownMs;
+    }
+  }
+
+  private recordProviderError(provider: CandidateProvider): void {
+    const state = this.getProviderCircuit(provider);
+    state.consecutiveTimeouts = 0;
+    state.cooldownUntil = 0;
+    state.lastStatus = 'error';
+  }
+
+  private getCircuitDiagnostic(
+    provider: CandidateProvider,
+    now: number,
+  ): Pick<
+    RetrievalProviderDiagnostic,
+    'consecutiveTimeouts' | 'cooldownRemainingMs' | 'lastStatus'
+  > {
+    const state = this.getProviderCircuit(provider);
+    return {
+      consecutiveTimeouts: state.consecutiveTimeouts,
+      cooldownRemainingMs: Math.max(0, state.cooldownUntil - now),
+      lastStatus: state.lastStatus,
+    };
   }
 }
 
@@ -836,8 +953,8 @@ function withProviderDeadline<T>(
     operations.push(
       new Promise<never>((_, reject) => {
         timeoutId = window.setTimeout(() => {
-          abortController.abort();
           reject(new ProviderTimeoutError());
+          abortController.abort();
         }, deadlineMs);
       }),
     );
@@ -932,4 +1049,16 @@ function forwardAbortSignal(
 function stringifyError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.floor(value))
+    : fallback;
+}
+
+function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.max(0, Math.floor(value))
+    : fallback;
 }
