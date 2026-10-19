@@ -276,29 +276,159 @@ fn validate_screen_review(segments_json: &str, response: &str) -> Option<Value> 
     Some(json!({"decisions": screened}))
 }
 
-/// 조각마다 질문 토큰 겹침 비율을 계산하고 질문 토큰이 없으면 전부 유지합니다.
+/// 한 조각의 질문 용어 빈도와 검색 구간입니다.
+struct ReviewScoreSegment<'a> {
+    /// 원문 조각 식별자입니다.
+    id: &'a str,
+    /// 문서 빈도를 합산할 경로입니다.
+    path: &'a str,
+    /// 질문 밖 용어도 포함한 전체 토큰 수입니다.
+    length: usize,
+    /// 질문에 등장하는 용어의 출현 횟수입니다.
+    frequencies: BTreeMap<String, usize>,
+    /// 선택적으로 제공된 시작 행입니다.
+    start_line: Option<u64>,
+    /// 선택적으로 제공된 끝 행입니다.
+    end_line: Option<u64>,
+}
+
+/// 기존 하이브리드 검색이 지목한 원문 구간과 순위입니다.
+struct ReviewRetrievalSignal<'a> {
+    /// 검색 결과 문서 경로입니다.
+    path: &'a str,
+    /// 1부터 시작하는 검색 순위입니다.
+    rank: f64,
+    /// 검색 결과의 시작 행입니다.
+    start_line: Option<u64>,
+    /// 검색 결과의 끝 행입니다.
+    end_line: Option<u64>,
+}
+
+/// 검색 신호가 없으면 빈 목록, 손상됐으면 실패를 반환합니다.
+fn parse_review_retrieval_signals(value: &Value) -> Option<Vec<ReviewRetrievalSignal<'_>>> {
+    let Some(raw) = value.get("retrievalSignals") else {
+        return Some(Vec::new());
+    };
+    raw.as_array()?
+        .iter()
+        .map(|signal| {
+            let rank = signal.get("rank")?.as_u64()?;
+            if rank == 0 {
+                return None;
+            }
+            let start_line = match signal.get("startLine") {
+                Some(line) => Some(line.as_u64()?),
+                None => None,
+            };
+            let end_line = match signal.get("endLine") {
+                Some(line) => Some(line.as_u64()?),
+                None => None,
+            };
+            if start_line.is_some_and(|line| line == 0)
+                || end_line.is_some_and(|line| line < start_line.unwrap_or(1))
+            {
+                return None;
+            }
+            Some(ReviewRetrievalSignal {
+                path: signal.get("path")?.as_str()?,
+                rank: crate::usize_to_f64(usize::try_from(rank).ok()?)?,
+                start_line,
+                end_line,
+            })
+        })
+        .collect()
+}
+
+/// 문서별 희귀도·조각 길이와 기존 검색 순위를 함께 보존합니다.
 fn score_segments(input: &str) -> Option<Value> {
     let value: Value = serde_json::from_str(input).ok()?;
     let question = value.get("question")?.as_str()?;
     let segments = value.get("segments")?.as_array()?;
-    if segments.is_empty() || segments.len() > 1024 {
+    if segments.is_empty() {
         return None;
     }
     let asked = crate::tokenize(question)
         .into_iter()
         .collect::<BTreeSet<_>>();
-    let asked_count = crate::usize_to_f64(asked.len())?;
-    let mut rows = Vec::with_capacity(segments.len());
+    let mut corpus = Vec::with_capacity(segments.len());
+    let mut documents = BTreeMap::<&str, BTreeSet<String>>::new();
+    let mut total_length = 0_usize;
+    let mut ids = BTreeSet::new();
     for segment in segments {
         let id = segment.get("id")?.as_str()?;
+        if !ids.insert(id) {
+            return None;
+        }
+        let path = segment.get("path")?.as_str()?;
         let text = segment.get("text")?.as_str()?;
+        let tokens = crate::tokenize(text);
+        total_length = total_length.checked_add(tokens.len())?;
+        let mut frequencies = BTreeMap::<String, usize>::new();
+        for token in tokens.iter().filter(|token| asked.contains(*token)) {
+            *frequencies.entry(token.clone()).or_default() += 1;
+        }
+        documents
+            .entry(path)
+            .or_default()
+            .extend(frequencies.keys().cloned());
+        corpus.push(ReviewScoreSegment {
+            id,
+            path,
+            length: tokens.len(),
+            frequencies,
+            start_line: segment.get("startLine").and_then(Value::as_u64),
+            end_line: segment.get("endLine").and_then(Value::as_u64),
+        });
+    }
+    let document_count = crate::usize_to_f64(documents.len())?;
+    let average_length = crate::usize_to_f64(total_length)? / crate::usize_to_f64(corpus.len())?;
+    let inverse_frequencies = asked
+        .iter()
+        .map(|token| {
+            let frequency = documents
+                .values()
+                .filter(|terms| terms.contains(token))
+                .count();
+            let frequency = crate::usize_to_f64(frequency)?;
+            Some((
+                token.as_str(),
+                ((document_count - frequency + 0.5) / (frequency + 0.5)).ln_1p(),
+            ))
+        })
+        .collect::<Option<BTreeMap<_, _>>>()?;
+    let signals = parse_review_retrieval_signals(&value)?;
+    let mut rows = Vec::with_capacity(corpus.len());
+    for segment in corpus {
+        let mut raw_score = 0.0;
+        for (term, frequency) in segment.frequencies {
+            raw_score += crate::bm25_score_value(
+                *inverse_frequencies.get(term.as_str())?,
+                crate::usize_to_f64(frequency)?,
+                crate::usize_to_f64(segment.length)?,
+                average_length,
+            );
+        }
+        let retrieval_score = signals
+            .iter()
+            .filter(|signal| {
+                signal.path == segment.path
+                    && match (signal.start_line, segment.start_line, segment.end_line) {
+                        (Some(start), Some(segment_start), Some(segment_end)) => {
+                            segment_start <= signal.end_line.unwrap_or(start)
+                                && segment_end >= start
+                        }
+                        _ => true,
+                    }
+            })
+            .map(|signal| 1.0 / (60.0 + signal.rank))
+            .fold(0.0_f64, f64::max);
+        raw_score += retrieval_score;
         let score = if asked.is_empty() {
             1.0
         } else {
-            let found = crate::tokenize(text).into_iter().collect::<BTreeSet<_>>();
-            crate::usize_to_f64(found.intersection(&asked).count())? / asked_count
+            raw_score / (1.0 + raw_score)
         };
-        rows.push(json!({"id": id, "score": score}));
+        rows.push(json!({"id": segment.id, "score": score}));
     }
     Some(json!({"scores": rows}))
 }
@@ -506,7 +636,17 @@ mod tests {
     fn score_ignores_english_letter_case() {
         let input = json!({"question":"Quartz Cooling","segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"the QUARTZ cooling cycle requires two cycles"}]}).to_string();
         let result = score_segments(&input).unwrap_or(Value::Null);
-        assert_eq!(result.pointer("/scores/0/score"), Some(&json!(1.0)));
+        let lower = score_segments(&input.to_lowercase()).unwrap_or(Value::Null);
+        assert_eq!(
+            result.pointer("/scores/0/score"),
+            lower.pointer("/scores/0/score")
+        );
+        assert!(
+            result
+                .pointer("/scores/0/score")
+                .and_then(Value::as_f64)
+                .is_some_and(|score| score > 0.0 && score < 1.0)
+        );
     }
 
     #[test]
@@ -514,6 +654,60 @@ mod tests {
         let input = json!({"question":"냉각 주기","segments":[{"id":"one","path":"Research/A.md","startLine":1,"endLine":1,"text":"Delivery schedule for next week."}]}).to_string();
         let result = score_segments(&input).unwrap_or(Value::Null);
         assert_eq!(result.pointer("/scores/0/score"), Some(&json!(0.0)));
+    }
+
+    #[test]
+    fn score_prioritizes_rare_terms_and_concise_passages() {
+        let input = json!({"question":"quartz maintenance","segments":[
+            {"id":"rare","path":"A.md","text":"quartz"},
+            {"id":"common","path":"B.md","text":"maintenance"},
+            {"id":"long","path":"C.md","text":format!("quartz {}", "delivery ".repeat(40))},
+            {"id":"other","path":"D.md","text":"maintenance"},
+            {"id":"another","path":"E.md","text":"maintenance"}
+        ]})
+        .to_string();
+        let result = score_segments(&input).unwrap_or(Value::Null);
+        let score = |index| {
+            result
+                .pointer(&format!("/scores/{index}/score"))
+                .and_then(Value::as_f64)
+                .unwrap_or(-1.0)
+        };
+        assert!(score(0) > score(1));
+        assert!(score(0) > score(2));
+    }
+
+    #[test]
+    fn score_preserves_semantic_retrieval_signal_without_lexical_overlap() {
+        let input = json!({"question":"quartz","segments":[
+            {"id":"semantic","path":"A.md","startLine":10,"endLine":20,"text":"cooling cycles"},
+            {"id":"unrelated","path":"B.md","startLine":1,"endLine":5,"text":"delivery schedule"}
+        ],"retrievalSignals":[{"path":"A.md","startLine":12,"endLine":15,"rank":1}]})
+        .to_string();
+        let result = score_segments(&input).unwrap_or(Value::Null);
+        assert!(
+            result
+                .pointer("/scores/0/score")
+                .and_then(Value::as_f64)
+                .is_some_and(|score| score > 0.0)
+        );
+        assert_eq!(result.pointer("/scores/1/score"), Some(&json!(0.0)));
+    }
+
+    #[test]
+    fn score_rejects_invalid_retrieval_signals_and_duplicate_ids() {
+        let segment = json!({"id":"one","path":"A.md","startLine":1,"endLine":2,"text":"quartz"});
+        for signal in [
+            json!({"path":"A.md","rank":0}),
+            json!({"path":"A.md","rank":1,"startLine":3,"endLine":1}),
+            json!({"path":"A.md","rank":1,"startLine":"invalid"}),
+        ] {
+            let invalid =
+                json!({"question":"quartz","segments":[segment],"retrievalSignals":[signal]});
+            assert!(score_segments(&invalid.to_string()).is_none());
+        }
+        let duplicated = json!({"question":"quartz","segments":[segment, segment]});
+        assert!(score_segments(&duplicated.to_string()).is_none());
     }
 
     #[test]
@@ -532,14 +726,17 @@ mod tests {
     }
 
     #[test]
-    fn score_rejects_more_than_1024_segments() {
+    fn score_supports_full_corpus_with_more_than_1024_segments() {
         let segments = (0..1025)
             .map(|index| {
                 json!({"id": format!("segment-{index}"), "path": "Research/A.md", "startLine": 1, "endLine": 1, "text": "냉각이 필요하다."})
             })
             .collect::<Vec<_>>();
         let input = json!({"question":"냉각 주기","segments":segments}).to_string();
-        assert!(score_segments(&input).is_none());
-        assert_eq!(score_indexed_review_segments_json(&input), "");
+        assert_eq!(
+            score_segments(&input)
+                .and_then(|value| value.get("scores").and_then(Value::as_array).map(Vec::len)),
+            Some(1025)
+        );
     }
 }
