@@ -267,6 +267,8 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   dataBoundarySnapshot?: DataBoundarySnapshot;
   retrievalTrace?: ChatRetrievalRecord[];
   usageSnapshot?: TurnUsageSnapshot;
+  indexedReviewDiagnostics?: import('../agent/indexed-vault-review').IndexedReviewDiagnostics;
+  indexedReviewNotice?: string;
   errorKind?: ChatErrorKind;
   errorRetryAt?: string;
   actionHistory?: ChatActionHistoryEntry[];

@@ -19,6 +19,49 @@ vi.mock('obsidian', () => {
 });
 
 describe('chat persistence', () => {
+  it('단계별 검수 비용과 미완료 고지를 저장하고 복원한다', async () => {
+    const vault = createVault();
+    const phase = () => ({
+      durationMs: 12,
+      requests: 1,
+      reportedRequests: 1,
+      inputTokens: 20,
+      outputTokens: 3,
+      totalTokens: 23,
+    });
+    const indexedReviewDiagnostics = {
+      phases: {
+        inventory: phase(),
+        search: phase(),
+        map: phase(),
+        screen: phase(),
+        extract: phase(),
+        reduce: phase(),
+        answer: phase(),
+      },
+      counts: {
+        candidateSegments: 12,
+        screenAcceptedSegments: 4,
+        extractedSegments: 4,
+        screenRetries: 0,
+        extractRetries: 1,
+        splitBatches: 1,
+        reduceRequests: 0,
+        cacheHits: 2,
+      },
+    };
+    const message = createMessage({
+      role: 'assistant',
+      content: '독립 합성 답변',
+      indexedReviewDiagnostics,
+      indexedReviewNotice: '독립 합성 미완료 고지',
+    });
+    const file = await saveChat(vault, [message], 'Chats');
+    const loaded = await loadChat(vault, file.path);
+    expect(loaded.messages[0].indexedReviewDiagnostics).toEqual(indexedReviewDiagnostics);
+    expect(loaded.messages[0].indexedReviewNotice).toBe(message.indexedReviewNotice);
+  });
+
   it('답변 저장은 본문·출처·근거 제한을 보존하고 기존 노트를 덮어쓰지 않는다', async () => {
     const vault = createVault();
     vault.writeFile('Notes/Comparison.md', '기존 사용자 노트');
