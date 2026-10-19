@@ -1,5 +1,5 @@
 import type { NativeVaultQueryEngineLike } from '../agent/obsidian-native-vault-port';
-import type { RAGQueryEngine } from '../rag/query';
+import type { RAGQueryEngine, RAGQueryOptions } from '../rag/query';
 import type { RagQueryLike } from './context';
 import type { ChatRetrievalRecord } from './types';
 
@@ -9,11 +9,12 @@ export function observeChatRetrieval(
   onRecord: (record: ChatRetrievalRecord) => void,
 ): RagQueryLike & NativeVaultQueryEngineLike {
   return {
-    query: (question, topK, minScore?, prefixes?, options?: { signal?: AbortSignal }) =>
+    query: (question, topK, minScore?, prefixes?, options?: RAGQueryOptions) =>
       engine
         .query(question, topK, minScore, prefixes, {
           ...options,
-          onRetrieved: (results, diagnostics) =>
+          onRetrieved: (results, diagnostics) => {
+            options?.onRetrieved?.(results, diagnostics);
             onRecord({
               query: question,
               diagnostics: diagnostics.map(({ error: _error, ...diagnostic }) => diagnostic),
@@ -28,7 +29,8 @@ export function observeChatRetrieval(
                 vectorScore: result.vectorScore,
                 selectionReason: result.selectionReason,
               })),
-            }),
+            });
+          },
         })
         .catch((error: unknown) => {
           onRecord({ query: question, status: 'error', diagnostics: [], results: [] });

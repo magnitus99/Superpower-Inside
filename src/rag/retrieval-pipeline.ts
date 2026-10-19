@@ -32,6 +32,7 @@ export interface RagRetrievalRequest {
   isEntryCompatible?: (entry: VectorEntry) => boolean;
   isEntryInScope?: (entry: VectorEntry) => boolean;
   filterCurrentCandidates?: (candidates: RetrievalCandidate[]) => Promise<RetrievalCandidate[]>;
+  excludedProviderIds?: readonly string[];
 }
 
 export interface RetrievalCandidate {
@@ -83,6 +84,18 @@ export interface RetrievalProviderDiagnostic {
   estimatedCost: RetrievalEstimatedCost;
   skippedReason?: string;
   error?: string;
+  receivedCandidateCount?: number;
+  revisionRejectedCount?: number;
+  ranking?: {
+    mergedCandidates: number;
+    scopeRejected: number;
+    invalidScoreRejected: number;
+    scoredCandidates: number;
+    scoreRejected: number;
+    policyRejected: number;
+    diversityRejected: number;
+    returnedCandidates: number;
+  };
 }
 
 export interface RagRetrievalResult {
@@ -534,6 +547,21 @@ export class RetrievalOrchestrator {
     signal?: AbortSignal,
   ): Promise<{ candidates: RetrievalCandidate[]; diagnostic: RetrievalProviderDiagnostic }> {
     const startedAt = Date.now();
+    if (request.excludedProviderIds?.includes(provider.id)) {
+      return {
+        candidates: [],
+        diagnostic: {
+          providerId: provider.id,
+          source: provider.source,
+          status: 'skipped',
+          durationMs: Date.now() - startedAt,
+          candidateCount: 0,
+          readiness: 'degraded',
+          estimatedCost: 'free',
+          skippedReason: 'previous-attempt-failed',
+        },
+      };
+    }
     if (
       request.queryVector.length === 0 &&
       (provider.source === 'vector' || provider.source === 'ann')
@@ -593,6 +621,7 @@ export class RetrievalOrchestrator {
       const abortController = new AbortController();
       const detachAbort = forwardAbortSignal(signal, abortController);
       let candidates: RetrievalCandidate[];
+      let receivedCandidateCount = 0;
       try {
         const deadlineMs = await withAbortSignal(
           resolveProviderDeadlineMs(provider, request),
@@ -605,6 +634,7 @@ export class RetrievalOrchestrator {
           abortController,
           signal,
         );
+        receivedCandidateCount = candidates.length;
         throwIfAborted(signal);
         if (request.filterCurrentCandidates) {
           candidates = await withAbortSignal(request.filterCurrentCandidates(candidates), signal);
@@ -625,6 +655,8 @@ export class RetrievalOrchestrator {
           status: 'ok',
           durationMs: Date.now() - startedAt,
           candidateCount: rankedCandidates.length,
+          receivedCandidateCount,
+          revisionRejectedCount: receivedCandidateCount - rankedCandidates.length,
           readiness: readiness.readiness,
           estimatedCost: readiness.estimatedCost,
         },

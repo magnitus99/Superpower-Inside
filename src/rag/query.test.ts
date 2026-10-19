@@ -15,6 +15,49 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('복구에서 제외한 임베딩과 벡터는 다시 호출하지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    const embedding = createEmbeddingProvider([1, 0]);
+    const embed = vi.spyOn(embedding, 'embed');
+    const search = vi.spyOn(store, 'search');
+    const engine = new RAGQueryEngine(store, embedding);
+    await engine.query('synthetic', 2, 0, undefined, {
+      excludedProviderIds: ['query-embedding', 'exact-vector'],
+    });
+    expect(embed).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'query-embedding',
+          status: 'skipped',
+          skippedReason: 'previous-attempt-failed',
+        }),
+      ]),
+    );
+  });
+
+  it('최종 후보가 줄어든 단계를 집계해 검색 진단에 남긴다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([
+      createEntry('a.md', [1, 0], 'synthetic'),
+      createEntry('b.md', [1, 0], 'synthetic'),
+    ]);
+    const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]));
+    await engine.query('synthetic', 1, 0);
+    const diagnostic = engine
+      .getLastRetrievalDiagnostics()
+      .find((item) => item.providerId === 'query-ranking');
+    expect(diagnostic?.candidateCount).toBe(1);
+    expect(diagnostic?.ranking).toMatchObject({
+      mergedCandidates: 2,
+      scoredCandidates: 2,
+      scoreRejected: 0,
+      diversityRejected: 1,
+      returnedCandidates: 1,
+    });
+  });
+
   it('검색별 진단 콜백은 실제 임베딩 상태와 반환 후보를 전달한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([createEntry('synthetic.md', [1, 0], 'synthetic evidence')]);
@@ -436,6 +479,7 @@ describe('RAGQueryEngine', () => {
         source: 'ann',
         status: 'ok',
       }),
+      expect.objectContaining({ providerId: 'query-ranking', source: 'reranker', status: 'ok' }),
     ]);
   });
 
@@ -468,6 +512,7 @@ describe('RAGQueryEngine', () => {
         source: 'structural',
         status: 'ok',
       }),
+      expect.objectContaining({ providerId: 'query-ranking', source: 'reranker', status: 'ok' }),
     ]);
   });
 

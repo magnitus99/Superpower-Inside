@@ -73,6 +73,7 @@ export interface RAGQueryEngineOptions {
 
 export interface RAGQueryOptions {
   signal?: AbortSignal;
+  excludedProviderIds?: readonly string[];
   onRetrieved?: (
     results: readonly QueryResult[],
     diagnostics: readonly RetrievalProviderDiagnostic[],
@@ -172,7 +173,8 @@ export class RAGQueryEngine {
     let qVector: number[] = [];
     let embeddingFailure = false;
     const embeddingStarted = performance.now();
-    if (this.embeddingProvider) {
+    const embeddingExcluded = options.excludedProviderIds?.includes('query-embedding') === true;
+    if (this.embeddingProvider && !embeddingExcluded) {
       try {
         qVector = await this.embeddingProvider.embed(question, { signal: options.signal });
       } catch (error) {
@@ -191,6 +193,7 @@ export class RAGQueryEngine {
         question,
         queryVector: qVector,
         candidateLimit: topK * 8,
+        excludedProviderIds: options.excludedProviderIds,
         requireSourceRevision: this.corpusStore !== undefined,
         vectorFilter:
           qVector.length > 0
@@ -218,24 +221,34 @@ export class RAGQueryEngine {
         status: embeddingFailure ? 'error' : qVector.length > 0 ? 'ok' : 'skipped',
         durationMs: embeddingDurationMs,
         candidateCount: 0,
-        readiness: embeddingFailure ? 'degraded' : qVector.length > 0 ? 'ready' : 'cold',
-        estimatedCost: 'medium',
-        skippedReason: embeddingFailure
-          ? 'query-embedding-failed'
-          : qVector.length > 0
-            ? undefined
-            : 'embedding-unavailable',
+        readiness:
+          embeddingExcluded || embeddingFailure
+            ? 'degraded'
+            : qVector.length > 0
+              ? 'ready'
+              : 'cold',
+        estimatedCost: embeddingExcluded ? 'free' : 'medium',
+        skippedReason: embeddingExcluded
+          ? 'previous-attempt-failed'
+          : embeddingFailure
+            ? 'query-embedding-failed'
+            : qVector.length > 0
+              ? undefined
+              : 'embedding-unavailable',
       },
       ...retrieval.diagnostics,
     ];
-    this.lastRetrievalDiagnostics = diagnostics;
+    const rankingStarted = performance.now();
     const queryTokens = tokenizeRust(question) ?? [];
 
     const scored: QueryResult[] = [];
+    let scopeRejected = 0;
+    let invalidScoreRejected = 0;
     for (let index = 0; index < retrieval.candidates.length; index++) {
       const candidate = retrieval.candidates[index];
       const entry = candidate.entry;
       if (!isInScope(entry)) {
+        scopeRejected += 1;
         continue;
       }
       const vectorScore =
@@ -247,6 +260,7 @@ export class RAGQueryEngine {
               : null
           : 0;
       if (vectorScore === null) {
+        invalidScoreRejected += 1;
         continue;
       }
       const bm25 = candidate.sourceScores.bm25 ?? 0;
@@ -260,6 +274,7 @@ export class RAGQueryEngine {
         retrievalSources: candidate.sources,
       });
       if (!scorePlan) {
+        invalidScoreRejected += 1;
         continue;
       }
       scored.push({
@@ -293,12 +308,30 @@ export class RAGQueryEngine {
     // 네트워크·작업자 대기 중 바뀐 제외 정책도 응답 직전에 적용합니다.
     const currentPaths = await this.getCandidatePaths?.();
     throwIfQueryAborted(options.signal);
-    const results = selectDiverseResults(
-      currentPaths
-        ? relevantResults.filter((result) => currentPaths.has(result.sourcePath))
-        : relevantResults,
-      topK,
-    );
+    const allowedResults = currentPaths
+      ? relevantResults.filter((result) => currentPaths.has(result.sourcePath))
+      : relevantResults;
+    const results = selectDiverseResults(allowedResults, topK);
+    diagnostics.push({
+      providerId: 'query-ranking',
+      source: 'reranker',
+      status: 'ok',
+      durationMs: performance.now() - rankingStarted,
+      candidateCount: results.length,
+      readiness: 'ready',
+      estimatedCost: 'low',
+      ranking: {
+        mergedCandidates: retrieval.candidates.length,
+        scopeRejected,
+        invalidScoreRejected,
+        scoredCandidates: scored.length,
+        scoreRejected: scored.length - relevantResults.length,
+        policyRejected: relevantResults.length - allowedResults.length,
+        diversityRejected: allowedResults.length - results.length,
+        returnedCandidates: results.length,
+      },
+    });
+    this.lastRetrievalDiagnostics = diagnostics;
     options.onRetrieved?.(results, diagnostics);
     return results;
   }

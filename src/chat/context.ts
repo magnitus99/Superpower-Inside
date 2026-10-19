@@ -1,7 +1,7 @@
 import { TFile, TFolder, type App } from 'obsidian';
 import { t } from '../i18n';
 import type { MCPRegistry } from '../mcp/registry';
-import type { QueryResult } from '../rag/query';
+import type { QueryResult, RAGQueryOptions } from '../rag/query';
 import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
 import { readSourceFileSnapshot } from '../rag/source-snapshot';
 import { readSourceText } from '../rag/source-access';
@@ -43,12 +43,15 @@ export interface RagQueryLike {
     topK: number,
     minScore?: number,
     filePathPrefixes?: readonly string[],
+    options?: RAGQueryOptions,
   ): Promise<QueryResult[]>;
   getLastRetrievalDiagnostics?(): RetrievalProviderDiagnostic[];
 }
 
 export interface ContextBuildResult {
   vaultSearchEnabled?: boolean;
+  searchQueries?: readonly string[];
+  scoringQuestion?: string;
   preparedMcpServerNames?: string[];
   pluginDocumentationFailure?: string;
   systemPrompt: string | null;
@@ -70,6 +73,7 @@ export async function resolveChatRagEngine(
 
 interface BuildContextOptions {
   app: App;
+  signal?: AbortSignal;
   workspaceFiles?: WorkspaceMentionFiles;
   candidatePaths?: ReadonlySet<string>;
   /** 사용자가 직접 지정한 파일을 읽을 수 있는지 확인합니다(확장자 제외는 허용). */
@@ -87,6 +91,8 @@ interface BuildContextOptions {
   /** 플러그인 전용 생성에서는 명시한 자료만 읽고 자동 검색을 하지 않습니다. */
   explicitContextOnly?: boolean;
   enableVaultSearch?: boolean;
+  /** 후속 전수 검토에서 같은 질의 계획을 한 번만 실행합니다. */
+  deferAutoRagToReview?: boolean;
 }
 
 const DEFAULT_MAX_FOLDER_FILES = 12;
@@ -287,21 +293,47 @@ export async function buildChatContext(
   );
 
   const deferredFolder = attachments.some((attachment) => attachment.scopeOnly);
-  if (options.ragEngine && shouldUseAutoRag && !hasImplicitFolderEvidence && !deferredFolder) {
+  if (
+    options.ragEngine &&
+    shouldUseAutoRag &&
+    !hasImplicitFolderEvidence &&
+    !deferredFolder &&
+    !options.deferAutoRagToReview
+  ) {
     try {
       const prefixes = explicitFolders.length
         ? explicitFolders.map((folder) => folder.name)
         : undefined;
-      const retrieve = (query: string, topK: number, minScore?: number): Promise<QueryResult[]> =>
-        prefixes
-          ? options.ragEngine!.query(query, topK, minScore, prefixes)
-          : options.ragEngine!.query(query, topK, minScore);
+      const queryDiagnostics = new Map<string, readonly RetrievalProviderDiagnostic[]>();
+      const attemptDiagnostics: RetrievalProviderDiagnostic[] = [];
+      const retrieve = (
+        query: string,
+        topK: number,
+        minScore?: number,
+        recovering = false,
+      ): Promise<QueryResult[]> => {
+        // 시간 초과를 무관한 문서 부재로 취급하거나 같은 실패를 확대 반복하지 않습니다.
+        const excludedProviderIds = recovering
+          ? queryDiagnostics
+              .get(query)
+              ?.filter((item) => item.status === 'timeout' || item.status === 'error')
+              .map((item) => item.providerId)
+          : undefined;
+        return options.ragEngine!.query(query, topK, minScore, prefixes, {
+          signal: options.signal,
+          excludedProviderIds,
+          onRetrieved: (_results, diagnostics) => {
+            queryDiagnostics.set(query, diagnostics);
+            attemptDiagnostics.push(...diagnostics);
+          },
+        });
+      };
       let results = (
         await Promise.all(queries.map((query) => retrieve(query, ragTopK, options.ragMinScore)))
       ).flat();
       if (results.length === 0) {
         const fallbackCandidates = (
-          await Promise.all(queries.map((query) => retrieve(query, ragTopK * 3, 0)))
+          await Promise.all(queries.map((query) => retrieve(query, ragTopK * 3, 0, true)))
         ).flat();
         const fallbackIndices =
           planFolderLexicalEvidenceIndicesRust(
@@ -356,7 +388,9 @@ export async function buildChatContext(
         ragPartial ||= !result.complete;
       }
       const diagnosticsText = formatRetrievalDiagnostics(
-        options.ragEngine.getLastRetrievalDiagnostics?.() ?? [],
+        attemptDiagnostics.length > 0
+          ? attemptDiagnostics
+          : (options.ragEngine.getLastRetrievalDiagnostics?.() ?? []),
       );
       attachments.push({
         id: 'rag:auto',
@@ -392,6 +426,8 @@ export async function buildChatContext(
         autoRagReason: mentionPlan.autoRagReason,
       });
     } catch (err) {
+      if (options.signal?.aborted || (err instanceof DOMException && err.name === 'AbortError'))
+        throw err;
       appLogger.warn('Auto RAG context build failed.', {
         source: 'chat.context',
         error: err,
@@ -406,7 +442,12 @@ export async function buildChatContext(
         detail: stringifyError(err),
       });
     }
-  } else if (options.ragEngine && !shouldUseAutoRag && mentionPlan.tagIndices.length === 0) {
+  } else if (
+    options.ragEngine &&
+    ((options.deferAutoRagToReview && !hasImplicitFolderEvidence && !deferredFolder) ||
+      !shouldUseAutoRag) &&
+    mentionPlan.tagIndices.length === 0
+  ) {
     attachments.push({
       id: 'rag:auto',
       type: 'rag',
@@ -441,6 +482,8 @@ export async function buildChatContext(
     : '';
   return {
     vaultSearchEnabled: shouldUseAutoRag && options.enableVaultSearch !== false,
+    searchQueries: queries,
+    scoringQuestion: expandedQuery,
     systemPrompt:
       [
         scopeText,
