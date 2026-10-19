@@ -46,6 +46,137 @@ vi.mock('obsidian', () => {
 });
 
 describe('Obsidian 네이티브 Vault 포트', () => {
+  it('어휘 검색에서 읽은 revision을 여러 문서의 후속 읽기와 다음 질문에서도 재사용한다', async () => {
+    const files = [
+      createFile('Synthetic/First.txt', 'Quartz cooling requires two cycles.'),
+      createFile('Synthetic/Second.txt', 'Quartz cooling requires a closed valve.'),
+    ];
+    const cachedRead = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(source.content),
+    );
+    const port = createNativeVaultPort(createApp(files, {}, cachedRead));
+    const search = {
+      action: 'search' as const,
+      query: 'quartz',
+      path: '',
+      limit: 8,
+      match: 'any' as const,
+      mode: 'word' as const,
+    };
+    await port.search(search);
+    for (const file of [...files, files[0]]) {
+      const result = await port.read({ action: 'read', path: file.path, startLine: 1, endLine: null });
+      expect(result.content).toBe(file.content);
+    }
+    await port.search({ ...search, query: 'valve' });
+    expect(cachedRead).toHaveBeenCalledTimes(2);
+  });
+
+  it('원문 캐시가 있어도 변경된 revision과 현재 읽기 제외 정책을 적용한다', async () => {
+    const file = createFile('Synthetic/Changing.txt', 'Quartz cooling requires two cycles.');
+    const cachedRead = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(source.content),
+    );
+    let allowed = true;
+    const port = createNativeVaultPort(createApp([file], {}, cachedRead), () =>
+      Promise.resolve(allowed ? [file] : []),
+    );
+    const read = { action: 'read' as const, path: file.path, startLine: 1, endLine: null };
+    await port.read(read);
+    file.content = 'Quartz cooling requires three cycles.';
+    file.stat.mtime++;
+    expect((await port.read(read)).content).toBe(file.content);
+    allowed = false;
+    await expect(port.read(read)).rejects.toThrow();
+    expect(cachedRead).toHaveBeenCalledTimes(2);
+  });
+
+  it('원문 캐시의 문서 수 상한을 넘으면 가장 오래 사용하지 않은 문서를 다시 읽는다', async () => {
+    const files = Array.from({ length: 129 }, (_, index) =>
+      createFile(`Synthetic/Cache-${index}.txt`, 'Quartz cooling requires two cycles.'),
+    );
+    const cachedRead = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(source.content),
+    );
+    const port = createNativeVaultPort(createApp(files, {}, cachedRead));
+    for (const file of files) {
+      await port.read({ action: 'read', path: file.path, startLine: 1, endLine: null });
+    }
+    await port.read({ action: 'read', path: files[128].path, startLine: 1, endLine: null });
+    expect(cachedRead).toHaveBeenCalledTimes(129);
+    await port.read({ action: 'read', path: files[0].path, startLine: 1, endLine: null });
+    expect(cachedRead).toHaveBeenCalledTimes(130);
+  });
+
+  it('취소된 읽기가 늦게 완료되어도 다음 질문의 원문 캐시로 사용하지 않는다', async () => {
+    const file = createFile('Synthetic/Delayed.txt', 'A documented cooling condition.');
+    const pending = createDeferred<string>();
+    const cachedRead = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(source.content),
+    );
+    cachedRead.mockImplementationOnce(() => pending.promise);
+    const port = createNativeVaultPort(createApp([file], {}, cachedRead));
+    const request = { action: 'read' as const, path: file.path, startLine: 1, endLine: null };
+    const controller = new AbortController();
+    const reading = port.read(request, controller.signal);
+    await vi.waitFor(() => expect(cachedRead).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(reading).rejects.toMatchObject({ name: 'AbortError' });
+    pending.resolve(file.content);
+    expect((await port.read(request)).content).toBe(file.content);
+    expect(cachedRead).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['deleted', 'replaced'] as const)(
+    '목록의 과거 파일 객체가 %s 상태면 캐시된 본문을 검색 결과로 반환하지 않는다',
+    async (state) => {
+      const file = createFile('Synthetic/Stale-list.txt', 'quartz cooling evidence');
+      let current: TFile | null = file;
+      const cachedRead = vi.fn((source: TFile & { content: string }) =>
+        Promise.resolve(source.content),
+      );
+      const app = createApp([file], {}, cachedRead);
+      app.vault.getAbstractFileByPath = () => current;
+      const port = createNativeVaultPort(app, () => Promise.resolve([file]));
+      const request = {
+        action: 'search' as const,
+        query: 'quartz',
+        path: '',
+        limit: 8,
+        match: 'any' as const,
+        mode: 'word' as const,
+      };
+      expect((await port.search(request)).hits).toHaveLength(1);
+      current = state === 'deleted' ? null : createFile(file.path, 'x'.repeat(file.content.length));
+      const result = await port.search(request);
+      expect(result.hits).toEqual([]);
+      expect(result.unreadableFiles).toBe(1);
+      expect(cachedRead).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('소수의 큰 원문도 캐시 본문 예산을 넘으면 이전 문서를 다시 읽는다', async () => {
+    const files = [
+      createFile('Synthetic/Large-A.txt', 'x'.repeat(2_200_000)),
+      createFile('Synthetic/Large-B.txt', 'y'.repeat(2_200_000)),
+    ];
+    const cachedRead = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(source.content),
+    );
+    const port = createNativeVaultPort(createApp(files, {}, cachedRead));
+    const search = {
+      action: 'search' as const,
+      query: 'quartz',
+      path: '',
+      limit: 8,
+      match: 'any' as const,
+      mode: 'word' as const,
+    };
+    await port.search(search);
+    await port.search({ ...search, path: files[0].path });
+    expect(cachedRead).toHaveBeenCalledTimes(3);
+  });
+
   it.each(['Synthetic/Record #3.txt', 'Synthetic/A|B.txt', 'Synthetic/Rate%20Plan.txt'])(
     '실제 파일 경로의 링크 특수문자를 헤딩·별칭으로 해석하지 않는다: %s',
     async (path) => {
@@ -897,7 +1028,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       truncated: true,
     });
     expect(query).toHaveBeenCalledWith('고객 문제', 2, undefined, undefined, {});
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(cachedRead).toHaveBeenCalledOnce();
   });
 
   it('인덱스가 찾은 유효한 구간을 현재 Vault 본문으로 즉시 검증한다', async () => {
@@ -953,7 +1084,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
         status: 'verified',
       }),
     ]);
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(cachedRead).toHaveBeenCalledOnce();
   });
 
   it('인덱스 후보의 현재 본문을 읽지 못하면 검증되지 않은 locator로 보존한다', async () => {
@@ -1157,7 +1288,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       }),
     ]);
     expect(result.hits[0]).not.toHaveProperty('requiresRead');
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(cachedRead).toHaveBeenCalledOnce();
   });
 
   it('정상 인덱스가 비어도 원문에서 일치하는 문서를 복구한다', async () => {
@@ -1188,7 +1319,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       truncated: false,
     });
     expect(query).toHaveBeenCalledOnce();
-    expect(listCandidateFiles).toHaveBeenCalledOnce();
+    expect(listCandidateFiles).toHaveBeenCalledTimes(3);
     expect(cachedRead).toHaveBeenCalledTimes(2);
   });
 
@@ -1434,7 +1565,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       }),
     ]);
     expect(result.citations.map((citation) => citation.filePath)).toHaveLength(3);
-    expect(cachedRead).toHaveBeenCalledTimes(5);
+    expect(cachedRead).toHaveBeenCalledTimes(3);
   });
 
   it('production vector file record가 stale 또는 missing이면 live lexical을 함께 탐색한다', async () => {
@@ -1491,7 +1622,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.hits.find((hit) => hit.path === newNote.path)?.retrievalSources).toEqual([
       'live-lexical',
     ]);
-    expect(cachedRead).toHaveBeenCalledTimes(3);
+    expect(cachedRead).toHaveBeenCalledTimes(2);
   });
 
   it('메타데이터가 같아도 해시가 다른 인덱스 구간은 검증된 근거로 승격하지 않는다', async () => {
@@ -1543,7 +1674,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
     expect(result.hits[0]?.path).toBe(indexedNote.path);
     expect(result.hits[0]).toMatchObject({ citationStatus: 'candidate', requiresRead: true });
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(cachedRead).toHaveBeenCalledOnce();
   });
 
   it('ready 인덱스 결과가 모두 숨김 대상이면 같은 검색 범위의 원문을 확인한다', async () => {
@@ -1623,7 +1754,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       truncated: false,
     });
     expect(query).toHaveBeenCalledOnce();
-    expect(listCandidateFiles).toHaveBeenCalledOnce();
+    expect(listCandidateFiles).toHaveBeenCalledTimes(4);
     expect(cachedRead).toHaveBeenCalledTimes(3);
   });
 
