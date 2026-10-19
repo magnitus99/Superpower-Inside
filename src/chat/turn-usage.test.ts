@@ -27,6 +27,30 @@ function provider(): LLMProvider {
 }
 
 describe('응답 전체 모델 사용량', () => {
+  it('취소 뒤 늦은 사용량 보고는 전체 집계와 하위 콜백을 갱신하지 않는다', async () => {
+    const controller = new AbortController();
+    const updates: TurnUsageSnapshot[] = [];
+    const onUsage = vi.fn();
+    const underlying = provider();
+    const chat = vi.fn<LLMProvider['chat']>((_messages, _temperature, _tools, options) => {
+      options?.onUsage?.({ inputTokens: 20, outputTokens: 4, totalTokens: 24 });
+      controller.abort();
+      options?.onUsage?.({ inputTokens: 999, outputTokens: 999, totalTokens: 1998 });
+      return Promise.resolve('late answer');
+    });
+    underlying.chat = chat;
+    const tracked = withTurnUsage(underlying, (snapshot) => updates.push(snapshot));
+    await tracked.chat([], undefined, undefined, { signal: controller.signal, onUsage });
+    expect(updates.at(-1)?.totalTokens).toBe(24);
+    expect(onUsage).toHaveBeenCalledOnce();
+    const count = updates.length;
+    await expect(
+      tracked.chat([], undefined, undefined, { signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(updates).toHaveLength(count);
+    expect(chat).toHaveBeenCalledOnce();
+  });
+
   it('연구 chat와 답변 streamChat을 함께 합산하고 누적 델타를 중복 계산하지 않는다', async () => {
     const updates: TurnUsageSnapshot[] = [];
     const underlying = provider();
