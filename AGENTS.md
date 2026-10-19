@@ -29,25 +29,31 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 
 ## 서브에이전트
 
-- 작업은 기본값이 아니라 원칙으로 서브에이전트가 수행합니다. 가능한 작업은 반드시 서브에이전트에 위임하고, 본 모델은 조율·검증·통합을 맡습니다.
-- 프로젝트 서브에이전트(정의 원본: `.codex/agents/`): `ponytail_implementer`(구현), `design_specialist`(디자인), `philosophy_reviewer`(제품 철학 검토·제안 데모, 수동·범위 지정 전용). 내장 에이전트(`default`·`worker`·`explorer`)도 작업에 맞으면 사용합니다.
-- 위임 지시에는 범위·완료 기준·출력 형식을 명시합니다. 서브에이전트 결과는 그대로 신뢰하지 않고 본 모델이 검증한 뒤 통합합니다.
-- 서브에이전트가 실패·중단·부분 완료로 끝나면 완료로 합치지 않습니다. 지시를 좁혀 1회 재시도하고, 다시 실패하면 본 모델로 진행하며 이유를 남깁니다.
-- 다음 경우에만 본 채팅 모델로 진행합니다: 서브에이전트가 해당 작업을 수행할 수 없을 때(도구·권한·모델 제약) 또는 적합한 서브에이전트가 없을 때(사용자가 지정한 모델·추론과 맞는 에이전트가 없는 경우 포함). 이때는 폴백 이유를 보고에 남깁니다. 사용자가 지정한 모델·추론은 에이전트 파일의 기본값보다 우선합니다.
-- 제품 철학 검토의 예외 조건은 아래 `제품 철학 검증` 절을 따릅니다.
+- ChatGPT Plus와 Command Code Pro를 **동시에** 사용한다. 고정 구독료는 합산 관리하되, Plus/Codex 사용량과 Command Code 크레딧(5시간·7일·월간·모델별)은 별도 한도다. API 표시 가격만으로 Plus 한도나 실제 비용을 환산하지 않는다.
+- 기본 수행 경로는 **Command Code 모델 기반 서브에이전트**다. Plus 메인은 작업 범위 결정, 승인 경계와 예외 판단, 최종 통합에 집중한다. Plus 사용량이 적게 든다는 것은 목표이며 실측 전 절감률을 약속하지 않는다.
+- 서브에이전트가 가능하다는 이유만으로 모든 일을 위임하지 않는다. 짧은 응답·단일 파일의 작은 확인 등 위임 비용이 더 큰 경우 부모가 직접 처리한다. 독립적인 하위 작업만 병렬화하고, 같은 파일 중복 탐색·중복 검토를 피한다. 작업당 기본 동시 실행은 최대 2개(사용자가 변경 가능).
+- 읽기/탐색은 `code_explorer`(Haiku), 작은 코드 구현은 `ponytail_implementer`(DeepSeek), 복잡한 리팩터링은 `refactor_specialist`(Sonnet), 지정 범위의 코드 독립 리뷰는 `code_reviewer`(GLM Flash), 예외적인 아키텍처 설계는 `architecture_planner`(Gemini Argon)로 분담한다.
+- 디자인·UX는 `design_specialist`(Sonnet), 반복 카피 초안은 `copy_specialist`(Haiku), 제품 철학은 **사용자가 범위를 지정해 명시적으로 요청했을 때만** `philosophy_reviewer`(DeepSeek)에게 위임한다.
+- 내장 `default`/`worker`/`explorer`는 과금 경로가 확인되지 않은 상태에서 자동으로 병렬 호출하지 않는다. `ccs-commandcode/...` 지정이 실제 Command Code 과금으로 연결되는지 CC Switch와 실행 로그에서 먼저 확인한다. 라우팅이 실패하면 **조용히 Plus 모델로 폴백하지 않는다**.
+- 모델명·추론 설정은 사용자 지정값이 항상 우선한다. 본 TOML 모델 경로는 배포/CC Switch 구성에 따라 호환성을 별도 확인해야 하며, 지원하지 않는 경로를 임의의 Plus 모델로 대체하지 않는다.
+- 실패 시 같은 모델로 작업 범위 축소 후 최대 1회 재시도한다. 그 뒤에는 원인/남은 범위 보고. 값비싼 모델 재호출, 다른 구독으로의 전환, 모델별 한도 초과가 예상되는 전환은 사전 승인을 받는다.
+- 모든 위임에는 범위·완료 기준·예상 산출물·읽기 한계를 지정한다. 결과 요약은 파일:줄 근거와 실제 실행 검증을 포함시키고, 부모는 변경 diff 및 핵심 검사 결과만 재확인한다. 테스트 통과와 실제 품질 검증은 구별한다.
+- Command Code Pro의 가격과 크레딧 한도는 변경 가능하다. 현재 화면에서 5시간/7일/월간/모델별 잔여량을 확인하고, 비싼 모델을 반복 호출하기 전에 남은 예산을 판단한다. 자동 비용 차단 기능이 구현됐다는 뜻은 아니다.
+- 서브에이전트 실행 정의는 `.codex/agents/`가 단일 원본이다. Git 관련 변경·시크릿·사용자 데이터·릴리스·모델/전역 설정 변경은 기존 승인 규칙을 유지한다.
 
-현재 모델 구성(원본: 각 TOML의 `model`·`model_reasoning_effort`, 모델 변경 시 이 표도 같은 변경에서 갱신):
+현재 권장 역할(가격과 모델 ID는 실제 연결에서 확인):
+| 역할 | 모델 | 기본 용도 |
+| --- | --- | --- |
+| 메인 채팅(Plus) | 사용자가 선택한 모델 | 계획·승인·최종 통합, 고난도 예외 |
+| `code_explorer` | `ccs-commandcode/anthropic/claude-haiku-5-5` | 읽기 전용 탐색·근거 수집 |
+| `ponytail_implementer` | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | 최소 버그 수정·작은 구현 |
+| `refactor_specialist` | `ccs-commandcode/anthropic/claude-sonnet-5-5` | 여러 파일의 동작 보존 리팩터링 |
+| `code_reviewer` | `ccs-commandcode/z-ai/glm-5.3-flash` | 변경 diff 독립 1차 검토 |
+| `architecture_planner` | `ccs-commandcode/google/gemini-4-argon` | 예외적인 아키텍처 설계·큰 시야 |
+| `design_specialist` | `ccs-commandcode/anthropic/claude-sonnet-5-5` | UI/UX·브랜드 디자인 방향 |
+| `copy_specialist` | `ccs-commandcode/anthropic/claude-haiku-5-5` | 마케팅·제품 카피 초안 |
+| `philosophy_reviewer` | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | 요청 시 제품 철학 1차 검토 |
 
-| 구분 | 실질 역할 | 모델 | 추론 | 도구 경계 |
-| --- | --- | --- | --- | --- |
-| 메인 채팅 | 조율·검증·통합 | `gpt-6.1-sol` | `high` | 웹 검색·병렬 도구 호출 지원 |
-| `ponytail_implementer` | 구현 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 웹 검색·병렬 도구 호출 미지원 |
-| `philosophy_reviewer` | 제품 철학 1차 검토·지적·권고·데모 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 웹 검색·병렬 도구 호출 미지원 |
-| `design_specialist` | 디자인 조사·설계·데모 | `gpt-6.1-sol` | `high` | 웹 검색·병렬 도구 호출 지원 |
-| `design_specialist` 폴백 | 위와 동일 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | sol 스폰 불가 시에만 |
-
-- 웹 검색이나 병렬 도구 호출이 반드시 필요한 작업은 해당 기능을 지원하는 모델(메인 채팅·`design_specialist`)에 맡깁니다. ds 기반 에이전트에는 순차·로컬 근거로 대체 가능한 작업만 맡기고, 대체 사실을 보고에 남깁니다.
-- ds 기반 에이전트의 도구 출력은 10,000바이트에서 잘립니다. 큰 파일은 한 번에 넘기지 말고 범위를 나눠 읽도록 위임 지시에도 적습니다.
 
 ## 제품·화면
 
