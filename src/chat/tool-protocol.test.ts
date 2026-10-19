@@ -48,8 +48,9 @@ describe('모델 중립 도구 프로토콜', () => {
       'Do not suggest folders, tags, or note organization unless the user asks',
     );
     expect(evidencePrompt).toContain(
-      'Use the available tools proactively whenever the answer depends on vault contents',
+      'attached only for the part of the request that the engine could not resolve',
     );
+    expect(evidencePrompt).not.toContain('Use the available tools proactively');
     expect(evidencePrompt).toContain('citationStatus="verified"');
     expect(evidencePrompt).toContain('requiresRead=true');
     expect(evidencePrompt).toContain(

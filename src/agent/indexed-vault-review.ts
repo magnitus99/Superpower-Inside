@@ -2,44 +2,451 @@ import { t } from '../i18n';
 import { LLMProviderHttpError, type LLMProvider, type TokenUsage } from '../llm/providers';
 import { prepareProviderRequest } from '../llm/request-budget';
 import {
-  planIndexedReviewInventoryRust,
-  planIndexedReviewSegmentsRust,
+  mergeIndexedEvidencePlansRust,
+  planIndexedEvidenceRust,
   planModelContextRust,
-  planResearchSummaryBatchesRust,
   planTurnUsageRust,
   renderIndexedReviewAnswerRust,
-  scoreIndexedReviewSegmentsRust,
-  validateIndexedReviewRust,
-  validateIndexedReviewScreenRust,
-  type IndexedReviewSegment,
-  type IndexedReviewFinding,
+  verifyIndexedEvidenceRust,
+  type RustIndexedEvidenceBudget,
+  type RustIndexedEvidenceCoverage,
+  type RustIndexedEvidenceDocument,
+  type RustIndexedEvidenceFilters,
+  type RustIndexedEvidenceMergeResult,
+  type RustIndexedEvidencePassage,
+  type RustIndexedEvidencePlan,
+  type RustIndexedEvidenceStatus,
 } from '../rag/rust-core';
+import type { FileIndexRecord, VectorEntry } from '../rag/store';
 import type { SourceCitation, TurnUsageSnapshot } from '../chat/types';
 import { appLogger } from '../utils/logger';
 import { selectAnswerCitations } from './citation-selection';
-import type {
-  NativeVaultListResult,
-  NativeVaultReadResult,
-  NativeVaultSearchHit,
-  NativeVaultSearchResult,
-  NativeVaultToolRuntimeLike,
-} from './native-vault-tool';
 import type { VaultResearchProgress } from './research-agent';
 
-/** 후보 세그먼트 상한과 screen 배치 크기입니다. */
-const CANDIDATE_LIMIT = 128;
-const SCREEN_BATCH_LIMIT = 16;
-const REVIEW_CACHE_LIMIT = 64;
-const REVIEW_CACHE_BYTES = 2 * 1024 * 1024;
+/** 색인 본문·리비전만으로 근거를 선별하는 엔진 연결(provider 미사용)입니다. */
+export type IndexedEvidenceItem = RustIndexedEvidencePassage;
+export type IndexedEvidencePlan = RustIndexedEvidencePlan;
+export type IndexedEvidenceStatus = RustIndexedEvidenceStatus;
+export type IndexedEvidenceBudget = RustIndexedEvidenceBudget;
 
-export type IndexedReviewPhase =
-  | 'inventory'
-  | 'search'
-  | 'map'
-  | 'screen'
-  | 'extract'
-  | 'reduce'
-  | 'answer';
+/** 하이브리드 검색이 지목한 후보와 점수입니다. 순위 병합은 엔진이 결정합니다. */
+export interface IndexedEvidenceCandidate {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+  score: number;
+  source: 'bm25' | 'lexical' | 'vector' | 'ann' | 'structural';
+  rank: number;
+}
+
+/** 색인 전체 규모(이번 배치 밖 미검토 포함)를 엔진에 알리는 계약입니다. */
+export interface IndexedEvidenceInventory {
+  indexedCount: number;
+  unreviewedCount: number;
+  notIndexedCount: number;
+}
+
+/** 색인 저장소의 본문·리비전 조회 계약입니다. */
+export interface IndexedVaultCorpus {
+  getEntriesByFilePaths(paths: readonly string[]): Promise<readonly VectorEntry[]>;
+  getFileIndexRecords(): Promise<readonly FileIndexRecord[]>;
+}
+
+export type IndexedVaultDocumentScope = 'all' | 'candidates';
+
+export interface IndexedVaultSearchOptions {
+  question: string;
+  indexedPaths: readonly string[];
+  scopes: readonly string[];
+  corpus: IndexedVaultCorpus;
+  /** 본문 조회 범위입니다. 기본값은 기존 채팅·리뷰 계약을 유지하는 `all`입니다. */
+  documentScope?: IndexedVaultDocumentScope;
+  candidates?: readonly IndexedEvidenceCandidate[];
+  inventory?: IndexedEvidenceInventory;
+  filters?: RustIndexedEvidenceFilters;
+  budget?: IndexedEvidenceBudget;
+  signal?: AbortSignal;
+}
+
+export interface IndexedVaultSearchCoverage extends RustIndexedEvidenceCoverage {
+  documentScope: IndexedVaultDocumentScope;
+}
+
+export interface IndexedVaultSearchResult {
+  plan: IndexedEvidencePlan;
+  /** 구절·위치·리비전·스코프 검증을 통과한 근거만 담습니다. */
+  evidence: readonly IndexedEvidenceItem[];
+  rejected: readonly IndexedEvidenceStatus[];
+  coverage: IndexedVaultSearchCoverage;
+  scannedDocuments: number;
+  scannedPaths: number;
+}
+
+const DEFAULT_EVIDENCE_BUDGET: Required<IndexedEvidenceBudget> = {
+  maxDocuments: 64,
+  maxPassages: 24,
+  maxChars: 262_144,
+};
+
+/** 기본값을 채운 실제 근거 예산입니다. 엔진 계획과 전역 병합에 같은 값을 씁니다. */
+function resolveEvidenceBudget(
+  budget: IndexedEvidenceBudget | undefined,
+): Required<IndexedEvidenceBudget> {
+  return { ...DEFAULT_EVIDENCE_BUDGET, ...budget };
+}
+
+/**
+ * 엔진 plan 입력 문서입니다.
+ * 엔진 `scan_input_document`는 title·headings·tags·codeBlocks를 optional로 받지만
+ * 래퍼 타입(`RustIndexedEvidenceDocument`)에는 아직 headings가 없어 로컬에서만 더합니다.
+ */
+interface IndexedEvidencePlanDocument extends RustIndexedEvidenceDocument {
+  /** 엔진 heading 필드 매칭에 쓰는 청크 헤딩 목록입니다. */
+  headings?: readonly string[];
+}
+
+/**
+ * 코퍼스 청크 메타데이터를 엔진 plan 입력 문서로 옮깁니다.
+ * 실제로 확인되는 값만 싣고 없는 값은 키를 만들지 않아 엔진 기본값(경로 유도 title 등)을 씁니다.
+ * title·tags·codeBlocks는 문서 코퍼스가 아직 전달하지 않아 이 경로에서는 비어 있습니다.
+ * 수정 시각은 청크 `metadata.sourceMtime`(ms epoch)만 엔진 u64 계약에 맞춰 싣고,
+ * 안전한 양의 정수가 아니면 키를 만들지 않아 엔진 입력 자체가 거절되지 않게 합니다.
+ */
+function planDocument(
+  metadata: VectorEntry['metadata'],
+  revision: string,
+): IndexedEvidencePlanDocument {
+  const heading = metadata.heading;
+  const modifiedAt = metadata.sourceMtime;
+  return {
+    path: metadata.filePath,
+    revision,
+    indexed: true,
+    reviewState: 'reviewed',
+    text: metadata.text,
+    startLine: metadata.startLine,
+    ...(heading && heading.trim().length > 0 ? { headings: [heading] } : {}),
+    ...(typeof modifiedAt === 'number' && Number.isSafeInteger(modifiedAt) && modifiedAt >= 0
+      ? { modifiedAt }
+      : {}),
+  };
+}
+
+const EVIDENCE_PATH_BATCH = 256;
+
+/** 색인 경로 순서를 유지하면서 후보에 포함된 경로만 중복 없이 고릅니다. */
+function candidateScopedPaths(
+  indexedPaths: readonly string[],
+  candidates: readonly IndexedEvidenceCandidate[] | undefined,
+): string[] {
+  const candidatePaths = new Set(candidates?.map((candidate) => candidate.path) ?? []);
+  const seen = new Set<string>();
+  return indexedPaths.filter((path) => {
+    if (!candidatePaths.has(path) || seen.has(path)) return false;
+    seen.add(path);
+    return true;
+  });
+}
+
+interface IndexedEvidenceEngineInput {
+  question: string;
+  documents: RustIndexedEvidenceDocument[];
+  scopes: string[];
+  filters?: RustIndexedEvidenceFilters;
+  budget: IndexedEvidenceBudget;
+  candidates?: IndexedEvidenceCandidate[];
+  inventory?: IndexedEvidenceInventory;
+}
+
+function evidenceRevision(record: FileIndexRecord | undefined, entry: VectorEntry): string | null {
+  if (!record) return null;
+  // 청크 자신의 해시가 없거나 파일 인덱스와 어긋나면 오래된 본문으로 보고 제외합니다.
+  const chunkHash = entry.metadata.contentHash;
+  if (!chunkHash) return null;
+  if (record.contentHash && record.contentHash !== chunkHash) return null;
+  // 해시와 파일 mtime·size는 비교 영역이 다르므로 원문 대조는 sourceMtime:sourceSize로만 합니다.
+  if (record.sourceMtime === undefined || record.sourceSize === undefined) return null;
+  return record.sourceMtime + ':' + record.sourceSize;
+}
+
+const RUST_INPUT_MAX_DOCUMENTS = 4096;
+const RUST_INPUT_MAX_BYTES = 8 * 1024 * 1024;
+
+/** payload 상한(문서 수·바이트)에 맞춰 자르고, 단독으로 상한을 넘는 청크는 미검토로 분리합니다. */
+function partitionEvidencePayloads(
+  documents: readonly RustIndexedEvidenceDocument[],
+  oversizePaths: Set<string>,
+): RustIndexedEvidenceDocument[][] {
+  const batches: RustIndexedEvidenceDocument[][] = [];
+  let current: RustIndexedEvidenceDocument[] = [];
+  let bytes = 0;
+  for (const document of documents) {
+    // UTF-8 최악 3바이트/문자를 가정한 보수적 추정치입니다.
+    const size = (document.text.length + 64) * 3;
+    if (size > RUST_INPUT_MAX_BYTES) {
+      oversizePaths.add(document.path);
+      continue;
+    }
+    if (
+      current.length > 0 &&
+      (current.length >= RUST_INPUT_MAX_DOCUMENTS || bytes + size > RUST_INPUT_MAX_BYTES)
+    ) {
+      batches.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(document);
+    bytes += size;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
+/** 병합 결과에서 원래 근거 행을 대조하는 키입니다(점수 비교가 아니라 같은 행 식별용). */
+function evidenceRowKey(item: IndexedEvidenceItem): string {
+  return `${item.path}\u0000${item.startLine}\u0000${item.endLine}\u0000${item.quote}`;
+}
+
+/**
+ * 엔진 전역 병합 결과를 계획 계약으로 옮깁니다.
+ * 순위·선택 수·예산·coverage·truncated는 엔진 값을 그대로 쓰고, 병합 API가 돌려주지 않는
+ * 배치 진단(후보 깊이·기계 제외 합계·미일치 토큰)만 모읍니다.
+ */
+function mergedEvidencePlan(
+  plans: readonly RustIndexedEvidencePlan[],
+  merged: RustIndexedEvidenceMergeResult,
+  budget: Required<IndexedEvidenceBudget>,
+  documentCount: number,
+): RustIndexedEvidencePlan | null {
+  const first = plans[0];
+  if (!first) return null;
+  let candidateDepth = 0;
+  let candidateDocuments = 0;
+  let candidateChunks = 0;
+  let belowThreshold = 0;
+  let filtered = 0;
+  let missingCandidatePaths = 0;
+  let zeroHitReason: string | null = null;
+  const unmatchedTerms = new Set<string>();
+  for (const plan of plans) {
+    candidateDepth = Math.max(candidateDepth, plan.diagnostics.candidateDepth);
+    candidateDocuments += plan.diagnostics.candidateDocuments;
+    candidateChunks += plan.diagnostics.candidateChunks;
+    belowThreshold += plan.diagnostics.droppedDocuments.belowThreshold;
+    filtered += plan.diagnostics.droppedDocuments.filtered;
+    missingCandidatePaths = Math.max(missingCandidatePaths, plan.diagnostics.missingCandidatePaths);
+    for (const term of plan.diagnostics.unmatchedTerms) unmatchedTerms.add(term);
+    zeroHitReason ??= plan.diagnostics.zeroHitReason;
+  }
+  return {
+    queryTokens: first.queryTokens,
+    phrases: first.phrases,
+    evidence: merged.evidence,
+    order: merged.order,
+    coverage: merged.coverage,
+    diagnostics: {
+      candidateDepth,
+      candidateDocuments: Math.min(candidateDocuments, documentCount),
+      candidateChunks,
+      selectedDocuments: merged.diagnostics.selectedDocuments,
+      selectedChunks: merged.diagnostics.selectedChunks,
+      truncated: merged.diagnostics.truncated,
+      droppedDocuments: {
+        budget: merged.diagnostics.budgetDropped,
+        belowThreshold,
+        filtered,
+      },
+      unmatchedTerms: [...unmatchedTerms],
+      missingCandidatePaths,
+      zeroHitReason,
+    },
+    budget: {
+      maxDocuments: budget.maxDocuments,
+      maxPassages: merged.budget.maxPassages,
+      maxChars: merged.budget.maxChars,
+      usedChars: merged.budget.usedChars,
+    },
+  };
+}
+
+/** 색인 본문으로 근거를 선별하고 구절·위치·리비전을 검증합니다. 실패하면 null입니다. */
+export async function searchIndexedVault(
+  options: IndexedVaultSearchOptions,
+): Promise<IndexedVaultSearchResult | null> {
+  options.signal?.throwIfAborted();
+  const budget = resolveEvidenceBudget(options.budget);
+  const documentScope = options.documentScope ?? 'all';
+  const scopedPaths =
+    documentScope === 'candidates'
+      ? candidateScopedPaths(options.indexedPaths, options.candidates)
+      : options.indexedPaths;
+  // 후보 범위에 읽을 경로가 없으면 저장소 구현이 전체 색인을 재구성하지 않도록 records도 읽지 않습니다.
+  const records =
+    documentScope === 'candidates' && scopedPaths.length === 0
+      ? []
+      : await options.corpus.getFileIndexRecords();
+  options.signal?.throwIfAborted();
+  const byPath = new Map(records.map((record) => [record.filePath, record]));
+  const indexedPaths = scopedPaths.filter((path) => byPath.has(path));
+  const totalIndexed = Math.max(options.indexedPaths.length, options.inventory?.indexedCount ?? 0);
+  const scannedPaths = new Set<string>();
+  const oversizePaths = new Set<string>();
+  // 청크 해시·원문 리비전이 없어 엔진 입력에서 빠진 경로는 미검토로 남깁니다.
+  const unreviewedPaths = new Set<string>();
+  const inventoryFor = (): IndexedEvidenceInventory =>
+    documentScope === 'candidates'
+      ? {
+          indexedCount: totalIndexed,
+          // 후보 밖 색인 문서와 읽지 못한 후보는 모두 미검토로 남깁니다.
+          unreviewedCount: Math.min(
+            totalIndexed,
+            Math.max(options.inventory?.unreviewedCount ?? 0, totalIndexed - scannedPaths.size),
+          ),
+          notIndexedCount: options.inventory?.notIndexedCount ?? 0,
+        }
+      : {
+          indexedCount: options.inventory?.indexedCount ?? indexedPaths.length,
+          unreviewedCount: (options.inventory?.unreviewedCount ?? 0) + unreviewedPaths.size,
+          notIndexedCount: options.inventory?.notIndexedCount ?? 0,
+        };
+  const plans: RustIndexedEvidencePlan[] = [];
+  const statuses: RustIndexedEvidenceStatus[] = [];
+  for (let offset = 0; offset < indexedPaths.length; offset += EVIDENCE_PATH_BATCH) {
+    options.signal?.throwIfAborted();
+    const paths = indexedPaths.slice(offset, offset + EVIDENCE_PATH_BATCH);
+    const entries = await options.corpus.getEntriesByFilePaths(paths);
+    options.signal?.throwIfAborted();
+    const documents: IndexedEvidencePlanDocument[] = [];
+    const pathsWithDocuments = new Set<string>();
+    for (const entry of entries) {
+      const revision = evidenceRevision(byPath.get(entry.metadata.filePath), entry);
+      if (revision === null) continue;
+      scannedPaths.add(entry.metadata.filePath);
+      pathsWithDocuments.add(entry.metadata.filePath);
+      documents.push(planDocument(entry.metadata, revision));
+    }
+    for (const path of paths) {
+      if (!pathsWithDocuments.has(path)) unreviewedPaths.add(path);
+    }
+    // payload 상한을 넘는 구간만 잘라 보내고, 상한 초과 단일 청크는 미검토로 남깁니다.
+    for (const batch of partitionEvidencePayloads(documents, oversizePaths)) {
+      options.signal?.throwIfAborted();
+      const engineInput: IndexedEvidenceEngineInput = {
+        question: options.question,
+        documents: batch,
+        scopes: [...options.scopes],
+        filters: options.filters,
+        budget,
+        candidates: options.candidates ? [...options.candidates] : undefined,
+        inventory: inventoryFor(),
+      };
+      const plan = planIndexedEvidenceRust(engineInput);
+      if (!plan) return null;
+      const verification = verifyIndexedEvidenceRust({
+        evidence: plan.evidence.map((item) => ({
+          sourceId: item.sourceId,
+          path: item.path,
+          revision: item.revision ?? undefined,
+          startLine: item.startLine,
+          endLine: item.endLine,
+          quote: item.quote,
+        })),
+        documents: batch,
+        scopes: [...options.scopes],
+      });
+      if (!verification) return null;
+      for (const document of batch) {
+        if (oversizePaths.has(document.path)) unreviewedPaths.add(document.path);
+      }
+      plans.push(plan);
+      statuses.push(...verification.statuses);
+    }
+  }
+  if (scannedPaths.size === 0 && documentScope === 'all') return null;
+  if (plans.length === 0 && documentScope === 'candidates') {
+    const engineInput: IndexedEvidenceEngineInput = {
+      question: options.question,
+      documents: [],
+      scopes: [...options.scopes],
+      filters: options.filters,
+      budget,
+      candidates: options.candidates ? [...options.candidates] : undefined,
+      inventory: inventoryFor(),
+    };
+    const plan = planIndexedEvidenceRust(engineInput);
+    if (!plan) return null;
+    const verification = verifyIndexedEvidenceRust({
+      evidence: [],
+      documents: [],
+      scopes: [...options.scopes],
+    });
+    if (!verification) return null;
+    plans.push(plan);
+    statuses.push(...verification.statuses);
+  }
+  const bySource = new Map(statuses.map((status) => [status.sourceId, status]));
+  // 근거 자격은 엔진 검증이 정하고, 전역 순위·중복 제거·예산 절단은 엔진 병합이 정합니다.
+  const merged = mergeIndexedEvidencePlansRust({
+    plans: plans.map((plan) => ({
+      ...plan,
+      evidence: plan.evidence.filter((item) => bySource.get(item.sourceId)?.status === 'verified'),
+    })),
+    budget: { maxPassages: budget.maxPassages, maxChars: budget.maxChars },
+  });
+  if (!merged) return null;
+  const plan = mergedEvidencePlan(plans, merged, budget, scannedPaths.size);
+  if (!plan) return null;
+  const selected = new Set(merged.evidence.map((item) => evidenceRowKey(item)));
+  const rejected: IndexedEvidenceStatus[] = [];
+  const reported = new Set<string>();
+  for (const batchPlan of plans) {
+    for (const item of batchPlan.evidence) {
+      if (reported.has(item.sourceId)) continue;
+      reported.add(item.sourceId);
+      const status = bySource.get(item.sourceId);
+      if (!status) continue;
+      if (status.status !== 'verified') {
+        rejected.push(status);
+        continue;
+      }
+      // 엔진 전역 예산·중복으로 제외된 근거는 out-of-scope가 아니라 미검토로 남깁니다.
+      if (!selected.has(evidenceRowKey(item)))
+        rejected.push({ ...status, status: 'unreviewed', reviewState: 'unreviewed' });
+    }
+  }
+  const finalInventory = inventoryFor();
+  const finalCoverage: RustIndexedEvidenceCoverage =
+    documentScope === 'candidates'
+      ? {
+          status:
+            plan.coverage.status === 'budget-exhausted'
+              ? 'budget-exhausted'
+              : plan.coverage.status === 'incomplete' ||
+                  finalInventory.unreviewedCount > 0 ||
+                  finalInventory.notIndexedCount > 0
+                ? 'incomplete'
+                : 'supported',
+          reviewedDocuments: Math.max(
+            0,
+            finalInventory.indexedCount - finalInventory.unreviewedCount,
+          ),
+          unreviewedDocuments: finalInventory.unreviewedCount,
+          notIndexedDocuments: finalInventory.notIndexedCount,
+        }
+      : plan.coverage;
+  const resultPlan = { ...plan, coverage: finalCoverage };
+  return {
+    plan: resultPlan,
+    evidence: merged.evidence,
+    rejected,
+    coverage: { ...finalCoverage, documentScope },
+    scannedDocuments: scannedPaths.size,
+    scannedPaths: scannedPaths.size,
+  };
+}
+
+/** 엔진 채택 근거를 그대로 쓰고 LLM에는 최종 해석만 맡깁니다. */
+export type IndexedReviewPhase = 'inventory' | 'search' | 'map' | 'screen' | 'extract' | 'reduce' | 'answer';
 
 export interface IndexedReviewPhaseDiagnostics extends TurnUsageSnapshot {
   durationMs: number;
@@ -56,21 +463,23 @@ export interface IndexedReviewDiagnostics {
     splitBatches: number;
     reduceRequests: number;
     cacheHits: number;
+    answerCorrectionRequests?: number;
   };
 }
 
-interface IndexedVaultReviewOptions {
+export interface IndexedVaultReviewOptions {
   question: string;
   indexedPaths: readonly string[];
   scopes: readonly string[];
-  nativeTool: NativeVaultToolRuntimeLike;
+  corpus?: IndexedVaultCorpus;
+  candidates?: readonly IndexedEvidenceCandidate[];
+  inventory?: IndexedEvidenceInventory;
+  /** 채택 문서의 현재 vault 리비전을 확인하는 caller 주입 reader입니다. */
+  revisionReader?: (path: string) => Promise<string | null>;
   provider: Pick<LLMProvider, 'streamChat' | 'contextBudget'>;
   systemPrompt?: string;
   previousUserQuestions?: readonly string[];
-  searchQueries?: readonly string[];
   scoringQuestion?: string;
-  reviewCache?: Map<string, string>;
-  cacheScope?: string;
   deferAnswer?: boolean;
   signal?: AbortSignal;
   onProgress?: (progress: VaultResearchProgress) => void;
@@ -87,16 +496,11 @@ export interface IndexedVaultReviewResult {
   providerTransfer: { sentFiles: number; sentPaths?: string[] };
   coverageNotice: string;
   diagnostics: IndexedReviewDiagnostics;
+  /** 엔진이 선별하지 못했거나 리비전이 어긋나 도구 호출 fallback이 필요함을 알립니다. */
+  toolFallback: boolean;
+  engineUnavailable: boolean;
 }
 
-/** 전 문서 스크리닝 점수와 검색 하한 고정 여부를 보존합니다. */
-interface ScoredReviewSegment {
-  segment: IndexedReviewSegment;
-  score: number;
-  floorLocked: boolean;
-}
-
-/** 검색은 읽기 순서만 바꾸며 색인 전체의 명시적 검토가 끝나야 최종 답변을 생성합니다. */
 export async function reviewIndexedVault(
   options: IndexedVaultReviewOptions,
 ): Promise<IndexedVaultReviewResult> {
@@ -107,7 +511,6 @@ export async function reviewIndexedVault(
   try {
     return await runIndexedVaultReview({ ...options, signal: controller.signal });
   } finally {
-    // 한 병렬 판정의 치명적 실패 뒤 다른 분기가 새 호출을 이어가지 못하게 합니다.
     controller.abort();
     options.signal?.removeEventListener('abort', cancel);
   }
@@ -140,31 +543,15 @@ async function runIndexedVaultReview(
       splitBatches: 0,
       reduceRequests: 0,
       cacheHits: 0,
+      answerCorrectionRequests: 0,
     },
   };
-  const phaseRequests: Partial<Record<IndexedReviewPhase, TokenUsage[][]>> = {};
-  let phaseStartedAt = performance.now();
-  let activePhase: IndexedReviewPhase | undefined = 'inventory';
   let finished = false;
+  const phaseStartedAt = performance.now();
+  let activePhase: IndexedReviewPhase = 'inventory';
   const emitDiagnostics = () => {
-    if (finished) return;
-    if (activePhase)
-      diagnostics.phases[activePhase].durationMs = performance.now() - phaseStartedAt;
-    options.onDiagnostics?.(structuredClone(diagnostics));
-  };
-  const completePhase = (name: IndexedReviewPhase) => {
-    diagnostics.phases[name].durationMs = performance.now() - phaseStartedAt;
-    phaseStartedAt = performance.now();
-    const next: Partial<Record<IndexedReviewPhase, IndexedReviewPhase>> = {
-      inventory: 'search',
-      search: 'map',
-      map: 'screen',
-      screen: 'extract',
-      extract: 'reduce',
-      reduce: 'answer',
-    };
-    activePhase = next[name];
-    emitDiagnostics();
+    diagnostics.phases[activePhase].durationMs = performance.now() - phaseStartedAt;
+    if (!finished) options.onDiagnostics?.(structuredClone(diagnostics));
   };
   const check = () => options.signal?.throwIfAborted();
   const interruptible = <T>(operation: Promise<T>): Promise<T> => {
@@ -179,114 +566,184 @@ async function runIndexedVaultReview(
         .finally(() => signal.removeEventListener('abort', abort));
     });
   };
-  const execute = async (request: Record<string, unknown>) => {
-    check();
-    const result = await interruptible(
-      options.nativeTool.execute(JSON.stringify(request), options.signal),
-    );
-    check();
-    return result.modelText;
-  };
   try {
-    emitDiagnostics();
     options.onProgress?.({ phase: 'inventory', completedFiles: 0, totalFiles: 0 });
-    const visiblePaths: string[] = [];
-    let cursor = 0;
-    while (true) {
-      const page = JSON.parse(
-        await execute({ action: 'list', cursor, limit: 100 }),
-      ) as NativeVaultListResult;
-      visiblePaths.push(...page.files.map((file) => file.path));
-      if (page.nextCursor === null) break;
-      if (page.nextCursor <= cursor) throw new Error(t('vaultResearchListStalled'));
-      cursor = page.nextCursor;
-    }
-    completePhase('inventory');
-    let priorityPaths: string[] = [];
-    let hits: NativeVaultSearchHit[] = [];
-    try {
-      const search = JSON.parse(
-        await execute({
-          action: 'search',
-          query: options.question,
-          queries: options.searchQueries,
-          path: '',
-          limit: 20,
-          mode: 'auto',
-          match: 'any',
-        }),
-      ) as NativeVaultSearchResult;
-      hits = search.hits;
-      priorityPaths = search.hits.map((hit) => hit.path);
-    } catch (error) {
-      check();
-      appLogger.warn('Search prioritization failed; continuing the full indexed review.', {
+    emitDiagnostics();
+    const total = options.indexedPaths.length;
+    const search = options.corpus
+      ? await interruptible(
+          searchIndexedVault({
+            question: options.scoringQuestion ?? options.question,
+            indexedPaths: options.indexedPaths,
+            scopes: options.scopes,
+            corpus: options.corpus,
+            candidates: options.candidates,
+            documentScope: 'all',
+            inventory: options.inventory,
+            signal: options.signal,
+          }),
+        )
+      : null;
+    check();
+    activePhase = 'search';
+    if (!search) {
+      emitDiagnostics();
+      activePhase = 'answer';
+      const content = t('indexedReviewNoEvidence');
+      appLogger.warn('Indexed evidence engine unavailable; deferring to tool calls.', {
         source: 'chat.indexed-review',
-        error,
       });
-    }
-    completePhase('search');
-    const paths = planIndexedReviewInventoryRust({
-      indexedPaths: options.indexedPaths,
-      visiblePaths,
-      priorityPaths,
-      scopes: options.scopes,
-    });
-    if (!paths) throw new Error(t('vaultResearchContractUnavailable'));
-    if (paths.length === 0)
       return {
-        content: t('indexedReviewEmpty'),
+        content,
         citations: [],
         processedFiles: 0,
-        totalFiles: 0,
+        totalFiles: total,
         rejectedFiles: 0,
         providerTransfer: { sentFiles: 0, sentPaths: [] },
-        coverageNotice: t('indexedReviewEmpty'),
+        coverageNotice: content,
         diagnostics,
+        toolFallback: true,
+        engineUnavailable: true,
       };
-
+    }
+    diagnostics.counts.candidateSegments = search.plan.evidence.length;
+    diagnostics.counts.screenAcceptedSegments = search.evidence.length;
+    diagnostics.counts.extractedSegments = search.evidence.length;
+    activePhase = 'map';
+    options.onProgress?.({ phase: 'map', completedFiles: 0, totalFiles: total });
+    // 채택 문서만 현재 vault 리비전과 대조합니다.
+    const adoptedPaths = [...new Set(search.evidence.map((item) => item.path))];
+    const stale = new Set<string>();
+    for (const path of adoptedPaths) {
+      const expected = search.evidence.find((item) => item.path === path)?.revision ?? null;
+      let current: string | null = null;
+      // 원문 리비전을 한 번 더 확인하고, 그래도 어긋나면 verified로 승격하지 않습니다.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        check();
+        try {
+          current = (await options.revisionReader?.(path)) ?? null;
+        } catch (error) {
+          check();
+          current = null;
+          appLogger.warn('Source revision read failed; treating the document as stale.', {
+            source: 'chat.indexed-review',
+            error,
+          });
+        }
+        if (current !== null && current === expected) break;
+      }
+      if (expected === null || current === null || current !== expected) stale.add(path);
+    }
+    const evidence = search.evidence.filter((item) => !stale.has(item.path));
+    const citations = new Map<string, SourceCitation>();
+    for (const item of evidence) {
+      citations.set(item.sourceId, {
+        id: item.sourceId,
+        filePath: item.path,
+        line: item.startLine,
+        endLine: item.endLine,
+        preview: item.quote,
+        status: 'verified',
+      });
+    }
+    const accepted = new Set(evidence.map((item) => item.path));
+    const reviewed = search.coverage.reviewedDocuments;
+    const machineExcluded = search.plan.diagnostics.droppedDocuments.belowThreshold +
+      search.plan.diagnostics.droppedDocuments.budget +
+      search.plan.diagnostics.droppedDocuments.filtered;
+    // 전역 예산·coverage·truncated는 엔진 병합 값을 그대로 두고, 엔진이 알 수 없는
+    // 현재 vault 리비전(stale) 제거분만 selectedDocuments·coverage에 다시 반영합니다.
+    const selectedDocuments = accepted.size;
+    const effectiveCoverage = {
+      ...search.coverage,
+      // stale 제거 뒤에도 완료(supported)로 승격하지 않습니다.
+      status:
+        stale.size > 0 && search.coverage.status === 'supported'
+          ? ('incomplete' as const)
+          : search.coverage.status,
+      unreviewedDocuments: search.coverage.unreviewedDocuments + stale.size,
+    };
+    const coverage = t('indexedReviewCoverage', {
+      total,
+      floor: selectedDocuments,
+      machineExcluded,
+      accepted: accepted.size,
+      rejected: search.rejected.length + stale.size,
+    });
+    const notice = t('indexedReviewIncompleteNotice', {
+      total,
+      screened: reviewed,
+      floor: selectedDocuments,
+      machineExcluded,
+      accepted: accepted.size,
+      rejected: search.rejected.length + stale.size,
+      undecided: effectiveCoverage.unreviewedDocuments,
+      unreadable: stale.size,
+    });
+    const partialReview =
+      stale.size > 0 ||
+      effectiveCoverage.status !== 'supported' ||
+      search.plan.diagnostics.truncated;
+    const evidencePayload = evidence.map((item) => ({
+      sourceId: item.sourceId,
+      path: item.path,
+      startLine: item.startLine,
+      endLine: item.endLine,
+      quote: item.quote,
+      contextBefore: item.contextBefore,
+      contextAfter: item.contextAfter,
+    }));
+    activePhase = 'answer';
+    emitDiagnostics();
+    if (options.deferAnswer || evidence.length === 0) {
+      const content =
+        evidence.length === 0
+          ? partialReview
+            ? notice
+            : t('indexedReviewNoEvidence')
+          : JSON.stringify({ evidence: evidencePayload });
+      options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
+      return {
+        content,
+        citations: [...citations.values()],
+        processedFiles: reviewed,
+        totalFiles: total,
+        rejectedFiles: search.rejected.length,
+        providerTransfer: { sentFiles: accepted.size, sentPaths: [...accepted] },
+        coverageNotice: partialReview ? notice : coverage,
+        diagnostics,
+        toolFallback: evidence.length === 0,
+        engineUnavailable: false,
+      };
+    }
     const budget = options.provider.contextBudget ?? planModelContextRust({});
     if (!budget) throw new Error(t('vaultResearchContractUnavailable'));
-    const batchChars = budget.evidenceChars;
-    // 출력 한도를 모르는 모델은 추론에 출력 예산을 소진하기 쉬워 판정 묶음을 더 작게 보냅니다.
-    const judgeBatchLimit = budget.outputSource === 'fallback' ? 4 : 8;
-    const citations = new Map<string, SourceCitation>();
-    const relevantPaths = new Set<string>();
-    const sentPaths = new Set<string>();
-    const screenedDocs = new Set<string>();
-    const unreadablePaths = new Set<string>();
-    const unresolvedPaths = new Set<string>();
-    const scored: ScoredReviewSegment[] = [];
-    let undecidedSegments = 0;
-    let consecutiveJudgeFailures = 0;
-    let judgingSuspended = false;
-    let summaries: string[] = [];
-
-    const request = async (
-      name: IndexedReviewPhase,
-      instruction: string,
-      body: string,
-      sourcePaths: Iterable<string> = [],
-    ) => {
+    const usage: TokenUsage[][] = [];
+    const requestAnswer = async (correction = false): Promise<string | null> => {
       check();
       const prepared = prepareProviderRequest(
         [
-          { role: 'system', content: [t('llmEvidenceDataBoundary'), instruction].join('\n\n') },
-          { role: 'user', content: body },
+          {
+            role: 'system',
+            content: [t('llmEvidenceDataBoundary'), options.systemPrompt, t('llmIndexedReviewAnswer')]
+              .filter(Boolean)
+              .join('\n\n'),
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              question: options.question,
+              previousUserQuestions: options.previousUserQuestions ?? [],
+              evidence: evidencePayload,
+            }),
+          },
         ],
         undefined,
         budget.inputBytes,
       );
       const updates: TokenUsage[] = [];
-      for (const path of sourcePaths) sentPaths.add(path);
-      const requests = (phaseRequests[name] ??= []);
-      requests.push(updates);
-      const updateUsage = () => {
-        const usage = planTurnUsageRust({ requests });
-        if (usage) Object.assign(diagnostics.phases[name], usage);
-        emitDiagnostics();
-      };
-      updateUsage();
+      usage.push(updates);
+      if (correction) diagnostics.counts.answerCorrectionRequests = 1;
       let content = '';
       try {
         await interruptible(
@@ -301,572 +758,59 @@ async function runIndexedVaultReview(
             {
               signal: options.signal,
               toolChoice: 'none',
-              onUsage: (usage) => {
+              onUsage: (chunkUsage) => {
                 if (options.signal?.aborted) return;
-                updates.push({ ...usage });
-                updateUsage();
+                updates.push({ ...chunkUsage });
+                const plan = planTurnUsageRust({ requests: usage });
+                if (plan) Object.assign(diagnostics.phases.answer, plan);
+                emitDiagnostics();
               },
             },
           ),
         );
       } finally {
-        updateUsage();
+        const plan = planTurnUsageRust({ requests: usage });
+        if (plan) Object.assign(diagnostics.phases.answer, plan);
       }
       check();
       if (!content.trim()) throw new Error(t('indexedReviewIncomplete'));
-      return content;
+      return renderIndexedReviewAnswerRust([...citations.keys()], content);
     };
-
-    const compact = async () => {
-      for (let round = 0; round < 16; round++) {
-        if (summaries.join('\n\n').length <= batchChars) return;
-        const batches = planResearchSummaryBatchesRust(
-          summaries.map((text) => text.length + 2),
-          8,
-          batchChars,
-        );
-        if (!batches) throw new Error(t('vaultResearchBatchPlanFailed'));
-        const before = summaries.join('\n\n').length;
-        const next: string[] = [];
-        for (const batch of batches) {
-          const evidence = batch.flatMap((index) => (summaries[index] ? [summaries[index]] : []));
-          if (evidence.length <= 1) {
-            next.push(...evidence);
-            continue;
-          }
-          try {
-            diagnostics.counts.reduceRequests += 1;
-            next.push(
-              await request(
-                'reduce',
-                t('llmIndexedReviewReduce'),
-                JSON.stringify({ question: options.question, evidence }),
-                relevantPaths,
-              ),
-            );
-          } catch (error) {
-            check();
-            if (error instanceof LLMProviderHttpError) throw error;
-            appLogger.warn('Summary compression failed; keeping the original summaries.', {
-              source: 'chat.indexed-review',
-              error,
-            });
-            next.push(evidence.join('\n\n'));
-          }
-        }
-        summaries = next;
-        // 줄이지 못한 묶음만 남으면 원본 요약을 유지한 채 정상 종료합니다.
-        if (summaries.join('\n\n').length >= before) return;
-      }
-    };
-
-    const requestAnswer = async (): Promise<string | null> => {
-      try {
-        const response = await request(
-          'answer',
-          [options.systemPrompt, t('llmIndexedReviewAnswer')].filter(Boolean).join('\n\n'),
-          JSON.stringify({
-            question: options.question,
-            previousUserQuestions: options.previousUserQuestions ?? [],
-            evidence: summaries,
-          }),
-          relevantPaths,
-        );
-        return renderIndexedReviewAnswerRust([...citations.keys()], response);
-      } catch (error) {
-        check();
-        if (error instanceof LLMProviderHttpError) throw error;
-        appLogger.warn('Final indexed review answer attempt failed.', {
-          source: 'chat.indexed-review',
-          error,
-        });
-        return null;
-      }
-    };
-
-    const generateAnswer = async (): Promise<string | null> => {
-      const first = await requestAnswer();
-      if (first !== null) return first;
-      const second = await requestAnswer();
-      if (second !== null) return second;
-      appLogger.warn('Ending the indexed review with the incomplete notice.', {
-        source: 'chat.indexed-review',
-      });
-      return null;
-    };
-
-    const markUndecided = (rows: readonly IndexedReviewSegment[]): void => {
-      if (rows.length === 0) return;
-      for (const row of rows) {
-        undecidedSegments += 1;
-        unresolvedPaths.add(row.path);
-      }
-      appLogger.warn('Left judged segments undecided; continuing the review.', {
-        source: 'chat.indexed-review',
-        data: { segments: rows.length },
-      });
-    };
-
-    /** 빈 응답이 이어지면 같은 실패를 반복하지 않도록 판정 호출 자체를 멈춥니다. */
-    const recordJudgeFailure = (): void => {
-      consecutiveJudgeFailures += 1;
-      if (consecutiveJudgeFailures < 8) return;
-      judgingSuspended = true;
-      appLogger.warn('Suspending indexed review judgments after repeated empty responses.', {
-        source: 'chat.indexed-review',
-      });
-    };
-
-    let activeJudgments = 0;
-    const judgmentWaiters = new Set<() => void>();
-    const requestJudgment = async <T>(
-      name: 'screen' | 'extract',
-      instruction: string,
-      rows: readonly IndexedReviewSegment[],
-      validate: (rows: readonly IndexedReviewSegment[], response: string) => T | null,
-    ): Promise<T | null> => {
-      check();
-      const body = JSON.stringify({
-        question: options.question,
-        previousUserQuestions: options.previousUserQuestions ?? [],
-        segments: rows,
-      });
-      const cache = options.cacheScope ? options.reviewCache : undefined;
-      const cacheKey = JSON.stringify([
-        options.cacheScope,
-        t('llmEvidenceDataBoundary'),
-        instruction,
-        body,
-      ]);
-      const cached = cache?.get(cacheKey);
-      if (cached !== undefined) {
-        const result = validate(rows, cached);
-        if (result) {
-          diagnostics.counts.cacheHits += 1;
-          return result;
-        }
-        cache?.delete(cacheKey);
-      }
-      // 실패 한도 직전에는 진행 중 판정을 기다려 병렬 호출이 한도를 넘지 않게 합니다.
-      while (!judgingSuspended && consecutiveJudgeFailures + activeJudgments >= 8) {
-        await interruptible(new Promise<void>((resolve) => judgmentWaiters.add(resolve)));
-        check();
-      }
-      if (judgingSuspended) return null;
-      activeJudgments += 1;
-      try {
-        const response = await request(
-          name,
-          instruction,
-          body,
-          rows.map((row) => row.path),
-        );
-        const result = validate(rows, response);
-        if (!result) {
-          recordJudgeFailure();
-          return null;
-        }
-        consecutiveJudgeFailures = 0;
-        if (cache) {
-          // 현재 원문이 포함된 정확한 요청만 재사용하고 메모리 보관량도 제한합니다.
-          const encoder = new TextEncoder();
-          const bytes = encoder.encode(cacheKey).byteLength + encoder.encode(response).byteLength;
-          if (bytes <= REVIEW_CACHE_BYTES) {
-            cache.set(cacheKey, response);
-            let totalBytes = 0;
-            for (const [key, value] of cache)
-              totalBytes += encoder.encode(key).byteLength + encoder.encode(value).byteLength;
-            while (cache.size > REVIEW_CACHE_LIMIT || totalBytes > REVIEW_CACHE_BYTES) {
-              const oldest = cache.entries().next().value;
-              if (!oldest) break;
-              totalBytes -=
-                encoder.encode(oldest[0]).byteLength + encoder.encode(oldest[1]).byteLength;
-              cache.delete(oldest[0]);
-            }
-          }
-        }
-        return result;
-      } catch (error) {
-        check();
-        if (!(error instanceof LLMProviderHttpError)) recordJudgeFailure();
-        throw error;
-      } finally {
-        activeJudgments -= 1;
-        for (const resolve of judgmentWaiters) resolve();
-        judgmentWaiters.clear();
-      }
-    };
-
-    /** 검색이 지목한 구간과 겹치면 점수와 무관하게 후보로 고정합니다. */
-    const lockedBySearchHit = (segment: IndexedReviewSegment): boolean =>
-      hits.some((hit) => {
-        if (hit.path !== segment.path) return false;
-        if (!Number.isSafeInteger(hit.startLine)) return true;
-        const endLine = typeof hit.endLine === 'number' ? hit.endLine : hit.startLine;
-        return segment.startLine <= endLine && segment.endLine >= hit.startLine;
-      });
-
-    for (const path of paths) {
-      check();
-      options.onProgress?.({
-        phase: 'map',
-        completedFiles: screenedDocs.size,
-        totalFiles: paths.length,
-        currentPath: path,
-      });
-      let startLine = 1;
-      let startOffset = 0;
-      let readFailed = false;
-      const segments: IndexedReviewSegment[] = [];
-      while (true) {
-        let raw: string;
-        try {
-          raw = await execute({
-            action: 'read',
-            path,
-            start_line: startLine,
-            start_offset: startOffset,
-          });
-        } catch (error) {
-          check();
-          unreadablePaths.add(path);
-          readFailed = true;
-          appLogger.warn('Source read failed; continuing the remaining indexed documents.', {
-            source: 'chat.indexed-review',
-            error,
-          });
-          break;
-        }
-        const rows = planIndexedReviewSegmentsRust(raw, batchChars);
-        if (!rows || rows.some((row) => row.path !== path))
-          throw new Error(t('indexedReviewIncomplete'));
-        segments.push(...rows);
-        const payload = JSON.parse(raw) as NativeVaultReadResult;
-        if (!payload.truncated) break;
-        const nextLine = payload.nextStartLine;
-        const nextOffset = payload.nextStartOffset ?? 0;
-        if (
-          nextLine === null ||
-          nextLine === undefined ||
-          nextLine < startLine ||
-          (nextLine === startLine && nextOffset <= startOffset)
-        )
-          throw new Error(t('indexedReviewIncomplete'));
-        startLine = nextLine;
-        startOffset = nextOffset;
-      }
-      if (readFailed) continue;
-      // 점수 계산이 실패하면 조용히 빼지 않고 안전 측으로 1.0을 주어 후보로 남깁니다.
-      for (const segment of segments) {
-        scored.push({
-          segment,
-          score: 1,
-          floorLocked: lockedBySearchHit(segment),
-        });
-      }
-      screenedDocs.add(path);
-      options.onProgress?.({
-        phase: 'map',
-        completedFiles: screenedDocs.size,
-        totalFiles: paths.length,
-        currentPath: path,
-      });
-    }
-
-    const scores = scoreIndexedReviewSegmentsRust(
-      options.scoringQuestion ?? options.question,
-      scored.map((row) => row.segment),
-      hits.map((hit, index) => ({
-        path: hit.path,
-        startLine: hit.startLine,
-        endLine: hit.endLine,
-        rank: index + 1,
-      })),
-    );
-    for (const row of scored) row.score = scores?.get(row.segment.id) ?? 1;
-    completePhase('map');
-
-    const locked = scored.filter((row) => row.floorLocked);
-    const candidates = [...locked];
-    for (const row of scored
-      .filter((item) => !item.floorLocked && item.score > 0)
-      .sort((left, right) => right.score - left.score)) {
-      if (candidates.length >= CANDIDATE_LIMIT) break;
-      candidates.push(row);
-    }
-    const candidatePaths = new Set(candidates.map((row) => row.segment.path));
-    const floorDocs = new Set(locked.map((row) => row.segment.path));
-    const machineExcludedDocs = new Set(
-      [...screenedDocs].filter((path) => !candidatePaths.has(path)),
-    );
-
-    const candidateById = new Map(candidates.map((row) => [row.segment.id, row.segment]));
-    diagnostics.counts.candidateSegments = candidates.length;
-    const accepted: IndexedReviewSegment[] = [];
-    let screenedSegments = 0;
-    const completeScreen = (rows: readonly IndexedReviewSegment[], undecided: boolean): void => {
-      if (undecided) markUndecided(rows);
-      screenedSegments += rows.length;
-      options.onProgress?.({
-        phase: 'screen',
-        completedFiles: screenedSegments,
-        totalFiles: candidates.length,
-      });
-    };
-
-    const screenBatch = async (rows: readonly IndexedReviewSegment[]): Promise<void> => {
-      if (judgingSuspended) {
-        completeScreen(rows, true);
-        return;
-      }
-      // 빈 응답·검증 실패는 한 번 더 시도하고, 그래도 실패하면 절반으로 나눠 판정합니다.
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (attempt > 0) diagnostics.counts.screenRetries += 1;
-        try {
-          const decisions = await requestJudgment(
-            'screen',
-            t('llmIndexedReviewScreen'),
-            rows,
-            validateIndexedReviewScreenRust,
-          );
-          if (!decisions) {
-            if (judgingSuspended) {
-              completeScreen(rows, true);
-              return;
-            }
-            continue;
-          }
-          for (const decision of decisions) {
-            const segment = candidateById.get(decision.id);
-            if (decision.relevant && segment) accepted.push(segment);
-          }
-          completeScreen(rows, false);
-          return;
-        } catch (error) {
-          check();
-          if (error instanceof LLMProviderHttpError) throw error;
-          appLogger.warn('Screen call failed; retrying or splitting the batch.', {
-            source: 'chat.indexed-review',
-            error,
-          });
-          if (judgingSuspended) {
-            completeScreen(rows, true);
-            return;
-          }
-        }
-      }
-      if (rows.length > 1) {
-        diagnostics.counts.splitBatches += 1;
-        const middle = Math.ceil(rows.length / 2);
-        await screenBatch(rows.slice(0, middle));
-        await screenBatch(rows.slice(middle));
-        return;
-      }
-      completeScreen(rows, true);
-    };
-
-    const screenBatches = planResearchSummaryBatchesRust(
-      candidates.map((row) => JSON.stringify(row.segment).length),
-      SCREEN_BATCH_LIMIT,
-      batchChars,
-    );
-    if (!screenBatches) throw new Error(t('vaultResearchBatchPlanFailed'));
-    for (let index = 0; index < screenBatches.length; index += 2) {
-      const pending = screenBatches.slice(index, index + 2).map((batch) => {
-        const rows = batch.flatMap((item) => (candidates[item] ? [candidates[item].segment] : []));
-        return rows.length > 0 ? screenBatch(rows) : Promise.resolve();
-      });
-      await Promise.all(pending);
-      // 즉시 응답하는 로컬 provider에서도 취소·화면 갱신을 처리할 기회를 줍니다.
-      await interruptible(new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0)));
-    }
-    // 응답 도착 순서와 무관하게 검색·스크리닝의 원래 순서를 다음 단계에 전달합니다.
-    const acceptedIds = new Set(accepted.map((row) => row.id));
-    accepted.splice(
-      0,
-      accepted.length,
-      ...candidates.filter((row) => acceptedIds.has(row.segment.id)).map((row) => row.segment),
-    );
-    diagnostics.counts.screenAcceptedSegments = accepted.length;
-    completePhase('screen');
-
-    let extractedSegments = 0;
-    const findingsByBatch = new Map<string, IndexedReviewFinding[]>();
-    const completeExtract = (rows: readonly IndexedReviewSegment[], undecided: boolean): void => {
-      if (undecided) markUndecided(rows);
-      else diagnostics.counts.extractedSegments += rows.length;
-      extractedSegments += rows.length;
-      options.onProgress?.({
-        phase: 'extract',
-        completedFiles: extractedSegments,
-        totalFiles: accepted.length,
-      });
-    };
-
-    const judgeBatch = async (rows: readonly IndexedReviewSegment[]): Promise<void> => {
-      if (judgingSuspended) {
-        completeExtract(rows, true);
-        return;
-      }
-      // 빈 응답·검증 실패는 같은 본문을 반복하지 않고 절반으로 나눠 다시 판정합니다.
-      const attempts = rows.length > 1 ? 1 : 2;
-      for (let attempt = 0; attempt < attempts; attempt++) {
-        if (attempt > 0) diagnostics.counts.extractRetries += 1;
-        try {
-          const review = await requestJudgment(
-            'extract',
-            t('llmIndexedReviewJudge'),
-            rows,
-            validateIndexedReviewRust,
-          );
-          if (!review) {
-            if (judgingSuspended) {
-              completeExtract(rows, true);
-              return;
-            }
-            continue;
-          }
-          if (rows[0]) findingsByBatch.set(rows[0].id, review.findings);
-          completeExtract(rows, false);
-          return;
-        } catch (error) {
-          check();
-          if (error instanceof LLMProviderHttpError) throw error;
-          appLogger.warn('Judge call failed; retrying with smaller pieces when possible.', {
-            source: 'chat.indexed-review',
-            error,
-          });
-          if (judgingSuspended) {
-            completeExtract(rows, true);
-            return;
-          }
-        }
-      }
-      if (rows.length > 1) {
-        diagnostics.counts.splitBatches += 1;
-        const middle = Math.ceil(rows.length / 2);
-        await judgeBatch(rows.slice(0, middle));
-        await judgeBatch(rows.slice(middle));
-        return;
-      }
-      completeExtract(rows, true);
-    };
-
-    const extractBatches = planResearchSummaryBatchesRust(
-      accepted.map((row) => JSON.stringify(row).length),
-      judgeBatchLimit,
-      batchChars,
-    );
-    if (!extractBatches) throw new Error(t('vaultResearchBatchPlanFailed'));
-    for (let index = 0; index < extractBatches.length; index += 2) {
-      const pending = extractBatches.slice(index, index + 2).map((batch) => {
-        const rows = batch.flatMap((item) => (accepted[item] ? [accepted[item]] : []));
-        return rows.length > 0 ? judgeBatch(rows) : Promise.resolve();
-      });
-      await Promise.all(pending);
-      await interruptible(new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0)));
-    }
-    for (const row of accepted) {
-      for (const finding of findingsByBatch.get(row.id) ?? []) {
-        relevantPaths.add(finding.path);
-        citations.set(finding.sourceId, {
-          id: finding.sourceId,
-          filePath: finding.path,
-          line: finding.startLine,
-          endLine: finding.endLine,
-          preview: finding.quote,
-          status: 'verified',
-        });
-        summaries.push(JSON.stringify([finding]));
-      }
-    }
-    completePhase('extract');
-
-    check();
-    await compact();
-    completePhase('reduce');
-    // 후보가 있었지만 채택 근거도 미판정도 없는 문서는 LLM 제외로 집계합니다.
-    const rejectedDocs = new Set<string>();
-    for (const path of candidatePaths) {
-      if (relevantPaths.has(path) || unresolvedPaths.has(path)) continue;
-      rejectedDocs.add(path);
-    }
-    const rejectedFiles = machineExcludedDocs.size + rejectedDocs.size;
-    const coverage = t('indexedReviewCoverage', {
-      total: paths.length,
-      floor: floorDocs.size,
-      machineExcluded: machineExcludedDocs.size,
-      accepted: relevantPaths.size,
-      rejected: rejectedDocs.size,
-    });
-    const notice = t('indexedReviewIncompleteNotice', {
-      total: paths.length,
-      screened: screenedDocs.size,
-      floor: floorDocs.size,
-      machineExcluded: machineExcludedDocs.size,
-      accepted: relevantPaths.size,
-      rejected: rejectedDocs.size,
-      undecided: undecidedSegments,
-      unreadable: unreadablePaths.size,
-    });
-    const partialReview = unreadablePaths.size > 0 || undecidedSegments > 0;
     let answer: string | null = null;
-    if (summaries.length > 0 && !options.deferAnswer) {
-      options.onProgress?.({
-        phase: 'reduce',
-        completedFiles: paths.length,
-        totalFiles: paths.length,
+    try {
+      // 정상 해석 1회와 결정적 인용 형식 오류 교정 1회까지만 허용합니다.
+      answer = await requestAnswer();
+      if (answer === null) answer = await requestAnswer(true);
+    } catch (error) {
+      check();
+      if (error instanceof LLMProviderHttpError) throw error;
+      appLogger.warn('Final indexed review answer attempt failed.', {
+        source: 'chat.indexed-review',
+        error,
       });
-      answer = await generateAnswer();
-      if (answer !== null) options.onAnswer?.(`${partialReview ? notice : coverage}\n\n${answer}`);
+      answer = null;
     }
-    completePhase('answer');
-    const answerFailed = !options.deferAnswer && summaries.length > 0 && answer === null;
-    const noEvidence = partialReview || summaries.length > 0 ? null : t('indexedReviewNoEvidence');
-    const body =
-      options.deferAnswer && summaries.length > 0
-        ? JSON.stringify({ evidence: summaries })
-        : (answer ?? noEvidence);
-    const content = answerFailed
-      ? `${notice}\n\n${t('indexedReviewAnswerUnavailable')}`
-      : body === null
-        ? notice
-        : `${partialReview ? notice : coverage}\n\n${body}`;
-    options.onProgress?.({
-      phase: 'complete',
-      completedFiles: paths.length,
-      totalFiles: paths.length,
-    });
-    const reviewStats = {
-      reviewed: screenedDocs.size,
-      accepted: relevantPaths.size,
-      rejected: rejectedFiles,
-      floor: floorDocs.size,
-      machineExcluded: machineExcludedDocs.size,
-      unreadable: unreadablePaths.size,
-      undecided: undecidedSegments,
-    };
-    if (partialReview || answerFailed)
+    const resolved = answer !== null;
+    const body = resolved ? answer : t('indexedReviewAnswerUnavailable');
+    const content = evidence.length === 0 ? notice : (partialReview || !resolved) ? notice + '\n\n' + body : coverage + '\n\n' + body;
+    options.onAnswer?.(content);
+    options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
+    if (partialReview || !resolved)
       appLogger.warn('Finished the indexed document review with unresolved coverage.', {
         source: 'chat.indexed-review',
-        data: reviewStats,
-      });
-    else
-      appLogger.notice('Completed the full indexed document review.', {
-        source: 'chat.indexed-review',
-        data: reviewStats,
+        data: { accepted: accepted.size, rejected: search.rejected.length, stale: stale.size },
       });
     return {
       content,
-      citations: options.deferAnswer
-        ? [...citations.values()]
-        : selectAnswerCitations(answer ?? '', [...citations.values()], 0),
-      totalFiles: paths.length,
-      processedFiles: screenedDocs.size,
-      rejectedFiles,
-      providerTransfer: { sentFiles: sentPaths.size, sentPaths: [...sentPaths] },
-      coverageNotice: partialReview || answerFailed ? notice : coverage,
+      citations: selectAnswerCitations(answer ?? '', [...citations.values()], 0),
+      processedFiles: reviewed,
+      totalFiles: total,
+      rejectedFiles: search.rejected.length,
+      providerTransfer: { sentFiles: accepted.size, sentPaths: [...accepted] },
+      coverageNotice: partialReview || !resolved ? notice : coverage,
       diagnostics,
+      toolFallback: false,
+      engineUnavailable: false,
     };
   } finally {
     emitDiagnostics();

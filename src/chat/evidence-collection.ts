@@ -16,7 +16,6 @@ export interface EvidenceCollectionResult {
   toolCalls: ToolCallRecord[];
   checkpoint: string;
   plan: RustEvidenceCollectionPlan;
-  reviewRequests: number;
 }
 
 interface EvidenceCollectionOptions {
@@ -24,12 +23,11 @@ interface EvidenceCollectionOptions {
   scopes: readonly string[];
   nativeTool: NativeVaultToolRuntimeLike;
   createId: () => string;
-  provider?: Pick<LLMProvider, 'streamChat' | 'contextBudget'>;
   signal?: AbortSignal;
   onUpdate?: (calls: ToolCallRecord[]) => void;
 }
 
-/** 모델의 도구 선택 전에 같은 읽기 전용 검색·문맥 확인 절차를 수행합니다. */
+/** 같은 질문에 대해 모델과 독립적인 읽기 전용 검색·문맥 확인 절차를 수행합니다. */
 export async function collectVaultEvidence(
   options: EvidenceCollectionOptions,
 ): Promise<EvidenceCollectionResult> {
@@ -47,21 +45,18 @@ export async function collectVaultEvidence(
   }
 }
 
-/** 전체 I/O·판정·시간 상한 안에서 Rust가 제시한 다음 행동만 수행합니다. */
+/** 전체 I/O·시간 상한 안에서 Rust가 제시한 다음 행동만 수행합니다. */
 async function runEvidenceCollection(
   options: EvidenceCollectionOptions,
   signal: AbortSignal,
 ): Promise<EvidenceCollectionResult> {
   const toolCalls: ToolCallRecord[] = [];
-  const reviews: { afterCalls: number; content: string }[] = [];
   // Rust의 계획 상한과 별개로 잘못된 wire 결과가 I/O를 무한 반복하지 않게 합니다.
   for (let step = 0; step <= 51; step++) {
     if (options.signal?.aborted) throw new DOMException(t('cancelledLabel'), 'AbortError');
     const plan = planEvidenceCollectionRust({
       question: options.question,
       scopes: options.scopes,
-      reviewEnabled: Boolean(options.provider),
-      reviews,
       budgetExpired: signal.aborted,
       toolCalls: toolCalls.map((call) => ({
         name: call.name,
@@ -76,7 +71,6 @@ async function runEvidenceCollection(
         source: 'chat.evidence-collection',
         data: {
           calls: toolCalls.length,
-          reviews: reviews.length,
           reason: plan.reason,
           coverage: plan.coverage,
           sources: plan.verifiedSources,
@@ -85,7 +79,6 @@ async function runEvidenceCollection(
       return {
         toolCalls,
         plan,
-        reviewRequests: reviews.length,
         checkpoint: t('llmEvidenceCollectionCheckpoint', {
           reason: plan.reason,
           sources: plan.verifiedSources,
@@ -94,11 +87,6 @@ async function runEvidenceCollection(
           gaps: JSON.stringify(plan.unresolved),
         }),
       };
-    }
-    if (plan.reviewRequest !== null && options.provider && reviews.length < 3) {
-      const content = await requestEvidenceReview(plan.reviewRequest, options.provider, signal);
-      reviews.push({ afterCalls: toolCalls.length, content });
-      continue;
     }
     if (!plan.nextCall || toolCalls.length >= 48 || step === 51)
       throw new Error(t('nativeVaultPlanUnavailable'));
@@ -132,7 +120,7 @@ async function runEvidenceCollection(
   throw new Error(t('nativeVaultPlanUnavailable'));
 }
 
-/** best-effort abort provider도 늦은 완료가 다음 계획을 실행하지 못하게 합니다. */
+/** best-effort abort 연산도 늦은 완료가 다음 계획을 실행하지 못하게 합니다. */
 function awaitEvidenceOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(new DOMException(t('cancelledLabel'), 'AbortError'));
@@ -140,45 +128,6 @@ function awaitEvidenceOperation<T>(operation: Promise<T>, signal: AbortSignal): 
     if (signal.aborted) abort();
     operation.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
   });
-}
-
-/** 판정 실패는 기본 조사 결과를 보존하며 의미적 충족으로 취급하지 않습니다. */
-async function requestEvidenceReview(
-  packet: string,
-  provider: Pick<LLMProvider, 'streamChat' | 'contextBudget'>,
-  signal: AbortSignal,
-): Promise<string> {
-  let content = '';
-  try {
-    const request = prepareProviderRequest(
-      [
-        { role: 'system', content: t('llmEvidenceSufficiencyReview') },
-        { role: 'user', content: packet },
-      ],
-      undefined,
-      provider.contextBudget?.inputBytes,
-    );
-    await awaitEvidenceOperation(
-      provider.streamChat(
-        request.messages,
-        (chunk) => {
-          if (!signal.aborted && content.length < 32_768) content += chunk.content ?? '';
-        },
-        0.2,
-        undefined,
-        { signal, toolChoice: 'none', maxOutputTokens: 3000 },
-      ),
-      signal,
-    );
-    return content;
-  } catch (error) {
-    if (!signal.aborted)
-      appLogger.warn('Evidence sufficiency review failed.', {
-        source: 'chat.evidence-collection',
-        error,
-      });
-    return '';
-  }
 }
 
 /** 확보한 출처를 빠뜨린 답변은 같은 모델로 한 번만 교정하고 남은 한계를 표시합니다. */

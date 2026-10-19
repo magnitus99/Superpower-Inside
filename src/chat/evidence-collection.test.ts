@@ -87,86 +87,14 @@ function collect(nativeTool: NativeVaultToolRuntimeLike, signal?: AbortSignal) {
 }
 
 describe('모델과 독립적인 원문 수집', () => {
-  it('선택한 provider가 발견한 공백을 실제 검색·원문 읽기로 연결하고 다시 검토한다', async () => {
-    const streamChat = vi.fn<
-      Parameters<typeof finalizeEvidenceAnswer>[0]['provider']['streamChat']
-    >((messages, onChunk) => {
-      const packet = JSON.parse(messages.at(-1)?.content ?? '{}') as {
-        facets: string[];
-        evidence: { id: string; path: string; text: string }[];
-      };
-      const source = packet.evidence[0];
-      const checks: Record<string, unknown>[] = packet.facets.map((question, facetId) => ({
-        facetId,
-        question,
-        status: 'supported',
-        evidence: [{ id: source.id, quote: source.text }],
-      }));
-      checks.push(
-        packet.evidence.some((row) => row.path.endsWith('Exception.md'))
-          ? {
-              facetId: null,
-              question: '추가 실패 조건',
-              status: 'supported',
-              evidence: [{ id: source.id, quote: source.text }],
-            }
-          : {
-              facetId: null,
-              question: '추가 실패 조건',
-              status: 'missing',
-              query: 'rare failure condition',
-            },
-      );
-      onChunk({ content: JSON.stringify({ checks }), done: true });
-      return Promise.resolve();
-    });
-    let sequence = 0;
-    const result = await collectVaultEvidence({
-      question: 'Compare copper storage and glass queue latency',
-      scopes: ['Research'],
-      nativeTool: runtime(),
-      provider: { streamChat },
-      createId: () => `adaptive-${++sequence}`,
-    });
-    expect(
-      result.toolCalls.some(
-        (call) => call.name.endsWith('_search') && call.arguments.includes('rare failure'),
-      ),
-    ).toBe(true);
-    expect(
-      result.toolCalls.some(
-        (call) => call.name.endsWith('_read') && call.arguments.includes('Exception.md'),
-      ),
-    ).toBe(true);
-    expect(result.plan.coverage).toBe('supported');
-    expect(result.plan.unresolved).toEqual([]);
-    expect(result.reviewRequests).toBe(2);
-    expect(streamChat.mock.calls.every((call) => call[4]?.toolChoice === 'none')).toBe(true);
-  });
-
-  it('판정 형식이 틀려도 원문을 보존하고 판정 요청은 유한하게 끝낸다', async () => {
-    const streamChat = vi.fn<
-      Parameters<typeof finalizeEvidenceAnswer>[0]['provider']['streamChat']
-    >((_messages, onChunk) => {
-      onChunk({
-        content:
-          '{"checks":[{"question":"누락","status":"supported","evidence":[{"id":"invented","quote":"원문에 없는 근거"}]}]}',
-        done: true,
-      });
-      return Promise.resolve();
-    });
-    const result = await collectVaultEvidence({
-      question: 'Compare copper and glass',
-      scopes: ['Research'],
-      nativeTool: runtime(),
-      provider: { streamChat },
-      createId: () => 'invalid-review',
-    });
-    expect(result.plan.coverage).toBe('invalid-review');
+  it('엔진 계획만으로 원문 수집을 끝내고 모델 판정 필드를 만들지 않는다', async () => {
+    const result = await collect(runtime());
+    expect(result.plan.done).toBe(true);
+    expect(['exhausted', 'no-progress', 'no-evidence']).toContain(result.plan.reason);
+    expect(result.plan.coverage).toBe('unreviewed');
     expect(result.plan.verifiedSources).toBeGreaterThan(0);
-    expect(result.reviewRequests).toBeLessThanOrEqual(3);
+    expect('reviewRequests' in result).toBe(false);
     expect(result.toolCalls.length).toBeLessThanOrEqual(result.plan.maxCalls);
-    expect(result.plan.unresolved.length).toBeGreaterThan(0);
   });
 
   it('응답하지 않는 도구도 전체 시간 한도에서 닫고 늦은 결과를 무시한다', async () => {
@@ -211,7 +139,11 @@ describe('모델과 독립적인 원문 수집', () => {
         first.toolCalls,
         protocol,
       );
-      expect(messages.at(-1)?.content).toContain('합성 원문과 조건·예외');
+      // 새 plan 계약은 원문을 읽은 뒤 범위 검색으로 관련 출처를 더 찾을 수 있으므로,
+      // 마지막 메시지가 아니라 라운드 안에 검증된 원문 내용이 전달됐는지 확인한다.
+      expect(messages.some((message) => message.content.includes('합성 원문과 조건·예외'))).toBe(
+        true,
+      );
     }
   });
 
