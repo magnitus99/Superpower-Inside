@@ -60,6 +60,8 @@ interface MessagePersistMeta {
   dataBoundarySnapshot?: ChatMessageWithMeta['dataBoundarySnapshot'];
   usageSnapshot?: ChatMessageWithMeta['usageSnapshot'];
   retrievalTrace?: ChatMessageWithMeta['retrievalTrace'];
+  indexedReviewDiagnostics?: ChatMessageWithMeta['indexedReviewDiagnostics'];
+  indexedReviewNotice?: string;
   errorKind?: ChatMessageWithMeta['errorKind'];
   errorRetryAt?: string;
   actionHistory?: ChatMessageWithMeta['actionHistory'];
@@ -400,6 +402,8 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
     dataBoundarySnapshot: message.dataBoundarySnapshot,
     usageSnapshot: message.usageSnapshot,
     retrievalTrace: message.retrievalTrace,
+    indexedReviewDiagnostics: message.indexedReviewDiagnostics,
+    indexedReviewNotice: message.indexedReviewNotice,
     errorKind: message.errorKind,
     errorRetryAt: message.errorRetryAt,
     actionHistory: message.actionHistory,
@@ -539,6 +543,9 @@ function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta
     dataBoundarySnapshot: plan.dataBoundarySnapshot as ChatMessageWithMeta['dataBoundarySnapshot'],
     usageSnapshot: plan.usageSnapshot,
     retrievalTrace: plan.retrievalTrace as ChatMessageWithMeta['retrievalTrace'],
+    indexedReviewDiagnostics:
+      plan.indexedReviewDiagnostics as ChatMessageWithMeta['indexedReviewDiagnostics'],
+    indexedReviewNotice: plan.indexedReviewNotice,
     errorKind: plan.errorKind as ChatMessageWithMeta['errorKind'],
     errorRetryAt: plan.errorRetryAt,
     actionHistory: plan.actionHistory as ChatMessageWithMeta['actionHistory'],

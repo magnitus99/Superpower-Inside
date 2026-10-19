@@ -124,7 +124,7 @@ describe('승인 대기 도구 provider 재개 계약', () => {
     expect(approvalSource).toContain('planChatRunFinalization(this.activeRun, run, false)');
     expect(approvalSource).toContain('if (!isChatRunOwner(this.activeRun, run))');
     expect(approvalSource).toContain(
-      'const resumeDataBoundarySnapshot = createDataBoundarySnapshot({',
+      'const resumeBaseDataBoundarySnapshot = createDataBoundarySnapshot({',
     );
     expect(approvalSource).toContain('citations: promptContext.citations,');
     expect(approvalSource).toContain('contextAttachments: promptContext.attachments,');
@@ -145,7 +145,7 @@ describe('승인 대기 도구 provider 재개 계약', () => {
     const approvalEnd = viewSource.indexOf('private async buildPromptContext(', approvalStart);
     const approvalSource = viewSource.slice(approvalStart, approvalEnd);
     const resumeBoundaryStart = approvalSource.indexOf(
-      'const resumeDataBoundarySnapshot = createDataBoundarySnapshot({',
+      'const resumeBaseDataBoundarySnapshot = createDataBoundarySnapshot({',
     );
     const resumeBoundaryEnd = approvalSource.indexOf('const resumePlan =', resumeBoundaryStart);
     const resumeBoundarySource = approvalSource.slice(resumeBoundaryStart, resumeBoundaryEnd);

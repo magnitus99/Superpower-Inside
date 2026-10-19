@@ -121,7 +121,7 @@ import {
   createRecoveryMessageActionId,
 } from './chat-message-actions';
 import { createStreamingRenderPlan, STREAMING_CURSOR_CLASS } from './chat-streaming-renderer';
-import { expandVaultSearchPlan } from './vault-query-expansion';
+import { expandVaultSearchPlan, expandVaultSearchQueryLocally } from './vault-query-expansion';
 import {
   createDataBoundarySnapshot,
   createResearchDataBoundarySnapshot,
@@ -220,6 +220,8 @@ function renderPlainTextWithBreaks(container: HTMLElement, text: string): void {
 interface MessageMetaInput {
   usageSnapshot?: ChatMessageWithMeta['usageSnapshot'];
   retrievalTrace?: ChatMessageWithMeta['retrievalTrace'];
+  indexedReviewDiagnostics?: ChatMessageWithMeta['indexedReviewDiagnostics'];
+  indexedReviewNotice?: string;
   providerKey?: ChatMessageWithMeta['providerKey'];
   providerLabel?: string;
   model?: string;
@@ -293,6 +295,7 @@ export class ChatView extends ItemView {
     AssistantResponseLayoutController
   >();
   private readonly nativeVaultTool: NativeVaultToolRuntimeLike;
+  private readonly indexedReviewCache = new Map<string, string>();
   private retrievalObserver?: {
     run: ChatRunHandle<AbortController>;
     record: (record: import('./types').ChatRetrievalRecord) => void;
@@ -449,6 +452,7 @@ export class ChatView extends ItemView {
     );
     this.refreshBusUnsubscribers.push(
       this.plugin.refreshBus.on('models', () => {
+        this.indexedReviewCache.clear();
         this.populateModelSelect();
         this.renderChatReadiness();
       }),
@@ -469,6 +473,7 @@ export class ChatView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.indexedReviewCache.clear();
     this.clearAutoSaveTimer();
     this.invalidateActiveChatRun(false);
     this.cancelStreamingMarkdownRender();
@@ -1195,6 +1200,8 @@ export class ChatView extends ItemView {
     const msg: ChatMessageWithMeta = {
       usageSnapshot: metaInput?.usageSnapshot,
       retrievalTrace: metaInput?.retrievalTrace,
+      indexedReviewDiagnostics: metaInput?.indexedReviewDiagnostics,
+      indexedReviewNotice: metaInput?.indexedReviewNotice,
       id,
       role,
       content,
@@ -1293,6 +1300,17 @@ export class ChatView extends ItemView {
 
     const message = this.messages.find((m) => m.id === id);
     if (message) {
+      message.indexedReviewDiagnostics =
+        metaInput?.indexedReviewDiagnostics ?? message.indexedReviewDiagnostics;
+      message.indexedReviewNotice = metaInput?.indexedReviewNotice ?? message.indexedReviewNotice;
+      if (
+        isDone &&
+        content &&
+        message.indexedReviewNotice &&
+        !content.startsWith(message.indexedReviewNotice)
+      ) {
+        content = `${message.indexedReviewNotice}\n\n${content}`;
+      }
       message.content = content;
       message.reasoning = reasoning;
       if (metaInput?.originalContent !== undefined) {
@@ -2822,12 +2840,14 @@ export class ChatView extends ItemView {
     let provider: LLMProvider;
     const diagnosticsTarget: { messageId?: string } = {};
     let usageSnapshot: ChatMessageWithMeta['usageSnapshot'];
+    let indexedReviewDiagnostics: ChatMessageWithMeta['indexedReviewDiagnostics'];
     const retrievalTrace: NonNullable<ChatMessageWithMeta['retrievalTrace']> = [];
     const updateDiagnostics = (): void => {
       if (!diagnosticsTarget.messageId || !isChatRunActive(this.activeRun, run)) return;
       const message = this.messages.find((item) => item.id === diagnosticsTarget.messageId);
       if (!message) return;
       message.usageSnapshot = usageSnapshot;
+      message.indexedReviewDiagnostics = indexedReviewDiagnostics;
       message.retrievalTrace = [...retrievalTrace];
       const wrapper = this.messageEls.get(diagnosticsTarget.messageId);
       const container = wrapper?.querySelector('.superpower-inside-chat-bubble-container');
@@ -2936,6 +2956,7 @@ export class ChatView extends ItemView {
             workspaceFiles,
             provider,
             abortController.signal,
+            true,
           );
     } catch (error) {
       if (isChatRunOwner(this.activeRun, run)) {
@@ -2999,7 +3020,12 @@ export class ChatView extends ItemView {
         : {};
     const contextMeta: Pick<
       MessageMetaInput,
-      'contextAttachments' | 'contextBudgetSnapshot' | 'dataBoundarySnapshot' | 'citations'
+      | 'contextAttachments'
+      | 'contextBudgetSnapshot'
+      | 'dataBoundarySnapshot'
+      | 'citations'
+      | 'indexedReviewDiagnostics'
+      | 'indexedReviewNotice'
     > = {
       contextAttachments: promptContext.attachments,
       contextBudgetSnapshot,
@@ -3097,6 +3123,10 @@ export class ChatView extends ItemView {
         await this.plugin.prepareRagForChat();
         if (!isChatRunActive(this.activeRun, run)) return;
         const indexedPaths = (await this.plugin.vectorStore?.getIndexedFilePaths()) ?? [];
+        const deferAnswer = toolsEnabled && explicitlyMentionedServers.length > 0;
+        const localSearchQuestion =
+          promptContext.scoringQuestion ??
+          expandVaultSearchQueryLocally(text, previousUserQuestions);
         const researchResult = await reviewIndexedVault({
           question: text,
           indexedPaths,
@@ -3105,6 +3135,17 @@ export class ChatView extends ItemView {
           provider,
           systemPrompt: getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt),
           previousUserQuestions,
+          searchQueries: promptContext.searchQueries ?? [localSearchQuestion],
+          scoringQuestion: localSearchQuestion,
+          deferAnswer,
+          reviewCache: this.indexedReviewCache,
+          cacheScope: JSON.stringify([key, modelName, provider.capability, provider.contextBudget]),
+          onDiagnostics: (diagnostics) => {
+            if (!isChatRunActive(this.activeRun, run)) return;
+            indexedReviewDiagnostics = diagnostics;
+            contextMeta.indexedReviewDiagnostics = diagnostics;
+            updateDiagnostics();
+          },
           signal: abortController.signal,
           onProgress: (progress) => {
             if (!isChatRunActive(this.activeRun, run)) return;
@@ -3138,10 +3179,24 @@ export class ChatView extends ItemView {
           },
         });
         if (!isChatRunActive(this.activeRun, run)) return;
+        contextMeta.indexedReviewDiagnostics = researchResult.diagnostics;
+        contextMeta.indexedReviewNotice = researchResult.coverageNotice;
+        // 검수에 이관한 검색 대기는 결과가 나온 뒤 미발견 첨부로 남기지 않습니다.
+        promptContext.attachments = promptContext.attachments.filter(
+          (attachment) => attachment.id !== 'rag:auto',
+        );
+        contextMeta.contextAttachments = promptContext.attachments;
+        const researchDocumentCount =
+          deferAnswer && researchResult.providerTransfer.sentPaths
+            ? new Set([
+                ...researchResult.providerTransfer.sentPaths,
+                ...researchResult.citations.map((citation) => citation.filePath),
+              ]).size
+            : researchResult.providerTransfer.sentFiles;
         contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(dataBoundarySnapshot, {
-          researchDocumentCount: researchResult.providerTransfer.sentFiles,
+          researchDocumentCount,
         });
-        if (toolsEnabled && mentionedServers.length > 0) {
+        if (deferAnswer) {
           // 명시한 외부 도구도 실행할 수 있도록 검토 결과와 원문 인용을 기존 흐름에 전달합니다.
           promptContext.systemPrompt = [
             promptContext.systemPrompt,
@@ -4861,6 +4916,7 @@ export class ChatView extends ItemView {
           captureWorkspaceMentionFiles(this.app),
           provider,
           abortController.signal,
+          Boolean(message.indexedReviewDiagnostics),
         );
         if (!isChatRunActive(this.activeRun, run)) return;
         if (promptContext.pluginDocumentationFailure) {
@@ -4879,13 +4935,55 @@ export class ChatView extends ItemView {
           );
           return;
         }
+        let resumedResearchDocumentCount: number | undefined;
+        if (message.indexedReviewDiagnostics) {
+          await this.plugin.prepareRagForChat();
+          if (!isChatRunActive(this.activeRun, run)) return;
+          const indexedPaths = (await this.plugin.vectorStore?.getIndexedFilePaths()) ?? [];
+          const researchResult = await reviewIndexedVault({
+            question: currentQuestion, indexedPaths,
+            scopes: this.parseMentions(currentQuestion).filter((mention) => mention.type === 'folder').map((mention) => mention.name),
+            nativeTool: this.nativeVaultTool, provider,
+            previousUserQuestions, searchQueries: promptContext.searchQueries,
+            scoringQuestion: promptContext.scoringQuestion ?? expandVaultSearchQueryLocally(currentQuestion, previousUserQuestions),
+            deferAnswer: true, reviewCache: this.indexedReviewCache,
+            cacheScope: JSON.stringify([message.providerKey, message.model, provider.capability, provider.contextBudget]),
+            signal: abortController.signal,
+            onDiagnostics: (diagnostics) => {
+              if (!isChatRunActive(this.activeRun, run)) return;
+              message.indexedReviewDiagnostics = diagnostics;
+              this.markDirtyAndAutoSave();
+            },
+          });
+          if (!isChatRunActive(this.activeRun, run)) return;
+          message.indexedReviewNotice = researchResult.coverageNotice;
+          message.indexedReviewDiagnostics = researchResult.diagnostics;
+          resumedResearchDocumentCount = researchResult.providerTransfer.sentPaths
+            ? new Set([...researchResult.providerTransfer.sentPaths, ...researchResult.citations.map((citation) => citation.filePath)]).size
+            : researchResult.providerTransfer.sentFiles;
+          promptContext.systemPrompt = [
+            promptContext.systemPrompt,
+            t('llmEvidenceDataBoundary'),
+            JSON.stringify({
+              indexedDocumentReview: researchResult.content,
+              verifiedSourcePassages: researchResult.citations,
+            }),
+          ]
+            .filter(Boolean)
+            .join('\n\n');
+          promptContext.citations = [
+            ...promptContext.citations,
+            ...researchResult.citations,
+          ];
+          promptContext.attachments = promptContext.attachments.filter((attachment) => attachment.id !== 'rag:auto');
+        }
         const toolDefinitions = await this.collectToolDefinitions(
           mentionedServers,
           mentionOnlyServers,
           run,
         );
         if (!isChatRunActive(this.activeRun, run)) return;
-        const resumeDataBoundarySnapshot = createDataBoundarySnapshot({
+        const resumeBaseDataBoundarySnapshot = createDataBoundarySnapshot({
           providerLabel: message.providerLabel ?? message.providerKey,
           model: message.model,
           hasUserQuestion: true,
@@ -4895,6 +4993,10 @@ export class ChatView extends ItemView {
           citations: promptContext.citations,
           mcpServerNames: promptContext.preparedMcpServerNames ?? [],
         });
+        const resumeDataBoundarySnapshot = withDataBoundaryProviderUsage(
+          resumeBaseDataBoundarySnapshot,
+          { researchDocumentCount: resumedResearchDocumentCount },
+        );
         const resumeToolModelKey = `${message.providerKey}\u0000${message.model}`;
         const resumeToolProtocol: ToolTranscriptProtocol =
           provider.capability.toolCalling &&
@@ -4938,6 +5040,8 @@ export class ChatView extends ItemView {
             citations: promptContext.citations,
             contextAttachments: promptContext.attachments,
             dataBoundarySnapshot: resumePlan.dataBoundarySnapshot,
+            indexedReviewDiagnostics: message.indexedReviewDiagnostics,
+            indexedReviewNotice: message.indexedReviewNotice,
           },
           mentionedServers,
           explicitToolServerCount: mentionOnlyServers.length,
@@ -5037,6 +5141,7 @@ export class ChatView extends ItemView {
     workspaceFiles: WorkspaceMentionFiles = captureWorkspaceMentionFiles(this.app),
     provider?: LLMProvider,
     signal?: AbortSignal,
+    deferAutoRagToReview = false,
   ): Promise<ContextBuildResult> {
     const retrievalObserver = this.retrievalObserver ?? null;
     const parts: string[] = [];
@@ -5098,6 +5203,8 @@ export class ChatView extends ItemView {
       deferImplicitFolderEvidenceToTools,
       explicitContextOnly: pluginDocumentation !== null,
       enableVaultSearch: !skipAutoRag && pluginDocumentation === null,
+      deferAutoRagToReview,
+      signal,
       queryExpander: (question) =>
         expandVaultSearchPlan(question, provider, previousUserQuestions, signal),
     });
