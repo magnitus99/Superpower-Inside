@@ -73,7 +73,11 @@ import {
   getLocalEmbeddingModels,
   type LocalEmbeddingModelId,
 } from './src/llm/local-embedding-models';
-import { IndexedDbBM25Index, type BM25CorpusDocument } from './src/rag/bm25';
+import {
+  getBM25DocumentFields,
+  IndexedDbBM25Index,
+  type BM25CorpusDocument,
+} from './src/rag/bm25';
 import { buildBM25CorpusDocuments } from './src/rag/bm25-corpus';
 import { IndexedDbDocumentCorpusStore } from './src/rag/document-corpus-store';
 import { VaultDocumentCorpus } from './src/rag/vault-document-corpus';
@@ -100,6 +104,13 @@ import {
 import { shouldRunRagStatusBackgroundRefresh } from './src/rag/background-status';
 import type { StructuralMetadataContext } from './src/rag/retrieval-pipeline';
 import { CHAT_VIEW_TYPE, ChatView } from './src/chat/view';
+import { SEARCH_VIEW_TYPE, SearchView } from './src/search/view';
+import { createPluginSearchPort } from './src/search/indexed-search-deps';
+import {
+  createPendingWriteRecoveryHost,
+  recoverPendingFileWrites,
+} from './src/rag/pending-write-recovery';
+import type { SearchPort } from './src/search/engine-port';
 import { AGENT_DIAGNOSTICS_VIEW_TYPE, AgentDiagnosticsView } from './src/diagnostics/view';
 import {
   AgentDiagnosticsService,
@@ -357,6 +368,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
+    this.registerView(SEARCH_VIEW_TYPE, (leaf) => new SearchView(leaf, this));
     this.registerView(AGENT_DIAGNOSTICS_VIEW_TYPE, (leaf) => new AgentDiagnosticsView(leaf, this));
     this.addRibbonIcon('message-circle', t('cmdOpenAiChat'), () => {
       void this.openChatView();
@@ -405,6 +417,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
       id: 'open-ai-chat',
       name: t('cmdOpenAiChat'),
       callback: () => this.openChatView(),
+    });
+
+    this.addCommand({
+      id: 'open-vault-search',
+      name: t('cmdOpenSearchView'),
+      callback: () => this.openSearchView(),
     });
 
     this.addCommand({
@@ -1669,7 +1687,29 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private async buildBM25IndexDocumentsFromVault(): Promise<BM25CorpusDocument[]> {
     if (this.vaultDocumentCorpus && this.documentCorpus) {
       await this.vaultDocumentCorpus.refresh();
-      return this.documentCorpus.getDocuments();
+      const files = await getRagCandidateFiles(
+        this.app.vault,
+        this.settings.rag,
+        this.settings.chat,
+      );
+      const filesByPath = new Map(files.map((file) => [file.path, file]));
+      return this.documentCorpus.getDocuments().then((documents) =>
+        documents.flatMap((document) => {
+          const file = filesByPath.get(document.sourcePath ?? '');
+          return file
+            ? [
+                {
+                  ...document,
+                  ...getBM25DocumentFields(
+                    file,
+                    this.app.metadataCache.getFileCache(file),
+                    document.heading,
+                  ),
+                },
+              ]
+            : [];
+        }),
+      );
     }
     const files = await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat);
     const documents: BM25CorpusDocument[] = [];
@@ -1681,7 +1721,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   private buildBM25CorpusDocuments(file: TFile, content: string): BM25CorpusDocument[] {
-    return buildBM25CorpusDocuments(file, content, this.settings.rag);
+    return buildBM25CorpusDocuments(file, content, this.settings.rag).map((document) => ({
+      ...document,
+      ...getBM25DocumentFields(
+        file,
+        this.app.metadataCache.getFileCache(file),
+        document.heading,
+      ),
+    }));
   }
 
   private async indexBM25File(
@@ -1690,9 +1737,15 @@ export default class SuperpowerInsidePlugin extends Plugin {
   ): Promise<void> {
     await this.vaultDocumentCorpus?.refreshFile(file);
     const documents = (await this.documentCorpus?.getDocumentsByFilePath(file.path)) ?? [];
+    const metadata = this.app.metadataCache.getFileCache(file);
     await bm25Index?.withBatch(async () => {
       bm25Index.removeDocumentsBySource(file.path);
-      for (const document of documents) bm25Index.addCorpusDocument(document);
+      for (const document of documents) {
+        bm25Index.addCorpusDocument({
+          ...document,
+          ...getBM25DocumentFields(file, metadata, document.heading),
+        });
+      }
       await bm25Index.persist();
     });
     this.debouncedRefreshStats();
@@ -2294,6 +2347,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         bm25Index,
         this.getLogger(),
         this.vaultDocumentCorpus ?? undefined,
+        this.app.metadataCache,
       );
 
       this.ragIndexingScheduler = new RAGIndexingScheduler({
@@ -2390,6 +2444,23 @@ export default class SuperpowerInsidePlugin extends Plugin {
         countPendingDocuments: countAutomaticRecoveryPendingDocuments,
         runHealthyMaintenance: async (fingerprint, force, isCancelled) => {
           await scheduler.waitForIdle();
+          // 중단된 쓰기 원장은 내구 요청 등록 후 재색인·삭제로 복구한다.
+          const indexer = this.vaultIndexer;
+          if (indexer) {
+            const pendingWrites = await indexer.listPendingWriteRecovery();
+            if (pendingWrites.length > 0) {
+              await recoverPendingFileWrites(
+                pendingWrites,
+                createPendingWriteRecoveryHost(
+                  this.app.vault,
+                  ragConfig,
+                  chatConfig,
+                  (file) => scheduler.scheduleFile(file, 'auto'),
+                  (path) => indexer.removeFile(path),
+                ),
+              );
+            }
+          }
           await runRagStorageMaintenance(
             {
               listCandidateFiles: listAutomaticRecoveryFiles,
@@ -3170,6 +3241,26 @@ export default class SuperpowerInsidePlugin extends Plugin {
       cancel();
     }
     this.mcpRetryTimers.clear();
+  }
+
+  /**
+   * 색인 검색 화면이 쓰는 포트. 색인 저장소·하이브리드 후보·리비전 reader는
+   * chat과 같은 factory(src/search/indexed-search-deps.ts)에서 만든다.
+   */
+  getSearchPort(): SearchPort | null {
+    return createPluginSearchPort(this);
+  }
+
+  private async openSearchView(): Promise<void> {
+    const workspace = this.app.workspace;
+    const leaves = workspace.getLeavesOfType(SEARCH_VIEW_TYPE);
+    if (leaves.length > 0) {
+      void workspace.revealLeaf(leaves[0]);
+      return;
+    }
+    const leaf = workspace.getLeaf('tab');
+    await leaf.setViewState({ type: SEARCH_VIEW_TYPE, active: true });
+    void workspace.revealLeaf(leaf);
   }
 
   private async openChatView(): Promise<void> {

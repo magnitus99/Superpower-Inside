@@ -1117,6 +1117,7 @@ export interface PluginLike {
   refreshBus: import('./utils/refresh-bus').RefreshBus;
   updateChecker?: PluginUpdateChecker | null;
   logger: AppLogger;
+  documentCorpus: import('./rag/document-corpus-store').IndexedDbDocumentCorpusStore | null;
 }
 // 탭 타입 및 설정
 type SettingsTabId = 'general' | 'providers' | 'rag' | 'chat' | 'mcp' | 'advanced';

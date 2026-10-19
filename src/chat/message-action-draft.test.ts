@@ -252,7 +252,12 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
         prepareRagForChat: vi.fn(),
-        vectorStore: { getIndexedFilePaths: () => Promise.resolve(['Synthetic.md']) },
+  documentCorpus: {
+          getIndexedFilePaths: () => Promise.resolve(['Synthetic.md']),
+          getEntriesByFilePaths: () => Promise.resolve([]),
+          getFileIndexRecords: () => Promise.resolve([]),
+        },
+        ragEngine: null,
       },
       getEffectiveMcpServerNames: () => ['optional-server'],
       collectToolDefinitions,
@@ -287,6 +292,8 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
           cacheHits: 0,
         },
       },
+      toolFallback: false,
+      engineUnavailable: false,
     });
     await view.handleSend('합성 자료에 대한 질문');
     expect(reviewIndexedVault).toHaveBeenCalledWith(
@@ -302,6 +309,107 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     );
     expect(collectToolDefinitions).not.toHaveBeenCalled();
     expect(stream).not.toHaveBeenCalled();
+  });
+
+  it('엔진이 원문을 확인하지 못하면 검수 답변 대신 도구 흐름을 실행한다', async () => {
+    const { view, stream, context } = createView(3);
+    context.mockResolvedValue({
+      systemPrompt: null,
+      attachments: [],
+      citations: [],
+      warnings: [],
+      vaultSearchEnabled: true,
+    });
+    const collectToolDefinitions = vi.fn().mockResolvedValue([]);
+    Object.assign(view, {
+      plugin: {
+        settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        prepareRagForChat: vi.fn(),
+        documentCorpus: {
+          getIndexedFilePaths: () => Promise.resolve(['Synthetic.md']),
+          getEntriesByFilePaths: () => Promise.resolve([]),
+          getFileIndexRecords: () => Promise.resolve([]),
+        },
+        ragEngine: null,
+        logger: { warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      },
+      getEffectiveMcpServerNames: () => ['optional-server'],
+      collectToolDefinitions: collectToolDefinitions as never,
+      updateMessage: vi.fn(),
+    });
+    vi.mocked(reviewIndexedVault).mockResolvedValue({
+      content: '엔진이 이 질문을 뒷받침하는 원문 구절을 확인하지 못했습니다.',
+      citations: [],
+      totalFiles: 1,
+      processedFiles: 0,
+      rejectedFiles: 0,
+      providerTransfer: { sentFiles: 0 },
+      coverageNotice: '미검증 합성 고지',
+      diagnostics: undefined as never,
+      toolFallback: true,
+      engineUnavailable: true,
+    });
+    await view.handleSend('합성 자료에 대한 질문');
+    expect(collectToolDefinitions).toHaveBeenCalled();
+    expect(stream).toHaveBeenCalled();
+  });
+
+  it('공통 factory의 corpus·hybrid 후보·리비전 reader를 엔진 검토에 전달한다', async () => {
+    const { view, context } = createView(0);
+    context.mockResolvedValue({
+      systemPrompt: null,
+      attachments: [],
+      citations: [],
+      warnings: [],
+      vaultSearchEnabled: true,
+    });
+    const corpus = {
+      getIndexedFilePaths: () => Promise.resolve(['Synthetic/Hybrid.md']),
+      getEntriesByFilePaths: () => Promise.resolve([]),
+      getFileIndexRecords: () => Promise.resolve([]),
+    };
+    const query = vi.fn().mockResolvedValue([
+      {
+        entry: { metadata: { startLine: 4, endLine: 6 } },
+        sourcePath: 'Synthetic/Hybrid.md',
+        combinedScore: 0.8,
+        bm25Score: 2,
+        vectorScore: 0,
+        retrievalSources: ['bm25'],
+      },
+    ]);
+    Object.assign(view, {
+      plugin: {
+        settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        prepareRagForChat: vi.fn(),
+        documentCorpus: corpus,
+        ragEngine: { query },
+        logger: { warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      },
+      updateMessage: vi.fn(),
+    });
+    vi.mocked(reviewIndexedVault).mockResolvedValue({
+      content: '합성 해석',
+      citations: [],
+      totalFiles: 1,
+      processedFiles: 1,
+      rejectedFiles: 0,
+      providerTransfer: { sentFiles: 1 },
+      coverageNotice: '합성 집계',
+      diagnostics: undefined as never,
+      toolFallback: false,
+      engineUnavailable: false,
+    });
+    await view.handleSend('합성 검색 질문');
+    const options = vi.mocked(reviewIndexedVault).mock.calls.at(-1)?.[0];
+    expect(options?.corpus).toBe(corpus);
+    expect(options?.candidates?.[0]).toMatchObject({
+      path: 'Synthetic/Hybrid.md',
+      startLine: 4,
+      rank: 1,
+      source: 'bm25',
+    });
+    expect(typeof options?.revisionReader).toBe('function');
   });
 
   it('준비 과정과 최종 응답의 실제 사용량을 같은 답변에 연결한다', async () => {
@@ -420,6 +528,8 @@ describe('전수 검수 뒤 승인 대기 재개', () => {
       providerTransfer: { sentFiles: 1 },
       coverageNotice: '현재 검수 고지',
       diagnostics,
+      toolFallback: false,
+      engineUnavailable: false,
     });
     const pending = {
       id: 'pending-call',
@@ -475,19 +585,22 @@ describe('전수 검수 뒤 승인 대기 재개', () => {
     const view = Object.create(ChatView.prototype) as {
       approveToolCall(messageId: string, toolCallId: string): Promise<void>;
     };
-    const reviewCache = new Map<string, string>();
     Object.assign(view, {
       app: { workspace: { getActiveFile: () => null, iterateAllLeaves: vi.fn() } },
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { mcpMentionOnly: true } },
         prepareRagForChat: vi.fn().mockResolvedValue(undefined),
-        vectorStore: { getIndexedFilePaths: () => Promise.resolve(['Current/Fresh.md']) },
+documentCorpus: {
+          getIndexedFilePaths: () => Promise.resolve(['Current/Fresh.md']),
+          getEntriesByFilePaths: () => Promise.resolve([]),
+          getFileIndexRecords: () => Promise.resolve([]),
+        },
+        ragEngine: null,
       },
       messages: storedMessages,
       runTokenSequence: 0,
       isStreaming: false,
       compatibilityToolModels: new Set(),
-      indexedReviewCache: reviewCache,
       nativeVaultTool: { execute: vi.fn() },
       setLoading: vi.fn(),
       updateMessage: vi.fn(),
@@ -519,7 +632,6 @@ describe('전수 검수 뒤 승인 대기 재개', () => {
         indexedPaths: ['Current/Fresh.md'],
         scopes: ['Current'],
         deferAnswer: true,
-        reviewCache,
       }),
     );
     expect(runToolResponseLoop).toHaveBeenCalledOnce();

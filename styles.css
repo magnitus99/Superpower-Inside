@@ -8382,3 +8382,201 @@ button.superpower-inside-prompt-danger-btn:disabled {
 .superpower-inside-answer-diagnostics-result {
   margin-block: var(--superpower-inside-row-padding);
 }
+
+/* ── 볼트 검색 화면 ─────────────────────────────────────────── */
+.superpower-inside-search-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 12px 16px;
+  overflow-y: auto;
+}
+
+.superpower-inside-search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.superpower-inside-search-form {
+  display: flex;
+  flex: 1 1 260px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.superpower-inside-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.superpower-inside-search-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+}
+
+.superpower-inside-search-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.superpower-inside-search-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-block: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.superpower-inside-search-filter-row {
+  display: flex;
+}
+
+.superpower-inside-search-filter-field {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.superpower-inside-search-filter-label {
+  flex: 0 0 96px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.superpower-inside-search-filter-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.superpower-inside-search-filter-reset {
+  align-self: flex-start;
+}
+
+.superpower-inside-search-index,
+.superpower-inside-search-diagnostics {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.superpower-inside-search-index.is-warning,
+.superpower-inside-search-status.is-warning {
+  color: var(--text-warning);
+}
+
+.superpower-inside-search-status {
+  font-size: var(--font-ui-small);
+}
+
+.superpower-inside-search-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.superpower-inside-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.superpower-inside-search-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.superpower-inside-search-group-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.superpower-inside-search-path {
+  padding: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: var(--text-normal);
+  cursor: var(--cursor-link);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  text-align: left;
+}
+
+.superpower-inside-search-path:hover {
+  color: var(--text-accent);
+  text-decoration: underline;
+}
+
+.superpower-inside-search-group-count {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.superpower-inside-search-passage {
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid var(--background-modifier-border);
+}
+
+.superpower-inside-search-passage.is-active,
+.superpower-inside-search-passage:focus-visible {
+  background-color: var(--background-modifier-hover);
+  border-left-color: var(--interactive-accent);
+}
+
+.superpower-inside-search-passage:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.superpower-inside-search-quote {
+  margin: 0 0 4px;
+  font-size: var(--font-ui-small);
+  line-height: 1.45;
+}
+
+.superpower-inside-search-quote mark {
+  padding: 0;
+  background-color: var(--text-highlight-bg);
+  color: inherit;
+}
+
+.superpower-inside-search-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.superpower-inside-search-duplicate {
+  color: var(--text-warning);
+}
+
+@media (max-width: 380px) {
+  .superpower-inside-search-filter-field {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .superpower-inside-search-filter-label {
+    flex: 0 0 auto;
+  }
+}
+
+/* 검색 화면의 숨김 상태가 후속 display 규칙에 덮이지 않게 한다. */
+.superpower-inside-search-container .superpower-inside-hidden {
+  display: none;
+}
+
+.superpower-inside-search-filter-field > .superpower-inside-search-filter-label {
+  color: var(--text-muted);
+}

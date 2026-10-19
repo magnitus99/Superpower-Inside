@@ -74,6 +74,7 @@ import {
   isScopedVaultResearchRequest,
 } from '../agent/research-agent';
 import { reviewIndexedVault } from '../agent/indexed-vault-review';
+import { collectIndexedSearchSource } from '../search/indexed-search-deps';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
@@ -295,7 +296,6 @@ export class ChatView extends ItemView {
     AssistantResponseLayoutController
   >();
   private readonly nativeVaultTool: NativeVaultToolRuntimeLike;
-  private readonly indexedReviewCache = new Map<string, string>();
   private retrievalObserver?: {
     run: ChatRunHandle<AbortController>;
     record: (record: import('./types').ChatRetrievalRecord) => void;
@@ -452,7 +452,6 @@ export class ChatView extends ItemView {
     );
     this.refreshBusUnsubscribers.push(
       this.plugin.refreshBus.on('models', () => {
-        this.indexedReviewCache.clear();
         this.populateModelSelect();
         this.renderChatReadiness();
       }),
@@ -473,7 +472,6 @@ export class ChatView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    this.indexedReviewCache.clear();
     this.clearAutoSaveTimer();
     this.invalidateActiveChatRun(false);
     this.cancelStreamingMarkdownRender();
@@ -3122,24 +3120,31 @@ export class ChatView extends ItemView {
       if (indexedVaultReview) {
         await this.plugin.prepareRagForChat();
         if (!isChatRunActive(this.activeRun, run)) return;
-        const indexedPaths = (await this.plugin.vectorStore?.getIndexedFilePaths()) ?? [];
         const deferAnswer = toolsEnabled && explicitlyMentionedServers.length > 0;
         const localSearchQuestion =
           promptContext.scoringQuestion ??
           expandVaultSearchQueryLocally(text, previousUserQuestions);
+        // 검색 화면과 같은 corpus·hybrid 후보·리비전 reader를 공유합니다.
+        const searchSource = await collectIndexedSearchSource(
+          { app: this.app, ragEngine: this.plugin.ragEngine, documentCorpus: this.plugin.documentCorpus },
+          localSearchQuestion,
+          abortController.signal,
+        );
+        const indexedPaths = searchSource ? await searchSource.getIndexedPaths() : [];
+        const searchInventory = searchSource?.inventory;
         const researchResult = await reviewIndexedVault({
           question: text,
           indexedPaths,
           scopes: mentionedFolders.map((folder) => folder.name),
-          nativeTool: this.nativeVaultTool,
+          corpus: searchSource?.corpus,
+          candidates: searchSource?.candidates,
+          inventory: searchInventory,
+          revisionReader: searchSource?.revisionReader,
           provider,
           systemPrompt: getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt),
           previousUserQuestions,
-          searchQueries: promptContext.searchQueries ?? [localSearchQuestion],
           scoringQuestion: localSearchQuestion,
           deferAnswer,
-          reviewCache: this.indexedReviewCache,
-          cacheScope: JSON.stringify([key, modelName, provider.capability, provider.contextBudget]),
           onDiagnostics: (diagnostics) => {
             if (!isChatRunActive(this.activeRun, run)) return;
             indexedReviewDiagnostics = diagnostics;
@@ -3196,7 +3201,9 @@ export class ChatView extends ItemView {
         contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(dataBoundarySnapshot, {
           researchDocumentCount,
         });
-        if (deferAnswer) {
+        // 엔진이 선별하지 못하면 근거 없는 지식으로 메우지 않고 기존 도구 흐름으로 넘깁니다.
+        const toolFallback = researchResult.toolFallback && toolsEnabled;
+        if (deferAnswer || toolFallback) {
           // 명시한 외부 도구도 실행할 수 있도록 검토 결과와 원문 인용을 기존 흐름에 전달합니다.
           promptContext.systemPrompt = [
             promptContext.systemPrompt,
@@ -4939,15 +4946,24 @@ export class ChatView extends ItemView {
         if (message.indexedReviewDiagnostics) {
           await this.plugin.prepareRagForChat();
           if (!isChatRunActive(this.activeRun, run)) return;
-          const indexedPaths = (await this.plugin.vectorStore?.getIndexedFilePaths()) ?? [];
+          const resumeSource = await collectIndexedSearchSource(
+            { app: this.app, ragEngine: this.plugin.ragEngine, documentCorpus: this.plugin.documentCorpus },
+            promptContext.scoringQuestion ?? currentQuestion,
+            abortController.signal,
+          );
+          const indexedPaths = resumeSource ? await resumeSource.getIndexedPaths() : [];
+          const resumeInventory = resumeSource?.inventory;
           const researchResult = await reviewIndexedVault({
             question: currentQuestion, indexedPaths,
             scopes: this.parseMentions(currentQuestion).filter((mention) => mention.type === 'folder').map((mention) => mention.name),
-            nativeTool: this.nativeVaultTool, provider,
-            previousUserQuestions, searchQueries: promptContext.searchQueries,
+            corpus: resumeSource?.corpus,
+            candidates: resumeSource?.candidates,
+            inventory: resumeInventory,
+            revisionReader: resumeSource?.revisionReader,
+            provider,
+            previousUserQuestions,
             scoringQuestion: promptContext.scoringQuestion ?? expandVaultSearchQueryLocally(currentQuestion, previousUserQuestions),
-            deferAnswer: true, reviewCache: this.indexedReviewCache,
-            cacheScope: JSON.stringify([message.providerKey, message.model, provider.capability, provider.contextBudget]),
+            deferAnswer: true,
             signal: abortController.signal,
             onDiagnostics: (diagnostics) => {
               if (!isChatRunActive(this.activeRun, run)) return;
