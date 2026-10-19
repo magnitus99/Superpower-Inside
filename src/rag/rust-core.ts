@@ -1245,6 +1245,8 @@ export interface RustChatMessagePlan {
   dataBoundarySnapshot?: unknown;
   usageSnapshot?: TurnUsageSnapshot;
   retrievalTrace?: unknown[];
+  indexedReviewDiagnostics?: unknown;
+  indexedReviewNotice?: string;
   errorKind?: string;
   errorRetryAt?: string;
   actionHistory?: unknown[];
@@ -4888,6 +4890,13 @@ export interface IndexedReviewSegment {
   text: string;
 }
 
+export interface IndexedReviewRetrievalSignal {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+  rank: number;
+}
+
 export interface IndexedReviewScreenDecision {
   id: string;
   relevant: boolean;
@@ -4981,11 +4990,12 @@ export function planIndexedReviewSegmentsRust(
 export function scoreIndexedReviewSegmentsRust(
   question: string,
   segments: readonly IndexedReviewSegment[],
+  retrievalSignals: readonly IndexedReviewRetrievalSignal[] = [],
 ): Map<string, number> | null {
   if (!ensureRustCore()) return null;
   try {
     const value: unknown = JSON.parse(
-      score_indexed_review_segments_json(JSON.stringify({ question, segments })),
+      score_indexed_review_segments_json(JSON.stringify({ question, segments, retrievalSignals })),
     );
     if (!isStringRecordValueMap(value) || !Array.isArray(value.scores)) return null;
     const scores = new Map<string, number>();
@@ -7679,6 +7689,10 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
         message.dataBoundarySnapshot !== null)) &&
     (message.usageSnapshot === undefined || isTurnUsageSnapshot(message.usageSnapshot)) &&
     (message.retrievalTrace === undefined || Array.isArray(message.retrievalTrace)) &&
+    (message.indexedReviewDiagnostics === undefined ||
+      (typeof message.indexedReviewDiagnostics === 'object' &&
+        message.indexedReviewDiagnostics !== null)) &&
+    (message.indexedReviewNotice === undefined || isStringValue(message.indexedReviewNotice)) &&
     (message.errorKind === undefined || isStringValue(message.errorKind)) &&
     (message.errorRetryAt === undefined || isStringValue(message.errorRetryAt)) &&
     (message.actionHistory === undefined || Array.isArray(message.actionHistory))
