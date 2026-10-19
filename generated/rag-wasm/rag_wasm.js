@@ -37,6 +37,30 @@ export class Bm25RuntimeIndex {
         wasm.bm25runtimeindex_add_document(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, tokenizer_version);
     }
     /**
+     * 선택 필드 JSON과 함께 document 하나를 추가하거나 교체한다. 추가하면 1, 거부하면 0이다.
+     *
+     * `fields_json`은 `{"title":"...","headings":["..."],"path":"...","tags":["..."]}` 형식이다.
+     * 빈 문자열이면 선택 필드 없이 `sourcePath`만 경로 필드로 색인한다.
+     * @param {string} doc_id
+     * @param {string} text
+     * @param {string} source_path
+     * @param {string} fields_json
+     * @param {number} tokenizer_version
+     * @returns {number}
+     */
+    add_document_fields_json(doc_id, text, source_path, fields_json, tokenizer_version) {
+        const ptr0 = passStringToWasm0(doc_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(source_path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(fields_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.bm25runtimeindex_add_document_fields_json(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, tokenizer_version);
+        return ret >>> 0;
+    }
+    /**
      * bounded JSON 문서 batch를 한 번의 bridge 호출로 검증하고 추가한다.
      * @param {string} documents_json
      * @param {number} tokenizer_version
@@ -105,6 +129,26 @@ export class Bm25RuntimeIndex {
         return this;
     }
     /**
+     * 위치·필드 색인 상태를 JSON 문자열로 반환한다.
+     *
+     * `positionedDocs`가 `totalDocs`보다 작으면 legacy snapshot처럼 위치 정보가 없는 문서가
+     * 섞여 있다는 뜻이다. 구문·근접·필드 질의는 그 문서를 검증 대상에서 제외하므로, 이 값이
+     * 다르면 원문으로 다시 색인해야 위치 기반 질의의 재현율이 회복된다.
+     * @returns {string}
+     */
+    position_index_status_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.bm25runtimeindex_position_index_status_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * document 하나를 runtime index에서 제거한다.
      * @param {string} doc_id
      * @param {number} tokenizer_version
@@ -125,7 +169,9 @@ export class Bm25RuntimeIndex {
         wasm.bm25runtimeindex_remove_source(this.__wbg_ptr, ptr0, len0, tokenizer_version);
     }
     /**
-     * query score 목록을 JSON 문자열로 반환한다.
+     * 질의문(구문·근접·필드·prefix 포함) score 목록을 JSON 문자열로 반환한다.
+     *
+     * 평문 term 질의는 기존 BM25 점수·순서 계약을 그대로 유지한다.
      * @param {string} query
      * @returns {string}
      */
@@ -144,7 +190,7 @@ export class Bm25RuntimeIndex {
         }
     }
     /**
-     * 상위 query score 목록만 JSON 문자열로 반환한다.
+     * 질의문(구문·근접·필드·prefix 포함) 상위 score 목록만 JSON 문자열로 반환한다.
      * @param {string} query
      * @param {number} limit
      * @returns {string}
@@ -1170,6 +1216,29 @@ export function local_model_range_matches(start, end, total, status, length, con
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.local_model_range_matches(start, end, total, status, length, ptr0, len0);
     return ret !== 0;
+}
+
+/**
+ * 여러 배치 계획을 전역 score 순·`path` stable 순으로 병합합니다.
+ *
+ * 배치 순서와 무관하게 같은 결과를 내며, 원문 구절은 다시 할당하지 않고
+ * 계획 JSON의 증거 행만 재정렬·중복 제거해 전체 corpus 메모리 축적을 피합니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function merge_indexed_evidence_plans_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.merge_indexed_evidence_plans_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
 }
 
 /**
@@ -2231,6 +2300,26 @@ export function plan_indexed_db_storage_layout_json(plugin_id, vault_identity, l
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+    }
+}
+
+/**
+ * 질의 관련 원문 구절·진단 계획을 결정적으로 계산합니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function plan_indexed_evidence_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_evidence_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -4366,6 +4455,26 @@ export function validate_mcp_json(mcp_json_text) {
         const ptr0 = passStringToWasm0(mcp_json_text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.validate_mcp_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 채택 구절의 원문 존재·위치·리비전·스코프·검토 상태를 결정적으로 검증합니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function verify_indexed_evidence_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.verify_indexed_evidence_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);

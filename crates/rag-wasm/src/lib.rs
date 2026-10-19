@@ -7,6 +7,7 @@
 
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -66,6 +67,12 @@ pub use performance_guard::plan_rag_performance_guard_json;
 mod chat_input;
 mod evidence_collection;
 pub use evidence_collection::plan_evidence_collection_json;
+/// 위치·필드 기반 `BM25` 질의 parser와 구문 검증.
+mod bm25_query;
+mod indexed_evidence;
+pub use indexed_evidence::{
+    merge_indexed_evidence_plans_json, plan_indexed_evidence_json, verify_indexed_evidence_json,
+};
 mod indexed_review;
 pub use indexed_review::{
     plan_indexed_review_inventory_json, plan_indexed_review_segments_json,
@@ -164,6 +171,16 @@ const BM25_COMPACT_SCHEMA_VERSION: u32 = 3;
 const MAX_BM25_DOCUMENT_BATCH_SIZE: usize = 128;
 /// 한 번의 BM25 bulk 입력이 점유할 수 있는 JSON byte 상한.
 const MAX_BM25_DOCUMENT_BATCH_JSON_BYTES: usize = 2 * 1024 * 1024;
+/// 위치·필드 색인의 제목 필드 bitmask.
+const BM25_FIELD_TITLE: u8 = 1;
+/// 위치·필드 색인의 헤딩 필드 bitmask.
+const BM25_FIELD_HEADING: u8 = 2;
+/// 위치·필드 색인의 본문 필드 bitmask.
+const BM25_FIELD_BODY: u8 = 4;
+/// 위치·필드 색인의 vault 경로 필드 bitmask.
+const BM25_FIELD_PATH: u8 = 8;
+/// 위치·필드 색인의 태그 필드 bitmask.
+const BM25_FIELD_TAGS: u8 = 16;
 /// 기존 `TypeScript RRF` 계산의 rank smoothing 상수.
 const RRF_K: f64 = 60.0;
 /// 기존 hybrid score의 base vector/BM25 component weight.
@@ -4265,6 +4282,21 @@ impl Bm25RuntimeIndex {
         self.index.doc_lengths.len()
     }
 
+    /// 위치·필드 색인 상태를 JSON 문자열로 반환한다.
+    ///
+    /// `positionedDocs`가 `totalDocs`보다 작으면 legacy snapshot처럼 위치 정보가 없는 문서가
+    /// 섞여 있다는 뜻이다. 구문·근접·필드 질의는 그 문서를 검증 대상에서 제외하므로, 이 값이
+    /// 다르면 원문으로 다시 색인해야 위치 기반 질의의 재현율이 회복된다.
+    #[must_use]
+    pub fn position_index_status_json(&self) -> String {
+        let total_docs = self.index.doc_lengths.len();
+        let positioned_docs = self.index.doc_field_runs.len();
+        format!(
+            "{{\"totalDocs\":{total_docs},\"positionedDocs\":{positioned_docs},\"complete\":{}}}",
+            wasm_bridge_bool(positioned_docs == total_docs)
+        )
+    }
+
     /// doc id에 대응되는 source path를 반환한다. 없으면 빈 문자열이다.
     #[must_use]
     pub fn source_path_for_doc(&self, doc_id: &str) -> String {
@@ -4285,6 +4317,29 @@ impl Bm25RuntimeIndex {
     ) {
         self.index.tokenizer_version = tokenizer_version;
         add_bm25_document(&mut self.index, doc_id, text, source_path);
+    }
+
+    /// 선택 필드 JSON과 함께 document 하나를 추가하거나 교체한다. 추가하면 1, 거부하면 0이다.
+    ///
+    /// `fields_json`은 `{"title":"...","headings":["..."],"path":"...","tags":["..."]}` 형식이다.
+    /// 빈 문자열이면 선택 필드 없이 `sourcePath`만 경로 필드로 색인한다.
+    pub fn add_document_fields_json(
+        &mut self,
+        doc_id: &str,
+        text: &str,
+        source_path: &str,
+        fields_json: &str,
+        tokenizer_version: u32,
+    ) -> usize {
+        if doc_id.is_empty() || source_path.is_empty() {
+            return 0;
+        }
+        let Some(fields) = parse_bm25_document_fields_json(fields_json) else {
+            return 0;
+        };
+        self.index.tokenizer_version = tokenizer_version;
+        add_bm25_document_fields(&mut self.index, doc_id, text, source_path, &fields);
+        1
     }
 
     /// 중복이 없다고 보장된 document 하나를 runtime index에 추가한다.
@@ -4314,18 +4369,20 @@ impl Bm25RuntimeIndex {
         let count = documents.len();
         for document in documents {
             if known_unique {
-                insert_bm25_document(
+                insert_bm25_document_fields(
                     &mut self.index,
                     &document.doc_id,
                     &document.text,
                     &document.source_path,
+                    &document.fields,
                 );
             } else {
-                add_bm25_document(
+                add_bm25_document_fields(
                     &mut self.index,
                     &document.doc_id,
                     &document.text,
                     &document.source_path,
+                    &document.fields,
                 );
             }
         }
@@ -4352,16 +4409,21 @@ impl Bm25RuntimeIndex {
         }
     }
 
-    /// query score 목록을 JSON 문자열로 반환한다.
+    /// 질의문(구문·근접·필드·prefix 포함) score 목록을 JSON 문자열로 반환한다.
+    ///
+    /// 평문 term 질의는 기존 BM25 점수·순서 계약을 그대로 유지한다.
     #[must_use]
     pub fn search_json(&self, query: &str) -> String {
-        serialize_bm25_search_scores_json(&search_bm25_index(&self.index, query))
+        serialize_bm25_search_scores_json(&bm25_query::search_index(&self.index, query))
     }
 
-    /// 상위 query score 목록만 JSON 문자열로 반환한다.
+    /// 질의문(구문·근접·필드·prefix 포함) 상위 score 목록만 JSON 문자열로 반환한다.
     #[must_use]
     pub fn search_top_json(&self, query: &str, limit: usize) -> String {
-        serialize_bm25_search_scores_json(&search_bm25_index_top(&self.index, query, limit))
+        serialize_bm25_search_scores_json(&limit_bm25_search_scores(
+            bm25_query::search_index(&self.index, query),
+            limit,
+        ))
     }
 
     /// compact v3 JSON payload로 직렬화한다.
@@ -4494,10 +4556,24 @@ struct Bm25IndexData {
     tokenizer_version: u32,
     /// term -> doc id -> term frequency.
     inverted: BTreeMap<String, BTreeMap<String, f64>>,
+    /// term -> doc id -> 문서 token stream 안의 위치 목록(오름차순).
+    positions: BTreeMap<String, BTreeMap<String, Vec<u32>>>,
+    /// doc id -> 필드별 token 구간. key가 있으면 위치 정보가 완전하다.
+    doc_field_runs: BTreeMap<String, Vec<Bm25FieldRun>>,
     /// doc id -> document token count.
     doc_lengths: BTreeMap<String, f64>,
     /// doc id -> source file path.
     doc_sources: BTreeMap<String, String>,
+}
+
+/// 문서 token stream 안에서 한 필드가 차지하는 연속 구간.
+struct Bm25FieldRun {
+    /// 필드 bitmask.
+    field: u8,
+    /// 구간 시작 token 위치.
+    start: u32,
+    /// 구간 token 수.
+    length: u32,
 }
 
 /// 한 번의 bounded BM25 bulk bridge 호출에 포함된 문서.
@@ -4508,6 +4584,23 @@ struct Bm25DocumentBatchEntry {
     text: String,
     /// 원본 vault 파일 경로.
     source_path: String,
+    /// 선택 필드 입력.
+    fields: Bm25DocumentFields,
+}
+
+/// 문서 단위 선택 필드 입력.
+#[derive(Default)]
+struct Bm25DocumentFields {
+    /// 문서 제목. 비면 색인하지 않는다.
+    title: String,
+    /// 헤딩 텍스트. 줄바꿈으로 이어 붙인다.
+    headings: String,
+    /// 'sourcePath'를 대신할 vault 경로.
+    path: String,
+    /// 태그 텍스트. 줄바꿈으로 이어 붙인다.
+    tags: String,
+    /// 경로 필드에 'sourcePath'를 넣을지 여부.
+    include_source_path: bool,
 }
 
 impl Bm25IndexData {
@@ -4516,6 +4609,8 @@ impl Bm25IndexData {
         Self {
             tokenizer_version,
             inverted: BTreeMap::new(),
+            positions: BTreeMap::new(),
+            doc_field_runs: BTreeMap::new(),
             doc_lengths: BTreeMap::new(),
             doc_sources: BTreeMap::new(),
         }
@@ -5075,7 +5170,26 @@ fn add_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, source
 
 /// BM25 index에 중복 제거가 이미 끝난 document를 삽입한다.
 fn insert_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, source_path: &str) {
-    let (token_count, frequencies) = accumulate_token_frequencies(tokenize(text));
+    insert_bm25_document_fields(
+        index,
+        doc_id,
+        text,
+        source_path,
+        &Bm25DocumentFields::default(),
+    );
+}
+
+/// 선택 필드까지 포함해 중복 제거가 끝난 document를 삽입한다.
+fn insert_bm25_document_fields(
+    index: &mut Bm25IndexData,
+    doc_id: &str,
+    text: &str,
+    source_path: &str,
+    fields: &Bm25DocumentFields,
+) {
+    let (stream, position_runs) = build_bm25_document_stream(text, source_path, fields);
+    let (token_count, frequencies) =
+        accumulate_token_frequencies(stream.iter().map(|(term, _field)| term.as_str()));
     for (term, frequency) in frequencies {
         let Some(frequency) = usize_to_f64(frequency) else {
             continue;
@@ -5086,6 +5200,19 @@ fn insert_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, sou
             .or_default()
             .insert(doc_id.to_owned(), frequency);
     }
+    if let Some(runs) = position_runs {
+        // 위치 목록을 모두 만든 뒤에만 commit해 부분 위치가 남지 않게 한다.
+        if let Some(positions_by_term) = bm25_term_positions(&stream) {
+            for (term, positions) in positions_by_term {
+                index
+                    .positions
+                    .entry(term)
+                    .or_default()
+                    .insert(doc_id.to_owned(), positions);
+            }
+            index.doc_field_runs.insert(doc_id.to_owned(), runs);
+        }
+    }
     index.doc_lengths.insert(
         doc_id.to_owned(),
         usize_to_f64(token_count).unwrap_or_default(),
@@ -5095,15 +5222,110 @@ fn insert_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, sou
         .insert(doc_id.to_owned(), source_path.to_owned());
 }
 
+/// 선택 필드까지 포함해 문서를 추가하거나 교체한다.
+fn add_bm25_document_fields(
+    index: &mut Bm25IndexData,
+    doc_id: &str,
+    text: &str,
+    source_path: &str,
+    fields: &Bm25DocumentFields,
+) {
+    if index.doc_lengths.contains_key(doc_id) {
+        remove_bm25_document(index, doc_id);
+    }
+    insert_bm25_document_fields(index, doc_id, text, source_path, fields);
+}
+
+/// 필드 순서대로 tokenize할 segment 목록을 만든다.
+#[must_use]
+fn bm25_document_segments<'a>(
+    text: &'a str,
+    source_path: &'a str,
+    fields: &'a Bm25DocumentFields,
+) -> Vec<(u8, &'a str)> {
+    let mut segments = Vec::<(u8, &'a str)>::with_capacity(5);
+    if !fields.title.is_empty() {
+        segments.push((BM25_FIELD_TITLE, fields.title.as_str()));
+    }
+    if !fields.headings.is_empty() {
+        segments.push((BM25_FIELD_HEADING, fields.headings.as_str()));
+    }
+    segments.push((BM25_FIELD_BODY, text));
+    if fields.include_source_path {
+        let path = if fields.path.is_empty() {
+            source_path
+        } else {
+            fields.path.as_str()
+        };
+        if !path.is_empty() {
+            segments.push((BM25_FIELD_PATH, path));
+        }
+    }
+    if !fields.tags.is_empty() {
+        segments.push((BM25_FIELD_TAGS, fields.tags.as_str()));
+    }
+    segments
+}
+
+/// 문서 segment를 token stream과 필드 구간으로 만든다.
+///
+/// token 위치를 'u32'로 표현할 수 없으면 token stream만 반환하고 위치 정보는 만들지 않는다.
+#[must_use]
+fn build_bm25_document_stream(
+    text: &str,
+    source_path: &str,
+    fields: &Bm25DocumentFields,
+) -> (Vec<(String, u8)>, Option<Vec<Bm25FieldRun>>) {
+    let mut stream = Vec::<(String, u8)>::new();
+    let mut runs = Vec::<Bm25FieldRun>::new();
+    let mut positioned = true;
+    for (field, segment) in bm25_document_segments(text, source_path, fields) {
+        let tokens = tokenize(segment);
+        if tokens.is_empty() {
+            continue;
+        }
+        match (u32::try_from(stream.len()), u32::try_from(tokens.len())) {
+            (Ok(start), Ok(length)) if positioned => runs.push(Bm25FieldRun {
+                field,
+                start,
+                length,
+            }),
+            _ => {
+                positioned = false;
+                runs.clear();
+            }
+        }
+        stream.extend(tokens.into_iter().map(|token| (token, field)));
+    }
+    (stream, positioned.then_some(runs))
+}
+
+/// token stream에서 term별 위치 목록을 만든다.
+#[must_use]
+fn bm25_term_positions(stream: &[(String, u8)]) -> Option<BTreeMap<String, Vec<u32>>> {
+    let mut positions_by_term = BTreeMap::<String, Vec<u32>>::new();
+    for (index, (term, _field)) in stream.iter().enumerate() {
+        let position = u32::try_from(index).ok()?;
+        positions_by_term
+            .entry(term.clone())
+            .or_default()
+            .push(position);
+    }
+    Some(positions_by_term)
+}
+
 /// tokenizer output을 소비하면서 total token 수와 token별 frequency를 한 번에 누적한다.
-fn accumulate_token_frequencies(
-    tokens: impl IntoIterator<Item = String>,
-) -> (usize, BTreeMap<String, usize>) {
+fn accumulate_token_frequencies<T>(
+    tokens: impl IntoIterator<Item = T>,
+) -> (usize, BTreeMap<String, usize>)
+where
+    T: Borrow<str>,
+{
     let mut total_tokens = 0_usize;
     let mut frequencies = BTreeMap::<String, usize>::new();
     for token in tokens {
         total_tokens = total_tokens.saturating_add(1);
-        let count = frequencies.entry(token).or_insert(0);
+        let count = frequencies.entry(token.borrow().to_owned()).or_insert(0);
         *count = count.saturating_add(1);
     }
     (total_tokens, frequencies)
@@ -5115,6 +5337,11 @@ fn remove_bm25_document(index: &mut Bm25IndexData, doc_id: &str) {
         posting.remove(doc_id);
     }
     index.inverted.retain(|_, posting| !posting.is_empty());
+    for posting in index.positions.values_mut() {
+        posting.remove(doc_id);
+    }
+    index.positions.retain(|_, posting| !posting.is_empty());
+    index.doc_field_runs.remove(doc_id);
     index.doc_lengths.remove(doc_id);
     index.doc_sources.remove(doc_id);
 }
@@ -5184,14 +5411,6 @@ fn search_bm25_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore>
         }
     }
     scores
-}
-
-/// BM25 index에서 상위 query score만 계산한다.
-fn search_bm25_index_top(index: &Bm25IndexData, query: &str, limit: usize) -> Vec<Bm25SearchScore> {
-    if limit == 0 {
-        return Vec::new();
-    }
-    limit_bm25_search_scores(search_bm25_index(index, query), limit)
 }
 
 /// BM25 score 목록을 기존 hit lookup 정렬 계약과 같은 순서로 제한한다.
@@ -11694,6 +11913,9 @@ fn serialize_bm25_index_json(index: &Bm25IndexData) -> String {
 }
 
 /// BM25 index data를 compact v3 JSON 문자열로 serialize한다.
+///
+/// `runs`와 `pos`는 위치·필드 색인의 선택 키다. 키가 없는 payload도 그대로 읽을 수 있고, 이 키를
+/// 모르는 reader도 기존 키만으로 동작하므로 schema version을 올리지 않는다.
 fn serialize_bm25_compact_index_json(index: &Bm25IndexData) -> String {
     let mut doc_index_by_id = BTreeMap::<&str, usize>::new();
     let mut docs = Vec::<String>::new();
@@ -11704,8 +11926,14 @@ fn serialize_bm25_compact_index_json(index: &Bm25IndexData) -> String {
         let doc_index = docs.len();
         doc_index_by_id.insert(doc_id.as_str(), doc_index);
         let source_path = index.doc_sources.get(doc_id).unwrap_or(doc_id);
+        let runs_json = index
+            .doc_field_runs
+            .get(doc_id)
+            .map_or_else(String::new, |runs| {
+                format!(",\"runs\":[{}]", serialize_bm25_field_runs_json(runs))
+            });
         docs.push(format!(
-            "{{\"id\":\"{}\",\"sourcePath\":\"{}\",\"length\":{}}}",
+            "{{\"id\":\"{}\",\"sourcePath\":\"{}\",\"length\":{}{runs_json}}}",
             escape_json_string(doc_id),
             escape_json_string(source_path),
             length_json,
@@ -11728,8 +11956,25 @@ fn serialize_bm25_compact_index_json(index: &Bm25IndexData) -> String {
         if posting_values.is_empty() {
             continue;
         }
+        let mut position_values = Vec::<String>::new();
+        if let Some(positions_by_doc) = index.positions.get(term) {
+            for (doc_id, positions) in positions_by_doc {
+                let Some(doc_index) = doc_index_by_id.get(doc_id.as_str()).copied() else {
+                    continue;
+                };
+                let Some(encoded) = encode_bm25_positions(positions) else {
+                    continue;
+                };
+                position_values.push(format!("[{doc_index},{encoded}]"));
+            }
+        }
+        let positions_json = if position_values.is_empty() {
+            String::new()
+        } else {
+            format!(",\"pos\":[{}]", position_values.join(","))
+        };
         terms.push(format!(
-            "{{\"term\":\"{}\",\"postings\":[{}]}}",
+            "{{\"term\":\"{}\",\"postings\":[{}]{positions_json}}}",
             escape_json_string(term),
             posting_values.join(","),
         ));
@@ -11744,6 +11989,33 @@ fn serialize_bm25_compact_index_json(index: &Bm25IndexData) -> String {
         docs.len(),
         finite_json_number(bm25_average_doc_length(index)).unwrap_or_else(|| "1".to_owned()),
     )
+}
+
+/// 필드 구간 목록을 JSON 배열로 serialize한다.
+fn serialize_bm25_field_runs_json(runs: &[Bm25FieldRun]) -> String {
+    runs.iter()
+        .map(|run| format!("[{},{},{}]", run.field, run.start, run.length))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// 위치 목록을 첫 절대값과 이후 delta로 serialize한다. 비어 있으면 `None`이다.
+fn encode_bm25_positions(positions: &[u32]) -> Option<String> {
+    if positions.is_empty() {
+        return None;
+    }
+    let mut encoded = Vec::<String>::with_capacity(positions.len());
+    let mut previous = 0_u32;
+    for (index, position) in positions.iter().copied().enumerate() {
+        let value = if index == 0 {
+            position
+        } else {
+            position.checked_sub(previous)?
+        };
+        encoded.push(value.to_string());
+        previous = position;
+    }
+    Some(encoded.join(","))
 }
 
 /// BM25 inverted index를 JSON 문자열로 serialize한다.
@@ -11870,13 +12142,80 @@ fn parse_bm25_document_batch_json(payload: &str) -> Option<Vec<Bm25DocumentBatch
         if doc_id.is_empty() || source_path.is_empty() {
             return None;
         }
+        let fields = parse_bm25_document_fields(object, false)?;
         documents.push(Bm25DocumentBatchEntry {
             doc_id,
             text,
             source_path,
+            fields,
         });
     }
     Some(documents)
+}
+
+/// 문서 선택 필드 block을 읽는다.
+///
+/// `force_fielded`가 참이면 선택 키가 없어도 fielded 입력으로 취급한다. 거짓이면 선택 키가 없는
+/// legacy 입력에서 경로 필드를 색인하지 않아 기존 점수를 그대로 유지한다.
+#[must_use]
+fn parse_bm25_document_fields(
+    object: &JsonMap<String, JsonValue>,
+    force_fielded: bool,
+) -> Option<Bm25DocumentFields> {
+    let has_any = ["title", "headings", "path", "tags"]
+        .iter()
+        .any(|key| object.contains_key(*key));
+    Some(Bm25DocumentFields {
+        title: parse_bm25_string_field(object.get("title"))?,
+        headings: parse_bm25_string_list_field(object.get("headings"))?,
+        path: parse_bm25_string_field(object.get("path"))?,
+        tags: parse_bm25_string_list_field(object.get("tags"))?,
+        include_source_path: force_fielded || has_any,
+    })
+}
+
+/// 선택 문자열 필드를 읽는다. 키가 없으면 빈 문자열, 형식이 다르면 `None`이다.
+#[must_use]
+fn parse_bm25_string_field(value: Option<&JsonValue>) -> Option<String> {
+    match value {
+        None => Some(String::new()),
+        Some(JsonValue::String(text)) => Some(text.trim().to_owned()),
+        Some(_) => None,
+    }
+}
+
+/// 선택 문자열/문자열 배열 필드를 줄바꿈으로 이어 읽는다.
+#[must_use]
+fn parse_bm25_string_list_field(value: Option<&JsonValue>) -> Option<String> {
+    match value {
+        None => Some(String::new()),
+        Some(JsonValue::String(text)) => Some(text.trim().to_owned()),
+        Some(JsonValue::Array(items)) => {
+            let mut parts = Vec::<String>::with_capacity(items.len());
+            for item in items {
+                parts.push(item.as_str()?.trim().to_owned());
+            }
+            Some(parts.join("\n"))
+        }
+        Some(_) => None,
+    }
+}
+
+/// fielded 단일 문서 입력 JSON을 파싱한다.
+#[must_use]
+fn parse_bm25_document_fields_json(payload: &str) -> Option<Bm25DocumentFields> {
+    if payload.trim().is_empty() {
+        return Some(Bm25DocumentFields {
+            include_source_path: true,
+            ..Bm25DocumentFields::default()
+        });
+    }
+    if payload.len() > MAX_BM25_DOCUMENT_BATCH_JSON_BYTES {
+        return None;
+    }
+    let value = serde_json::from_str::<JsonValue>(payload).ok()?;
+    let object = value.as_object()?;
+    parse_bm25_document_fields(object, true)
 }
 
 /// BM25 index JSON object를 파싱한다.
@@ -11915,6 +12254,8 @@ fn parse_bm25_index_json(payload: &str) -> Option<Bm25IndexData> {
         inverted: parse_bm25_inverted_object(
             object.get("inverted").and_then(JsonValue::as_object)?,
         ),
+        positions: BTreeMap::new(),
+        doc_field_runs: BTreeMap::new(),
         doc_lengths,
         doc_sources,
     })
@@ -11931,6 +12272,8 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
     let mut doc_ids = Vec::<String>::with_capacity(docs.len());
     let mut doc_lengths = BTreeMap::<String, f64>::new();
     let mut doc_sources = BTreeMap::<String, String>::new();
+    let mut doc_field_runs = BTreeMap::<String, Vec<Bm25FieldRun>>::new();
+    let mut doc_stream_lengths = BTreeMap::<String, u32>::new();
 
     for doc in docs {
         let doc_object = doc.as_object()?;
@@ -11949,12 +12292,23 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
             .filter(|value| !value.is_empty())
             .unwrap_or(&id)
             .to_owned();
+        match parse_bm25_field_runs(doc_object.get("runs"))? {
+            Bm25ParsedRuns::Absent => {}
+            Bm25ParsedRuns::Present {
+                stream_length,
+                runs,
+            } => {
+                doc_field_runs.insert(id.clone(), runs);
+                doc_stream_lengths.insert(id.clone(), stream_length);
+            }
+        }
         doc_ids.push(id.clone());
         doc_lengths.insert(id.clone(), length);
         doc_sources.insert(id, source_path);
     }
 
     let mut inverted = BTreeMap::<String, BTreeMap<String, f64>>::new();
+    let mut positions = BTreeMap::<String, BTreeMap<String, Vec<u32>>>::new();
     for term_value in object.get("terms")?.as_array()? {
         let term_object = term_value.as_object()?;
         let term = term_object.get("term")?.as_str()?.trim().to_owned();
@@ -11977,17 +12331,131 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
             let doc_id = doc_ids.get(doc_index)?;
             posting.insert(doc_id.clone(), frequency);
         }
-        if !posting.is_empty() {
-            inverted.insert(term, posting);
+        if posting.is_empty() {
+            continue;
         }
+        if let Some(values) = term_object.get("pos") {
+            let parsed = parse_bm25_term_positions(values, &doc_ids, &doc_stream_lengths)?;
+            if !parsed.is_empty() {
+                positions.insert(term.clone(), parsed);
+            }
+        }
+        inverted.insert(term, posting);
     }
 
     Some(Bm25IndexData {
         tokenizer_version,
         inverted,
+        positions,
+        doc_field_runs,
         doc_lengths,
         doc_sources,
     })
+}
+
+/// compact `runs` 키 해석 결과.
+enum Bm25ParsedRuns {
+    /// 키가 없어 위치 정보를 알 수 없다.
+    Absent,
+    /// 유효한 필드 구간 목록과 token stream 길이.
+    Present {
+        /// 문서 token stream 길이.
+        stream_length: u32,
+        /// 필드 구간 목록.
+        runs: Vec<Bm25FieldRun>,
+    },
+}
+
+/// compact 문서의 선택 `runs` 배열을 검증하며 파싱한다.
+fn parse_bm25_field_runs(value: Option<&JsonValue>) -> Option<Bm25ParsedRuns> {
+    let Some(value) = value else {
+        return Some(Bm25ParsedRuns::Absent);
+    };
+    let entries = value.as_array()?;
+    let mut runs = Vec::<Bm25FieldRun>::with_capacity(entries.len());
+    let mut next_start = 0_u32;
+    for entry in entries {
+        let [field_value, start_value, length_value] = entry.as_array()?.as_slice() else {
+            return None;
+        };
+        let field = field_value
+            .as_u64()
+            .and_then(|value| u8::try_from(value).ok())?;
+        let start = start_value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())?;
+        let length = length_value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())?;
+        if !is_known_bm25_field(field) || length == 0 || start != next_start {
+            return None;
+        }
+        next_start = start.checked_add(length)?;
+        runs.push(Bm25FieldRun {
+            field,
+            start,
+            length,
+        });
+    }
+    Some(Bm25ParsedRuns::Present {
+        stream_length: next_start,
+        runs,
+    })
+}
+
+/// 위치 배열을 검증하며 문서별 위치 목록으로 파싱한다.
+fn parse_bm25_term_positions(
+    value: &JsonValue,
+    doc_ids: &[String],
+    doc_stream_lengths: &BTreeMap<String, u32>,
+) -> Option<BTreeMap<String, Vec<u32>>> {
+    let entries = value.as_array()?;
+    let mut positions_by_doc = BTreeMap::<String, Vec<u32>>::new();
+    for entry in entries {
+        let [doc_index_value, first_value, rest @ ..] = entry.as_array()?.as_slice() else {
+            return None;
+        };
+        let doc_index = doc_index_value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())?;
+        let doc_id = doc_ids.get(doc_index)?.clone();
+        let stream_length = doc_stream_lengths.get(&doc_id).copied()?;
+        let first = first_value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())?;
+        if first >= stream_length {
+            return None;
+        }
+        let mut positions = Vec::<u32>::with_capacity(rest.len().saturating_add(1));
+        positions.push(first);
+        let mut previous = first;
+        for delta_value in rest {
+            let delta = delta_value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())?;
+            if delta == 0 {
+                return None;
+            }
+            let position = previous.checked_add(delta)?;
+            if position >= stream_length {
+                return None;
+            }
+            positions.push(position);
+            previous = position;
+        }
+        positions_by_doc.insert(doc_id, positions);
+    }
+    Some(positions_by_doc)
+}
+
+/// 위치·필드 색인이 아는 필드 bitmask인지 확인한다.
+#[must_use]
+const fn is_known_bm25_field(field: u8) -> bool {
+    field == BM25_FIELD_TITLE
+        || field == BM25_FIELD_HEADING
+        || field == BM25_FIELD_BODY
+        || field == BM25_FIELD_PATH
+        || field == BM25_FIELD_TAGS
 }
 
 /// BM25 inverted object를 파싱한다.
@@ -14466,6 +14934,269 @@ mod tests {
         assert_eq!(
             limited_doc_ids, expected_doc_ids,
             "제한 검색은 전체 결과를 JS로 넘기지 않고 상위 BM25 hit만 반환해야 한다",
+        );
+    }
+
+    /// 검색 결과 JSON에서 문서 id 순서만 읽는다.
+    fn bm25_test_doc_ids(payload: &str) -> Vec<String> {
+        parse_bm25_score_test_json(payload)
+            .into_iter()
+            .map(|score| score.doc_id)
+            .collect()
+    }
+
+    /// 위치 색인이 반영된 문서 수를 상태 JSON에서 읽는다.
+    fn bm25_test_positioned_docs(index: &Bm25RuntimeIndex) -> u64 {
+        let status = serde_json::from_str::<JsonValue>(&index.position_index_status_json())
+            .unwrap_or(JsonValue::Null);
+        status
+            .get("positionedDocs")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(u64::MAX)
+    }
+
+    /// 정확 구문과 근접 질의는 저장된 토큰 위치로 검증한 문서만 반환해야 한다.
+    #[test]
+    fn bm25_exact_phrase_and_proximity_use_stored_positions() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        index.add_new_document("adjacent.md::0", "alpha beta gamma", "adjacent.md", 2);
+        index.add_new_document("near.md::0", "alpha delta beta", "near.md", 2);
+        index.add_new_document("far.md::0", "alpha delta epsilon beta", "far.md", 2);
+
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("\"alpha beta\"")),
+            vec!["adjacent.md::0".to_owned()],
+            "정확 구문은 토큰이 실제로 인접한 문서만 반환해야 한다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("\"alpha beta\"~1")),
+            vec!["adjacent.md::0".to_owned(), "near.md::0".to_owned()],
+            "근접 slop 1은 한 칸 벌어진 구문까지 검증해야 한다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("\"alpha beta\"~2")),
+            vec![
+                "adjacent.md::0".to_owned(),
+                "far.md::0".to_owned(),
+                "near.md::0".to_owned(),
+            ],
+            "근접 slop 2는 더 벌어진 구문까지 검증해야 한다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("alpha beta")).len(),
+            3,
+            "평문 질의는 위치 검증 없이 기존 BM25 점수를 유지해야 한다",
+        );
+    }
+
+    /// 필드 질의는 저장된 필드 구간만 사용하고 다른 필드 문서를 섞으면 안 된다.
+    #[test]
+    fn bm25_field_queries_use_indexed_fields() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        let added = index.add_documents_json(
+            r#"[{"id":"a.md::0","text":"body alpha","sourcePath":"notes/a.md","title":"Beta Report","headings":["Gamma Section"],"tags":["ops"]},{"id":"b.md::0","text":"alpha only","sourcePath":"notes/b.md"}]"#,
+            2,
+            true,
+        );
+        assert_eq!(
+            added, 2,
+            "선택 필드가 있는 batch 입력도 그대로 추가되어야 한다"
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("title:beta")),
+            vec!["a.md::0".to_owned()],
+            "title 질의는 제목 필드 token만 사용해야 한다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("heading:gamma")),
+            vec!["a.md::0".to_owned()],
+            "heading 질의는 헤딩 필드 token만 사용해야 한다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("tag:ops")),
+            vec!["a.md::0".to_owned()],
+            "tag 질의는 태그 필드 token만 사용해야 한다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("path:notes/a.md")),
+            vec!["a.md::0".to_owned()],
+            "path 질의는 sourcePath 색인을 사용해야 한다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("body:alpha")),
+            vec!["a.md::0".to_owned(), "b.md::0".to_owned()],
+            "body 질의는 본문 token을 가진 문서만 반환해야 한다",
+        );
+        assert!(
+            bm25_test_doc_ids(&index.search_json("title:alpha")).is_empty(),
+            "제목에 token이 없는 문서는 title 질의에서 제외되어야 한다",
+        );
+    }
+
+    /// 위치·필드 색인은 compact snapshot roundtrip을 보존하고 legacy payload를 상태로 구분해야 한다.
+    #[test]
+    fn bm25_position_index_roundtrips_and_reports_legacy_state() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        let added = index.add_document_fields_json(
+            "a.md::0",
+            "alpha beta gamma",
+            "a.md",
+            r#"{"title":"deploy runbook","tags":["ops"]}"#,
+            2,
+        );
+        assert_eq!(added, 1, "선택 필드 문서 추가는 성공을 반환해야 한다");
+
+        let restored = Bm25RuntimeIndex::from_json(&index.to_json(), 2);
+        assert_eq!(
+            restored.search_json("title:\"deploy runbook\""),
+            index.search_json("title:\"deploy runbook\""),
+            "compact snapshot은 필드 위치를 그대로 보존해야 한다",
+        );
+        assert_eq!(
+            bm25_test_positioned_docs(&restored),
+            1,
+            "roundtrip한 snapshot은 위치 색인 문서 수를 보존해야 한다",
+        );
+
+        let legacy = Bm25RuntimeIndex::from_json(&serialize_bm25_index_json(&index.index), 2);
+        assert_eq!(
+            bm25_test_positioned_docs(&legacy),
+            0,
+            "legacy payload는 위치 정보가 없음을 상태로 구분해야 한다",
+        );
+        assert!(
+            bm25_test_doc_ids(&legacy.search_json("\"alpha beta\"")).is_empty(),
+            "위치 정보가 없는 문서는 검증할 수 없는 구문 질의에 점수를 만들면 안 된다",
+        );
+        assert!(
+            !bm25_test_doc_ids(&legacy.search_json("alpha")).is_empty(),
+            "위치 정보가 없어도 평문 BM25 점수는 유지되어야 한다",
+        );
+
+        let mut rebuilt = Bm25RuntimeIndex::from_json(&serialize_bm25_index_json(&index.index), 2);
+        rebuilt.add_document("a.md::0", "alpha beta gamma", "a.md", 2);
+        assert_eq!(
+            bm25_test_positioned_docs(&rebuilt),
+            1,
+            "원문을 다시 넣으면 위치 정보가 재구축되어야 한다",
+        );
+        assert!(
+            rebuilt.search_json("\"alpha beta\"").contains("a.md::0"),
+            "재구축한 문서는 구문 질의에서 검증되어야 한다",
+        );
+    }
+
+    /// runtime 검색은 위치·필드 색인을 더해도 평문 질의 점수 계약을 보존해야 한다.
+    #[test]
+    fn bm25_plain_query_scores_match_legacy_plan_contract() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        for (doc_id, text) in [
+            ("a.md::0", "alpha beta"),
+            ("b.md::0", "beta gamma alpha"),
+            ("c.md::0", "gamma"),
+        ] {
+            index.add_new_document(doc_id, text, doc_id, 2);
+        }
+        let legacy_plan = serialize_bm25_index_json(&index.index);
+        for query in ["alpha beta", "beta", "gamma zeta"] {
+            assert_eq!(
+                index.search_json(query),
+                plan_bm25_search_json(&legacy_plan, query),
+                "평문 질의 점수는 기존 plan 계약과 같아야 한다: {query}",
+            );
+        }
+    }
+
+    /// prefix·오타 확장은 bounded이고 정확 식별자를 우선해야 한다.
+    #[test]
+    fn bm25_prefix_and_typo_expansion_are_bounded_and_exact_first() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        index.add_new_document("a.md::0", "retrieval engine", "a.md", 2);
+        index.add_new_document("b.md::0", "retrievalx engine", "b.md", 2);
+
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("retriev*")),
+            vec!["a.md::0".to_owned(), "b.md::0".to_owned()],
+            "명시 prefix는 사전 식별자를 bounded 범위에서 확장해야 한다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("retrievl")),
+            vec!["a.md::0".to_owned()],
+            "정확한 term이 없으면 편집 거리 1 이내 후보만 보정해야 한다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("retrieval")),
+            vec!["a.md::0".to_owned()],
+            "정확한 term이 있으면 다른 확장을 만들면 안 된다",
+        );
+    }
+
+    /// 위치 색인은 교체·삭제 뒤에도 오래된 구문 일치를 남기면 안 된다.
+    #[test]
+    fn bm25_position_index_tracks_upsert_and_removal() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        index.add_document("a.md::0", "alpha beta", "a.md", 2);
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("\"alpha beta\"")),
+            vec!["a.md::0".to_owned()],
+            "본문만 추가한 문서도 위치 색인으로 구문 검증되어야 한다",
+        );
+
+        index.add_document("a.md::0", "alpha gamma", "a.md", 2);
+        assert!(
+            bm25_test_doc_ids(&index.search_json("\"alpha beta\"")).is_empty(),
+            "교체된 문서의 이전 위치는 남으면 안 된다",
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("\"alpha gamma\"")),
+            vec!["a.md::0".to_owned()],
+            "교체된 문서의 새 위치는 구문 검증되어야 한다",
+        );
+
+        index.remove_document("a.md::0", 2);
+        assert!(
+            bm25_test_doc_ids(&index.search_json("\"alpha gamma\"")).is_empty(),
+            "삭제된 문서의 위치는 남으면 안 된다",
+        );
+        assert_eq!(
+            bm25_test_positioned_docs(&index),
+            0,
+            "삭제된 문서는 위치 색인 문서 수에서도 빠져야 한다",
+        );
+    }
+
+    /// batch 입력은 기존 `{id,text,sourcePath}`를 그대로 받고 선택 필드를 함께 허용해야 한다.
+    #[test]
+    fn bm25_document_batch_accepts_legacy_and_fielded_input() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        let added = index.add_documents_json(
+            r#"[{"id":"legacy.md::0","text":"alpha beta","sourcePath":"legacy.md"},{"id":"fielded.md::0","text":"alpha beta","sourcePath":"fielded.md","title":"Legacy Field"}]"#,
+            2,
+            true,
+        );
+        assert_eq!(
+            added, 2,
+            "legacy·fielded 입력을 같은 batch에서 추가해야 한다"
+        );
+        assert_eq!(
+            bm25_test_doc_ids(&index.search_json("title:legacy")),
+            vec!["fielded.md::0".to_owned()],
+            "선택 필드가 있는 문서만 제목 필드 질의에 맞아야 한다",
+        );
+
+        let rejected = index.add_documents_json(
+            r#"[{"id":"bad.md::0","text":"alpha","sourcePath":"bad.md","title":3}]"#,
+            2,
+            true,
+        );
+        assert_eq!(
+            rejected, 0,
+            "형식이 맞지 않는 선택 필드는 batch 전체를 거부해야 한다",
+        );
+        assert_eq!(
+            index.total_docs(),
+            2,
+            "거부된 batch는 index를 바꾸면 안 된다"
         );
     }
 

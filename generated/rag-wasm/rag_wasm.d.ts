@@ -11,6 +11,13 @@ export class Bm25RuntimeIndex {
      */
     add_document(doc_id: string, text: string, source_path: string, tokenizer_version: number): void;
     /**
+     * 선택 필드 JSON과 함께 document 하나를 추가하거나 교체한다. 추가하면 1, 거부하면 0이다.
+     *
+     * `fields_json`은 `{"title":"...","headings":["..."],"path":"...","tags":["..."]}` 형식이다.
+     * 빈 문자열이면 선택 필드 없이 `sourcePath`만 경로 필드로 색인한다.
+     */
+    add_document_fields_json(doc_id: string, text: string, source_path: string, fields_json: string, tokenizer_version: number): number;
+    /**
      * bounded JSON 문서 batch를 한 번의 bridge 호출로 검증하고 추가한다.
      */
     add_documents_json(documents_json: string, tokenizer_version: number, known_unique: boolean): number;
@@ -35,6 +42,14 @@ export class Bm25RuntimeIndex {
      */
     constructor(tokenizer_version: number);
     /**
+     * 위치·필드 색인 상태를 JSON 문자열로 반환한다.
+     *
+     * `positionedDocs`가 `totalDocs`보다 작으면 legacy snapshot처럼 위치 정보가 없는 문서가
+     * 섞여 있다는 뜻이다. 구문·근접·필드 질의는 그 문서를 검증 대상에서 제외하므로, 이 값이
+     * 다르면 원문으로 다시 색인해야 위치 기반 질의의 재현율이 회복된다.
+     */
+    position_index_status_json(): string;
+    /**
      * document 하나를 runtime index에서 제거한다.
      */
     remove_document(doc_id: string, tokenizer_version: number): void;
@@ -43,11 +58,13 @@ export class Bm25RuntimeIndex {
      */
     remove_source(source_path: string, tokenizer_version: number): void;
     /**
-     * query score 목록을 JSON 문자열로 반환한다.
+     * 질의문(구문·근접·필드·prefix 포함) score 목록을 JSON 문자열로 반환한다.
+     *
+     * 평문 term 질의는 기존 BM25 점수·순서 계약을 그대로 유지한다.
      */
     search_json(query: string): string;
     /**
-     * 상위 query score 목록만 JSON 문자열로 반환한다.
+     * 질의문(구문·근접·필드·prefix 포함) 상위 score 목록만 JSON 문자열로 반환한다.
      */
     search_top_json(query: string, limit: number): string;
     /**
@@ -358,6 +375,14 @@ export function is_whole_vault_research_intent(question: string): boolean;
 export function local_model_range_matches(start: number, end: number, total: number, status: number, length: number, content_range: string): boolean;
 
 /**
+ * 여러 배치 계획을 전역 score 순·`path` stable 순으로 병합합니다.
+ *
+ * 배치 순서와 무관하게 같은 결과를 내며, 원문 구절은 다시 할당하지 않고
+ * 계획 JSON의 증거 행만 재정렬·중복 제거해 전체 corpus 메모리 축적을 피합니다.
+ */
+export function merge_indexed_evidence_plans_json(input: string): string;
+
+/**
  * 저장된 MCP 설정을 로컬·원격 공통 내부 형식으로 마이그레이션한다.
  */
 export function migrate_stored_mcp_servers_json(input: string): string;
@@ -600,6 +625,11 @@ export function plan_indexed_db_bounded_retention_json(oldest_records_json: stri
  * 공통 원문·vector·BM25를 새 세대로 옮기고 임베딩 캐시는 재사용합니다.
  */
 export function plan_indexed_db_storage_layout_json(plugin_id: string, vault_identity: string, legacy_vault_name: string, embedding_namespace: string, index_namespace: string): string;
+
+/**
+ * 질의 관련 원문 구절·진단 계획을 결정적으로 계산합니다.
+ */
+export function plan_indexed_evidence_json(input: string): string;
 
 /**
  * 이름·검색 순위로 자료를 제거하지 않고 색인과 허용 범위의 교집합을 반환합니다.
@@ -1099,6 +1129,11 @@ export function validate_indexed_review_screen_json(segments_json: string, respo
  */
 export function validate_mcp_json(mcp_json_text: string): string;
 
+/**
+ * 채택 구절의 원문 존재·위치·리비전·스코프·검토 상태를 결정적으로 검증합니다.
+ */
+export function verify_indexed_evidence_json(input: string): string;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -1111,12 +1146,14 @@ export interface InitOutput {
     readonly assign_vector_clusters: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly bm25_score_pairs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly bm25runtimeindex_add_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly bm25runtimeindex_add_document_fields_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
     readonly bm25runtimeindex_add_documents_json: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly bm25runtimeindex_add_new_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly bm25runtimeindex_from_json: (a: number, b: number, c: number) => number;
     readonly bm25runtimeindex_is_ready: (a: number) => number;
     readonly bm25runtimeindex_is_tokenizer_current: (a: number, b: number) => number;
     readonly bm25runtimeindex_new: (a: number) => number;
+    readonly bm25runtimeindex_position_index_status_json: (a: number) => [number, number];
     readonly bm25runtimeindex_remove_document: (a: number, b: number, c: number, d: number) => void;
     readonly bm25runtimeindex_remove_source: (a: number, b: number, c: number, d: number) => void;
     readonly bm25runtimeindex_search_json: (a: number, b: number, c: number) => [number, number];
@@ -1167,6 +1204,7 @@ export interface InitOutput {
     readonly ivfruntimeindex_query: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly ivfruntimeindex_row_count: (a: number) => number;
     readonly local_model_range_matches: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
+    readonly merge_indexed_evidence_plans_json: (a: number, b: number) => [number, number];
     readonly migrate_stored_mcp_servers_json: (a: number, b: number) => [number, number];
     readonly normalize_exclude_extension_json: (a: number, b: number) => [number, number];
     readonly normalize_mcp_tool_result_json: (a: number, b: number) => [number, number];
@@ -1213,6 +1251,7 @@ export interface InitOutput {
     readonly plan_indexed_db_bounded_cleanup_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
     readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
+    readonly plan_indexed_evidence_json: (a: number, b: number) => [number, number];
     readonly plan_indexed_review_inventory_json: (a: number, b: number) => [number, number];
     readonly plan_indexed_review_segments_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_mcp_server_candidates_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
@@ -1314,6 +1353,7 @@ export interface InitOutput {
     readonly vectorruntimeindex_rank_top_k: (a: number, b: number, c: number, d: number) => [number, number];
     readonly vectorruntimeindex_rank_top_k_filtered: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly vectorruntimeindex_row_count: (a: number) => number;
+    readonly verify_indexed_evidence_json: (a: number, b: number) => [number, number];
     readonly xlsxsourcetext_new: (a: number, b: number) => number;
     readonly xlsxsourcetext_reason: (a: number) => [number, number];
     readonly xlsxsourcetext_segments_json: (a: number) => [number, number];

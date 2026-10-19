@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   calculateRecallAtKRust,
+  RustBm25RuntimeIndex,
   createContentHashRust,
   chunkMarkdownRust,
   chunkPlainTextRust,
@@ -56,6 +57,9 @@ import {
   planProviderVerificationResetRust,
   planReferenceFileIndicesRust,
   planResearchAnswerContractRust,
+  mergeIndexedEvidencePlansRust,
+  planIndexedEvidenceRust,
+  verifyIndexedEvidenceRust,
   planResearchProviderLedgerTransitionRust,
   planResearchProviderRequestBudgetRust,
   planMergedRetrievalCandidatesByEntryIdRust,
@@ -2239,5 +2243,141 @@ describe('Rust WASM RAG core bridge', () => {
           })
         : null,
     ).toMatchObject({ allowed: true });
+  });
+});
+
+describe('planIndexedEvidenceRust / verifyIndexedEvidenceRust', () => {
+  const planInput = {
+    question: 'alpha -beta gamma.md 2024',
+    documents: [{ path: 'notes/alpha.md', text: 'alpha gamma.md 2024 review' }],
+  } as const;
+
+  it('does not throw while the generated glue has no evidence exports yet', () => {
+    const plan = planIndexedEvidenceRust(planInput);
+    if (plan !== null) return;
+    expect(plan).toBeNull();
+    const verification = verifyIndexedEvidenceRust({
+      evidence: [{ sourceId: 'notes/alpha.md#L1-L1', path: 'notes/alpha.md', quote: 'alpha' }],
+      documents: [{ path: 'notes/alpha.md', text: 'alpha gamma.md 2024 review' }],
+    });
+    expect(verification).toBeNull();
+  });
+
+  it('honors the deterministic evidence contract once the glue export lands', () => {
+    const plan = planIndexedEvidenceRust(planInput);
+    if (plan === null) return;
+    expect(plan.queryTokens.some((token) => token.text === 'alpha' && !token.negated)).toBe(true);
+    expect(plan.queryTokens.some((token) => token.text === 'beta' && token.negated)).toBe(true);
+    expect(plan.evidence.length).toBeGreaterThan(0);
+    expect(plan.evidence[0].rank).toBe(1);
+    expect(plan.evidence[0].path).toBe('notes/alpha.md');
+    expect(plan.diagnostics.candidateDocuments).toBe(1);
+    expect(['supported', 'incomplete', 'budget-exhausted']).toContain(plan.coverage.status);
+    const verification = verifyIndexedEvidenceRust({
+      evidence: [
+        {
+          sourceId: plan.evidence[0].sourceId,
+          path: plan.evidence[0].path,
+          quote: plan.evidence[0].quote,
+          startLine: plan.evidence[0].startLine,
+          endLine: plan.evidence[0].endLine,
+        },
+      ],
+      documents: [{ path: 'notes/alpha.md', text: 'alpha gamma.md 2024 review' }],
+    });
+    expect(verification?.statuses.length).toBe(1);
+    expect(['verified', 'quote-missing', 'position-mismatch']).toContain(
+      verification?.statuses[0].status,
+    );
+  });
+});
+
+describe('mergeIndexedEvidencePlansRust', () => {
+  const planRow = {
+    sourceId: 'a.md#L1-L1',
+    path: 'a.md',
+    revision: null,
+    startLine: 1,
+    endLine: 1,
+    quote: 'alpha',
+    contextBefore: '',
+    contextAfter: '',
+    score: 1,
+    rank: 1,
+    signal: 'lexical',
+    phraseMatches: 0,
+    proximityScore: 0,
+    fieldScore: 0,
+    exactSignals: [],
+    fieldMatches: [],
+    negatedNearby: false,
+    duplicateOf: null,
+    highlights: [{ start: 0, end: 5 }],
+  } as const;
+  const plan = {
+    queryTokens: [],
+    phrases: [],
+    evidence: [planRow],
+    order: [planRow.sourceId],
+    diagnostics: {
+      candidateDepth: 1,
+      candidateDocuments: 1,
+      candidateChunks: 1,
+      selectedDocuments: 1,
+      selectedChunks: 1,
+      truncated: false,
+      droppedDocuments: { budget: 0, belowThreshold: 0, filtered: 0 },
+      unmatchedTerms: [],
+      missingCandidatePaths: 0,
+      zeroHitReason: null,
+    },
+    coverage: {
+      status: 'supported' as const,
+      reviewedDocuments: 1,
+      unreviewedDocuments: 0,
+      notIndexedDocuments: 0,
+    },
+    budget: { maxDocuments: 64, maxPassages: 12, maxChars: 262144, usedChars: 5 },
+  } as const;
+
+  it('stays null-safe until the glue export lands', () => {
+    const merged = mergeIndexedEvidencePlansRust({ plans: [plan] });
+    if (merged !== null) {
+      expect(merged.evidence.length).toBeLessThanOrEqual(1);
+      expect(merged.evidence[0]?.highlights.length).toBeGreaterThan(0);
+      return;
+    }
+    expect(merged).toBeNull();
+  });
+
+  it('is partition invariant once the glue export lands', () => {
+    const forward = mergeIndexedEvidencePlansRust({ plans: [plan] });
+    const backward = mergeIndexedEvidencePlansRust({ plans: [plan] });
+    if (forward === null || backward === null) return;
+    expect(forward.order).toEqual(backward.order);
+    expect(forward.diagnostics.evaluatedChunks).toBe(1);
+  });
+});
+
+describe('RustBm25RuntimeIndex field bridge', () => {
+  it('adds fields and reports position index status', () => {
+    const index = RustBm25RuntimeIndex.empty(3);
+    if (index === null) return;
+    try {
+      const added = index.addDocumentFields(
+        'doc-1',
+        'alpha beta',
+        'a.md',
+        { path: 'a.md', title: 'Alpha', headings: ['Alpha'], tags: ['t'] },
+        3,
+      );
+      expect(added).toBe(true);
+      const status = index.positionIndexStatus();
+      expect(status).not.toBeNull();
+      expect(status?.totalDocs).toBe(1);
+      expect(status?.complete).toBe(true);
+    } finally {
+      index.dispose();
+    }
   });
 });

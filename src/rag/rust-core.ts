@@ -178,6 +178,7 @@ import {
   tokenize_json,
   VectorRuntimeIndex,
 } from '../../generated/rag-wasm/rag_wasm.js';
+import * as ragWasmGenerated from '../../generated/rag-wasm/rag_wasm.js';
 import type { Chunk } from './indexer';
 import type { SourceProcessingInput, SourceProcessingSummary } from './source-processing';
 import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
@@ -558,6 +559,59 @@ export class RustBm25RuntimeIndex {
     return this.inner.is_tokenizer_current(tokenizerVersion);
   }
 
+
+  /** 선택 필드와 함께 문서를 추가·교체합니다. 추가하면 true입니다. */
+  addDocumentFields(
+    docId: string,
+    text: string,
+    sourcePath: string,
+    fields: {
+      path?: string;
+      title?: string;
+      headings?: readonly string[];
+      tags?: readonly string[];
+    },
+    tokenizerVersion: number,
+  ): boolean {
+    try {
+      return (
+        this.inner.add_document_fields_json(
+          docId,
+          text,
+          sourcePath,
+          JSON.stringify(fields),
+          tokenizerVersion,
+        ) === 1
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** 위치·필드 색인 상태를 검증해 반환합니다. */
+  positionIndexStatus(): {
+    positionedDocs: number;
+    totalDocs: number;
+    complete: boolean;
+  } | null {
+    try {
+      const parsed: unknown = JSON.parse(this.inner.position_index_status_json());
+      if (!isStringRecordValueMap(parsed)) return null;
+      if (
+        !isNonNegativeSafeInteger(parsed.positionedDocs) ||
+        !isNonNegativeSafeInteger(parsed.totalDocs) ||
+        typeof parsed.complete !== 'boolean'
+      )
+        return null;
+      return {
+        positionedDocs: parsed.positionedDocs,
+        totalDocs: parsed.totalDocs,
+        complete: parsed.complete,
+      };
+    } catch {
+      return null;
+    }
+  }
   totalDocs(): number {
     return this.inner.total_docs();
   }
@@ -5012,6 +5066,579 @@ export function scoreIndexedReviewSegmentsRust(
       scores.set(row.id, row.score);
     }
     return scores;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 생성된 glue가 아직 노출하지 않은 문자열 export를 안전하게 탐색합니다.
+ * build 후 glue가 갱신되면 같은 시그니처로 자동 활성화되며 TS 계산으로 대체하지 않습니다.
+ */
+function resolveRustStringExport(name: string): ((input: string) => string) | null {
+  const candidate: unknown = (ragWasmGenerated as unknown as Record<string, unknown>)[name];
+  return typeof candidate === 'function' ? (candidate as (input: string) => string) : null;
+}
+
+export interface RustIndexedEvidenceDocument {
+  path: string;
+  text: string;
+  revision?: string;
+  indexed?: boolean;
+  reviewState?: 'reviewed' | 'unreviewed';
+  startLine?: number;
+  tags?: readonly string[];
+  modifiedAt?: number;
+}
+
+export interface RustIndexedEvidenceCandidate {
+  path: string;
+  source: string;
+  rank: number;
+  score?: number;
+  startLine?: number;
+  endLine?: number;
+}
+
+export interface RustIndexedEvidenceInventory {
+  indexedCount: number;
+  unreviewedCount: number;
+  notIndexedCount: number;
+}
+
+export interface RustIndexedEvidenceFilters {
+  pathPrefixes?: readonly string[];
+  extensions?: readonly string[];
+  tags?: readonly string[];
+  modifiedAfter?: number;
+}
+
+export interface RustIndexedEvidenceBudget {
+  maxDocuments?: number;
+  maxPassages?: number;
+  maxChars?: number;
+}
+
+export interface RustIndexedEvidenceInput {
+  question: string;
+  documents: readonly RustIndexedEvidenceDocument[];
+  scopes?: readonly string[];
+  filters?: RustIndexedEvidenceFilters;
+  budget?: RustIndexedEvidenceBudget;
+  candidates?: readonly RustIndexedEvidenceCandidate[];
+  inventory?: RustIndexedEvidenceInventory;
+}
+
+export interface RustIndexedEvidenceToken {
+  text: string;
+  position: number;
+  field: string;
+  kind: string;
+  negated: boolean;
+  phraseIndex: number | null;
+}
+
+export interface RustIndexedEvidencePhrase {
+  tokens: readonly string[];
+  negated: boolean;
+  field: string;
+}
+
+export interface RustIndexedEvidencePassage {
+  sourceId: string;
+  path: string;
+  revision: string | null;
+  startLine: number;
+  endLine: number;
+  quote: string;
+  contextBefore: string;
+  contextAfter: string;
+  score: number;
+  rank: number;
+  signal: string;
+  phraseMatches: number;
+  proximityScore: number;
+  fieldScore: number;
+  exactSignals: readonly string[];
+  fieldMatches?: readonly string[];
+  negatedNearby: boolean;
+  highlights: readonly { start: number; end: number }[];
+  duplicateOf: string | null;
+}
+
+export interface RustIndexedEvidenceDroppedDocuments {
+  budget: number;
+  belowThreshold: number;
+  filtered: number;
+}
+
+export interface RustIndexedEvidenceDiagnostics {
+  candidateDepth: number;
+  candidateDocuments: number;
+  candidateChunks: number;
+  selectedDocuments: number;
+  selectedChunks: number;
+  truncated: boolean;
+  droppedDocuments: RustIndexedEvidenceDroppedDocuments;
+  unmatchedTerms: readonly string[];
+  missingCandidatePaths: number;
+  zeroHitReason: string | null;
+}
+export interface RustIndexedEvidenceCoverage {
+  status: 'supported' | 'incomplete' | 'budget-exhausted';
+  reviewedDocuments: number;
+  unreviewedDocuments: number;
+  notIndexedDocuments: number;
+}
+
+export interface RustIndexedEvidencePlanBudget {
+  maxDocuments: number;
+  maxPassages: number;
+  maxChars: number;
+  usedChars: number;
+}
+
+/** LLM 없이 선택한 원문 구절·출처·진단 계획입니다. */
+export interface RustIndexedEvidencePlan {
+  queryTokens: readonly RustIndexedEvidenceToken[];
+  phrases: readonly RustIndexedEvidencePhrase[];
+  evidence: readonly RustIndexedEvidencePassage[];
+  order: readonly string[];
+  diagnostics: RustIndexedEvidenceDiagnostics;
+  coverage: RustIndexedEvidenceCoverage;
+  budget: RustIndexedEvidencePlanBudget;
+}
+
+export interface RustIndexedEvidenceRef {
+  sourceId: string;
+  path: string;
+  quote: string;
+  revision?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+export interface RustIndexedEvidenceVerificationDocument {
+  path: string;
+  text: string;
+  revision?: string;
+  indexed?: boolean;
+  reviewState?: 'reviewed' | 'unreviewed';
+  scopes?: readonly string[];
+}
+
+export interface RustIndexedEvidenceVerificationInput {
+  evidence: readonly RustIndexedEvidenceRef[];
+  documents: readonly RustIndexedEvidenceVerificationDocument[];
+  scopes?: readonly string[];
+}
+
+export type RustIndexedEvidenceStatusName =
+  | 'verified'
+  | 'quote-missing'
+  | 'position-mismatch'
+  | 'revision-mismatch'
+  | 'revision-unknown'
+  | 'out-of-scope'
+  | 'unreviewed'
+  | 'not-indexed';
+
+export interface RustIndexedEvidenceStatus {
+  sourceId: string;
+  path: string;
+  status: RustIndexedEvidenceStatusName;
+  exists: boolean;
+  lineMatches: boolean | null;
+  offsetMatches: boolean | null;
+  revisionState: 'match' | 'mismatch' | 'unknown';
+  scopeState: 'in-scope' | 'out-of-scope' | 'unknown';
+  reviewState: 'reviewed' | 'unreviewed' | 'not-indexed';
+  duplicateOf: string | null;
+}
+
+/** 채택 구절의 원문 존재·위치·리비전·스코프·검토 상태 검증 결과입니다. */
+export interface RustIndexedEvidenceVerification {
+  statuses: readonly RustIndexedEvidenceStatus[];
+}
+
+function readIndexedEvidenceToken(value: unknown): RustIndexedEvidenceToken | null {
+  if (!isStringRecordValueMap(value)) return null;
+  if (
+    !isStringValue(value.text) ||
+    !isNonNegativeSafeInteger(value.position) ||
+    !isStringValue(value.field) ||
+    !isStringValue(value.kind) ||
+    typeof value.negated !== 'boolean' ||
+    !(value.phraseIndex === null || isNonNegativeSafeInteger(value.phraseIndex))
+  )
+    return null;
+  return {
+    text: value.text,
+    position: value.position,
+    field: value.field,
+    kind: value.kind,
+    negated: value.negated,
+    phraseIndex: value.phraseIndex,
+  };
+}
+
+function readIndexedEvidencePhrase(value: unknown): RustIndexedEvidencePhrase | null {
+  if (!isStringRecordValueMap(value)) return null;
+  if (!Array.isArray(value.tokens) || !value.tokens.every(isStringValue)) return null;
+  if (typeof value.negated !== 'boolean' || !isStringValue(value.field)) return null;
+  return { tokens: value.tokens, negated: value.negated, field: value.field };
+}
+
+/** evidence highlight 구간을 검증해 복사합니다. */
+function readEvidenceHighlights(
+  value: unknown,
+): readonly { start: number; end: number }[] | null {
+  if (!Array.isArray(value)) return null;
+  const highlights: { start: number; end: number }[] = [];
+  for (const row of value) {
+    if (
+      !isStringRecordValueMap(row) ||
+      !isNonNegativeSafeInteger(row.start) ||
+      !isNonNegativeSafeInteger(row.end) ||
+      row.end < row.start
+    )
+      return null;
+    highlights.push({ start: row.start, end: row.end });
+  }
+  return highlights;
+}
+
+function readIndexedEvidencePassage(value: unknown): RustIndexedEvidencePassage | null {
+  if (!isStringRecordValueMap(value)) return null;
+  if (
+    !isStringValue(value.sourceId) ||
+    !isStringValue(value.path) ||
+    !(value.revision === null || isStringValue(value.revision)) ||
+    !isNonNegativeSafeInteger(value.startLine) ||
+    value.startLine < 1 ||
+    !isNonNegativeSafeInteger(value.endLine) ||
+    value.endLine < value.startLine ||
+    !isStringValue(value.quote) ||
+    !isStringValue(value.contextBefore) ||
+    !isStringValue(value.contextAfter) ||
+    typeof value.score !== 'number' ||
+    !Number.isFinite(value.score) ||
+    value.score < 0 ||
+    !isNonNegativeSafeInteger(value.rank) ||
+    value.rank < 1 ||
+    !isStringValue(value.signal) ||
+    !isNonNegativeSafeInteger(value.phraseMatches) ||
+    typeof value.proximityScore !== 'number' ||
+    !Number.isFinite(value.proximityScore) ||
+    typeof value.fieldScore !== 'number' ||
+    !Number.isFinite(value.fieldScore) ||
+    !Array.isArray(value.exactSignals) ||
+    !value.exactSignals.every(isStringValue) ||
+    typeof value.negatedNearby !== 'boolean' ||
+    !readEvidenceHighlights(value.highlights) ||
+    !(value.duplicateOf === null || isStringValue(value.duplicateOf))
+  )
+    return null;
+  return {
+    sourceId: value.sourceId,
+    path: value.path,
+    revision: value.revision,
+    startLine: value.startLine,
+    endLine: value.endLine,
+    quote: value.quote,
+    contextBefore: value.contextBefore,
+    contextAfter: value.contextAfter,
+    score: value.score,
+    rank: value.rank,
+    signal: value.signal,
+    phraseMatches: value.phraseMatches,
+    proximityScore: value.proximityScore,
+    fieldScore: value.fieldScore,
+    fieldMatches: Array.isArray(value.fieldMatches) && value.fieldMatches.every(isStringValue) ? value.fieldMatches : [],
+    exactSignals: value.exactSignals,
+    negatedNearby: value.negatedNearby,
+    duplicateOf: value.duplicateOf,
+    highlights: readEvidenceHighlights(value.highlights) ?? [],
+  };
+}
+
+function readIndexedEvidencePlan(value: unknown): RustIndexedEvidencePlan | null {
+  if (!isStringRecordValueMap(value)) return null;
+  if (!Array.isArray(value.queryTokens) || !Array.isArray(value.phrases)) return null;
+  if (!Array.isArray(value.evidence) || !Array.isArray(value.order)) return null;
+  if (!isStringRecordValueMap(value.diagnostics)) return null;
+  if (!isStringRecordValueMap(value.coverage) || !isStringRecordValueMap(value.budget)) return null;
+  const queryTokens: RustIndexedEvidenceToken[] = [];
+  for (const row of value.queryTokens) {
+    const token = readIndexedEvidenceToken(row);
+    if (!token) return null;
+    queryTokens.push(token);
+  }
+  const phrases: RustIndexedEvidencePhrase[] = [];
+  for (const row of value.phrases) {
+    const phrase = readIndexedEvidencePhrase(row);
+    if (!phrase) return null;
+    phrases.push(phrase);
+  }
+  const evidence: RustIndexedEvidencePassage[] = [];
+  for (const row of value.evidence) {
+    const passage = readIndexedEvidencePassage(row);
+    if (!passage) return null;
+    evidence.push(passage);
+  }
+  if (!value.order.every(isStringValue)) return null;
+  const dropped = value.diagnostics.droppedDocuments;
+  if (
+    !isStringRecordValueMap(dropped) ||
+    !isNonNegativeSafeInteger(dropped.budget) ||
+    !isNonNegativeSafeInteger(dropped.belowThreshold) ||
+    !isNonNegativeSafeInteger(dropped.filtered)
+  )
+    return null;
+  if (
+    !isNonNegativeSafeInteger(value.diagnostics.candidateDepth) ||
+    !isNonNegativeSafeInteger(value.diagnostics.candidateChunks) ||
+    !isNonNegativeSafeInteger(value.diagnostics.selectedChunks) ||
+    !isNonNegativeSafeInteger(value.diagnostics.missingCandidatePaths) ||
+    !isNonNegativeSafeInteger(value.diagnostics.candidateDocuments) ||
+    !isNonNegativeSafeInteger(value.diagnostics.selectedDocuments) ||
+    typeof value.diagnostics.truncated !== 'boolean' ||
+    !Array.isArray(value.diagnostics.unmatchedTerms) ||
+    !value.diagnostics.unmatchedTerms.every(isStringValue) ||
+    !(value.diagnostics.zeroHitReason === null || isStringValue(value.diagnostics.zeroHitReason))
+  )
+    return null;
+  if (
+    !['supported', 'incomplete', 'budget-exhausted'].includes(String(value.coverage.status)) ||
+    !isNonNegativeSafeInteger(value.coverage.reviewedDocuments) ||
+    !isNonNegativeSafeInteger(value.coverage.unreviewedDocuments) ||
+    !isNonNegativeSafeInteger(value.coverage.notIndexedDocuments)
+  )
+    return null;
+  if (
+    !isNonNegativeSafeInteger(value.budget.maxDocuments) ||
+    !isNonNegativeSafeInteger(value.budget.maxPassages) ||
+    !isNonNegativeSafeInteger(value.budget.maxChars) ||
+    !isNonNegativeSafeInteger(value.budget.usedChars)
+  )
+    return null;
+  return {
+    queryTokens,
+    phrases,
+    evidence,
+    order: value.order,
+    diagnostics: {
+      candidateDepth: value.diagnostics.candidateDepth,
+      candidateDocuments: value.diagnostics.candidateDocuments,
+      selectedDocuments: value.diagnostics.selectedDocuments,
+      candidateChunks: value.diagnostics.candidateChunks,
+      selectedChunks: value.diagnostics.selectedChunks,
+      missingCandidatePaths: value.diagnostics.missingCandidatePaths,
+      truncated: value.diagnostics.truncated,
+      droppedDocuments: {
+        budget: dropped.budget,
+        belowThreshold: dropped.belowThreshold,
+        filtered: dropped.filtered,
+      },
+      unmatchedTerms: value.diagnostics.unmatchedTerms,
+      zeroHitReason: value.diagnostics.zeroHitReason,
+    },
+    coverage: {
+      status: value.coverage.status as RustIndexedEvidenceCoverage['status'],
+      reviewedDocuments: value.coverage.reviewedDocuments,
+      unreviewedDocuments: value.coverage.unreviewedDocuments,
+      notIndexedDocuments: value.coverage.notIndexedDocuments,
+    },
+    budget: {
+      maxDocuments: value.budget.maxDocuments,
+      maxPassages: value.budget.maxPassages,
+      maxChars: value.budget.maxChars,
+      usedChars: value.budget.usedChars,
+    },
+  };
+}
+
+function readIndexedEvidenceStatus(value: unknown): RustIndexedEvidenceStatus | null {
+  if (!isStringRecordValueMap(value)) return null;
+  const statuses: readonly string[] = [
+    'verified',
+    'quote-missing',
+    'position-mismatch',
+    'revision-mismatch',
+    'revision-unknown',
+    'out-of-scope',
+    'unreviewed',
+    'not-indexed',
+  ];
+  if (
+    !isStringValue(value.sourceId) ||
+    !isStringValue(value.path) ||
+    !statuses.includes(String(value.status)) ||
+    typeof value.exists !== 'boolean' ||
+    !(value.lineMatches === null || typeof value.lineMatches === 'boolean') ||
+    !(value.offsetMatches === null || typeof value.offsetMatches === 'boolean') ||
+    !['match', 'mismatch', 'unknown'].includes(String(value.revisionState)) ||
+    !['in-scope', 'out-of-scope', 'unknown'].includes(String(value.scopeState)) ||
+    !['reviewed', 'unreviewed', 'not-indexed'].includes(String(value.reviewState)) ||
+    !(value.duplicateOf === null || isStringValue(value.duplicateOf))
+  )
+    return null;
+  return {
+    sourceId: value.sourceId,
+    path: value.path,
+    status: value.status as RustIndexedEvidenceStatusName,
+    exists: value.exists,
+    lineMatches: value.lineMatches,
+    offsetMatches: value.offsetMatches,
+    revisionState: value.revisionState as RustIndexedEvidenceStatus['revisionState'],
+    scopeState: value.scopeState as RustIndexedEvidenceStatus['scopeState'],
+    reviewState: value.reviewState as RustIndexedEvidenceStatus['reviewState'],
+    duplicateOf: value.duplicateOf,
+  };
+}
+
+function readIndexedEvidenceVerification(value: unknown): RustIndexedEvidenceVerification | null {
+  if (!isStringRecordValueMap(value) || !Array.isArray(value.statuses)) return null;
+  const statuses: RustIndexedEvidenceStatus[] = [];
+  for (const row of value.statuses) {
+    const status = readIndexedEvidenceStatus(row);
+    if (!status) return null;
+    statuses.push(status);
+  }
+  return { statuses };
+}
+
+/** 질의 토큰 위치·필드·exact·부정 신호와 원문 구절 선택 계획을 계산합니다. */
+export function planIndexedEvidenceRust(input: RustIndexedEvidenceInput): RustIndexedEvidencePlan | null {
+  if (!ensureRustCore()) return null;
+  const run = resolveRustStringExport('plan_indexed_evidence_json');
+  if (!run) return null;
+  try {
+    return readIndexedEvidencePlan(JSON.parse(run(JSON.stringify(input))));
+  } catch {
+    return null;
+  }
+}
+
+/** 채택 구절의 원문 존재·행 위치·리비전·스코프·검토 상태만 결정적으로 검증합니다. */
+export function verifyIndexedEvidenceRust(
+  input: RustIndexedEvidenceVerificationInput,
+): RustIndexedEvidenceVerification | null {
+  if (!ensureRustCore()) return null;
+  const run = resolveRustStringExport('verify_indexed_evidence_json');
+  if (!run) return null;
+  try {
+    return readIndexedEvidenceVerification(JSON.parse(run(JSON.stringify(input))));
+  } catch {
+    return null;
+  }
+}
+
+
+/** 배치 계획 병합 예산입니다. */
+export interface RustIndexedEvidenceMergeBudget {
+  maxPassages?: number;
+  maxChars?: number;
+}
+
+/** 배치 계획 병합 입력입니다. */
+export interface RustIndexedEvidenceMergeInput {
+  plans: readonly RustIndexedEvidencePlan[];
+  budget?: RustIndexedEvidenceMergeBudget;
+}
+
+/** 배치 계획 병합 진단입니다. */
+export interface RustIndexedEvidenceMergeDiagnostics {
+  truncated: boolean;
+  budgetDropped: number;
+  duplicatesDropped: number;
+  evaluatedChunks: number;
+  selectedDocuments: number;
+  selectedChunks: number;
+}
+
+/** 배치 계획을 전역 점수 순으로 병합한 결과입니다. */
+export interface RustIndexedEvidenceMergeResult {
+  evidence: readonly RustIndexedEvidencePassage[];
+  order: readonly string[];
+  coverage: RustIndexedEvidenceCoverage;
+  diagnostics: RustIndexedEvidenceMergeDiagnostics;
+  budget: {
+    maxPassages: number;
+    maxChars: number;
+    usedChars: number;
+  };
+}
+
+/** 병합 결과를 화이트리스트 검증합니다. */
+function readIndexedEvidenceMerge(value: unknown): RustIndexedEvidenceMergeResult | null {
+  if (!isStringRecordValueMap(value)) return null;
+  if (!Array.isArray(value.evidence) || !Array.isArray(value.order)) return null;
+  const evidence: RustIndexedEvidencePassage[] = [];
+  for (const row of value.evidence) {
+    const passage = readIndexedEvidencePassage(row);
+    if (!passage) return null;
+    evidence.push(passage);
+  }
+  if (!value.order.every(isStringValue)) return null;
+  if (!isStringRecordValueMap(value.diagnostics) || !isStringRecordValueMap(value.budget)) {
+    return null;
+  }
+  if (!isStringRecordValueMap(value.coverage)) return null;
+  const diagnostics = value.diagnostics;
+  if (
+    typeof diagnostics.truncated !== 'boolean' ||
+    !isNonNegativeSafeInteger(diagnostics.budgetDropped) ||
+    !isNonNegativeSafeInteger(diagnostics.duplicatesDropped) ||
+    !isNonNegativeSafeInteger(diagnostics.evaluatedChunks) ||
+    !isNonNegativeSafeInteger(diagnostics.selectedDocuments) ||
+    !isNonNegativeSafeInteger(diagnostics.selectedChunks) ||
+    !isNonNegativeSafeInteger(value.budget.maxPassages) ||
+    !isNonNegativeSafeInteger(value.budget.maxChars) ||
+    !isNonNegativeSafeInteger(value.budget.usedChars)
+  )
+    return null;
+  if (
+    !['supported', 'incomplete', 'budget-exhausted'].includes(String(value.coverage.status)) ||
+    !isNonNegativeSafeInteger(value.coverage.reviewedDocuments) ||
+    !isNonNegativeSafeInteger(value.coverage.unreviewedDocuments) ||
+    !isNonNegativeSafeInteger(value.coverage.notIndexedDocuments)
+  )
+    return null;
+  return {
+    evidence,
+    order: value.order,
+    coverage: {
+      status: value.coverage.status as RustIndexedEvidenceCoverage['status'],
+      reviewedDocuments: value.coverage.reviewedDocuments,
+      unreviewedDocuments: value.coverage.unreviewedDocuments,
+      notIndexedDocuments: value.coverage.notIndexedDocuments,
+    },
+    diagnostics: {
+      truncated: diagnostics.truncated,
+      budgetDropped: diagnostics.budgetDropped,
+      duplicatesDropped: diagnostics.duplicatesDropped,
+      evaluatedChunks: diagnostics.evaluatedChunks,
+      selectedDocuments: diagnostics.selectedDocuments,
+      selectedChunks: diagnostics.selectedChunks,
+    },
+    budget: {
+      maxPassages: value.budget.maxPassages,
+      maxChars: value.budget.maxChars,
+      usedChars: value.budget.usedChars,
+    },
+  };
+}
+
+/** 배치 plan 증거만 전역 점수 순으로 병합합니다. 원문 재스캔은 하지 않습니다. */
+export function mergeIndexedEvidencePlansRust(
+  input: RustIndexedEvidenceMergeInput,
+): RustIndexedEvidenceMergeResult | null {
+  if (!ensureRustCore()) return null;
+  const run = resolveRustStringExport('merge_indexed_evidence_plans_json');
+  if (!run) return null;
+  try {
+    return readIndexedEvidenceMerge(JSON.parse(run(JSON.stringify(input))));
   } catch {
     return null;
   }

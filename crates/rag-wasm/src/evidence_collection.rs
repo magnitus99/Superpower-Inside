@@ -318,6 +318,27 @@ fn next_source_call(state: &CollectionState<'_>) -> Option<Value> {
     {
         return Some(next);
     }
+    // related 도구는 범위를 받지 않으므로 원문 시드를 범위가 있는 검색으로 전달합니다.
+    if !state.scopes.is_empty() {
+        for result in state.results.iter().flatten() {
+            if result.get("action").and_then(Value::as_str) != Some("read")
+                || !result
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| in_scope(path, &state.scopes))
+            {
+                continue;
+            }
+            let Some(content) = result.get("content").and_then(Value::as_str) else {
+                continue;
+            };
+            for probe in search_probes(content, &state.scopes) {
+                if !attempted(state.calls, SEARCH, &probe) {
+                    return Some(next_call(SEARCH, &probe));
+                }
+            }
+        }
+    }
     if state.calls.len() >= 2 {
         let before = state.results.get(..state.results.len().saturating_sub(2))?;
         if verified_ranges(before, &state.scopes) == verified_ranges(&state.results, &state.scopes)
@@ -749,6 +770,67 @@ mod tests {
         .unwrap_or(Value::Null);
         assert_eq!(args.get("path").unwrap_or(&Value::Null), "Research");
         assert_eq!(args.get("mode").unwrap_or(&Value::Null), "auto");
+    }
+
+    #[test]
+    fn scoped_original_text_discovers_related_sources_without_model_reviews() {
+        for content in [
+            "Restart uses the quartz handshake waiting procedure",
+            "재시작은 수정 인계 대기 절차를 따른다",
+        ] {
+            let mut calls = Vec::new();
+            let mut discovered = false;
+            let mut finished = false;
+            for _ in 0..MAX_CALLS {
+                let input = json!({"question":"restart waiting procedure", "scopes":["Research"], "toolCalls":calls});
+                let result = collection_plan(&input).unwrap_or(Value::Null);
+                assert!(result.is_object());
+                assert!(result.get("reviewRequest").is_none_or(Value::is_null));
+                if result.get("done") == Some(&json!(true)) {
+                    assert!(discovered);
+                    assert_eq!(result.get("verifiedSources"), Some(&json!(2)));
+                    assert!(
+                        u64::try_from(calls.len()).unwrap_or(u64::MAX)
+                            <= result.get("maxCalls").and_then(Value::as_u64).unwrap_or(0)
+                    );
+                    finished = true;
+                    break;
+                }
+                let next = result.get("nextCall").unwrap_or(&Value::Null);
+                let args: Value = serde_json::from_str(
+                    next.get("arguments").and_then(Value::as_str).unwrap_or(""),
+                )
+                .unwrap_or(Value::Null);
+                let name = next.get("name").and_then(Value::as_str).unwrap_or("");
+                assert!([SEARCH, READ].contains(&name));
+                let response = match name {
+                    SEARCH => {
+                        assert_eq!(args.get("path"), Some(&json!("Research")));
+                        let path = if calls.is_empty() {
+                            "Research/Seed.md"
+                        } else {
+                            let query = args.get("query").and_then(Value::as_str).unwrap_or("");
+                            assert!(query.contains("quartz") || query.contains("수정"));
+                            discovered = true;
+                            "Research/Procedure.md"
+                        };
+                        json!({"action":"search","hits":[
+                            {"path":path,"startLine":1,"endLine":1,"requiresRead":true},
+                            {"path":"Other/Private.md","startLine":1,"endLine":1,"requiresRead":true}
+                        ]})
+                    }
+                    READ => {
+                        let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+                        assert!(path.starts_with("Research/"));
+                        json!({"action":"read","path":path,"startLine":1,"endLine":1,"content":content})
+                    }
+                    _ => Value::Null,
+                };
+                calls.push(call(name, &args, &response));
+            }
+            assert!(discovered);
+            assert!(finished);
+        }
     }
 
     #[test]
