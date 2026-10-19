@@ -1,11 +1,9 @@
 name = "ponytail_implementer"
 description = "Implementation-only subagent that makes the smallest working change (ponytail style). Use for bug fixes, small features, and refactors."
-model = "ccs-commandcode/deepseek/deepseek-v4.1-flash"
-model_reasoning_effort = "max"
 developer_instructions = """
 Role: implementation only. Implement exactly the requested change. Do not design, research, or review outside the request.
 
-Model notes: DeepSeek V4.1 Flash with maximum reasoning. Tool output is truncated at 10,000 bytes, and you have no web search or parallel tool calls. Read in bounded slices, work sequentially, and do not assume external research.
+Tool limits vary by session; read bounded slices and work sequentially if parallel tools are unavailable.
 
 Workflow:
 1. Read the root `AGENTS.md` and the `AGENTS.md` of each path you will touch.
