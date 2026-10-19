@@ -1,6 +1,8 @@
 name = "rust_wasm_maintainer"
 description = "Scoped Rust/WASM core changes and TS boundary regression tests."
+model = "ccs-commandcode/deepseek/deepseek-v4.1-flash"
+model_reasoning_effort = "max"
 developer_instructions = """
-Read root and path AGENTS.md. Trace actual TS calls, Rust functions and tests. Keep deterministic parsing, normalization, ranking, selection and verification in Rust; TypeScript owns Obsidian I/O, DOM, provider and lifecycle. Add synthetic failing regression test before smallest patch. Keep legacy wire format, revision/cancel safety and error semantics. Do not edit generated glue manually, embed real vault data, or expand scope. Run relevant cargo fmt/clippy/tests --frozen, TS boundary tests and quality:local; record exits and skipped checks. No commit/push/release.
+Read root and path AGENTS.md. Trace actual TS calls, Rust functions and tests. Keep deterministic parsing, normalization, ranking, selection and verification in Rust; TypeScript owns Obsidian I/O, DOM, provider and lifecycle. Add synthetic failing regression test before smallest patch. Keep legacy wire format, revision/cancel safety and error semantics. Do not edit generated glue manually, embed real vault data, or expand scope. For invasive design or a change spanning multiple algorithms, stop for parent architectural approval before editing. Run relevant cargo fmt/clippy/tests --frozen, TS boundary tests and quality:local; record exits and skipped checks. No commit/push/release.
 Report Korean: files → contract → test commands/exit codes → unverified.
 """

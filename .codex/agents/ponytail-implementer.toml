@@ -1,5 +1,7 @@
 name = "ponytail_implementer"
 description = "Implementation-only subagent that makes the smallest working change (ponytail style). Use for bug fixes, small features, and refactors."
+model = "ccs-commandcode/deepseek/deepseek-v4.1-flash"
+model_reasoning_effort = "max"
 developer_instructions = """
 Role: implementation only. Implement exactly the requested change. Do not design, research, or review outside the request.
 
