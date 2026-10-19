@@ -9995,6 +9995,7 @@ fn parse_chat_message_plan(
     copy_optional_chat_string(object, &mut message, "branchRoot");
     copy_optional_chat_string(object, &mut message, "variantOf");
     copy_optional_chat_string(object, &mut message, "stopReason");
+    copy_optional_chat_string(object, &mut message, "indexedReviewNotice");
     copy_optional_chat_value(object, &mut message, "toolCalls");
     copy_optional_chat_value(object, &mut message, "citations");
     copy_optional_chat_value(object, &mut message, "sourceWarnings");
@@ -10043,6 +10044,53 @@ fn copy_optional_chat_diagnostics(
     {
         target.insert("retrievalTrace".to_owned(), trace.clone());
     }
+    if let Some(diagnostics) = source
+        .get("indexedReviewDiagnostics")
+        .and_then(validated_indexed_review_diagnostics)
+    {
+        target.insert("indexedReviewDiagnostics".to_owned(), diagnostics);
+    }
+}
+
+/// 검수 진단에는 정해진 단계의 비용과 집계만 남겨 원문 필드가 섞이지 않게 합니다.
+fn validated_indexed_review_diagnostics(value: &JsonValue) -> Option<JsonValue> {
+    let mut phases = JsonMap::new();
+    for phase in [
+        "inventory",
+        "search",
+        "map",
+        "screen",
+        "extract",
+        "reduce",
+        "answer",
+    ] {
+        let raw = value.get("phases")?.get(phase)?;
+        let mut snapshot = turn_usage::validated_snapshot(raw)?.as_object()?.clone();
+        let duration = raw.get("durationMs")?.as_f64()?;
+        if !duration.is_finite() || duration < 0.0 {
+            return None;
+        }
+        snapshot.insert("durationMs".to_owned(), finite_json_number_value(duration)?);
+        phases.insert(phase.to_owned(), JsonValue::Object(snapshot));
+    }
+    let mut counts = JsonMap::new();
+    for key in [
+        "candidateSegments",
+        "screenAcceptedSegments",
+        "extractedSegments",
+        "screenRetries",
+        "extractRetries",
+        "splitBatches",
+        "reduceRequests",
+        "cacheHits",
+    ] {
+        let count = value.get("counts")?.get(key)?.as_u64()?;
+        if count > 9_007_199_254_740_991 {
+            return None;
+        }
+        counts.insert(key.to_owned(), JsonValue::from(count));
+    }
+    Some(serde_json::json!({"phases": phases, "counts": counts}))
 }
 
 /// 저장된 검색 진단이 화면의 반복문·번역 키·점수 표시 계약을 충족하는지 확인합니다.
@@ -10124,6 +10172,34 @@ fn valid_chat_retrieval_diagnostic(value: &JsonValue) -> bool {
         && ["skippedReason", "error"]
             .iter()
             .all(|key| value.get(key).is_none_or(JsonValue::is_string))
+        && ["receivedCandidateCount", "revisionRejectedCount"]
+            .iter()
+            .all(|key| {
+                value.get(key).is_none_or(|value| {
+                    value
+                        .as_u64()
+                        .is_some_and(|number| number <= 9_007_199_254_740_991)
+                })
+            })
+        && value.get("ranking").is_none_or(|ranking| {
+            [
+                "mergedCandidates",
+                "scopeRejected",
+                "invalidScoreRejected",
+                "scoredCandidates",
+                "scoreRejected",
+                "policyRejected",
+                "diversityRejected",
+                "returnedCandidates",
+            ]
+            .iter()
+            .all(|key| {
+                ranking
+                    .get(key)
+                    .and_then(JsonValue::as_u64)
+                    .is_some_and(|number| number <= 9_007_199_254_740_991)
+            })
+        })
 }
 
 /// chat role 값이 런타임에서 허용되는 role인지 확인한다.
@@ -13569,6 +13645,48 @@ mod tests {
             ),
             "[{\"id\":\"msg-1\",\"role\":\"assistant\",\"content\":\"원본 답변 내용\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"providerKey\":\"openai\",\"providerCapability\":{\"providerKey\":\"openai\",\"model\":\"gpt-test\",\"streaming\":true,\"transport\":\"fetch-sse\",\"toolCalling\":true,\"reasoning\":true,\"abort\":\"native\",\"fileReference\":true,\"maxToolRounds\":10,\"knownLimitations\":[]},\"turnStage\":\"streaming-answer\",\"toolRound\":2,\"errorRetryAt\":\"2026-01-01T00:05:00.000Z\",\"reasoning\":\"생각의 과정입니다.\"},{\"id\":\"msg-2\",\"role\":\"assistant\",\"content\":\"생각의 과정입니다.\",\"timestamp\":1700000000000.0,\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"updatedAt\":\"2026-01-01T00:00:00.000Z\",\"status\":\"complete\",\"reasoning\":\"생각의 과정입니다.\"}]",
         );
+    }
+
+    /// 검수 비용에는 원문과 임의 필드를 보존하지 않고 안전한 집계만 남깁니다.
+    #[test]
+    fn indexed_review_diagnostics_keep_only_valid_costs() {
+        let phase = serde_json::json!({"durationMs": 2.5, "requests": 1, "reportedRequests": 1,
+            "inputTokens": 20, "outputTokens": 3, "totalTokens": 23, "text": "private synthetic text"});
+        let mut phases = JsonMap::new();
+        for name in [
+            "inventory",
+            "search",
+            "map",
+            "screen",
+            "extract",
+            "reduce",
+            "answer",
+        ] {
+            phases.insert(name.to_owned(), phase.clone());
+        }
+        let mut value = serde_json::json!({"phases": phases, "counts": {
+            "candidateSegments": 2, "screenAcceptedSegments": 1, "extractedSegments": 1,
+            "screenRetries": 0, "extractRetries": 0, "splitBatches": 0, "reduceRequests": 0,
+            "cacheHits": 1, "text": "private synthetic text"}, "question": "private synthetic question"});
+        let result = validated_indexed_review_diagnostics(&value).unwrap_or(JsonValue::Null);
+        assert_eq!(
+            result
+                .pointer("/phases/screen/totalTokens")
+                .and_then(JsonValue::as_u64),
+            Some(23)
+        );
+        assert!(!result.to_string().contains("private synthetic"));
+        if let Some(count) = value.pointer_mut("/counts/cacheHits") {
+            *count = serde_json::json!(-1);
+        }
+        assert!(validated_indexed_review_diagnostics(&value).is_none());
+        if let Some(count) = value.pointer_mut("/counts/cacheHits") {
+            *count = serde_json::json!(1);
+        }
+        if let Some(count) = value.pointer_mut("/phases/screen/reportedRequests") {
+            *count = serde_json::json!(2);
+        }
+        assert!(validated_indexed_review_diagnostics(&value).is_none());
     }
 
     /// 잘못된 진단 메타데이터가 답변을 삭제하거나 화면 반복문에 도달하지 않아야 합니다.
