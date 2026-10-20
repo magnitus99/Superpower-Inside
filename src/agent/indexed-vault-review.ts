@@ -1,5 +1,10 @@
 import { t } from '../i18n';
-import { LLMProviderHttpError, type LLMProvider, type TokenUsage } from '../llm/providers';
+import {
+  LLMProviderHttpError,
+  type ChatMessage,
+  type LLMProvider,
+  type TokenUsage,
+} from '../llm/providers';
 import { prepareProviderRequest } from '../llm/request-budget';
 import {
   mergeIndexedEvidencePlansRust,
@@ -446,7 +451,14 @@ export async function searchIndexedVault(
 }
 
 /** 엔진 채택 근거를 그대로 쓰고 LLM에는 최종 해석만 맡깁니다. */
-export type IndexedReviewPhase = 'inventory' | 'search' | 'map' | 'screen' | 'extract' | 'reduce' | 'answer';
+export type IndexedReviewPhase =
+  | 'inventory'
+  | 'search'
+  | 'map'
+  | 'screen'
+  | 'extract'
+  | 'reduce'
+  | 'answer';
 
 export interface IndexedReviewPhaseDiagnostics extends TurnUsageSnapshot {
   durationMs: number;
@@ -648,42 +660,41 @@ async function runIndexedVaultReview(
     }
     const accepted = new Set(evidence.map((item) => item.path));
     const reviewed = search.coverage.reviewedDocuments;
-    const machineExcluded = search.plan.diagnostics.droppedDocuments.belowThreshold +
-      search.plan.diagnostics.droppedDocuments.budget +
+    const machineExcluded =
+      search.plan.diagnostics.droppedDocuments.belowThreshold +
       search.plan.diagnostics.droppedDocuments.filtered;
+    const budgetExcluded = search.rejected.filter((item) => item.status === 'unreviewed').length;
+    const verificationRejected = search.rejected.length - budgetExcluded;
     // 전역 예산·coverage·truncated는 엔진 병합 값을 그대로 두고, 엔진이 알 수 없는
-    // 현재 vault 리비전(stale) 제거분만 selectedDocuments·coverage에 다시 반영합니다.
-    const selectedDocuments = accepted.size;
+    // 현재 vault 리비전(stale) 제거분만 별도 읽기 실패로 반영합니다.
+    const hasIncompleteCoverage =
+      search.coverage.status === 'incomplete' ||
+      search.coverage.unreviewedDocuments > 0 ||
+      search.coverage.notIndexedDocuments > 0 ||
+      stale.size > 0;
     const effectiveCoverage = {
       ...search.coverage,
-      // stale 제거 뒤에도 완료(supported)로 승격하지 않습니다.
-      status:
-        stale.size > 0 && search.coverage.status === 'supported'
-          ? ('incomplete' as const)
-          : search.coverage.status,
-      unreviewedDocuments: search.coverage.unreviewedDocuments + stale.size,
+      status: hasIncompleteCoverage ? ('incomplete' as const) : search.coverage.status,
     };
-    const coverage = t('indexedReviewCoverage', {
+    const noticeValues = {
       total,
-      floor: selectedDocuments,
       machineExcluded,
       accepted: accepted.size,
-      rejected: search.rejected.length + stale.size,
-    });
-    const notice = t('indexedReviewIncompleteNotice', {
-      total,
-      screened: reviewed,
-      floor: selectedDocuments,
-      machineExcluded,
-      accepted: accepted.size,
-      rejected: search.rejected.length + stale.size,
-      undecided: effectiveCoverage.unreviewedDocuments,
+      rejected: verificationRejected,
+      budgetExcluded,
+      unreviewed: effectiveCoverage.unreviewedDocuments,
+      notIndexed: effectiveCoverage.notIndexedDocuments,
       unreadable: stale.size,
-    });
-    const partialReview =
-      stale.size > 0 ||
-      effectiveCoverage.status !== 'supported' ||
-      search.plan.diagnostics.truncated;
+    };
+    const coverage = t('indexedReviewCoverage', noticeValues);
+    const limitedReview =
+      !hasIncompleteCoverage &&
+      (effectiveCoverage.status === 'budget-exhausted' || search.plan.diagnostics.truncated);
+    const notice = hasIncompleteCoverage
+      ? t('indexedReviewIncompleteNotice', noticeValues)
+      : limitedReview
+        ? t('indexedReviewLimitedNotice', noticeValues)
+        : coverage;
     const evidencePayload = evidence.map((item) => ({
       sourceId: item.sourceId,
       path: item.path,
@@ -698,7 +709,7 @@ async function runIndexedVaultReview(
     if (options.deferAnswer || evidence.length === 0) {
       const content =
         evidence.length === 0
-          ? partialReview
+          ? hasIncompleteCoverage || limitedReview
             ? notice
             : t('indexedReviewNoEvidence')
           : JSON.stringify({ evidence: evidencePayload });
@@ -708,9 +719,9 @@ async function runIndexedVaultReview(
         citations: [...citations.values()],
         processedFiles: reviewed,
         totalFiles: total,
-        rejectedFiles: search.rejected.length,
+        rejectedFiles: verificationRejected,
         providerTransfer: { sentFiles: accepted.size, sentPaths: [...accepted] },
-        coverageNotice: partialReview ? notice : coverage,
+        coverageNotice: notice,
         diagnostics,
         toolFallback: evidence.length === 0,
         engineUnavailable: false,
@@ -719,31 +730,36 @@ async function runIndexedVaultReview(
     const budget = options.provider.contextBudget ?? planModelContextRust({});
     if (!budget) throw new Error(t('vaultResearchContractUnavailable'));
     const usage: TokenUsage[][] = [];
-    const requestAnswer = async (correction = false): Promise<string | null> => {
+    const requestAnswer = async (
+      previousAnswer?: string,
+    ): Promise<{ raw: string; rendered: string | null }> => {
       check();
-      const prepared = prepareProviderRequest(
-        [
-          {
-            role: 'system',
-            content: [t('llmEvidenceDataBoundary'), options.systemPrompt, t('llmIndexedReviewAnswer')]
-              .filter(Boolean)
-              .join('\n\n'),
-          },
-          {
-            role: 'user',
-            content: JSON.stringify({
-              question: options.question,
-              previousUserQuestions: options.previousUserQuestions ?? [],
-              evidence: evidencePayload,
-            }),
-          },
-        ],
-        undefined,
-        budget.inputBytes,
-      );
+      const messages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: [t('llmEvidenceDataBoundary'), options.systemPrompt, t('llmIndexedReviewAnswer')]
+            .filter(Boolean)
+            .join('\n\n'),
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            question: options.question,
+            previousUserQuestions: options.previousUserQuestions ?? [],
+            evidence: evidencePayload,
+          }),
+        },
+      ];
+      if (previousAnswer !== undefined) {
+        if (previousAnswer.trim()) {
+          messages.push({ role: 'assistant', content: previousAnswer });
+        }
+        messages.push({ role: 'user', content: t('llmIndexedReviewAnswerCorrection') });
+      }
+      const prepared = prepareProviderRequest(messages, undefined, budget.inputBytes);
       const updates: TokenUsage[] = [];
       usage.push(updates);
-      if (correction) diagnostics.counts.answerCorrectionRequests = 1;
+      if (previousAnswer !== undefined) diagnostics.counts.answerCorrectionRequests = 1;
       let content = '';
       try {
         await interruptible(
@@ -773,14 +789,19 @@ async function runIndexedVaultReview(
         if (plan) Object.assign(diagnostics.phases.answer, plan);
       }
       check();
-      if (!content.trim()) throw new Error(t('indexedReviewIncomplete'));
-      return renderIndexedReviewAnswerRust([...citations.keys()], content);
+      return {
+        raw: content,
+        rendered: content.trim()
+          ? renderIndexedReviewAnswerRust([...citations.keys()], content)
+          : null,
+      };
     };
     let answer: string | null = null;
     try {
       // 정상 해석 1회와 결정적 인용 형식 오류 교정 1회까지만 허용합니다.
-      answer = await requestAnswer();
-      if (answer === null) answer = await requestAnswer(true);
+      const first = await requestAnswer();
+      answer = first.rendered;
+      if (answer === null) answer = (await requestAnswer(first.raw)).rendered;
     } catch (error) {
       check();
       if (error instanceof LLMProviderHttpError) throw error;
@@ -792,22 +813,27 @@ async function runIndexedVaultReview(
     }
     const resolved = answer !== null;
     const body = resolved ? answer : t('indexedReviewAnswerUnavailable');
-    const content = evidence.length === 0 ? notice : (partialReview || !resolved) ? notice + '\n\n' + body : coverage + '\n\n' + body;
+    const content = notice + '\n\n' + body;
     options.onAnswer?.(content);
     options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
-    if (partialReview || !resolved)
+    if (hasIncompleteCoverage || limitedReview || !resolved)
       appLogger.warn('Finished the indexed document review with unresolved coverage.', {
         source: 'chat.indexed-review',
-        data: { accepted: accepted.size, rejected: search.rejected.length, stale: stale.size },
+        data: {
+          accepted: accepted.size,
+          rejected: verificationRejected,
+          budgetExcluded,
+          stale: stale.size,
+        },
       });
     return {
       content,
       citations: selectAnswerCitations(answer ?? '', [...citations.values()], 0),
       processedFiles: reviewed,
       totalFiles: total,
-      rejectedFiles: search.rejected.length,
+      rejectedFiles: verificationRejected,
       providerTransfer: { sentFiles: accepted.size, sentPaths: [...accepted] },
-      coverageNotice: partialReview || !resolved ? notice : coverage,
+      coverageNotice: notice,
       diagnostics,
       toolFallback: false,
       engineUnavailable: false,

@@ -212,7 +212,9 @@ function answerProvider(): { provider: LLMProvider; calls: ChatMessage[][] } {
   return { provider, calls };
 }
 
-function reviewOptions(overrides: Partial<IndexedVaultReviewOptions> = {}): IndexedVaultReviewOptions {
+function reviewOptions(
+  overrides: Partial<IndexedVaultReviewOptions> = {},
+): IndexedVaultReviewOptions {
   return {
     question: 'Quartz cooling cycles',
     indexedPaths: [RELEVANT, OTHER],
@@ -277,19 +279,20 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.citations.map((citation) => citation.filePath)).toEqual([RELEVANT]);
     expect(result.providerTransfer.sentFiles).toBe(1);
     expect(result.toolFallback).toBe(false);
-    // 제거된 문서는 채택 문서·coverage에서 빠지고 미확정·읽기 실패로만 남습니다.
+    // 제거된 문서는 채택 문서·coverage에서 빠지고 원문 재확인 실패 문서로만 남습니다.
     expect(result.coverageNotice).toBe(
       t('indexedReviewIncompleteNotice', {
         total: 2,
-        screened: 2,
-        floor: 1,
-        machineExcluded: 0,
         accepted: 1,
-        rejected: 1,
-        undecided: 1,
+        machineExcluded: 0,
+        rejected: 0,
+        budgetExcluded: 0,
+        notIndexed: 0,
+        unreviewed: 0,
         unreadable: 1,
       }),
     );
+    expect(result.rejectedFiles).toBe(0);
   });
 
   it('stale 제거로 결과가 비면 완료로 승격하지 않고 미완료 고지·도구 fallback을 유지한다', async () => {
@@ -307,20 +310,23 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.content).toBe(
       t('indexedReviewIncompleteNotice', {
         total: 2,
-        screened: 2,
-        floor: 0,
-        machineExcluded: 0,
         accepted: 0,
-        rejected: 2,
-        undecided: 2,
+        machineExcluded: 0,
+        rejected: 0,
+        budgetExcluded: 0,
+        notIndexed: 0,
+        unreviewed: 0,
         unreadable: 2,
       }),
     );
   });
 
-  it('인용 형식 오류는 정상 해석 1회와 교정 1회까지만 재생성한다', async () => {
+  it('중복 vault 접두사는 첫 원문을 assistant로 전달해 정확한 ID로 한 번 교정한다', async () => {
     const calls: ChatMessage[][] = [];
     let attempt = 0;
+    const invalidAnswer = JSON.stringify({
+      paragraphs: [{ text: '형식 오류', sources: [`vault:vault:${SOURCE_ID}`] }],
+    });
     const provider = {
       streamChat: (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
         calls.push(messages);
@@ -328,7 +334,7 @@ describe('엔진 근거 기반 색인 검토', () => {
         consume({
           content:
             attempt === 1
-              ? JSON.stringify({ paragraphs: [{ text: '형식 오류', sources: ['missing-source'] }] })
+              ? invalidAnswer
               : JSON.stringify({
                   paragraphs: [{ text: '두 번 냉각한 뒤 재시작합니다.', sources: [SOURCE_ID] }],
                 }),
@@ -340,18 +346,50 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(calls).toHaveLength(2);
     expect(result.diagnostics.counts.answerCorrectionRequests).toBe(1);
     expect(result.content).toContain('두 번 냉각한 뒤');
-    expect(calls.every((messages) => !(messages[0]?.content ?? '').includes('스크리닝'))).toBe(
-      true,
-    );
+    expect(calls[1]).toContainEqual({ role: 'assistant', content: invalidAnswer });
+    expect(calls[1]?.at(-1)).toEqual({
+      role: 'user',
+      content: t('llmIndexedReviewAnswerCorrection'),
+    });
+    expect(calls[0]?.[0]?.content).toContain('sourceId를 그대로 복사');
+    expect(calls[1]?.at(-1)?.content).toContain('vault: 접두사를 붙이지');
   });
 
-  it('교정 1회도 실패하면 세 번째 해석 호출 없이 불가 고지를 남긴다', async () => {
+  it('단일 vault 접두사는 원본 sourceId로 정규화해 교정 없이 채택한다', async () => {
     const calls: ChatMessage[][] = [];
     const provider = {
       streamChat: (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
         calls.push(messages);
         consume({
-          content: JSON.stringify({ paragraphs: [{ text: '형식 오류', sources: ['missing-source'] }] }),
+          content: JSON.stringify({
+            paragraphs: [
+              { text: '두 번 냉각한 뒤 재시작합니다.', sources: ['vault:' + SOURCE_ID] },
+            ],
+          }),
+        });
+        return Promise.resolve();
+      },
+    } as unknown as LLMProvider;
+    const result = await reviewIndexedVault(reviewOptions({ provider }));
+    expect(calls).toHaveLength(1);
+    expect(result.diagnostics.counts.answerCorrectionRequests).toBe(0);
+    expect(result.content).toContain('두 번 냉각한 뒤');
+  });
+
+  it('첫 응답이 빈 문자열이면 assistant 원문 없이 교정 요청을 한 번 수행한다', async () => {
+    const calls: ChatMessage[][] = [];
+    let attempt = 0;
+    const provider = {
+      streamChat: (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+        calls.push(messages);
+        attempt += 1;
+        consume({
+          content:
+            attempt === 1
+              ? ''
+              : JSON.stringify({
+                  paragraphs: [{ text: '두 번 냉각한 뒤 재시작합니다.', sources: [SOURCE_ID] }],
+                }),
         });
         return Promise.resolve();
       },
@@ -359,14 +397,211 @@ describe('엔진 근거 기반 색인 검토', () => {
     const result = await reviewIndexedVault(reviewOptions({ provider }));
     expect(calls).toHaveLength(2);
     expect(result.diagnostics.counts.answerCorrectionRequests).toBe(1);
-    expect(result.content).toContain(t('indexedReviewAnswerUnavailable'));
+    expect(calls[1]?.some((message) => message.role === 'assistant')).toBe(false);
+    expect(calls[1]?.at(-1)).toEqual({
+      role: 'user',
+      content: t('llmIndexedReviewAnswerCorrection'),
+    });
+    expect(result.content).toContain('두 번 냉각한 뒤');
+  });
+
+  it('supported에서 두 답변 시도가 실패하면 coverage와 답변 불가만 표시한다', async () => {
+    const calls: ChatMessage[][] = [];
+    const provider = {
+      streamChat: (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+        calls.push(messages);
+        consume({
+          content: JSON.stringify({
+            paragraphs: [{ text: '형식 오류', sources: ['missing-source'] }],
+          }),
+        });
+        return Promise.resolve();
+      },
+    } as unknown as LLMProvider;
+    const result = await reviewIndexedVault(reviewOptions({ provider }));
+    expect(calls).toHaveLength(2);
+    expect(result.diagnostics.counts.answerCorrectionRequests).toBe(1);
+    const coverage = t('indexedReviewCoverage', {
+      total: 2,
+      accepted: 1,
+      machineExcluded: 1,
+      rejected: 0,
+      budgetExcluded: 0,
+      notIndexed: 0,
+      unreviewed: 0,
+      unreadable: 0,
+    });
+    expect(result.coverageNotice).toBe(coverage);
+    expect(result.content).toBe(`${coverage}\n\n${t('indexedReviewAnswerUnavailable')}`);
+    expect(result.content).not.toContain('검수 미완료');
+  });
+
+  it('budget-exhausted이고 실제 미검토 문서가 없으면 근거 범위 제한 고지와 답변을 낸다', async () => {
+    const plan = planFixture();
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue({
+      ...plan,
+      coverage: { ...plan.coverage, status: 'budget-exhausted' },
+    });
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(reviewOptions({ provider }));
+    const limited = t('indexedReviewLimitedNotice', {
+      total: 2,
+      accepted: 1,
+      machineExcluded: 1,
+      rejected: 0,
+      budgetExcluded: 0,
+      notIndexed: 0,
+      unreviewed: 0,
+      unreadable: 0,
+    });
+    expect(calls).toHaveLength(1);
+    expect(result.coverageNotice).toBe(limited);
+    expect(result.content.startsWith(`${limited}\n\n`)).toBe(true);
+    expect(result.content).toContain('두 번 냉각한 뒤');
+    expect(result.coverageNotice).not.toContain('검수 미완료');
+  });
+
+  it('budget-exhausted여도 실제 미검토 문서가 있으면 incomplete 고지를 쓴다', async () => {
+    const plan = planFixture();
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue({
+      ...plan,
+      coverage: {
+        ...plan.coverage,
+        status: 'budget-exhausted',
+        reviewedDocuments: 1,
+        unreviewedDocuments: 1,
+      },
+    });
+    const { provider } = answerProvider();
+    const result = await reviewIndexedVault(reviewOptions({ provider }));
+    const incomplete = t('indexedReviewIncompleteNotice', {
+      total: 2,
+      accepted: 1,
+      machineExcluded: 1,
+      rejected: 0,
+      budgetExcluded: 0,
+      notIndexed: 0,
+      unreviewed: 1,
+      unreadable: 0,
+    });
+    expect(result.coverageNotice).toBe(incomplete);
+    expect(result.content.startsWith(`${incomplete}\n\n`)).toBe(true);
+    expect(result.content).not.toContain(
+      t('indexedReviewLimitedNotice', {
+        total: 2,
+        accepted: 1,
+        machineExcluded: 1,
+        rejected: 0,
+        budgetExcluded: 0,
+        notIndexed: 0,
+        unreviewed: 1,
+        unreadable: 0,
+      }),
+    );
+  });
+
+  it('기계 선별·예산 제외 후보를 색인 범위 밖 문서로 표현하지 않는다', async () => {
+    const { provider } = answerProvider();
+    const result = await reviewIndexedVault(reviewOptions({ provider }));
+    expect(result.coverageNotice).toContain('점수·필터로 제외된 후보 1개');
+    expect(result.coverageNotice).not.toContain('색인 범위 밖 제외 1개');
+  });
+
+  it('미색인 문서가 있으면 supported가 아니라 미완료 고지에 수치를 남긴다', async () => {
+    const plan = planFixture();
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue({
+      ...plan,
+      coverage: { ...plan.coverage, status: 'incomplete', notIndexedDocuments: 1 },
+    });
+    const { provider } = answerProvider();
+    const result = await reviewIndexedVault(reviewOptions({ provider }));
+    expect(result.coverageNotice).toBe(
+      t('indexedReviewIncompleteNotice', {
+        total: 2,
+        accepted: 1,
+        machineExcluded: 1,
+        rejected: 0,
+        budgetExcluded: 0,
+        unreviewed: 0,
+        notIndexed: 1,
+        unreadable: 0,
+      }),
+    );
+    expect(result.coverageNotice).toContain('미색인 문서 1개');
+  });
+
+  it('원문 검증 제외·원문 확인 후 예산 제외·원문 재확인 실패를 섞지 않는다', async () => {
+    const base = planFixture();
+    const selected = base.evidence[0];
+    if (!selected) throw new Error('plan fixture without evidence');
+    const verificationFailedId = RELEVANT + '#L5-L6';
+    const budgetExcludedId = OTHER + '#L1-L1';
+    const plan: RustIndexedEvidencePlan = {
+      ...base,
+      order: [selected.sourceId, verificationFailedId, budgetExcludedId],
+      evidence: [
+        { ...selected, score: 3, rank: 1 },
+        {
+          ...selected,
+          sourceId: verificationFailedId,
+          startLine: 5,
+          endLine: 6,
+          quote: 'A quotation that no longer matches the indexed source.',
+          score: 2,
+          rank: 2,
+        },
+        {
+          ...selected,
+          sourceId: budgetExcludedId,
+          path: OTHER,
+          startLine: 1,
+          endLine: 1,
+          quote: 'Delivery schedule for the northern region.',
+          score: 1,
+          rank: 3,
+        },
+      ],
+      coverage: { ...base.coverage, status: 'incomplete', unreviewedDocuments: 1 },
+    };
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue(plan);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation((input) => ({
+      statuses: verifiedStatuses(input).statuses.map((status) => {
+        if (status.sourceId === verificationFailedId) {
+          return {
+            ...status,
+            status: 'quote-missing' as const,
+            exists: false,
+            lineMatches: false,
+          };
+        }
+        if (status.sourceId === budgetExcludedId) {
+          return {
+            ...status,
+            status: 'unreviewed' as const,
+            reviewState: 'unreviewed' as const,
+          };
+        }
+        return status;
+      }),
+    }));
+    const result = await reviewIndexedVault(reviewOptions());
+    const incomplete = t('indexedReviewIncompleteNotice', {
+      total: 2,
+      accepted: 1,
+      machineExcluded: 1,
+      rejected: 1,
+      budgetExcluded: 1,
+      notIndexed: 0,
+      unreviewed: 1,
+      unreadable: 0,
+    });
+    expect(result.coverageNotice).toBe(incomplete);
+    expect(result.rejectedFiles).toBe(1);
   });
 
   it('deferAnswer면 답변을 만들지 않고 검증 근거만 돌려준다', async () => {
     const { provider, calls } = answerProvider();
-    const result = await reviewIndexedVault(
-      reviewOptions({ provider, deferAnswer: true }),
-    );
+    const result = await reviewIndexedVault(reviewOptions({ provider, deferAnswer: true }));
     expect(calls).toHaveLength(0);
     const payload = JSON.parse(result.content) as { evidence: { quote: string }[] };
     expect(payload.evidence[0]?.quote).toContain('cooling cycles');
