@@ -375,7 +375,7 @@ export function is_whole_vault_research_intent(question: string): boolean;
 export function local_model_range_matches(start: number, end: number, total: number, status: number, length: number, content_range: string): boolean;
 
 /**
- * 여러 배치 계획을 전역 score 순·`path` stable 순으로 병합합니다.
+ * 여러 배치 계획을 배치 내부 순위 `RRF`·`path` stable 순으로 병합합니다.
  *
  * 배치 순서와 무관하게 같은 결과를 내며, 원문 구절은 다시 할당하지 않고
  * 계획 JSON의 증거 행만 재정렬·중복 제거해 전체 corpus 메모리 축적을 피합니다.

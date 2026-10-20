@@ -433,7 +433,7 @@ describe('색인 엔진 근거 선별', () => {
     expect(result?.plan.diagnostics.selectedDocuments).toBeLessThanOrEqual(2);
   });
 
-  it('배치 순서가 달라도 엔진 전역 병합 순위·표시가 같다', async () => {
+  it('배치 내 문서 순서가 달라도 엔진 전역 병합 순위·표시가 같다', async () => {
     const paths = Array.from(
       { length: 257 },
       (_, index) => `Synthetic/File-${String(index + 1).padStart(3, '0')}.md`,
@@ -469,11 +469,11 @@ describe('색인 엔진 근거 선별', () => {
         ),
       ),
     );
-    const collect = async (order: readonly string[]) => {
+    const collect = async (entryOrder: readonly string[]) => {
       const corpus: IndexedVaultCorpus = {
         getEntriesByFilePaths: (requested) =>
           Promise.resolve(
-            order.flatMap((path) =>
+            entryOrder.flatMap((path) =>
               requested.includes(path)
                 ? entries.filter((entry) => entry.metadata.filePath === path)
                 : [],
@@ -483,7 +483,7 @@ describe('색인 엔진 근거 선별', () => {
       };
       return searchIndexedVault({
         question: 'Quartz cooling cycles',
-        indexedPaths: order,
+        indexedPaths: paths,
         scopes: [],
         corpus,
         inventory: { indexedCount: paths.length, unreviewedCount: 0, notIndexedCount: 0 },

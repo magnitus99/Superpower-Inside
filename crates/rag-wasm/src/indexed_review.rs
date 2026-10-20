@@ -167,7 +167,16 @@ fn render_answer(source_ids: &str, response: &str) -> Option<Value> {
             .iter()
             .map(|reference| {
                 let id = reference.as_str()?;
-                sources.contains(id).then(|| format!("[{id}]"))
+                if id == "vault:" || id.starts_with("vault:vault:") {
+                    return None;
+                }
+                let source_id = if sources.contains(id) {
+                    id
+                } else {
+                    let normalized = id.strip_prefix("vault:")?;
+                    sources.contains(normalized).then_some(normalized)?
+                };
+                Some(format!("[{source_id}]"))
             })
             .collect::<Option<Vec<_>>>()?;
         blocks.push(format!("{text} {}", citations.join(" ")));
@@ -458,6 +467,40 @@ mod tests {
         assert!(
             render_answer(sources, &answer.replace("Research/A", "Research/Invented")).is_none()
         );
+    }
+
+    #[test]
+    fn answer_normalizes_one_vault_prefix_to_the_original_source_id() {
+        let sources = r#"["Research/A.md#L2-L3"]"#;
+        let answer = r#"{"paragraphs":[{"text":"Two cooling cycles are required.","sources":["vault:Research/A.md#L2-L3"]}]}"#;
+        let content = render_answer(sources, answer).and_then(|value| {
+            value
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+        assert_eq!(
+            content.as_deref(),
+            Some("Two cooling cycles are required. [Research/A.md#L2-L3]")
+        );
+    }
+
+    #[test]
+    fn answer_rejects_duplicate_vault_prefix_unknown_and_empty_source_ids() {
+        let sources = r#"["Research/A.md#L2-L3"]"#;
+        for reference in [
+            "vault:vault:Research/A.md#L2-L3",
+            "vault:Research/Invented.md#L1-L1",
+            "vault:",
+        ] {
+            let answer =
+                json!({"paragraphs":[{"text":"Unsupported reference.","sources":[reference]}]})
+                    .to_string();
+            assert!(
+                render_answer(sources, &answer).is_none(),
+                "accepted {reference}"
+            );
+        }
     }
 
     #[test]

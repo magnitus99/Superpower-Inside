@@ -65,6 +65,8 @@ const SECONDARY_FIELD_DAMPING: f64 = 0.25;
 const MIN_CANDIDATE_DEPTH: usize = 8;
 /// 상위 점수 대비 후보 깊이를 정하는 비율입니다.
 const CANDIDATE_DEPTH_RATIO: f64 = 0.5;
+/// 병합 시 배치 내부 순위를 전역 순위로 완만하게 반영하는 `RRF` 상수입니다.
+const MERGE_RRF_K: f64 = 60.0;
 
 /// 질의에서 파싱한 토큰 하나입니다.
 struct QueryToken {
@@ -2053,7 +2055,7 @@ fn verify_evidence(value: &Value) -> Option<Value> {
     Some(json!({"statuses": statuses}))
 }
 
-/// 여러 배치 계획을 전역 score 순·`path` stable 순으로 병합합니다.
+/// 여러 배치 계획을 배치 내부 순위 `RRF`·`path` stable 순으로 병합합니다.
 ///
 /// 배치 순서와 무관하게 같은 결과를 내며, 원문 구절은 다시 할당하지 않고
 /// 계획 JSON의 증거 행만 재정렬·중복 제거해 전체 corpus 메모리 축적을 피합니다.
@@ -2073,8 +2075,24 @@ pub fn merge_indexed_evidence_plans_json(input: &str) -> String {
 struct MergeEntry {
     /// 원래 출력용 증거 JSON입니다.
     value: Value,
-    /// 전역 점수입니다.
+    /// 배치 원본 점수입니다.
     score: f64,
+    /// 배치 최고 점수로 나눈 `0..=1` 점수입니다.
+    local_score: f64,
+    /// 배치 내부 유효 순위로 계산한 `RRF` 점수입니다.
+    rrf_score: f64,
+    /// 배치 내부 유효 순위입니다.
+    rank: usize,
+    /// 부정 토큰이 구절 근처에 있는지입니다.
+    negated_nearby: bool,
+    /// 신호에 `candidate`가 포함됐는지입니다.
+    has_candidate: bool,
+    /// 일치한 정확 구문 수입니다.
+    phrase_matches: u64,
+    /// `exact` 신호 수입니다.
+    exact_signal_count: usize,
+    /// 필드 일치 가중치 합입니다.
+    field_score: f64,
     /// 볼트 상대 경로입니다.
     path: String,
     /// 시작 행입니다.
@@ -2106,6 +2124,32 @@ fn merge_entry(value: &Value) -> Option<MergeEntry> {
     }
     let quote = value.get("quote")?.as_str()?.to_owned();
     let source_id = value.get("sourceId")?.as_str()?.to_owned();
+    let rank = value
+        .get("rank")
+        .and_then(Value::as_u64)
+        .and_then(|rank| usize::try_from(rank).ok())
+        .filter(|rank| *rank > 0)
+        .unwrap_or(0);
+    let negated_nearby = value
+        .get("negatedNearby")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let has_candidate = value
+        .get("signal")
+        .and_then(Value::as_str)
+        .is_some_and(|signal| signal.split('+').any(|signal| signal == "candidate"));
+    let phrase_matches = value
+        .get("phraseMatches")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let exact_signal_count = value
+        .get("exactSignals")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let field_score = value
+        .get("fieldScore")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
     let context_before = value
         .get("contextBefore")
         .and_then(Value::as_str)
@@ -2120,6 +2164,14 @@ fn merge_entry(value: &Value) -> Option<MergeEntry> {
     Some(MergeEntry {
         value: value.clone(),
         score,
+        local_score: 0.0,
+        rrf_score: 0.0,
+        rank,
+        negated_nearby,
+        has_candidate,
+        phrase_matches,
+        exact_signal_count,
+        field_score,
         path,
         start_line,
         end_line,
@@ -2150,9 +2202,41 @@ fn collect_merge_entries(plans: &[Value]) -> Option<(Vec<MergeEntry>, MergeCover
     let mut not_indexed = 0_usize;
     for plan in plans {
         let evidence = plan.get("evidence")?.as_array()?;
-        for row in evidence {
-            entries.push(merge_entry(row)?);
+        let mut plan_entries = evidence
+            .iter()
+            .map(merge_entry)
+            .collect::<Option<Vec<_>>>()?;
+        let mut ranks = BTreeSet::new();
+        let ranks_valid = plan_entries
+            .iter()
+            .all(|entry| entry.rank > 0 && ranks.insert(entry.rank))
+            && ranks.iter().copied().eq(1..=plan_entries.len());
+        if !ranks_valid {
+            plan_entries.sort_by(|left, right| {
+                right
+                    .score
+                    .total_cmp(&left.score)
+                    .then_with(|| left.path.cmp(&right.path))
+                    .then_with(|| left.start_line.cmp(&right.start_line))
+                    .then_with(|| left.end_line.cmp(&right.end_line))
+                    .then_with(|| left.quote.cmp(&right.quote))
+                    .then_with(|| left.source_id.cmp(&right.source_id))
+            });
+            for (index, entry) in plan_entries.iter_mut().enumerate() {
+                entry.rank = index.saturating_add(1);
+            }
         }
+        let max_score = plan_entries
+            .iter()
+            .map(|entry| entry.score)
+            .fold(0.0_f64, f64::max);
+        let denominator = max_score.max(1e-12);
+        for entry in &mut plan_entries {
+            entry.local_score = (entry.score / denominator).clamp(0.0, 1.0);
+            let rank = crate::usize_to_f64(entry.rank).unwrap_or(f64::MAX);
+            entry.rrf_score = (MERGE_RRF_K + 1.0) / (MERGE_RRF_K + rank);
+        }
+        entries.extend(plan_entries);
         if let Some(coverage) = plan.get("coverage") {
             let status = coverage.get("status").and_then(Value::as_str).unwrap_or("");
             let rank = match status {
@@ -2193,8 +2277,15 @@ fn select_merge_entries(
     let mut sorted = entries;
     sorted.sort_by(|left, right| {
         right
-            .score
-            .total_cmp(&left.score)
+            .rrf_score
+            .total_cmp(&left.rrf_score)
+            .then_with(|| left.negated_nearby.cmp(&right.negated_nearby))
+            .then_with(|| right.local_score.total_cmp(&left.local_score))
+            .then_with(|| right.has_candidate.cmp(&left.has_candidate))
+            .then_with(|| right.phrase_matches.cmp(&left.phrase_matches))
+            .then_with(|| right.exact_signal_count.cmp(&left.exact_signal_count))
+            .then_with(|| right.field_score.total_cmp(&left.field_score))
+            .then_with(|| right.score.total_cmp(&left.score))
             .then_with(|| left.path.cmp(&right.path))
             .then_with(|| left.start_line.cmp(&right.start_line))
             .then_with(|| left.end_line.cmp(&right.end_line))
@@ -3035,6 +3126,95 @@ mod tests {
         assert_eq!(
             signature.get(1).map(String::as_str),
             Some("b.md#L2-L2|b.md|2|1")
+        );
+    }
+
+    #[test]
+    fn merge_batch_rank_rrf_keeps_257_document_partition_order() {
+        let mut documents = Vec::with_capacity(257);
+        for index in 0..257 {
+            let document = match index {
+                0 => json!({"path": "exact.md", "text": "alpha beta spec-257"}),
+                256 => json!({"path": "phrase.md", "text": "alpha beta only"}),
+                _ => json!({"path": format!("filler-{index}.md"), "text": "unrelated body"}),
+            };
+            documents.push(document);
+        }
+        let plan_slice = |slice: &[Value]| {
+            plan_of(&json!({
+                "question": "\"alpha beta\" spec-257",
+                "documents": slice,
+                "budget": {"maxPassages": 4},
+            }))
+        };
+        let target_order = |merged: &Value| {
+            rows(merged, "evidence")
+                .iter()
+                .filter_map(|row| row.get("path").and_then(Value::as_str))
+                .filter(|path| matches!(*path, "exact.md" | "phrase.md"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let split = |at: usize| {
+            vec![
+                plan_slice(documents.get(..at).unwrap_or_default()),
+                plan_slice(documents.get(at..).unwrap_or_default()),
+            ]
+        };
+        let partitions = [
+            vec![plan_slice(&documents)],
+            split(256),
+            split(1),
+            split(128),
+        ];
+        let expected = vec!["exact.md".to_owned(), "phrase.md".to_owned()];
+        for plans in &partitions {
+            let reversed = plans.iter().rev().cloned().collect::<Vec<_>>();
+            let forward = merge_of(&json!({"plans": plans}));
+            let backward = merge_of(&json!({"plans": reversed}));
+            assert_eq!(forward, backward);
+            assert_eq!(target_order(&forward), expected);
+        }
+    }
+
+    #[test]
+    fn merge_reranks_missing_and_duplicate_plan_ranks() {
+        let missing = merge_of(&json!({
+            "plans": [
+                plan(&json!([
+                    {"sourceId": "a.md#L1-L1", "path": "a.md", "startLine": 1, "endLine": 1, "quote": "a", "score": 1.0},
+                    {"sourceId": "b.md#L1-L1", "path": "b.md", "startLine": 1, "endLine": 1, "quote": "b", "score": 0.5}
+                ]), None),
+                plan(&json!([
+                    {"sourceId": "c.md#L1-L1", "path": "c.md", "startLine": 1, "endLine": 1, "quote": "c", "score": 0.1, "rank": 1}
+                ]), None)
+            ]
+        }));
+        assert_eq!(
+            signatures(&missing)
+                .iter()
+                .map(|signature| signature.split('|').nth(1).unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["a.md", "c.md", "b.md"]
+        );
+
+        let duplicate = merge_of(&json!({
+            "plans": [
+                plan(&json!([
+                    {"sourceId": "d.md#L1-L1", "path": "d.md", "startLine": 1, "endLine": 1, "quote": "d", "score": 1.0, "rank": 1},
+                    {"sourceId": "e.md#L1-L1", "path": "e.md", "startLine": 1, "endLine": 1, "quote": "e", "score": 0.5, "rank": 1}
+                ]), None),
+                plan(&json!([
+                    {"sourceId": "f.md#L1-L1", "path": "f.md", "startLine": 1, "endLine": 1, "quote": "f", "score": 0.1, "rank": 1}
+                ]), None)
+            ]
+        }));
+        assert_eq!(
+            signatures(&duplicate)
+                .iter()
+                .map(|signature| signature.split('|').nth(1).unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["d.md", "f.md", "e.md"]
         );
     }
 
