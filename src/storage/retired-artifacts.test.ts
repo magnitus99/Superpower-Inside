@@ -23,8 +23,9 @@ function fixture() {
     context: () => Promise.resolve(context),
     listFiles: () =>
       Promise.resolve([...files].map(([id, record]) => ({ kind: 'file', id, ...record }))),
-    listDatabaseNames: () =>
+    listDatabaseNames: vi.fn(() =>
       Promise.resolve(['superpower-inside:vault:KnowledgeGraph', 'unrelated']),
+    ),
     measureDatabase: vi.fn(() => Promise.resolve(200)),
     removeFile: vi.fn((record: ArtifactRecord) => {
       files.delete(record.id);
@@ -53,6 +54,29 @@ describe('지원 종료 생성물 정리', () => {
     );
     expect(host.removeFile).not.toHaveBeenCalled();
     expect(host.deleteDatabase).not.toHaveBeenCalled();
+  });
+
+  it('현재 storage 계약 아래의 과거 index generation을 자동 탐지한다', async () => {
+    const { service, host, context } = fixture();
+    const oldIndex = 'superpower-inside:rag-v2:vault:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:vectors';
+    const oldCorpus = 'superpower-inside:rag-v2:vault:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:corpus';
+    const current = 'superpower-inside:rag-v2:vault:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:vectors';
+    const embeddingCache =
+      'superpower-inside:rag-v2:vault:cccccccccccccccccccccccccccccccc:embedding-cache';
+    context.activeNames = [current];
+    vi.mocked(host.listDatabaseNames).mockResolvedValue([
+      oldIndex,
+      oldCorpus,
+      current,
+      embeddingCache,
+      'superpower-inside:vault:KnowledgeGraph',
+      'unrelated',
+    ]);
+    expect(await service.scan()).toMatchObject({ hasArtifacts: true, bytes: 700 });
+    expect(host.measureDatabase).toHaveBeenCalledWith(oldIndex);
+    expect(host.measureDatabase).toHaveBeenCalledWith(oldCorpus);
+    expect(host.measureDatabase).not.toHaveBeenCalledWith(current);
+    expect(host.measureDatabase).not.toHaveBeenCalledWith(embeddingCache);
   });
 
   it('사용자가 본 스냅샷의 대상만 삭제하고 일부 실패는 재시도할 수 있다', async () => {

@@ -422,7 +422,7 @@ fn is_retired(record: &Record, context: &Context) -> bool {
         .iter()
         .find(|tracked| tracked.kind == record.kind && tracked.id == record.id)
     {
-        return context
+        let explicitly_retired = context
             .features
             .get(&tracked.feature_id)
             .is_some_and(|policy| {
@@ -432,6 +432,14 @@ fn is_retired(record: &Record, context: &Context) -> bool {
                         .iter()
                         .any(|version| version.to_bits() == tracked.format_version.to_bits())
             });
+        if explicitly_retired {
+            return true;
+        }
+        // 파일은 명시적으로 폐기된 경우에만 지웁니다. DB는 아래 generation 규칙까지
+        // 확인해, registry가 지원 기능으로 기록한 과거 index generation도 정리합니다.
+        if record.kind == "file" {
+            return false;
+        }
     }
     if record.kind == "file" {
         return (context.legacy_files_safe && RETIRED_FILES.contains(&record.id.as_str()))
@@ -463,11 +471,22 @@ fn is_retired(record: &Record, context: &Context) -> bool {
         let Some(suffix) = record.id.strip_prefix(prefix) else {
             return false;
         };
-        // 현재 세대의 모델별 데이터는 재사용되므로 유지합니다. 지원 중단된 v3만 폐기합니다.
+        // 현재 active 세대는 위 active_names에서 보호됩니다. 그 밖의 과거 index
+        // generation은 현재 storage 계약 아래에서도 재사용할 수 없으므로 폐기합니다.
+        // 모델별 embedding cache는 과거 index generation과 별개이므로 유지합니다.
         suffix == "graph"
+            || is_obsolete_index_suffix(suffix)
             || (prefix.starts_with(&format!("{}:rag-v3:", context.plugin_id))
                 && is_known_generation_suffix(suffix))
     })
+}
+
+/// 현재 storage 계약 아래에서 폐기할 과거 index generation suffix입니다.
+fn is_obsolete_index_suffix(suffix: &str) -> bool {
+    let Some((hash, kind)) = suffix.split_once(':') else {
+        return false;
+    };
+    is_storage_hash(hash) && matches!(kind, "vectors" | "corpus" | "bm25")
 }
 
 /// 과거에 실제로 배포된 저장소 종류와 해시 형식만 인정합니다.
@@ -540,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn healthy_migration_retires_exact_files_and_known_v3_databases_only() {
+    fn healthy_migration_retires_obsolete_index_generations_and_legacy_files() {
         let mut input = Input {
             context: context(),
             approval: None,
@@ -558,13 +577,62 @@ mod tests {
                     "plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:vectors",
                     100,
                 ),
+                record(
+                    "database",
+                    "plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:cccccccccccccccccccccccccccccccc:embedding-cache",
+                    100,
+                ),
             ],
         };
         input.context.legacy_files_safe = true;
         let plan = plan(&input);
-        assert_eq!(plan.records.len(), 3);
-        assert_eq!(plan.bytes, 200);
+        assert_eq!(plan.records.len(), 4);
+        assert_eq!(plan.bytes, 300);
         assert_eq!(plan.capacity, "0.01");
+    }
+
+    #[test]
+    fn tracked_supported_old_index_generation_is_still_retired() {
+        let mut context = context();
+        context.features.insert(
+            "rag-vectors".into(),
+            FeaturePolicy {
+                retired: false,
+                retired_versions: Vec::new(),
+            },
+        );
+        context.tracked.push(TrackedArtifact {
+            kind: "database".into(),
+            id: "plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:vectors"
+                .into(),
+            feature_id: "rag-vectors".into(),
+            stamp: "tracked".into(),
+            format_version: 1.0,
+        });
+        let old = record(
+            "database",
+            "plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:vectors",
+            100,
+        );
+        let current = record(
+            "database",
+            "plugin:rag-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:dddddddddddddddddddddddddddddddd:vectors",
+            100,
+        );
+        context.active_names = vec![current.id.clone()];
+        let input = Input {
+            context,
+            approval: None,
+            records: vec![old, current],
+        };
+        let result = plan(&input);
+        assert_eq!(result.records.len(), 1);
+        assert!(
+            result
+                .records
+                .first()
+                .is_some_and(|record| record.id.contains("bbbbbbbbbbbbbbbb"))
+        );
     }
 
     #[test]
