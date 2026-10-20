@@ -18,7 +18,11 @@ describe('실볼트 하네스의 독립 합성 호스트', () => {
     };
     runInNewContext(buildEvaluationCode({ queries: 1, statusPath: 'status', outputPath: 'report' }), {
       app: {
-        plugins: { plugins: { 'superpower-inside': { getSearchPort: () => port, manifest: { version: 'synthetic' } } } },
+        plugins: { plugins: { 'superpower-inside': {
+          getSearchPort: () => port,
+          documentCorpus: { getIndexedFilePaths: async () => [file.path] },
+          manifest: { version: 'synthetic' },
+        } } },
         vault: { getMarkdownFiles: () => [file], cachedRead: async () => text, getAbstractFileByPath: () => file },
         metadataCache: { getFileCache: () => ({ tags: [{ tag: '#synthetic-tag' }] }) },
       },
@@ -45,6 +49,45 @@ describe('실볼트 하네스의 독립 합성 호스트', () => {
     const persisted = [...outputs.values()].join('');
     for (const secret of [file.path, file.basename, evidence.quote, 'synthetic-tag']) expect(persisted).not.toContain(secret);
     expect(report.accuracyValidation).toContain('not full relevance accuracy');
+  });
+
+  it('초기화 상태를 기다린 뒤 색인된 경로만 probe한다', async () => {
+    const file = { path: 'private-synthetic/indexed.md', basename: 'indexed synthetic', extension: 'md', stat: { mtime: 10, size: 20 } };
+    const text = '# indexed synthetic\nsynthetic exact evidence';
+    const outputs = new Map();
+    let finish;
+    const completed = new Promise((resolve) => { finish = resolve; });
+    let readinessCalls = 0;
+    let indexedPathCalls = 0;
+    const port = async () => ({
+      evidence: [{ path: file.path, revision: '10:20', startLine: 1, endLine: 1, quote: 'synthetic exact evidence' }],
+      diagnostics: { zeroHitReason: null },
+      coverage: { reviewedDocuments: 1, unreviewedDocuments: 0, notIndexedDocuments: 0 },
+    });
+    runInNewContext(buildEvaluationCode({ queries: 1, statusPath: 'status', outputPath: 'report', timeoutMs: 5000 }), {
+      app: {
+        plugins: { plugins: { 'superpower-inside': {
+          getSearchPort: () => port,
+          ragEngine: { getCandidateReadiness: () => (++readinessCalls < 3 ? 'initializing' : 'ready') },
+          documentCorpus: { getIndexedFilePaths: async () => { indexedPathCalls += 1; return [file.path]; } },
+          manifest: { version: 'synthetic' },
+        } } },
+        vault: { getMarkdownFiles: () => [], cachedRead: async () => text, getAbstractFileByPath: () => file },
+        metadataCache: { getFileCache: () => ({}) },
+      },
+      require: (name) => name === 'node:fs' ? { writeFileSync: (target, content) => {
+        outputs.set(target, content);
+        if (target === 'status' && !JSON.parse(content).running) finish();
+      } } : { randomUUID: () => 'independent-absent-token' },
+      AbortController, performance, process: { pid: 1, memoryUsage: () => ({ rss: 100 }) },
+      setTimeout: (resolve) => resolve(),
+    });
+    await completed;
+    const report = JSON.parse(outputs.get('report'));
+    expect(indexedPathCalls).toBe(1);
+    expect(readinessCalls).toBeGreaterThanOrEqual(3);
+    expect(report.probeCorpus).toBe('indexed-paths');
+    expect(report.candidateReadiness).toBe('ready');
   });
 
   it('제품 포트가 없으면 구형 ragEngine으로 조용히 대체하지 않는다', () => {

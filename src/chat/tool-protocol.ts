@@ -27,7 +27,11 @@ const MAX_COMPATIBILITY_TOOL_CALLS_PER_TURN = 8;
  */
 export function createToolEvidencePrompt(definitions: readonly ToolDefinition[]): string {
   if (definitions.length === 0) return '';
-  const shared = [t('llmEvidenceDataBoundary'), t('llmToolEvidenceContract')].join('\n');
+  const shared = [
+    t('llmEvidenceDataBoundary'),
+    t('llmToolEvidenceContract'),
+    t('llmVaultInvestigationWorkflow'),
+  ].join('\n');
   if (
     !definitions.some((definition) => {
       const name = definition.function.name;
@@ -40,8 +44,6 @@ export function createToolEvidencePrompt(definitions: readonly ToolDefinition[])
   return [
     shared,
     '[Superpower Inside proactive research and evidence contract]',
-    t('llmVaultInvestigationWorkflow'),
-    'These tools are attached only for the part of the request that the engine could not resolve, or for an explicitly connected MCP service the user asked for. Use them for that unresolved part instead of guessing, and state the evidence limits when you stop.',
     'For the unresolved part of find, investigate, compare, analyze, summarize, or explain requests over connected data: search or list candidates, read the original sources you need, repair one invalid call when possible, then answer the latest user objective.',
     t('llmVerifiedCandidateBoundary'),
     'Keep the latest user objective and every explicit subquestion across all tool rounds. Do not drift back to an older question or answer only an easy metadata fragment.',

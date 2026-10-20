@@ -85,13 +85,18 @@ interface BuildContextOptions {
   maxReferenceFiles?: number;
   ragTopK?: number;
   ragMinScore?: number;
-  queryExpander?: (question: string) => Promise<string | { query: string; variants: string[] }>;
+  queryExpander?: (
+    question: string,
+  ) =>
+    | string
+    | { query: string; variants: string[] }
+    | Promise<string | { query: string; variants: string[] }>;
   /** 활성 도구 루프가 후보 검색·읽기를 맡을 때 비싼 암시적 폴더 전체 선별을 건너뜁니다. */
   deferImplicitFolderEvidenceToTools?: boolean;
   /** 플러그인 전용 생성에서는 명시한 자료만 읽고 자동 검색을 하지 않습니다. */
   explicitContextOnly?: boolean;
   enableVaultSearch?: boolean;
-  /** 후속 전수 검토에서 같은 질의 계획을 한 번만 실행합니다. */
+  /** 후속 엔진 검토에서 같은 질의 계획을 한 번만 실행합니다. */
   deferAutoRagToReview?: boolean;
 }
 
@@ -153,14 +158,14 @@ export async function buildChatContext(
     options.queryExpander &&
     options.explicitContextOnly !== true &&
     (shouldUseAutoRag || mentionPlan.folderIndices.length > 0)
-      ? await options.queryExpander(question).catch((error: unknown) => {
+      ? await Promise.resolve(options.queryExpander(question)).catch((error: unknown) => {
           if (error instanceof DOMException && error.name === 'AbortError') throw error;
           return question;
         })
       : question;
   const queryPlan = typeof expansion === 'string' ? { query: expansion, variants: [] } : expansion;
   const queries = [queryPlan.query, ...queryPlan.variants];
-  const expandedQuery = queryPlan.variants.length ? JSON.stringify(queries) : queryPlan.query;
+  const expandedQuery = queryPlan.variants[0] ?? queryPlan.query;
 
   const appendBlock = (block: ContextBlock): boolean => {
     return budget.append({

@@ -74,6 +74,32 @@ function fixture(path = 'notes/source.txt') {
 }
 
 describe('파일 중심 문서 생명주기', () => {
+  it('주입된 파일 캐시의 검색 필드는 raw corpus 본문과 별도로 저장한다', async () => {
+    const source = fixture('notes/source.md');
+    source.update('# Cooling\nQuartz cooling cycles');
+    const getMetadata = vi.fn(() => ({
+      frontmatter: { title: 'Thermal Guide', tags: ['thermal'] },
+    }));
+    const corpus = new VaultDocumentCorpus(
+      source.vault,
+      source.store,
+      () => source.config,
+      () => DEFAULT_SETTINGS.chat,
+      appLogger,
+      getMetadata,
+    );
+    await corpus.refreshFile(source.file);
+    expect(getMetadata).toHaveBeenCalledWith(source.file);
+    expect(
+      (await source.store.getEntriesByFilePaths([source.file.path]))[0]?.metadata,
+    ).toMatchObject({
+      text: '# Cooling\nQuartz cooling cycles',
+      title: 'Thermal Guide',
+      headings: ['Cooling'],
+      tags: ['thermal'],
+      startLine: 0,
+    });
+  });
   it.each(['resolve', 'reject'] as const)(
     '원문 갱신 취소는 기존 문서를 보존하고 늦은 %s 결과가 새 갱신을 덮지 않는다',
     async (settlement) => {

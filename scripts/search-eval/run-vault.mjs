@@ -26,7 +26,7 @@ async function main() {
   const directory = await mkdtemp(path.join(tempRoot, 'vault-'));
   const statusPath = path.join(directory, 'status.json');
   const outputPath = path.join(directory, 'report.json');
-  const code = buildEvaluationCode({ queries, statusPath, outputPath, requirePort: !args.includes('--allow-baseline') });
+  const code = buildEvaluationCode({ queries, statusPath, outputPath, timeoutMs: timeoutMinutes * 60_000, requirePort: !args.includes('--allow-baseline') });
   const cli = option('--obsidian-cli') ?? '/Applications/Obsidian.app/Contents/MacOS/obsidian-cli';
   try {
     const launch = execFileSync(cli, [`vault=${vault}`, 'eval', `code=${code}`], {
@@ -46,8 +46,8 @@ async function main() {
         throw new Error('Obsidian 평가 호스트가 종료되었습니다.');
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    if (!status || status.running) throw new Error('Obsidian 평가 대기 시간이 초과되었습니다.');
-    if (!status.completed) throw new Error(`실제 볼트 검색 평가 실패: 단계=${status.stage}`);
+    if (!status || status.running) throw new Error(`Obsidian 평가 대기 시간이 초과되었습니다. 단계=${status?.stage ?? 'unknown'}`);
+    if (!status.completed) throw new Error(`실제 볼트 검색 평가 실패: 단계=${status.stage}, 상태=${status.readiness ?? 'unknown'}`);
     const report = JSON.parse(await readFile(outputPath, 'utf8'));
     const serialized = `${JSON.stringify(report, null, 2)}\n`;
     const output = option('--json');
@@ -71,7 +71,7 @@ function isAlive(pid) {
 }
 
 // 평가 코드는 앱 안에서 실행되며 집계만 status/output 파일로 내보낸다.
-export function buildEvaluationCode({ queries, statusPath, outputPath, requirePort = true }) {
+export function buildEvaluationCode({ queries, statusPath, outputPath, timeoutMs = 30 * 60_000, requirePort = true }) {
   return [
     'void (async () => {',
     '  let stage = "plugin";',
@@ -87,8 +87,22 @@ export function buildEvaluationCode({ queries, statusPath, outputPath, requirePo
     '    const searchPath = port ? "search-port" : engine ? "rag-engine" : null;',
     '    if (!searchPath) { writeStatus({ completed: false, stage: "search-unavailable" }); return; }',
     `    if (${requirePort} && !port) { writeStatus({ completed: false, stage: "new-search-port-required" }); return; }`,
+    '    if (engine) {',
+    `      const deadline = Date.now() + ${timeoutMs};`,
+    '      let readiness = engine.getCandidateReadiness?.() ?? "ready";',
+    '      while (readiness === "initializing" || readiness === "indexing") {',
+    '        stage = "indexing";',
+    '        writeStatus({ running: true, hostPid: process.pid, stage, readiness });',
+    '        if (Date.now() >= deadline) { writeStatus({ completed: false, stage, readiness }); return; }',
+    '        await new Promise((resolve) => setTimeout(resolve, 1000));',
+    '        readiness = engine.getCandidateReadiness?.() ?? "ready";',
+    '      }',
+    '      if (readiness === "unavailable") { writeStatus({ completed: false, stage: "engine-unavailable", readiness }); return; }',
+    '    }',
     '    const pluginVersion = plugin && plugin.manifest ? plugin.manifest.version : null;',
-    '    const files = app.vault.getMarkdownFiles().slice().sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));',
+    '    const indexedPaths = plugin && plugin.documentCorpus && typeof plugin.documentCorpus.getIndexedFilePaths === "function" ? await plugin.documentCorpus.getIndexedFilePaths() : [];',
+    '    if (searchPath === "search-port" && indexedPaths.length === 0) { writeStatus({ completed: false, stage: "no-indexed-paths" }); return; }',
+    '    const files = (indexedPaths.length > 0 ? indexedPaths.map((path) => app.vault.getAbstractFileByPath(path)).filter(Boolean) : searchPath === "search-port" ? [] : app.vault.getMarkdownFiles()).slice().sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));',
     `    const target = Math.min(${queries}, files.length);`,
     '    const stride = Math.max(1, Math.floor(files.length / Math.max(1, target)));',
     '    const probes = [];',
@@ -184,6 +198,8 @@ export function buildEvaluationCode({ queries, statusPath, outputPath, requirePo
     '      kind: "product-search-live-aggregate",',
     '      searchPath,',
     '      pluginVersion,',
+    '      candidateReadiness: engine && typeof engine.getCandidateReadiness === "function" ? engine.getCandidateReadiness() : null,',
+    '      probeCorpus: indexedPaths.length > 0 ? "indexed-paths" : "unfiltered-markdown",',
     '      searchPortFnAvailable: typeof plugin?.getSearchPort === "function",',
     '      vaultMarkdownFiles: files.length,',
     '      probes: probes.length,',
@@ -209,6 +225,9 @@ export function buildEvaluationCode({ queries, statusPath, outputPath, requirePo
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch((error) => {
-  console.error(`실제 볼트 검색 평가 실패: ${error.name === 'Error' ? '실행 또는 호스트 검사 실패' : '입출력 실패'}`);
+  const message = error instanceof Error && /^(Obsidian|실제 볼트)/.test(error.message)
+    ? error.message
+    : '실제 볼트 검색 평가 실패: 실행 또는 호스트 검사 실패';
+  console.error(message);
   process.exitCode = 1;
 });

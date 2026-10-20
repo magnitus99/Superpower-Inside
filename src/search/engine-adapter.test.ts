@@ -8,6 +8,9 @@ import { createIndexedSearchPort, toSearchResponse } from './engine-adapter';
 
 function fixtureResult(): IndexedVaultSearchResult {
   const coverage = {
+    requestedPaths: [],
+    plannedPaths: [],
+    unreviewedPaths: [],
     documentScope: 'candidates' as const,
     status: 'incomplete' as const,
     reviewedDocuments: 2,
@@ -17,7 +20,14 @@ function fixtureResult(): IndexedVaultSearchResult {
   return {
     plan: {
       queryTokens: [
-        { text: 'quartz', position: 0, field: 'content', kind: 'term', negated: false, phraseIndex: null },
+        {
+          text: 'quartz',
+          position: 0,
+          field: 'content',
+          kind: 'term',
+          negated: false,
+          phraseIndex: null,
+        },
       ],
       phrases: [{ tokens: ['cooling', 'cycle'], negated: false, field: 'content' }],
       evidence: [],

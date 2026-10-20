@@ -5083,6 +5083,8 @@ function resolveRustStringExport(name: string): ((input: string) => string) | nu
 export interface RustIndexedEvidenceDocument {
   path: string;
   text: string;
+  title?: string;
+  headings?: readonly string[];
   revision?: string;
   indexed?: boolean;
   reviewState?: 'reviewed' | 'unreviewed';

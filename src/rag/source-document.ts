@@ -1,7 +1,7 @@
-import type { TFile } from 'obsidian';
+import type { CachedMetadata, TFile } from 'obsidian';
 import type { RAGConfig } from '../settings';
 import type { SourceTextSegment } from './source-access';
-import type { BM25CorpusDocument } from './bm25';
+import { getBM25DocumentFields, type BM25CorpusDocument } from './bm25';
 import { createContentHash } from './hash';
 import {
   chunkMarkdownRust,
@@ -75,6 +75,7 @@ export function chunkSourceDocument(
   });
 }
 
+/** 임베딩 요청에만 사용하는 일시적 projection이며 원문 저장에는 사용하지 않습니다. */
 export function buildSearchText(file: TFile, chunk: Chunk): string {
   const hints = [`File: ${file.path}`, `Title: ${file.basename}`];
   if (chunk.metadata.heading) hints.push(`Heading: ${chunk.metadata.heading}`);
@@ -86,13 +87,15 @@ export function buildSourceDocuments(
   content: string,
   config: Pick<RAGConfig, 'chunkSize' | 'overlap'>,
   segments: readonly SourceTextSegment[] = [],
+  metadata?: CachedMetadata | null,
 ): SourceDocument[] {
   const indexedAt = Date.now();
   const contentHash = createContentHash(content);
   return chunkSourceDocument(file, content, config, segments).map((chunk) => ({
     id: chunk.id,
     chunkHash: chunk.chunkHash,
-    text: buildSearchText(file, chunk),
+    text: chunk.text,
+    ...getBM25DocumentFields(file, metadata, chunk.metadata.heading),
     sourcePath: file.path,
     heading: chunk.metadata.heading,
     startLine: chunk.metadata.startLine,

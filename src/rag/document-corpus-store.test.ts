@@ -33,6 +33,35 @@ function createFile(path: string): TFile {
 }
 
 describe('지원 파일 공통 문서 저장소', () => {
+  it('raw 청크와 별도 검색 필드를 저장하고 엔트리에도 손실 없이 전달한다', async () => {
+    const store = createStore();
+    const file = createFile('notes/source.md');
+    const content = '# Deployment\nQuartz cooling cycles';
+    const documents = buildSourceDocuments(file, content, { chunkSize: 1000, overlap: 0 }, [], {
+      frontmatter: { title: 'Quarterly Report', tags: ['finance'] },
+      tags: [
+        {
+          tag: '#planning',
+          position: { start: { line: 0, col: 0, offset: 0 }, end: { line: 0, col: 0, offset: 0 } },
+        },
+      ],
+    });
+    expect(documents[0]).toMatchObject({
+      text: content,
+      title: 'Quarterly Report',
+      headings: ['Deployment'],
+      tags: ['#planning', 'finance'],
+      startLine: 0,
+      endLine: 1,
+    });
+    await store.replaceFileDocuments(file.path, documents);
+    expect((await store.getEntriesByFilePaths([file.path]))[0]?.metadata).toMatchObject({
+      text: content,
+      title: 'Quarterly Report',
+      headings: ['Deployment'],
+      tags: ['#planning', 'finance'],
+    });
+  });
   it.each(['md', 'markdown', 'txt', 'ts', 'json', 'csv', 'custom'])(
     '임베딩 없이도 %s 본문과 원문 revision을 보존한다',
     async (extension) => {

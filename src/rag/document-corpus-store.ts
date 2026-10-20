@@ -112,6 +112,9 @@ export function toDocumentEntry(document: SourceDocument): VectorEntry {
     vector: [],
     metadata: {
       filePath: document.sourcePath,
+      title: document.title,
+      headings: document.headings,
+      tags: document.tags,
       heading: document.heading,
       startLine: document.startLine,
       endLine: document.endLine,

@@ -34,13 +34,15 @@ describe('인덱싱 제외 정책', () => {
     bm25DbNames.add(dbName);
     const bm25 = new IndexedDbBM25Index(dbName);
     await bm25.load();
+    const vectors = new MemoryVectorStore();
+    const embedBatch = vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0])));
     try {
       const indexer = new VaultIndexer(
         vault,
-        new MemoryVectorStore(),
+        vectors,
         {
           embed: () => Promise.resolve([1, 0]),
-          embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])),
+          embedBatch,
         },
         createRagConfig(),
         createChatConfig(),
@@ -57,10 +59,19 @@ describe('인덱싱 제외 정책', () => {
       const documents = await bm25.getCorpusDocumentsBySourcePaths([file.path]);
       expect(documents).not.toHaveLength(0);
       expect(documents[0]).toMatchObject({
+        text: '# Deployment\nalpha beta body',
         title: 'Quarterly Report',
         tags: ['finance', 'planning'],
         headings: ['Deployment'],
       });
+      expect((await vectors.getEntries())[0]?.metadata).toMatchObject({
+        text: '# Deployment\nalpha beta body',
+        title: 'Quarterly Report',
+        tags: ['finance', 'planning'],
+        headings: ['Deployment'],
+        startLine: 0,
+      });
+      expect(embedBatch.mock.calls[0]?.[0]?.[0]).toContain('File: reports/ledger.md');
     } finally {
       bm25.close();
     }
@@ -452,9 +463,11 @@ describe('VaultIndexer 배치 인덱싱', () => {
     const entries = await store.getEntries();
     expect(batchSizes.slice(0, 3)).toEqual([4, 2, 1]);
     expect(entries.map((entry) => entry.metadata.text)).toEqual(
-      chunkMarkdown(content, 40).map((chunk) => buildSearchText(file, chunk)),
+      chunkMarkdown(content, 40).map((chunk) => chunk.text),
     );
-    expect(new Set(entries.map((entry) => entry.metadata.text))).toEqual(new Set(submittedTexts));
+    expect(
+      new Set(chunkMarkdown(content, 40).map((chunk) => buildSearchText(file, chunk))),
+    ).toEqual(new Set(submittedTexts));
     expect(new Set(submittedTexts).size).toBe(submittedTexts.length);
   });
 
@@ -1316,7 +1329,9 @@ describe('VaultIndexer 배치 인덱싱', () => {
     );
     expect(batches.every((batch) => batch.length <= 2)).toBe(true);
     const entries = await store.getEntries();
-    expect(entries.map((entry) => entry.metadata.text)).toEqual(sourceTexts);
+    expect(entries.map((entry) => entry.metadata.text)).toEqual(
+      chunkPlainText(content, 100).map((chunk) => chunk.text),
+    );
     expect(entries.map((entry) => entry.vector)).toEqual(
       sourceTexts.map((text) => [text.length, 1]),
     );

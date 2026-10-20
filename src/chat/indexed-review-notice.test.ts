@@ -14,7 +14,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 /** DOM 없이 완료 본문에 검수 고지가 붙는 계약만 확인하는 최소 요소입니다. */
 class NoticeTestElement {
-  readonly classList = { contains: (): boolean => false };
+  readonly classList = { contains: (name: string): boolean => name === 'assistant' };
   querySelector(): null {
     return null;
   }
@@ -45,17 +45,19 @@ function createHarness(content = '합성 본문입니다.') {
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
+  const updateAssistantLayers = vi.fn();
   const view = Object.assign(Object.create(ChatView.prototype), {
     messages: [message],
     messageEls: new Map([['answer', new NoticeTestElement()]]),
     autoScroll: false,
     updateMessageMeta: (): void => {},
+    updateAssistantLayers,
     markDirtyAndAutoSave: (): void => {},
   }) as unknown as ChatView;
-  return { view, message };
+  return { view, message, updateAssistantLayers };
 }
 
-describe('전수 검수 고지 렌더링', () => {
+describe('엔진 검토 고지와 근거 전용 렌더링', () => {
   it('완료 본문 맨 앞에 고지를 한 번만 붙인다', () => {
     const { view, message } = createHarness();
     view.updateMessage('answer', '합성 본문입니다.', true, undefined, undefined, {
@@ -69,6 +71,35 @@ describe('전수 검수 고지 렌더링', () => {
     });
     expect(message.content).toBe('합성 검수 고지\n\n합성 본문입니다.');
   });
+
+  it.each(['원문 근거만 표시합니다.', ''])(
+    '답변의 인용 마커가 없어도 검증 출처를 assistant 표시 계층에 전달한다: %s',
+    (content) => {
+      const { view, message, updateAssistantLayers } = createHarness();
+      const citations = [
+        {
+          id: 'synthetic-verified',
+          filePath: 'Synthetic.md',
+          preview: '독립 합성 근거',
+          status: 'verified' as const,
+        },
+      ];
+      view.updateMessage('answer', content, true, undefined, undefined, { citations });
+      expect(message.content).toBe(content);
+      expect(message.citations).toEqual(citations);
+      expect(message.status).toBe('complete');
+      expect(updateAssistantLayers).toHaveBeenCalledWith(
+        expect.any(NoticeTestElement),
+        content,
+        true,
+        undefined,
+        undefined,
+        citations,
+        undefined,
+        undefined,
+      );
+    },
+  );
 
   it('진행 중 본문과 고지 없는 완료 본문은 그대로 둔다', () => {
     const streaming = createHarness();

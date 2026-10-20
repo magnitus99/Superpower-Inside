@@ -715,7 +715,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
           pluginId: this.manifest.id,
           vaultPrefixes: layout.ownedVaultPrefixes,
           legacyNames: [...layout.cleanupLegacyNames, this.createIndexedDbName('KnowledgeGraph')],
-          activeNames: [...(this.activeArtifactDatabaseNames ?? [])],
+          activeNames: [
+            ...Object.values(layout.active),
+            ...(this.activeArtifactDatabaseNames ?? []),
+          ],
           legacyFilesSafe: Boolean(recovery && recovery === maintenance && this.bm25Index?.isReady),
           revision,
           tracked: this.generatedArtifacts.read(),
@@ -2062,6 +2065,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         () => this.settings.rag,
         () => this.settings.chat,
         this.getLogger(),
+        (file) => this.app.metadataCache.getFileCache(file),
       );
       const sourceCorpus = this.vaultDocumentCorpus;
       void sourceCorpus

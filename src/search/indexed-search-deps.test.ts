@@ -47,7 +47,13 @@ function queryResult(overrides: Partial<QueryResult> = {}): QueryResult {
 
 function engine(results: QueryResult[]): RAGQueryEngine {
   return {
-    query: (question: string, topK?: number, minScore?: number, prefixes?: unknown, options?: unknown) => {
+    query: (
+      question: string,
+      topK?: number,
+      minScore?: number,
+      prefixes?: unknown,
+      options?: unknown,
+    ) => {
       void question;
       void topK;
       void minScore;
@@ -91,23 +97,20 @@ describe('검색 의존성 factory', () => {
       unreviewedCount: 0,
       notIndexedCount: 1,
     });
-    expect(await source?.getIndexedPaths()).toEqual([
-      'Synthetic/Alpha.md',
-      'Synthetic/Beta.md',
-    ]);
+    expect(await source?.getIndexedPaths()).toEqual(['Synthetic/Alpha.md', 'Synthetic/Beta.md']);
     expect(source?.candidates).toEqual([
       {
         path: 'Synthetic/Alpha.md',
-        startLine: 4,
-        endLine: 6,
+        startLine: 5,
+        endLine: 7,
         score: 3.2,
         source: 'vector',
         rank: 1,
       },
       {
         path: 'Synthetic/Beta.md',
-        startLine: 9,
-        endLine: 9,
+        startLine: 10,
+        endLine: 10,
         score: 1.2,
         source: 'bm25',
         rank: 2,

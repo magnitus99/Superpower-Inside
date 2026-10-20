@@ -19,17 +19,11 @@ describe('RAG IndexedDB storage lifecycle', () => {
     });
     const deleteDatabase = vi.fn(() => Promise.resolve<'deleted'>('deleted'));
     const host: IndexedDbLifecycleHost = {
-      listDatabaseNames: vi.fn(() =>
-        Promise.resolve([layout.active.vector, layout.active.bm25]),
-      ),
+      listDatabaseNames: vi.fn(() => Promise.resolve([layout.active.vector, layout.active.bm25])),
       deleteDatabase,
     };
 
-    await cleanupStaleIndexedDbGenerations(
-      layout,
-      { maxDeletions: 4, preserveBm25: false },
-      host,
-    );
+    await cleanupStaleIndexedDbGenerations(layout, { maxDeletions: 4, preserveBm25: false }, host);
 
     expect(deleteDatabase).toHaveBeenCalledWith(layout.active.bm25);
     expect(deleteDatabase).not.toHaveBeenCalledWith(layout.active.vector);
@@ -83,7 +77,7 @@ describe('RAG IndexedDB storage lifecycle', () => {
       indexNamespace: createRagIndexNamespace({ chunkSize: 500, overlap: 100 }),
     });
 
-    expect(createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT)).toBe('idx-v3:1000:100');
+    expect(createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT)).toBe('idx-v4:1000:100');
     expect(createRagIndexNamespace({ chunkSize: 500, overlap: 100 })).toContain('500');
     expect(changed.active.vector).not.toBe(legacy.active.vector);
     expect(changed.active.bm25).not.toBe(legacy.active.bm25);

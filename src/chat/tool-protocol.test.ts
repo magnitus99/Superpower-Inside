@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { t } from '../i18n';
 import { createNativeVaultToolDefinition } from '../agent/native-vault-tool';
 import type { ToolDefinition } from '../llm/providers';
 import {
@@ -47,9 +48,7 @@ describe('모델 중립 도구 프로토콜', () => {
     expect(evidencePrompt).toContain(
       'Do not suggest folders, tags, or note organization unless the user asks',
     );
-    expect(evidencePrompt).toContain(
-      'attached only for the part of the request that the engine could not resolve',
-    );
+    expect(evidencePrompt).toContain(t('llmVaultInvestigationWorkflow'));
     expect(evidencePrompt).not.toContain('Use the available tools proactively');
     expect(evidencePrompt).toContain('citationStatus="verified"');
     expect(evidencePrompt).toContain('requiresRead=true');

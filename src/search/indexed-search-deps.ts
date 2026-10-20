@@ -129,8 +129,9 @@ async function collectHybridCandidates(
   return {
     candidates: results.map((result, index) => ({
       path: result.sourcePath,
-      startLine: result.entry.metadata.startLine,
-      endLine: result.entry.metadata.endLine,
+      startLine: result.entry.metadata.startLine + 1,
+      endLine:
+        result.entry.metadata.endLine === undefined ? undefined : result.entry.metadata.endLine + 1,
       score: result.combinedScore,
       source: candidateSource(result),
       rank: index + 1,

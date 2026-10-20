@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { MCPRegistry } from '../mcp/registry';
 import { createContentHash } from '../rag/hash';
 import type { QueryResult } from '../rag/query';
+import { expandVaultSearchPlan } from './vault-query-expansion';
 import { buildChatContext, resolveChatRagEngine, type RagQueryLike } from './context';
 
 vi.mock('obsidian', () => {
@@ -449,7 +450,26 @@ describe('buildChatContext RAG 출처 검증', () => {
     expect(query.mock.calls[0]?.[4]?.signal).toBe(controller.signal);
   });
 
-  it('전수 검토에 위임해도 검색 활성 상태와 확장 질의를 보존하며 초기 검색은 반복하지 않는다', async () => {
+  it.each(['압력 센서 교체 기록', '青い配線の点検'])(
+    '검토에 위임한 질의는 번역 없이 로컬 계획만 사용한다: %s',
+    async (question) => {
+      const query = vi.fn<RagQueryLike['query']>(() => Promise.resolve([]));
+      const previous = ['copper relay inspection'];
+      const plan = expandVaultSearchPlan(question, previous);
+      const context = await buildChatContext(question, {
+        app: createApp(new Map()),
+        ragEngine: { query },
+        deferAutoRagToReview: true,
+        queryExpander: (text) => expandVaultSearchPlan(text, previous),
+      });
+      expect(context.searchQueries).toEqual([plan.query, ...plan.variants]);
+      expect(context.scoringQuestion).toBe(plan.variants[0] ?? plan.query);
+      expect(context.scoringQuestion).not.toContain('["');
+      expect(query).not.toHaveBeenCalled();
+    },
+  );
+
+  it('엔진 검토에 위임해도 검색 활성 상태와 확장 질의를 보존하며 초기 검색은 반복하지 않는다', async () => {
     const query = vi.fn<RagQueryLike['query']>(() => Promise.resolve([]));
     const queryExpander = vi.fn(() =>
       Promise.resolve({ query: 'expanded question', variants: ['alternative evidence'] }),
@@ -464,9 +484,7 @@ describe('buildChatContext RAG 출처 검증', () => {
     expect(queryExpander).toHaveBeenCalledOnce();
     expect(context.vaultSearchEnabled).toBe(true);
     expect(context.searchQueries).toEqual(['expanded question', 'alternative evidence']);
-    expect(context.scoringQuestion).toBe(
-      JSON.stringify(['expanded question', 'alternative evidence']),
-    );
+    expect(context.scoringQuestion).toBe('alternative evidence');
     expect(context.attachments).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: 'rag:auto', status: 'missing' })]),
     );

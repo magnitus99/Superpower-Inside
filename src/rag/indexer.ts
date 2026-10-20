@@ -905,16 +905,13 @@ export class VaultIndexer {
     emitIndexingProgress(options, tracker, 'file-chunks');
 
     const texts = chunks.map((chunk) => buildSearchText(file, chunk));
+    const metadata = this.metadataCache?.getFileCache(file);
     if (this.bm25Index) {
       this.bm25Index.removeDocumentsBySource(file.path);
-      const metadata = this.metadataCache?.getFileCache(file);
-      for (let index = 0; index < chunks.length; index++) {
-        const chunk = chunks[index];
-        const text = texts[index];
-        if (!chunk || text === undefined) continue;
+      for (const chunk of chunks) {
         this.bm25Index.addCorpusDocument({
           id: chunk.id,
-          text,
+          text: chunk.text,
           sourcePath: file.path,
           ...getBM25DocumentFields(file, metadata, chunk.metadata.heading),
           heading: chunk.metadata.heading,
@@ -937,10 +934,11 @@ export class VaultIndexer {
       vector: vectors[i],
       metadata: {
         filePath: file.path,
+        ...getBM25DocumentFields(file, metadata, chunk.metadata.heading),
         heading: chunk.metadata.heading,
         startLine: chunk.metadata.startLine,
         endLine: chunk.metadata.endLine,
-        text: texts[i],
+        text: chunk.text,
         sourceMtime: file.stat.mtime,
         sourceSize: file.stat.size,
         contentHash: sourceHash,

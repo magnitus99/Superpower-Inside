@@ -53,6 +53,29 @@ describe('LLM 도구 실행 라우터', () => {
     expect(result).toMatch(/비신뢰|untrusted/i);
     expect(history.at(-1)?.role).toBe('tool');
   });
+  it('native runtime이 없는 채팅은 네이티브 호출을 승인하거나 실행하지 않는다', async () => {
+    const prepared = await prepareAssistantToolCalls({
+      toolCalls: [createToolCall()],
+      registry: null,
+      preferredServerNames: [],
+      mcpMode: 'always-manual',
+      mcpToolBindings: new Map(),
+    });
+    expect(prepared[0]).toMatchObject({ status: 'error', approved: false });
+    const executed = await executeAssistantToolCalls({
+      toolCalls: prepared,
+      registry: null,
+      preferredServerNames: [],
+    });
+    expect(executed[0]?.status).toBe('error');
+    const legacy = await executeAssistantToolCalls({
+      toolCalls: [createToolCall({ approved: true, executionKind: 'native' })],
+      registry: null,
+      preferredServerNames: [],
+    });
+    expect(legacy[0]?.status).toBe('error');
+  });
+
   it('네이티브 Vault 도구는 MCP 서버 없이 자동 승인한다', async () => {
     const { runtime: nativeTool } = createNativeTool();
 

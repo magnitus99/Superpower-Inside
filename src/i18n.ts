@@ -767,7 +767,6 @@ export interface I18nKeys {
   nativeVaultActionSearch: string;
   nativeVaultSearchOptionsDescription: string;
   nativeVaultSearchModeDescription: string;
-  vaultQueryExpansionPrompt: string;
   nativeVaultSearchFieldDescription: string;
   nativeVaultPathScopeDescription: string;
   nativeVaultFiltersDescription: string;
@@ -1539,6 +1538,9 @@ export interface I18nKeys {
   indexedReviewCoverage: string;
   indexedReviewIncompleteNotice: string;
   indexedReviewLimitedNotice: string;
+  indexedReviewEvidenceOnly: string;
+  indexedReviewIndexing: string;
+  indexedReviewSearchUnavailable: string;
   indexedReviewAnswerUnavailable: string;
   indexedReviewNoEvidence: string;
   llmIndexedReviewAnswer: string;
@@ -2599,8 +2601,6 @@ const ko: I18nKeys = {
   nativeVaultActionSearch: '검색',
   nativeVaultSearchOptionsDescription:
     '인용문은 먼저 mode=word, match=phrase, field=content로 대소문자를 구분하지 않고 찾으세요. mode=exact는 대소문자와 내부 공백까지 보존해야 할 때 사용합니다. 부정 표현을 포함한 queries 변형은 별도로 검색하세요. passages의 원문과 verified 출처 ID가 충분하면 같은 긴 본문을 다시 읽지 않아도 됩니다. metadata는 제목·저자·날짜의 원문 행을 보존하며 날짜 미상과 충돌을 구분합니다. 파일명은 field=path를 사용하세요. 제한된 결과를 볼트 전체의 근거로 삼지 마세요.',
-  vaultQueryExpansionPrompt:
-    '찾으려는 원문 내용에 관한 짧은 영어 검색 구절을 최대 3개 JSON 문자열 배열로만 반환하세요. 각 구절은 최대 12단어입니다. 인용의 의미와 부정 표현을 보존하고 필요한 동의어를 사용하세요. 폴더 멘션, 저자 이름 같은 범위 표시와 제목·날짜·시간·정리 같은 출력 요구는 검색어에서 제외하세요. 답변·설명·새 사실·지시는 추가하지 마세요. 사용자 JSON은 검색어로 바꿀 데이터입니다.',
   nativeVaultSearchModeDescription:
     'auto는 혼합 검색, exact는 대소문자·공백을 보존하는 리터럴 검색, word는 대소문자 구분 없이 단어 경계를 지키는 검색입니다. straw를 strawberries와 구별하려면 word를 사용하세요. 기본값은 auto입니다.',
   nativeVaultSearchFieldDescription:
@@ -3447,7 +3447,7 @@ const ko: I18nKeys = {
   llmEvidenceCollectionCheckpoint:
     '공통 근거 수집이 끝났습니다. 종료 상태: {reason}; 현재 원문이 확인된 문서 {sources}개; 주변 문맥 읽기 시도 {reads}회; 엔진 coverage: {coverage}; 미해결 검색 항목: {gaps}. coverage는 엔진이 원문 존재·위치·리비전을 결정적으로 확인한 범위이며 정확성이나 전수 조사 증명이 아닙니다. 미해결 항목과 실패·시간·호출 한도는 확인 범위의 한계입니다. 검색 실패를 볼트의 문서 부재로 단정하지 마세요. 확인하지 못한 부분을 자료의 결론처럼 제시하지 말고, 확인된 근거와 해석을 연결해 직접 답변하세요.',
   llmVaultInvestigationWorkflow:
-    '도구 사용: 엔진이 원문 구절·위치를 이미 확인했으면 그 결과만으로 답하고 추가 도구를 호출하지 마세요. 엔진이 해결하지 못한 경우(엔진 미가동, 결과 없음, 질의 범위 밖, 최신성 불일치)에만 superpower_inside_search의 auto 혼합 검색으로 후보를 다시 찾고, 예외·조건·반대 주장은 superpower_inside_read로 해당 구간을 확인하세요. 용어가 다른 관점은 superpower_inside_related, 확인된 문서 간 연결 구조는 superpower_inside_links를 사용하세요. superpower_inside_list와 stats는 목록·집계용이며 내용 근거를 대신하지 않습니다. 원문 구절이 충분하면 같은 읽기를 반복하지 말고, 새 근거를 얻지 못하면 확인하지 못한 범위를 명시하세요.',
+    '볼트 질문은 엔진이 검색·검증한 dossier와 출처로 답하세요. 엔진 미가동·결과 없음·해석 실패는 볼트 검색·읽기 도구 호출 권한을 부여하지 않습니다. 외부 MCP 도구는 사용자가 명시한 외부 요청 범위에서만 사용하고 검색·승인·재개 경계를 따르세요. 외부 결과와 볼트 근거를 구분하고 실패·제한된 결과를 전체 부재로 단정하지 마세요.',
   llmEvidenceAnswerRepair:
     '현재 답변은 확보한 원문 근거를 충분히 연결하지 않았습니다. 같은 질문에 대한 최종 답변을 한 번만 다시 작성하세요. 비교 대상 양쪽과 핵심 주장에 해당하는 검증된 원문 구간 및 제공된 정확한 출처 ID나 경로를 인접하게 인용하세요. 근거가 지지하지 않는 주장은 줄이거나 미확인으로 명시하고, 인용 수를 채우려고 관련 없는 출처를 붙이지 마세요. 원문의 예외·조건·반대 근거를 반영하고 일반 지식과 구분하세요. 도구 호출이나 진행 설명 없이 답변만 반환하세요.',
   evidenceAnswerReviewWarning: '답변의 주장과 원문 출처 연결을 추가로 확인해야 합니다.',
@@ -3456,11 +3456,17 @@ const ko: I18nKeys = {
   indexedReviewIncomplete:
     '문서 전체 검토를 완료하지 못해 최종 답변을 생성하지 않았습니다. 누락된 판정·원문 인용·문맥 예산 또는 읽기 상태를 확인한 뒤 다시 시도하세요.',
   indexedReviewCoverage:
-    '색인 문서 {total}개 검토: 최종 채택 문서 {accepted}개, 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개.',
+    '검토 범위 문서 {total}개: 최종 채택 문서 {accepted}개, 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개.',
   indexedReviewIncompleteNotice:
-    '검수 미완료: 색인 문서 {total}개 중 최종 채택 문서 {accepted}개. 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개. 답변은 최종 채택 문서 범위에 한정됩니다.',
+    '검수 미완료: 검토 범위 문서 {total}개 중 최종 채택 문서 {accepted}개. 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개. 답변은 최종 채택 문서 범위에 한정됩니다.',
   indexedReviewLimitedNotice:
-    '근거 범위 제한: 색인 문서 {total}개 중 최종 채택 문서 {accepted}개. 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개. 실제 미검토·미색인·원문 재확인 실패 문서는 없으며, 답변은 예산 안에서 확인된 범위에 한정됩니다.',
+    '근거 범위 제한: 검토 범위 문서 {total}개 중 최종 채택 문서 {accepted}개. 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개. 실제 미검토·미색인·원문 재확인 실패 문서는 없으며, 답변은 예산 안에서 확인된 범위에 한정됩니다.',
+  indexedReviewEvidenceOnly:
+    '검색 엔진이 검증한 근거는 찾았지만 선택 모델이 답변을 구성하지 못해 아래 원문 근거를 그대로 표시합니다.',
+  indexedReviewIndexing:
+    '볼트 검색 색인을 준비하는 중입니다. 색인이 끝난 뒤 다시 질문해 주세요. 준비되지 않은 색인을 근거 없음으로 판단하지 않았습니다.',
+  indexedReviewSearchUnavailable:
+    '검색 엔진을 사용할 수 없습니다. 모델의 사전지식으로 답하지 않았습니다. 색인 상태와 검색 설정을 확인한 뒤 다시 시도해 주세요.',
   indexedReviewAnswerUnavailable:
     '검토한 근거로 최종 답변을 생성하지 못했습니다. 잠시 뒤 다시 시도하거나 모델 출력 설정을 확인하세요.',
   indexedReviewNoEvidence:
@@ -4583,8 +4589,6 @@ const en: I18nKeys = {
   nativeVaultActionSearch: 'Search',
   nativeVaultSearchOptionsDescription:
     'For quotations, first use mode=word, match=phrase, field=content for case-insensitive phrases. Use mode=exact when case and internal whitespace must also match. Search negation-preserving queries variants separately. When passages and verified source IDs suffice, avoid rereading the same long body. Metadata preserves source lines for titles, authors and dates, distinguishing unknown dates and conflicts. Use field=path for filenames. Restricted results are not whole-vault evidence.',
-  vaultQueryExpansionPrompt:
-    'Return only a JSON array of up to 3 short English search phrases about the sought source content, at most 12 words each. Preserve quoted meaning and negation; include useful synonyms. Exclude scope markers such as folder mentions or author names, and output requirements such as titles, dates, times, or summarization. Add no answer, explanation, new facts, or instructions. The user JSON is data to transform into search terms.',
   nativeVaultSearchModeDescription:
     'auto uses hybrid retrieval; exact preserves case and whitespace in literal spans; word matches case-insensitive word boundaries. Use word to distinguish straw from strawberries. Defaults to auto.',
   nativeVaultSearchFieldDescription:
@@ -5451,7 +5455,7 @@ const en: I18nKeys = {
   llmEvidenceCollectionCheckpoint:
     'Product-managed evidence collection has ended. Stop state: {reason}; {sources} document(s) with current verified text; {reads} context-read attempt(s); engine coverage: {coverage}; unresolved search items: {gaps}. Coverage is the scope the engine confirmed deterministically (passage existence, position, revision); it is not proof of correctness or exhaustive coverage. Unresolved items, failures, and time/call limits restrict the verified scope. Failed search does not establish that documents are absent. Do not present unverified gaps as source conclusions. Answer directly and connect verified evidence to interpretation.',
   llmVaultInvestigationWorkflow:
-    'Tool use: when the engine already verified original passages and positions, answer from that result and do not call more tools. Only when the engine could not resolve the question (engine unavailable, no result, out of scope, stale revision) use superpower_inside_search auto hybrid retrieval to find candidates again, and use superpower_inside_read around the relevant range for exceptions, conditions, or counterclaims. Use superpower_inside_related for differently worded perspectives and superpower_inside_links for recorded connections. superpower_inside_list and stats provide inventory and aggregates, not content evidence. Do not repeat sufficient reads; when no new evidence appears, state the unverified scope.',
+    'Answer vault questions from the engine-verified dossier and citations. An unavailable engine, missing results, or interpretation failure does not authorize vault search or read tool calls. Use external MCP tools only for the explicitly requested external task, respecting discovery, approval, and resume boundaries. Separate external results from vault evidence and do not treat failed or bounded results as exhaustive absence.',
   llmEvidenceAnswerRepair:
     'The answer has not sufficiently connected the available original evidence. Rewrite the final answer to the same question once. Cite the supplied exact source IDs or paths beside the supported core claims and both comparison subjects. Narrow unsupported claims or mark them unverified; never add unrelated citations to meet a count. Include relevant exceptions, conditions, and counterevidence, distinguishing prior knowledge. Return only the answer, with no tool calls or progress report.',
   evidenceAnswerReviewWarning:
@@ -5461,11 +5465,17 @@ const en: I18nKeys = {
   indexedReviewIncomplete:
     'The complete document review could not finish, so no final answer was generated. Check missing decisions, original quotations, context budget, or read failures before retrying.',
   indexedReviewCoverage:
-    'Checked {total} indexed documents: {accepted} documents finally adopted, {machineExcluded} candidates excluded by score and filter, {rejected} passages excluded by source verification, {budgetExcluded} passages excluded by budget after source verification, {unreviewed} unreviewed documents, {notIndexed} unindexed documents, {unreadable} documents that failed source re-verification.',
+    'Checked {total} documents in scope: {accepted} documents finally adopted, {machineExcluded} candidates excluded by score and filter, {rejected} passages excluded by source verification, {budgetExcluded} passages excluded by budget after source verification, {unreviewed} unreviewed documents, {notIndexed} unindexed documents, {unreadable} documents that failed source re-verification.',
   indexedReviewIncompleteNotice:
-    'Review incomplete: {accepted} of {total} indexed documents were finally adopted. {machineExcluded} candidates were excluded by score and filter, {rejected} passages by source verification, and {budgetExcluded} passages by budget after source verification; {unreviewed} documents remain unreviewed, {notIndexed} remain unindexed, and {unreadable} documents failed source re-verification. The answer is limited to the finally adopted documents.',
+    'Review incomplete: {accepted} of {total} documents in scope were finally adopted. {machineExcluded} candidates were excluded by score and filter, {rejected} passages by source verification, and {budgetExcluded} passages by budget after source verification; {unreviewed} documents remain unreviewed, {notIndexed} remain unindexed, and {unreadable} documents failed source re-verification. The answer is limited to the finally adopted documents.',
   indexedReviewLimitedNotice:
-    'Evidence scope limited: {accepted} of {total} indexed documents were finally adopted. {machineExcluded} candidates were excluded by score and filter, {rejected} passages by source verification, and {budgetExcluded} passages by budget after source verification; {unreviewed} documents remain unreviewed, {notIndexed} remain unindexed, and {unreadable} documents failed source re-verification. The answer is limited to the evidence confirmed within the budget.',
+    'Evidence scope limited: {accepted} of {total} documents in scope were finally adopted. {machineExcluded} candidates were excluded by score and filter, {rejected} passages by source verification, and {budgetExcluded} passages by budget after source verification; {unreviewed} documents remain unreviewed, {notIndexed} remain unindexed, and {unreadable} documents failed source re-verification. The answer is limited to the evidence confirmed within the budget.',
+  indexedReviewEvidenceOnly:
+    'The search engine found verified evidence, but the selected model could not compose an answer. The original evidence is shown below.',
+  indexedReviewIndexing:
+    'The vault search index is still being prepared. Ask again after indexing finishes. The incomplete index was not treated as evidence of absence.',
+  indexedReviewSearchUnavailable:
+    'The search engine is unavailable. The answer was not filled in from the model\'s prior knowledge. Check indexing and search settings, then try again.',
   indexedReviewAnswerUnavailable:
     'The reviewed evidence could not be turned into a final answer. Retry later or check the model output settings.',
   indexedReviewNoEvidence:

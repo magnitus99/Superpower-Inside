@@ -1,4 +1,4 @@
-import type { TFile, Vault } from 'obsidian';
+import type { CachedMetadata, TFile, Vault } from 'obsidian';
 import type { ChatConfig, RAGConfig } from '../settings';
 import type { AppLogger } from '../utils/logger';
 import { getRagCandidateFiles, isRagCandidateFile } from '../utils/vault';
@@ -22,6 +22,7 @@ export class VaultDocumentCorpus {
     private readonly getRagConfig: () => RAGConfig,
     private readonly getChatConfig: () => ChatConfig,
     private readonly logger: AppLogger,
+    private readonly getMetadata?: (file: TFile) => CachedMetadata | null | undefined,
   ) {}
 
   refresh(): Promise<void> {
@@ -77,6 +78,7 @@ export class VaultDocumentCorpus {
         snapshot.content,
         this.getRagConfig(),
         snapshot.segments,
+        this.getMetadata?.(snapshot.file),
       );
       if (isCurrent()) await this.store.replaceFileDocuments(path, documents);
       if (isCurrent()) this.failedPaths.delete(path);

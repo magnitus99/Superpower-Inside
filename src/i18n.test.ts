@@ -6,6 +6,16 @@ afterEach(() => {
 });
 
 describe('UI 언어 계약', () => {
+  it.each(['ko', 'en'] as const)('%s 근거 전용 안내와 MCP 전용 경계를 제공한다', (lang) => {
+    setLanguage(lang);
+    expect(t('indexedReviewEvidenceOnly')).not.toBe('indexedReviewEvidenceOnly');
+    expect(t('indexedReviewEvidenceOnly')).toMatch(
+      lang === 'ko' ? /원문 근거/ : /original evidence/,
+    );
+    expect(t('llmVaultInvestigationWorkflow')).toContain('MCP');
+    expect(t('llmVaultInvestigationWorkflow')).not.toContain('superpower_inside_search');
+  });
+
   it('저장된 언어가 없으면 Obsidian 호스트 언어를 지원 언어로 정규화한다', () => {
     expect(resolveUiLanguage(undefined, 'ko-KR')).toBe('ko');
     expect(resolveUiLanguage(undefined, 'en-US')).toBe('en');

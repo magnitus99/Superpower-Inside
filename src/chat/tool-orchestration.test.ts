@@ -71,6 +71,47 @@ function normalizedReadResult(path: string): string {
 }
 
 describe('적극적 도구 오케스트레이션 경계', () => {
+  it('mixed 요청의 외부 전용 catalog는 native 볼트 도구를 요구하지 않는다', () => {
+    const external: ToolDefinition = {
+      type: 'function',
+      function: {
+        name: 'remote_lookup',
+        description: 'MCP server "external". Remote lookup.',
+        parameters: { type: 'object', properties: {} },
+      },
+    };
+    const plan = planAgenticToolTurn({
+      question: '내 볼트 근거와 @external 자료를 비교해줘',
+      contextAttachments: [
+        {
+          id: 'scope',
+          type: 'folder',
+          name: 'Synthetic',
+          label: 'Synthetic',
+          status: 'attached',
+          scopeOnly: true,
+        },
+      ],
+      explicitToolServerCount: 1,
+      explicitToolServerNames: ['external'],
+      toolDefinitions: [external],
+      toolCalls: [],
+      phase: 'initial',
+      round: 0,
+      maxRounds: 3,
+    });
+    expect(plan).not.toBeNull();
+    expect(plan?.requiredExternalServerNames).toEqual(['external']);
+    expect(plan?.requiredToolNames.every((name) => name === 'remote_lookup')).toBe(true);
+    expect(
+      selectAgenticToolDefinitions(
+        [external],
+        plan?.requiredToolNames,
+        plan?.requiredExternalServerNames,
+      ),
+    ).toEqual([external]);
+  });
+
   it('자동 검색을 허용한 비교는 볼트라는 단어가 없어도 원문 조사를 요구한다', () => {
     expect(
       planAgenticToolTurn({

@@ -36,6 +36,9 @@ export interface VectorEntry {
   metadata: {
     filePath: string;
     heading?: string;
+    title?: string;
+    headings?: string[];
+    tags?: string[];
     startLine: number;
     endLine?: number;
     text: string;

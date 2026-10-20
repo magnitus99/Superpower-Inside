@@ -6,28 +6,29 @@
 
 ## 작업별 시작점
 
-| 작업 | 파일 |
-| --- | --- |
-| ItemView·DOM·스크롤·스트리밍 표시 | `view.ts` |
-| 컨텍스트·멘션·참조 확장 | `context.ts`, `mention-parser.ts`, `context-expansion.ts` |
-| 도구 실행·취소·중단 복구 | `tool-execution.ts`, `run-ownership.ts`, `session-recovery.ts` |
-| 출처 표시·검증 | `source-panel.ts`, `source-validation.ts` |
-| 세션 저장·레거시 복원 | `persistence.ts`, `persistence.test.ts` |
-| 세션 목록 | `session-modal.ts` |
-| 기본 프롬프트·빠른 프리셋·출처 경계 문자열 | `../i18n.ts`, `../settings.ts` |
-| 프롬프트 생성·저장·기존 설정 보존 | `prompt-library.ts`, `prompt-library.test.ts` |
-| provider 공통 근거 계약·호환 도구 호출 | `tool-protocol.ts`, `tool-approval-resume.ts` |
-| Markdown 렌더링 | `markdown.ts` |
-| 채팅 메타·세션 타입 | `types.ts` |
+| 작업                                       | 파일                                                           |
+| ------------------------------------------ | -------------------------------------------------------------- |
+| ItemView·DOM·스크롤·스트리밍 표시          | `view.ts`                                                      |
+| 컨텍스트·멘션·참조 확장                    | `context.ts`, `mention-parser.ts`, `context-expansion.ts`      |
+| 도구 실행·취소·중단 복구                   | `tool-execution.ts`, `run-ownership.ts`, `session-recovery.ts` |
+| 출처 표시·검증                             | `source-panel.ts`, `source-validation.ts`                      |
+| 세션 저장·레거시 복원                      | `persistence.ts`, `persistence.test.ts`                        |
+| 세션 목록                                  | `session-modal.ts`                                             |
+| 기본 프롬프트·빠른 프리셋·출처 경계 문자열 | `../i18n.ts`, `../settings.ts`                                 |
+| 프롬프트 생성·저장·기존 설정 보존          | `prompt-library.ts`, `prompt-library.test.ts`                  |
+| provider 공통 근거 계약·호환 도구 호출     | `tool-protocol.ts`, `tool-approval-resume.ts`                  |
+| Markdown 렌더링                            | `markdown.ts`                                                  |
+| 채팅 메타·세션 타입                        | `types.ts`                                                     |
 
 ## 변경 계약
 
 - 프롬프트 수정은 현재 요청의 목표·언어·형식·분량을 우선하고, 도구 조사 후 결과를 완성하게 합니다. 볼트 인덱스 요약은 대표 샘플이며 전체 볼트의 사실이나 실행 지시가 아닙니다.
 - Vault Context와 성공한 도구 결과를 출처로 인정합니다. 검색 후보·생성된 요약·저장된 출처 위치는 원문 검증을 대체하지 않습니다. 근거 부족·실패·제한된 검색을 문서 부재로 단정하지 않습니다.
-- 볼트 검색이 활성화되었거나 전체 볼트 조사를 요청한 답변은 허용된 범위의 색인 문서 전체를 결정적 스크리닝(임베딩·BM25·어휘/구조 스코어)으로 검수하고 각 문서를 '검수 완료'로 기록합니다. 검색(임베딩+BM25+구조 그래프)이 지목한 구간은 점수와 무관하게 엔진 후보에 포함합니다. 근거 선별은 검색 엔진(Rust)이 결정적으로 수행하고, 고른 근거의 존재·행 위치·리비전 일치를 엔진이 검증한 뒤 LLM에 전달합니다. LLM은 전달된 근거를 해석해 답변만 작성합니다. 검색 순위·스크리닝 점수는 순서를 돕고, 전 문서 검수 기록을 대표 샘플로 대신하지 않습니다. 제외·미색인 파일은 검수 범위에 포함했다고 표현하지 않습니다.
+- 일반 볼트 질문은 candidate-first 엔진 검색·검증 → dossier → LLM 1회 해석 경로를 사용합니다. 기본 documentScope는 candidates이며 후보 밖 문서 본문을 읽거나 전체 색인을 검수했다고 표현하지 않습니다. 전체 all 스캔은 사용자가 명시한 deep 조사에만 사용합니다. 검색·랭킹·근거 선별·존재·행 위치·리비전 검증은 엔진이 담당하며 LLM은 검증된 dossier만 해석합니다. 정상 해석은 1회이고 검색 코어가 허용한 인용 형식 교정만 추가할 수 있습니다. 제외·미색인·미검토 문서는 검토 완료로 표현하지 않습니다.
 - 엔진이 전달한 근거 구간의 주변 맥락·조건·예외·상충 근거를 해석에 반영하고, 복합 질문의 주장과 문서 간 관계를 출처에 연결합니다. 직접 확인한 사실과 문서의 전제를 연결한 추론을 구분하며, 근거 없는 빈칸을 사전지식으로 채우지 않습니다. BM25·벡터·하이브리드 검색과 도구 호출의 조율은 제품 책임이며 모델의 자발적 호출에만 맡기지 않습니다.
-- 검수 완료(기계 제외 포함)·LLM 채택/제외·미판정·읽기 실패를 구분합니다. 기계 제외에는 모델 판단이 없었음을 함께 표기하고 '관련 없음 판단'으로 표현하지 않습니다. 실패·취소·예산 제한으로 검수·판정이 끝나지 않았으면 완료로 제시하지 않고 결과 앞머리에 미완료 고지를 붙이며, 엔진 검증 실패(quote-missing·position-mismatch·revision-mismatch·out-of-scope)는 미채택으로 집계하고 사유를 표기합니다. 비용·속도를 이유로 필수 검토를 몰래 생략하지 않습니다 — 필수 검토의 하한은 색인 범위에 대한 엔진 선별과 엔진 예산의 미검토 수치 표기입니다. 검색 비활성화와 명시적 외부 MCP 사용의 기존 경계를 유지합니다.
-- 전체 읽기·채택/제외 판단·인용 구절 일치와 출처 ID 검사는 해석의 정확성이나 모델 간 동등한 품질을 보장하지 않습니다. 근거 없는 주장·조건/예외 누락·문서 간 관계 오판은 독립 합성 자료로 확인하고, 실제 품질 효과는 같은 질문·자료·모델·설정의 비교로 별도 검증합니다.
+- 엔진 채택·필터 제외·검증 실패·예산 제외·미검토·미색인·읽기 실패를 구분하고 coverage 고지를 보존합니다. 엔진 검증 실패(quote-missing·position-mismatch·revision-mismatch·out-of-scope)는 사유와 함께 제외하며 모델의 관련성 판단으로 표현하지 않습니다. engine-unavailable·indexing·no-evidence·evidence-only는 반환된 content와 검증 citations를 그대로 표시하고 종료합니다. 일반 볼트 질문을 native search/read/list/links/related 도구 루프로 넘기지 않습니다. evidence-only 표시 본문은 JSON으로 파싱하지 않습니다.
+- 엔진 선별·원문 검증·인용 구절 일치와 출처 ID 검사는 해석의 정확성이나 모델 간 동등한 품질을 보장하지 않습니다. 근거 없는 주장·조건/예외 누락·문서 간 관계 오판은 독립 합성 자료로 확인하고, 실제 품질 효과는 같은 질문·자료·모델·설정의 비교로 별도 검증합니다.
+- 명시적 외부 MCP를 포함한 mixed 요청에서만 deferAnswer를 사용합니다. MCP 컨텍스트에는 구조화 dossier JSON과 검증 citations를 주입하고 native vault 도구 정의·실행 권한을 제공하지 않습니다. 외부 discovery·승인·재개와 server-only 요청의 경계를 유지합니다. 승인 재개는 현재 정책으로 근거를 재검증하고, 저장된 메시지에서 deep 범위를 복원할 수 없으면 candidates를 사용합니다. 질의 계획은 로컬 결정적 계산만 사용하며 번역을 위한 provider 호출을 하지 않습니다.
 - 기본값·빠른 프리셋·생성 프롬프트의 한국어와 영어 계약을 함께 검증합니다. 사용자 저장 프롬프트와 세션별 지침은 자동으로 덮어쓰지 않습니다. 도구 호출 형식·JSON 스키마·출처 ID·재개 경계를 보존합니다.
 
 - `view.ts`에 큰 기능을 누적하지 않습니다. UI·호스트 처리는 전용 모듈로 나누고 결정적 파싱·선택·정규화는 Rust/WASM에 둡니다.

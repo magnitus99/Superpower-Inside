@@ -45,6 +45,9 @@ function toRetrievalEntry(document: BM25CorpusDocument): VectorEntry {
     vector: [],
     metadata: {
       filePath: document.sourcePath,
+      title: document.title,
+      headings: document.headings,
+      tags: document.tags,
       heading: document.heading,
       startLine: document.startLine ?? 0,
       endLine: document.endLine,

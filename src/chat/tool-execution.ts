@@ -33,7 +33,7 @@ const MINIMAL_TOOL_RESULT_SUMMARY_BYTES = 128;
 
 interface AssistantToolOptions {
   toolCalls: ToolCallRecord[];
-  nativeTool: NativeVaultToolRuntimeLike;
+  nativeTool?: NativeVaultToolRuntimeLike;
   registry: MCPRegistryLike | null;
   preferredServerNames: string[];
 }
@@ -56,7 +56,7 @@ export async function prepareAssistantToolCalls(
   const mcpCalls: ToolCallRecord[] = [];
 
   prepared.forEach((toolCall, index) => {
-    if (options.nativeTool.isNativeTool(toolCall.name)) {
+    if (options.nativeTool?.isNativeTool(toolCall.name)) {
       toolCall.approved = true;
       toolCall.executionKind = 'native';
       toolCall.serverName = NATIVE_VAULT_TOOL_LABEL;
@@ -91,7 +91,7 @@ export async function executeAssistantToolCalls(
     const toolCall = updated[index];
     if (!toolCall || toolCall.status !== 'running' || toolCall.approved === false) continue;
 
-    if (options.nativeTool.isNativeTool(toolCall.name)) {
+    if (options.nativeTool?.isNativeTool(toolCall.name)) {
       await executeNativeToolCall(toolCall, options.nativeTool, options.signal);
       options.onUpdate?.(updated);
       continue;

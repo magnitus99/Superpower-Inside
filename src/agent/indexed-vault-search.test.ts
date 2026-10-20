@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { planIndexedEvidenceRust, verifyIndexedEvidenceRust } from '../rag/rust-core';
 import { searchIndexedVault, type IndexedVaultCorpus } from './indexed-vault-review';
+import { buildSourceDocuments } from '../rag/source-document';
+import { toDocumentEntry } from '../rag/document-corpus-store';
+import type { TFile } from 'obsidian';
 
 vi.mock('../rag/rust-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../rag/rust-core')>();
@@ -14,11 +17,12 @@ vi.mock('../rag/rust-core', async (importOriginal) => {
 const RELEVANT = 'Synthetic/Relevant.md';
 const OTHER = 'Synthetic/Other.md';
 
-function planFor(input: { documents: readonly { path: string; text: string; startLine?: number; revision?: string }[] }) {
+function planFor(input: {
+  documents: readonly { path: string; text: string; startLine?: number; revision?: string }[];
+}) {
   const document =
-    input.documents.find((item) => item.text.includes('cooling cycles')) ??
-    input.documents.at(-1);
-  if (!document) return null;
+    input.documents.find((item) => item.text.includes('cooling cycles')) ?? input.documents.at(-1);
+  if (!document) return planOfRows([], []);
   const sourceId = document.path + '#L3-L4';
   return {
     queryTokens: [],
@@ -179,6 +183,273 @@ function fixtureCorpus(): { corpus: IndexedVaultCorpus; requested: string[] } {
 }
 
 describe('색인 엔진 근거 선별', () => {
+  it('raw corpus 필드와 0 기반 줄을 실제 엔진의 1 기반 구절·태그 필터로 연결한다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const file = {
+      path: RELEVANT,
+      basename: 'Relevant',
+      extension: 'md',
+      stat: { mtime: 1, size: 80 },
+    } as TFile;
+    const documents = buildSourceDocuments(
+      file,
+      '# Intro\nNo match\n\n# Cooling\nQuartz cooling cycles',
+      { chunkSize: 1000, overlap: 0 },
+      [],
+      {
+        frontmatter: { title: 'Thermal Guide', tags: ['thermal'] },
+      },
+    );
+    const corpus: IndexedVaultCorpus = {
+      getEntriesByFilePaths: () => Promise.resolve(documents.map(toDocumentEntry)),
+      getFileIndexRecords: () =>
+        Promise.resolve([
+          {
+            filePath: RELEVANT,
+            contentHash: documents[0]?.contentHash,
+            sourceMtime: 1,
+            sourceSize: 80,
+            vectorCount: documents.length,
+            updated: 1,
+          },
+        ]),
+    };
+    const options = {
+      question: '"Quartz cooling cycles"',
+      indexedPaths: [RELEVANT],
+      scopes: [],
+      corpus,
+      filters: { tags: ['thermal'] },
+    };
+    const result = await searchIndexedVault(options);
+    expect(result?.evidence).toHaveLength(1);
+    expect(result?.evidence[0]).toMatchObject({
+      startLine: 4,
+      endLine: 5,
+      revision: '1:80',
+      quote: '# Cooling\nQuartz cooling cycles',
+    });
+    expect(result?.rejected).toEqual([]);
+    const input = vi.mocked(planIndexedEvidenceRust).mock.calls.at(-1)?.[0];
+    expect(input?.documents[1]).toMatchObject({
+      title: 'Thermal Guide',
+      headings: ['Cooling'],
+      tags: ['thermal'],
+      startLine: 4,
+      text: '# Cooling\nQuartz cooling cycles',
+    });
+    expect(
+      (await searchIndexedVault({ ...options, filters: { tags: ['absent'] } }))?.evidence,
+    ).toEqual([]);
+  });
+
+  it.each(
+    [
+      'missing-record',
+      'oversize',
+      'partial',
+      'hash-mismatch',
+      'metadata-mismatch',
+      'read-failure',
+    ].flatMap((failure) =>
+      (['all', 'candidates'] as const).map((documentScope) => ({ failure, documentScope })),
+    ),
+  )(
+    '$documentScope의 $failure 후보는 지원 근거가 있어도 미검토 coverage를 유지한다',
+    async ({ failure, documentScope }) => {
+      const { corpus } = fixtureCorpus();
+      const failing: IndexedVaultCorpus = {
+        getFileIndexRecords: async () =>
+          (await corpus.getFileIndexRecords()).flatMap((record) => {
+            if (record.filePath !== OTHER) return [record];
+            if (failure === 'missing-record') return [];
+            return [{ ...record, vectorCount: failure === 'partial' ? 2 : 1 }];
+          }),
+        getEntriesByFilePaths: async (paths) => {
+          if (failure === 'read-failure') throw new Error('synthetic read failure');
+          return (await corpus.getEntriesByFilePaths(paths)).map((entry) =>
+            entry.metadata.filePath !== OTHER
+              ? entry
+              : {
+                  ...entry,
+                  metadata: {
+                    ...entry.metadata,
+                    text:
+                      failure === 'oversize' ? 'x'.repeat(3 * 1024 * 1024) : entry.metadata.text,
+                    contentHash:
+                      failure === 'hash-mismatch' ? 'wrong-hash' : entry.metadata.contentHash,
+                    sourceMtime: failure === 'metadata-mismatch' ? 2 : undefined,
+                  },
+                },
+          );
+        },
+      };
+      const result = await searchIndexedVault({
+        question: 'Quartz cooling cycles',
+        indexedPaths: [RELEVANT, OTHER],
+        scopes: [],
+        corpus: failing,
+        documentScope,
+        candidates: [
+          { path: RELEVANT, score: 2, source: 'bm25', rank: 1 },
+          { path: OTHER, score: 1, source: 'bm25', rank: 2 },
+        ],
+      });
+      expect(result?.coverage.status).toBe('incomplete');
+      expect(result?.coverage.unreviewedDocuments).toBeGreaterThanOrEqual(1);
+      expect(result?.coverage.requestedPaths).toEqual([RELEVANT, OTHER]);
+      expect(result?.coverage.unreviewedPaths).toContain(OTHER);
+      if (failure === 'missing-record' || failure === 'oversize') {
+        expect(result?.coverage.plannedPaths).toEqual([RELEVANT]);
+      }
+    },
+  );
+
+  it.each(['all', 'candidates'] as const)(
+    '%s에서 한 파일의 일부 청크만 payload에 들어가도 미검토를 유지한다',
+    async (documentScope) => {
+      const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+      vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+      vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+      const corpus: IndexedVaultCorpus = {
+        getEntriesByFilePaths: () =>
+          Promise.resolve([
+            {
+              id: 'valid',
+              vector: [],
+              metadata: {
+                filePath: RELEVANT,
+                text: 'Quartz cooling cycles',
+                startLine: 0,
+                contentHash: 'hash',
+              },
+            },
+            {
+              id: 'oversize',
+              vector: [],
+              metadata: {
+                filePath: RELEVANT,
+                text: 'x'.repeat(2 * 1024 * 1024 + 1),
+                startLine: 1,
+                contentHash: 'hash',
+              },
+            },
+          ]),
+        getFileIndexRecords: () =>
+          Promise.resolve([
+            {
+              filePath: RELEVANT,
+              contentHash: 'hash',
+              sourceMtime: 1,
+              sourceSize: 10,
+              vectorCount: 2,
+              updated: 1,
+            },
+          ]),
+      };
+      const result = await searchIndexedVault({
+        question: 'Quartz cooling cycles',
+        indexedPaths: [RELEVANT],
+        scopes: [],
+        corpus,
+        documentScope,
+        candidates: [{ path: RELEVANT, score: 1, source: 'bm25', rank: 1 }],
+      });
+      expect(result?.evidence).toHaveLength(1);
+      expect(result?.coverage).toMatchObject({
+        status: 'incomplete',
+        reviewedDocuments: 0,
+        unreviewedDocuments: 1,
+        plannedPaths: [RELEVANT],
+        unreviewedPaths: [RELEVANT],
+      });
+    },
+  );
+
+  it('JSON 이스케이프가 커져도 payload 분할은 청크를 누락하지 않는다', async () => {
+    vi.mocked(planIndexedEvidenceRust).mockClear();
+    const entries = Array.from({ length: 5 }, (_, index) => ({
+      id: `chunk-${index}`,
+      vector: [],
+      metadata: {
+        filePath: RELEVANT,
+        text: '\\'.repeat(900_000),
+        startLine: index,
+        contentHash: 'hash',
+      },
+    }));
+    const corpus: IndexedVaultCorpus = {
+      getEntriesByFilePaths: () => Promise.resolve(entries),
+      getFileIndexRecords: () =>
+        Promise.resolve([
+          {
+            filePath: RELEVANT,
+            contentHash: 'hash',
+            sourceMtime: 1,
+            sourceSize: 10,
+            vectorCount: entries.length,
+            updated: 1,
+          },
+        ]),
+    };
+    const result = await searchIndexedVault({
+      question: 'Quartz',
+      indexedPaths: [RELEVANT],
+      scopes: [],
+      corpus,
+    });
+    const calls = vi.mocked(planIndexedEvidenceRust).mock.calls;
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls.flatMap(([input]) => input.documents)).toHaveLength(entries.length);
+    expect(
+      calls.every(
+        ([input]) => new TextEncoder().encode(JSON.stringify(input)).byteLength < 8 * 1024 * 1024,
+      ),
+    ).toBe(true);
+    expect(result?.coverage.unreviewedPaths).toEqual([]);
+  });
+
+  it('전체 색인이 커도 정상 후보만 읽으면 후보 coverage는 supported이며 전역 미색인 수는 보존한다', async () => {
+    const { corpus, requested } = fixtureCorpus();
+    const result = await searchIndexedVault({
+      question: 'Quartz cooling cycles',
+      indexedPaths: [RELEVANT, OTHER],
+      scopes: [],
+      corpus,
+      documentScope: 'candidates',
+      candidates: [{ path: RELEVANT, score: 1, source: 'bm25', rank: 1 }],
+      inventory: { indexedCount: 5403, unreviewedCount: 0, notIndexedCount: 2 },
+    });
+    expect(requested).toEqual([RELEVANT]);
+    expect(result?.coverage).toMatchObject({
+      status: 'supported',
+      reviewedDocuments: 1,
+      unreviewedDocuments: 0,
+      notIndexedDocuments: 2,
+    });
+  });
+  it('all의 요청 밖 색인과 파일 기록 누락은 서로 다른 미검토 문서로 집계한다', async () => {
+    const { corpus } = fixtureCorpus();
+    const partial: IndexedVaultCorpus = {
+      getEntriesByFilePaths: (paths) => corpus.getEntriesByFilePaths(paths),
+      getFileIndexRecords: async () =>
+        (await corpus.getFileIndexRecords()).filter((record) => record.filePath === RELEVANT),
+    };
+    const result = await searchIndexedVault({
+      question: 'Quartz cooling cycles',
+      indexedPaths: [RELEVANT, OTHER],
+      scopes: [],
+      corpus: partial,
+      inventory: { indexedCount: 3, unreviewedCount: 0, notIndexedCount: 0 },
+    });
+    expect(result?.coverage).toMatchObject({
+      reviewedDocuments: 1,
+      unreviewedDocuments: 2,
+      status: 'incomplete',
+    });
+  });
   beforeEach(() => {
     vi.mocked(planIndexedEvidenceRust).mockImplementation((input) => planFor(input) as never);
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation((input) => ({
@@ -230,7 +501,8 @@ describe('색인 엔진 근거 선별', () => {
       scopes: [],
       corpus: withoutRevision,
     });
-    expect(result).toBeNull();
+    expect(result?.evidence).toEqual([]);
+    expect(result?.coverage).toMatchObject({ status: 'incomplete', unreviewedDocuments: 1 });
   });
 
   it('hybrid 후보와 inventory를 전달하고 기본 all 모드는 전체 경로를 조회한다', async () => {
@@ -328,9 +600,9 @@ describe('색인 엔진 근거 선별', () => {
     expect(result?.scannedPaths).toBe(0);
     expect(result?.coverage).toMatchObject({
       documentScope: 'candidates',
-      status: 'incomplete',
+      status: 'supported',
       reviewedDocuments: 0,
-      unreviewedDocuments: 5403,
+      unreviewedDocuments: 0,
       notIndexedDocuments: 2,
     });
   });
@@ -371,13 +643,15 @@ describe('색인 엔진 근거 선별', () => {
     const partial: IndexedVaultCorpus = {
       getFileIndexRecords: () => corpus.getFileIndexRecords(),
       getEntriesByFilePaths: (paths) =>
-        corpus.getEntriesByFilePaths(paths).then((entries) =>
-          entries.map((entry) =>
-            entry.metadata.filePath === OTHER
-              ? { ...entry, metadata: { ...entry.metadata, contentHash: undefined } }
-              : entry,
+        corpus
+          .getEntriesByFilePaths(paths)
+          .then((entries) =>
+            entries.map((entry) =>
+              entry.metadata.filePath === OTHER
+                ? { ...entry, metadata: { ...entry.metadata, contentHash: undefined } }
+                : entry,
+            ),
           ),
-        ),
     };
     const captured: unknown[] = [];
     vi.mocked(planIndexedEvidenceRust).mockImplementation((input) => {
@@ -400,8 +674,22 @@ describe('색인 엔진 근거 선별', () => {
 
   it('Rust 입력 상한을 넘는 색인 청크는 배치로 나눠 계획하고 문서 수는 unique path로 집계한다', async () => {
     const records = [
-      { filePath: 'Synthetic/A.md', contentHash: 'a', sourceMtime: 1, sourceSize: 10, vectorCount: 1, updated: 1 },
-      { filePath: 'Synthetic/B.md', contentHash: 'b', sourceMtime: 1, sourceSize: 10, vectorCount: 1, updated: 1 },
+      {
+        filePath: 'Synthetic/A.md',
+        contentHash: 'a',
+        sourceMtime: 1,
+        sourceSize: 10,
+        vectorCount: 2049,
+        updated: 1,
+      },
+      {
+        filePath: 'Synthetic/B.md',
+        contentHash: 'b',
+        sourceMtime: 1,
+        sourceSize: 10,
+        vectorCount: 2048,
+        updated: 1,
+      },
     ];
     const entries = Array.from({ length: 4097 }, (_, index) => ({
       id: 'chunk-' + index,
@@ -456,7 +744,7 @@ describe('색인 엔진 근거 선별', () => {
         startLine: 1,
         endLine: 1,
         text: `Quartz cooling cycles ${filePath}`,
-        sourceMtime: 1_700_000_000_000,
+        sourceMtime: 1,
         contentHash: `hash-${filePath}`,
       },
     }));
@@ -465,7 +753,11 @@ describe('색인 엔진 근거 선별', () => {
       planOfRows(
         input.documents,
         input.documents.map((document) =>
-          rowFor(document.path, scoreOf.get(document.path) ?? 0, `Quartz cooling cycles ${document.path}`),
+          rowFor(
+            document.path,
+            scoreOf.get(document.path) ?? 0,
+            `Quartz cooling cycles ${document.path}`,
+          ),
         ),
       ),
     );
@@ -496,7 +788,9 @@ describe('색인 엔진 근거 선별', () => {
     expect(forwardIds).toHaveLength(24);
     expect(forwardIds).toEqual(reversed?.evidence.map((item) => item.sourceId) ?? []);
     expect(forwardIds[0]).toBe(`${paths.at(-1)}#L1-L1`);
-    expect(forward?.evidence.map((item) => item.rank)).toEqual(forwardIds.map((_, index) => index + 1));
+    expect(forward?.evidence.map((item) => item.rank)).toEqual(
+      forwardIds.map((_, index) => index + 1),
+    );
     expect(forward?.plan.diagnostics.selectedChunks).toBe(24);
     expect(forward?.plan.diagnostics.selectedDocuments).toBe(24);
     expect(forward?.plan.diagnostics.truncated).toBe(true);
@@ -512,12 +806,14 @@ describe('색인 엔진 근거 선별', () => {
       .mock.calls.flatMap(([input]) => [...input.documents]);
     expect(documents).toHaveLength(paths.length * 2);
     // ms epoch mtime은 u64 타임스탬프 계약으로 문서마다 엔진에 전달됩니다.
-    expect(documents.every((document) => document.modifiedAt === 1_700_000_000_000)).toBe(true);
+    expect(documents.every((document) => document.modifiedAt === 1)).toBe(true);
     expect(
       documents.every((document) => {
         if (!('headings' in document)) return false;
         const headings: unknown = document.headings;
-        return Array.isArray(headings) && headings.length === 1 && headings[0] === 'Synthetic Section';
+        return (
+          Array.isArray(headings) && headings.length === 1 && headings[0] === 'Synthetic Section'
+        );
       }),
     ).toBe(true);
   });
@@ -528,18 +824,17 @@ describe('색인 엔진 근거 선별', () => {
       [RELEVANT, 'Quartz cooling cycles alpha'],
       [OTHER, 'Quartz cooling cycles beta'],
     ]);
-    vi.mocked(planIndexedEvidenceRust).mockImplementation(
-      (input) =>
-        planOfRows(
-          input.documents,
-          input.documents.map((document) =>
-            rowFor(
-              document.path,
-              document.path === RELEVANT ? 10 : 5,
-              quotes.get(document.path) ?? '',
-            ),
+    vi.mocked(planIndexedEvidenceRust).mockImplementation((input) =>
+      planOfRows(
+        input.documents,
+        input.documents.map((document) =>
+          rowFor(
+            document.path,
+            document.path === RELEVANT ? 10 : 5,
+            quotes.get(document.path) ?? '',
           ),
         ),
+      ),
     );
     const result = await searchIndexedVault({
       question: 'Quartz cooling cycles',
@@ -558,9 +853,9 @@ describe('색인 엔진 근거 선별', () => {
       usedChars: 27,
     });
     expect(result?.coverage.status).toBe('budget-exhausted');
-    expect(result?.rejected.filter((item) => item.status === 'unreviewed').map((item) => item.path)).toEqual(
-      [OTHER],
-    );
+    expect(
+      result?.rejected.filter((item) => item.status === 'unreviewed').map((item) => item.path),
+    ).toEqual([OTHER]);
     expect(result?.rejected.every((item) => item.status !== 'out-of-scope')).toBe(true);
   });
 
@@ -612,7 +907,7 @@ describe('색인 엔진 근거 선별', () => {
       indexed: true,
       reviewState: 'reviewed',
       text: 'Quartz restarts only after two cooling cycles.',
-      startLine: 3,
+      startLine: 4,
       headings: ['Synthetic Section'],
     });
     // ms epoch mtime은 엔진 u64 타임스탬프 계약으로 문서에 전달됩니다.

@@ -56,13 +56,7 @@ import {
   selectProviderReinjectableToolCalls,
   type ToolTranscriptProtocol,
 } from './tool-execution';
-import {
-  NativeVaultToolRuntime,
-  createNativeVaultToolDefinitions,
-  type NativeVaultToolRuntimeLike,
-} from '../agent/native-vault-tool';
-import { ObsidianNativeVaultToolPort } from '../agent/obsidian-native-vault-port';
-import { RagNativeVaultFileScope } from '../agent/rag-native-vault-file-scope';
+import { NATIVE_VAULT_TOOL_NAME, NATIVE_VAULT_NAMED_TOOL_NAMES } from '../agent/native-vault-tool';
 import { finalizeEvidenceAnswer } from './evidence-collection';
 import {
   selectDisplayedAnswerCitations,
@@ -295,7 +289,6 @@ export class ChatView extends ItemView {
     HTMLElement,
     AssistantResponseLayoutController
   >();
-  private readonly nativeVaultTool: NativeVaultToolRuntimeLike;
   private retrievalObserver?: {
     run: ChatRunHandle<AbortController>;
     record: (record: import('./types').ChatRetrievalRecord) => void;
@@ -353,20 +346,6 @@ export class ChatView extends ItemView {
     this.lastStreamingMarkdownAt = 0;
     this.localToolCallSequence = 0;
     this.compatibilityToolModels = new Set();
-    this.nativeVaultTool = new NativeVaultToolRuntime(
-      new ObsidianNativeVaultToolPort(
-        this.app,
-        new RagNativeVaultFileScope(
-          this.app,
-          () => this.plugin.settings.rag,
-          () => this.plugin.settings.chat,
-        ),
-        () => this.getChatQueryEngine(),
-        this.plugin.getSourceFileProcessingStatus
-          ? (files) => this.plugin.getSourceFileProcessingStatus?.(files) ?? Promise.resolve(null)
-          : undefined,
-      ),
-    );
     this.sourcePanel = new SourcePanel({
       setIcon: (element, icon) => setIcon(element, icon),
       openCitation: (citation) => this.openCitation(citation),
@@ -2920,10 +2899,8 @@ export class ChatView extends ItemView {
       !contextMentions.some((mention) => mention.type === 'tag') &&
       (isWholeVaultResearchRequest(text) ||
         Boolean(researchScopePath && isScopedVaultResearchRequest(text)));
-    const explicitlyMentionedServers = wholeVaultResearch ? [] : this.getMentionedServerNames(text);
-    const mentionedServers = wholeVaultResearch
-      ? []
-      : this.getEffectiveMcpServerNames(text, explicitlyMentionedServers);
+    const explicitlyMentionedServers = this.getMentionedServerNames(text);
+    const mentionedServers = this.getEffectiveMcpServerNames(text, explicitlyMentionedServers);
     const mentionOnlyServers = this.getMentionOnlyServers(explicitlyMentionedServers);
     let promptContext: ContextBuildResult;
     try {
@@ -3126,25 +3103,35 @@ export class ChatView extends ItemView {
           expandVaultSearchQueryLocally(text, previousUserQuestions);
         // 검색 화면과 같은 corpus·hybrid 후보·리비전 reader를 공유합니다.
         const searchSource = await collectIndexedSearchSource(
-          { app: this.app, ragEngine: this.plugin.ragEngine, documentCorpus: this.plugin.documentCorpus },
+          {
+            app: this.app,
+            ragEngine: this.plugin.ragEngine,
+            documentCorpus: this.plugin.documentCorpus,
+          },
           localSearchQuestion,
           abortController.signal,
         );
         const indexedPaths = searchSource ? await searchSource.getIndexedPaths() : [];
         const searchInventory = searchSource?.inventory;
+        const mentionedTags = this.parseMentions(text)
+          .filter((mention) => mention.type === 'tag')
+          .map((mention) => mention.name);
         const researchResult = await reviewIndexedVault({
           question: text,
           indexedPaths,
           scopes: mentionedFolders.map((folder) => folder.name),
           corpus: searchSource?.corpus,
           candidates: searchSource?.candidates,
+          candidatesState: searchSource?.candidatesState,
           inventory: searchInventory,
+          filters: mentionedTags.length > 0 ? { tags: mentionedTags } : undefined,
           revisionReader: searchSource?.revisionReader,
           provider,
           systemPrompt: getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt),
           previousUserQuestions,
           scoringQuestion: localSearchQuestion,
           deferAnswer,
+          documentScope: wholeVaultResearch ? 'all' : 'candidates',
           onDiagnostics: (diagnostics) => {
             if (!isChatRunActive(this.activeRun, run)) return;
             indexedReviewDiagnostics = diagnostics;
@@ -3201,15 +3188,13 @@ export class ChatView extends ItemView {
         contextMeta.dataBoundarySnapshot = withDataBoundaryProviderUsage(dataBoundarySnapshot, {
           researchDocumentCount,
         });
-        // 엔진이 선별하지 못하면 근거 없는 지식으로 메우지 않고 기존 도구 흐름으로 넘깁니다.
-        const toolFallback = researchResult.toolFallback && toolsEnabled;
-        if (deferAnswer || toolFallback) {
+        if (deferAnswer) {
           // 명시한 외부 도구도 실행할 수 있도록 검토 결과와 원문 인용을 기존 흐름에 전달합니다.
           promptContext.systemPrompt = [
             promptContext.systemPrompt,
             t('llmEvidenceDataBoundary'),
             JSON.stringify({
-              indexedDocumentReview: researchResult.content,
+              indexedEvidenceDossier: researchResult.dossier,
               verifiedSourcePassages: researchResult.citations,
             }),
           ]
@@ -3218,10 +3203,7 @@ export class ChatView extends ItemView {
           promptContext.citations = [...promptContext.citations, ...researchResult.citations];
           contextMeta.citations = promptContext.citations;
         } else {
-          const researchCitations = selectDisplayedAnswerCitations(
-            researchResult.content,
-            researchResult.citations,
-          );
+          const researchCitations = researchResult.citations;
           const sourceWarnings = this.validateAssistantSources(
             researchResult.content,
             researchCitations,
@@ -3710,7 +3692,6 @@ export class ChatView extends ItemView {
       if (runnableToolCalls.length > 0) {
         const preparedToolCalls = await prepareAssistantToolCalls({
           toolCalls,
-          nativeTool: this.nativeVaultTool,
           registry: this.plugin.mcpRegistry,
           preferredServerNames: mentionedServers,
           mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
@@ -4065,16 +4046,18 @@ export class ChatView extends ItemView {
     run: ChatRunHandle<AbortController>,
   ): Promise<ToolDefinition[]> {
     if (!isChatRunActive(this.activeRun, run)) return [];
-    const nativeDefinitions = createNativeVaultToolDefinitions();
     const externalDefinitions = await collectExternalMcpToolDefinitions({
       serverNames,
       explicitlyMentionedServerNames,
-      reservedToolNames: new Set(nativeDefinitions.map((definition) => definition.function.name)),
+      reservedToolNames: new Set([
+        NATIVE_VAULT_TOOL_NAME,
+        ...Object.values(NATIVE_VAULT_NAMED_TOOL_NAMES),
+      ]),
       signal: run.controller.signal,
       getClient: (serverName) => this.plugin.mcpRegistry?.getClient(serverName),
       isActive: () => isChatRunActive(this.activeRun, run),
     });
-    return selectBoundedToolDefinitions(nativeDefinitions, externalDefinitions);
+    return selectBoundedToolDefinitions([], externalDefinitions);
   }
 
   private async streamFinalAnswerAfterTools(args: {
@@ -4512,7 +4495,6 @@ export class ChatView extends ItemView {
       if (newToolCalls.length > 0) {
         const preparedCandidates = await prepareAssistantToolCalls({
           toolCalls: newToolCalls,
-          nativeTool: this.nativeVaultTool,
           registry: this.plugin.mcpRegistry,
           preferredServerNames: args.mentionedServers,
           mcpMode: this.plugin.settings.chat.mcpToolExecutionPolicy,
@@ -4806,7 +4788,6 @@ export class ChatView extends ItemView {
       throw new Error(t('mcpResultMessageMissing', { messageId }));
     }
     return executeToolCalls({
-      nativeTool: this.nativeVaultTool,
       registry: this.plugin.mcpRegistry,
       toolCalls,
       preferredServerNames,
@@ -4943,27 +4924,42 @@ export class ChatView extends ItemView {
           return;
         }
         let resumedResearchDocumentCount: number | undefined;
-        if (message.indexedReviewDiagnostics) {
+        if (message.indexedReviewDiagnostics && explicitlyMentionedServers.length > 0) {
           await this.plugin.prepareRagForChat();
           if (!isChatRunActive(this.activeRun, run)) return;
           const resumeSource = await collectIndexedSearchSource(
-            { app: this.app, ragEngine: this.plugin.ragEngine, documentCorpus: this.plugin.documentCorpus },
+            {
+              app: this.app,
+              ragEngine: this.plugin.ragEngine,
+              documentCorpus: this.plugin.documentCorpus,
+            },
             promptContext.scoringQuestion ?? currentQuestion,
             abortController.signal,
           );
           const indexedPaths = resumeSource ? await resumeSource.getIndexedPaths() : [];
           const resumeInventory = resumeSource?.inventory;
+          const resumeTags = this.parseMentions(currentQuestion)
+            .filter((mention) => mention.type === 'tag')
+            .map((mention) => mention.name);
           const researchResult = await reviewIndexedVault({
-            question: currentQuestion, indexedPaths,
-            scopes: this.parseMentions(currentQuestion).filter((mention) => mention.type === 'folder').map((mention) => mention.name),
+            question: currentQuestion,
+            indexedPaths,
+            scopes: this.parseMentions(currentQuestion)
+              .filter((mention) => mention.type === 'folder')
+              .map((mention) => mention.name),
             corpus: resumeSource?.corpus,
             candidates: resumeSource?.candidates,
+            candidatesState: resumeSource?.candidatesState,
             inventory: resumeInventory,
+            filters: resumeTags.length > 0 ? { tags: resumeTags } : undefined,
             revisionReader: resumeSource?.revisionReader,
             provider,
             previousUserQuestions,
-            scoringQuestion: promptContext.scoringQuestion ?? expandVaultSearchQueryLocally(currentQuestion, previousUserQuestions),
+            scoringQuestion:
+              promptContext.scoringQuestion ??
+              expandVaultSearchQueryLocally(currentQuestion, previousUserQuestions),
             deferAnswer: true,
+            documentScope: 'candidates',
             signal: abortController.signal,
             onDiagnostics: (diagnostics) => {
               if (!isChatRunActive(this.activeRun, run)) return;
@@ -4975,23 +4971,25 @@ export class ChatView extends ItemView {
           message.indexedReviewNotice = researchResult.coverageNotice;
           message.indexedReviewDiagnostics = researchResult.diagnostics;
           resumedResearchDocumentCount = researchResult.providerTransfer.sentPaths
-            ? new Set([...researchResult.providerTransfer.sentPaths, ...researchResult.citations.map((citation) => citation.filePath)]).size
+            ? new Set([
+                ...researchResult.providerTransfer.sentPaths,
+                ...researchResult.citations.map((citation) => citation.filePath),
+              ]).size
             : researchResult.providerTransfer.sentFiles;
           promptContext.systemPrompt = [
             promptContext.systemPrompt,
             t('llmEvidenceDataBoundary'),
             JSON.stringify({
-              indexedDocumentReview: researchResult.content,
+              indexedEvidenceDossier: researchResult.dossier,
               verifiedSourcePassages: researchResult.citations,
             }),
           ]
             .filter(Boolean)
             .join('\n\n');
-          promptContext.citations = [
-            ...promptContext.citations,
-            ...researchResult.citations,
-          ];
-          promptContext.attachments = promptContext.attachments.filter((attachment) => attachment.id !== 'rag:auto');
+          promptContext.citations = [...promptContext.citations, ...researchResult.citations];
+          promptContext.attachments = promptContext.attachments.filter(
+            (attachment) => attachment.id !== 'rag:auto',
+          );
         }
         const toolDefinitions = await this.collectToolDefinitions(
           mentionedServers,
@@ -5221,8 +5219,7 @@ export class ChatView extends ItemView {
       enableVaultSearch: !skipAutoRag && pluginDocumentation === null,
       deferAutoRagToReview,
       signal,
-      queryExpander: (question) =>
-        expandVaultSearchPlan(question, provider, previousUserQuestions, signal),
+      queryExpander: (question) => expandVaultSearchPlan(question, previousUserQuestions),
     });
     if (context.systemPrompt) parts.push(context.systemPrompt);
 

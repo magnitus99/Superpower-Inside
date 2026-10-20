@@ -5,7 +5,7 @@ import { prepareChatProviderForModel } from '../llm/provider-resolution';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
 import type { LLMProvider } from '../llm/providers';
 import { RAGQueryEngine } from '../rag/query';
-import { reviewIndexedVault } from '../agent/indexed-vault-review';
+import { reviewIndexedVault, type IndexedVaultReviewResult } from '../agent/indexed-vault-review';
 
 vi.mock('obsidian', () => ({
   ItemView: class {},
@@ -21,6 +21,68 @@ vi.mock('../llm/provider-resolution', () => ({
 vi.mock('../agent/indexed-vault-review', () => ({ reviewIndexedVault: vi.fn() }));
 
 afterEach(() => vi.unstubAllGlobals());
+
+function createReviewResult(
+  overrides: Partial<IndexedVaultReviewResult> = {},
+): IndexedVaultReviewResult {
+  const coverage: IndexedVaultReviewResult['coverage'] = {
+    status: 'supported',
+    documentScope: 'candidates',
+    reviewedDocuments: 1,
+    unreviewedDocuments: 0,
+    notIndexedDocuments: 0,
+    requestedPaths: [],
+    plannedPaths: [],
+    unreviewedPaths: [],
+  };
+  const phase = () => ({ durationMs: 0, requests: 0, reportedRequests: 0 });
+  return {
+    outcome: 'answered',
+    evidence: [],
+    coverage,
+    dossier: {
+      question: '합성 질문',
+      scoringQuestion: '합성 질문',
+      previousUserQuestions: [],
+      queryPlan: { queryTokens: [], phrases: [] },
+      documentScope: 'candidates',
+      evidence: [],
+      coverage,
+      diagnostics: null,
+      notice: '합성 고지',
+    },
+    content: '합성 답변',
+    citations: [],
+    totalFiles: 1,
+    processedFiles: 1,
+    rejectedFiles: 0,
+    providerTransfer: { sentFiles: 1 },
+    coverageNotice: '합성 고지',
+    engineUnavailable: false,
+    diagnostics: {
+      phases: {
+        inventory: phase(),
+        search: phase(),
+        map: phase(),
+        screen: phase(),
+        extract: phase(),
+        reduce: phase(),
+        answer: phase(),
+      },
+      counts: {
+        candidateSegments: 1,
+        screenAcceptedSegments: 1,
+        extractedSegments: 1,
+        screenRetries: 0,
+        extractRetries: 0,
+        splitBatches: 0,
+        reduceRequests: 0,
+        cacheHits: 0,
+      },
+    },
+    ...overrides,
+  };
+}
 
 interface ActionView {
   inputArea: { value: string };
@@ -237,8 +299,42 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     return { view, stream, context, chat, storedMessages };
   }
 
+  it('태그 멘션을 검색 엔진 필터로 전달한다', async () => {
+    const { view, context } = createView();
+    context.mockResolvedValue({
+      systemPrompt: null,
+      attachments: [],
+      citations: [],
+      warnings: [],
+      vaultSearchEnabled: true,
+    });
+    Object.assign(view, {
+      plugin: {
+        settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        prepareRagForChat: vi.fn(),
+        ragEngine: null,
+        documentCorpus: {
+          getIndexedFilePaths: () => Promise.resolve(['Synthetic.md']),
+          getEntriesByFilePaths: () => Promise.resolve([]),
+          getFileIndexRecords: () => Promise.resolve([]),
+        },
+      },
+      parseMentions: () => [{ type: 'tag', name: 'synthetic-tag' }],
+      getEffectiveMcpServerNames: () => [],
+      collectToolDefinitions: vi.fn().mockResolvedValue([]),
+    });
+    vi.mocked(reviewIndexedVault).mockResolvedValue(createReviewResult());
+    await view.handleSend('@#synthetic-tag 합성 질문');
+    expect(reviewIndexedVault).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: { tags: ['synthetic-tag'] },
+        documentScope: 'candidates',
+      }),
+    );
+  });
+
   it('사용 가능한 MCP만 있으면 검수 답변을 재검색·재생성하지 않는다', async () => {
-    const { view, stream, context } = createView(3);
+    const { view, stream, context, chat } = createView(3);
     context.mockResolvedValue({
       systemPrompt: null,
       attachments: [],
@@ -252,7 +348,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
         prepareRagForChat: vi.fn(),
-  documentCorpus: {
+        documentCorpus: {
           getIndexedFilePaths: () => Promise.resolve(['Synthetic.md']),
           getEntriesByFilePaths: () => Promise.resolve([]),
           getFileIndexRecords: () => Promise.resolve([]),
@@ -263,41 +359,42 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       collectToolDefinitions,
       updateMessage,
     });
-    vi.mocked(reviewIndexedVault).mockResolvedValue({
-      content: '검수 완료된 합성 답변',
-      citations: [],
-      totalFiles: 1,
-      processedFiles: 1,
-      rejectedFiles: 0,
-      providerTransfer: { sentFiles: 1 },
-      coverageNotice: '합성 검수 집계',
-      diagnostics: {
-        phases: {
-          inventory: { durationMs: 0, requests: 0, reportedRequests: 0 },
-          search: { durationMs: 0, requests: 0, reportedRequests: 0 },
-          map: { durationMs: 0, requests: 0, reportedRequests: 0 },
-          screen: { durationMs: 0, requests: 0, reportedRequests: 0 },
-          extract: { durationMs: 0, requests: 0, reportedRequests: 0 },
-          reduce: { durationMs: 0, requests: 0, reportedRequests: 0 },
-          answer: { durationMs: 0, requests: 0, reportedRequests: 0 },
+    vi.mocked(reviewIndexedVault).mockResolvedValue(
+      createReviewResult({
+        content: '검수 완료된 합성 답변',
+        citations: [],
+        totalFiles: 1,
+        processedFiles: 1,
+        rejectedFiles: 0,
+        providerTransfer: { sentFiles: 1 },
+        coverageNotice: '합성 검수 집계',
+        diagnostics: {
+          phases: {
+            inventory: { durationMs: 0, requests: 0, reportedRequests: 0 },
+            search: { durationMs: 0, requests: 0, reportedRequests: 0 },
+            map: { durationMs: 0, requests: 0, reportedRequests: 0 },
+            screen: { durationMs: 0, requests: 0, reportedRequests: 0 },
+            extract: { durationMs: 0, requests: 0, reportedRequests: 0 },
+            reduce: { durationMs: 0, requests: 0, reportedRequests: 0 },
+            answer: { durationMs: 0, requests: 0, reportedRequests: 0 },
+          },
+          counts: {
+            candidateSegments: 1,
+            screenAcceptedSegments: 1,
+            extractedSegments: 1,
+            screenRetries: 0,
+            extractRetries: 0,
+            splitBatches: 0,
+            reduceRequests: 0,
+            cacheHits: 0,
+          },
         },
-        counts: {
-          candidateSegments: 1,
-          screenAcceptedSegments: 1,
-          extractedSegments: 1,
-          screenRetries: 0,
-          extractRetries: 0,
-          splitBatches: 0,
-          reduceRequests: 0,
-          cacheHits: 0,
-        },
-      },
-      toolFallback: false,
-      engineUnavailable: false,
-    });
+        engineUnavailable: false,
+      }),
+    );
     await view.handleSend('합성 자료에 대한 질문');
     expect(reviewIndexedVault).toHaveBeenCalledWith(
-      expect.objectContaining({ deferAnswer: false }),
+      expect.objectContaining({ deferAnswer: false, documentScope: 'candidates' }),
     );
     expect(updateMessage).toHaveBeenCalledWith(
       expect.any(String),
@@ -309,10 +406,100 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     );
     expect(collectToolDefinitions).not.toHaveBeenCalled();
     expect(stream).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
   });
 
-  it('엔진이 원문을 확인하지 못하면 검수 답변 대신 도구 흐름을 실행한다', async () => {
-    const { view, stream, context } = createView(3);
+  it.each(['engine-unavailable', 'no-evidence', 'evidence-only'] as const)(
+    '%s도 도구 루프 없이 본문과 검증 출처를 보존한다',
+    async (outcome) => {
+      const { view, stream, context, chat } = createView(3);
+      context.mockResolvedValue({
+        systemPrompt: null,
+        attachments: [],
+        citations: [],
+        warnings: [],
+        vaultSearchEnabled: true,
+      });
+      const collectToolDefinitions = vi.fn().mockResolvedValue([]);
+      Object.assign(view, {
+        plugin: {
+          settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+          prepareRagForChat: vi.fn(),
+          documentCorpus: {
+            getIndexedFilePaths: () => Promise.resolve(['Synthetic.md']),
+            getEntriesByFilePaths: () => Promise.resolve([]),
+            getFileIndexRecords: () => Promise.resolve([]),
+          },
+          ragEngine: null,
+          logger: { warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        },
+        getEffectiveMcpServerNames: () => ['optional-server'],
+        collectToolDefinitions,
+        updateMessage: vi.fn(),
+      });
+      vi.mocked(reviewIndexedVault).mockResolvedValue(
+        createReviewResult({
+          outcome,
+          content: '엔진 결과 원문',
+          citations:
+            outcome === 'evidence-only'
+              ? [
+                  {
+                    id: 'synthetic-source',
+                    filePath: 'Synthetic.md',
+                    preview: '합성 원문',
+                    status: 'verified',
+                  },
+                ]
+              : [],
+          totalFiles: 1,
+          processedFiles: 0,
+          rejectedFiles: 0,
+          providerTransfer: { sentFiles: 0 },
+          coverageNotice: '미검증 합성 고지',
+          engineUnavailable: true,
+        }),
+      );
+      await view.handleSend('합성 자료에 대한 질문');
+      expect(collectToolDefinitions).not.toHaveBeenCalled();
+      expect(stream).not.toHaveBeenCalled();
+      expect(chat).not.toHaveBeenCalled();
+      expect(Reflect.get(view, 'updateMessage')).toHaveBeenCalledWith(
+        expect.any(String),
+        '엔진 결과 원문',
+        true,
+        undefined,
+        undefined,
+        expect.objectContaining({
+          citations:
+            outcome === 'evidence-only'
+              ? [expect.objectContaining({ id: 'synthetic-source', status: 'verified' })]
+              : [],
+          stopReason: 'complete',
+        }),
+      );
+    },
+  );
+
+  it('명시적 deep 요청에만 전체 문서 범위를 전달한다', async () => {
+    const { view, stream } = createView(0);
+    Object.assign(view, {
+      plugin: {
+        settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        prepareRagForChat: vi.fn(),
+        ragEngine: null,
+      },
+    });
+    vi.mocked(reviewIndexedVault).mockResolvedValue(createReviewResult());
+    await view.handleSend('이 볼트 전체를 조사해서 요약해줘');
+    expect(reviewIndexedVault).toHaveBeenLastCalledWith(
+      expect.objectContaining({ documentScope: 'all', deferAnswer: false }),
+    );
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it('mixed MCP에는 표시 본문 대신 dossier와 검증 출처만 주입한다', async () => {
+    const { view, stream, context, chat } = createView(3);
     context.mockResolvedValue({
       systemPrompt: null,
       attachments: [],
@@ -320,38 +507,69 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       warnings: [],
       vaultSearchEnabled: true,
     });
-    const collectToolDefinitions = vi.fn().mockResolvedValue([]);
+    const result = createReviewResult({
+      outcome: 'evidence-only',
+      content: '표시 전용 비JSON 원문 본문',
+    });
+    vi.mocked(reviewIndexedVault).mockResolvedValue(result);
     Object.assign(view, {
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
         prepareRagForChat: vi.fn(),
-        documentCorpus: {
-          getIndexedFilePaths: () => Promise.resolve(['Synthetic.md']),
-          getEntriesByFilePaths: () => Promise.resolve([]),
-          getFileIndexRecords: () => Promise.resolve([]),
-        },
         ragEngine: null,
-        logger: { warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       },
-      getEffectiveMcpServerNames: () => ['optional-server'],
-      collectToolDefinitions: collectToolDefinitions as never,
-      updateMessage: vi.fn(),
+      getMentionedServerNames: () => ['external'],
+      getEffectiveMcpServerNames: () => ['external'],
+      collectToolDefinitions: vi.fn().mockResolvedValue([]),
     });
-    vi.mocked(reviewIndexedVault).mockResolvedValue({
-      content: '엔진이 이 질문을 뒷받침하는 원문 구절을 확인하지 못했습니다.',
-      citations: [],
-      totalFiles: 1,
-      processedFiles: 0,
-      rejectedFiles: 0,
-      providerTransfer: { sentFiles: 0 },
-      coverageNotice: '미검증 합성 고지',
-      diagnostics: undefined as never,
-      toolFallback: true,
-      engineUnavailable: true,
-    });
-    await view.handleSend('합성 자료에 대한 질문');
-    expect(collectToolDefinitions).toHaveBeenCalled();
+    await view.handleSend('합성 자료와 @external 결과를 비교해줘');
+    expect(reviewIndexedVault).toHaveBeenLastCalledWith(
+      expect.objectContaining({ documentScope: 'candidates', deferAnswer: true }),
+    );
     expect(stream).toHaveBeenCalled();
+    const body = JSON.stringify(stream.mock.calls[0]?.[0]);
+    expect(body).toContain('indexedEvidenceDossier');
+    expect(body).toContain('합성 질문');
+    expect(body).not.toContain(result.content);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('server-only 요청은 볼트 검토를 새로 시작하지 않는다', async () => {
+    const { view, stream } = createView(3);
+    vi.mocked(reviewIndexedVault).mockClear();
+    Object.assign(view, {
+      getMentionedServerNames: () => ['external'],
+      getEffectiveMcpServerNames: () => ['external'],
+      collectToolDefinitions: vi.fn().mockResolvedValue([]),
+    });
+    await view.handleSend('@external 상태를 알려줘');
+    expect(reviewIndexedVault).not.toHaveBeenCalled();
+    expect(stream).toHaveBeenCalledOnce();
+  });
+
+  it('채팅 도구 catalog는 외부 MCP만 노출한다', async () => {
+    const { view } = createView();
+    const run = { token: 1, controller: new AbortController() };
+    Object.assign(view, { activeRun: run, plugin: { mcpRegistry: null } });
+    const collect = Reflect.get(view, 'collectToolDefinitions') as (
+      servers: string[],
+      explicit: string[],
+      activeRun: typeof run,
+    ) => Promise<import('../llm/providers').ToolDefinition[]>;
+    expect(await collect.call(view, [], [], run)).toEqual([]);
+    const listTools = vi.fn().mockResolvedValue([
+      {
+        name: 'remote_lookup',
+        description: '합성 외부 조회',
+        inputSchema: { type: 'object', properties: {} },
+      },
+    ]);
+    Object.assign(view, { plugin: { mcpRegistry: { getClient: () => ({ listTools }) } } });
+    const definitions = await collect.call(view, ['external'], ['external'], run);
+    expect(definitions.map((definition) => definition.function.name)).toEqual(['remote_lookup']);
+    expect(listTools).toHaveBeenCalledWith(run.controller.signal);
+    listTools.mockRejectedValueOnce(new Error('합성 discovery 실패'));
+    await expect(collect.call(view, ['external'], ['external'], run)).rejects.toThrow('external');
   });
 
   it('공통 factory의 corpus·hybrid 후보·리비전 reader를 엔진 검토에 전달한다', async () => {
@@ -388,24 +606,24 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       },
       updateMessage: vi.fn(),
     });
-    vi.mocked(reviewIndexedVault).mockResolvedValue({
-      content: '합성 해석',
-      citations: [],
-      totalFiles: 1,
-      processedFiles: 1,
-      rejectedFiles: 0,
-      providerTransfer: { sentFiles: 1 },
-      coverageNotice: '합성 집계',
-      diagnostics: undefined as never,
-      toolFallback: false,
-      engineUnavailable: false,
-    });
+    vi.mocked(reviewIndexedVault).mockResolvedValue(
+      createReviewResult({
+        content: '합성 해석',
+        citations: [],
+        totalFiles: 1,
+        processedFiles: 1,
+        rejectedFiles: 0,
+        providerTransfer: { sentFiles: 1 },
+        coverageNotice: '합성 집계',
+        engineUnavailable: false,
+      }),
+    );
     await view.handleSend('합성 검색 질문');
     const options = vi.mocked(reviewIndexedVault).mock.calls.at(-1)?.[0];
     expect(options?.corpus).toBe(corpus);
     expect(options?.candidates?.[0]).toMatchObject({
       path: 'Synthetic/Hybrid.md',
-      startLine: 4,
+      startLine: 5,
       rank: 1,
       source: 'bm25',
     });
@@ -519,18 +737,19 @@ describe('전수 검수 뒤 승인 대기 재개', () => {
       },
     };
     const reviewContent = '현재 정책으로 확인한 독립 합성 검수 근거';
-    vi.mocked(reviewIndexedVault).mockResolvedValue({
-      content: reviewContent,
-      citations: [citation],
-      totalFiles: 1,
-      processedFiles: 1,
-      rejectedFiles: 0,
-      providerTransfer: { sentFiles: 1 },
-      coverageNotice: '현재 검수 고지',
-      diagnostics,
-      toolFallback: false,
-      engineUnavailable: false,
-    });
+    vi.mocked(reviewIndexedVault).mockResolvedValue(
+      createReviewResult({
+        content: reviewContent,
+        citations: [citation],
+        totalFiles: 1,
+        processedFiles: 1,
+        rejectedFiles: 0,
+        providerTransfer: { sentFiles: 1 },
+        coverageNotice: '현재 검수 고지',
+        diagnostics,
+        engineUnavailable: false,
+      }),
+    );
     const pending = {
       id: 'pending-call',
       name: 'synthetic_tool',
@@ -590,7 +809,7 @@ describe('전수 검수 뒤 승인 대기 재개', () => {
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { mcpMentionOnly: true } },
         prepareRagForChat: vi.fn().mockResolvedValue(undefined),
-documentCorpus: {
+        documentCorpus: {
           getIndexedFilePaths: () => Promise.resolve(['Current/Fresh.md']),
           getEntriesByFilePaths: () => Promise.resolve([]),
           getFileIndexRecords: () => Promise.resolve([]),
@@ -601,7 +820,6 @@ documentCorpus: {
       runTokenSequence: 0,
       isStreaming: false,
       compatibilityToolModels: new Set(),
-      nativeVaultTool: { execute: vi.fn() },
       setLoading: vi.fn(),
       updateMessage: vi.fn(),
       markDirtyAndAutoSave: vi.fn(),
@@ -632,12 +850,15 @@ documentCorpus: {
         indexedPaths: ['Current/Fresh.md'],
         scopes: ['Current'],
         deferAnswer: true,
+        documentScope: 'candidates',
       }),
     );
     expect(runToolResponseLoop).toHaveBeenCalledOnce();
     const resumed = runToolResponseLoop.mock.calls[0]?.[0];
     const providerBody = JSON.stringify(resumed?.baseMessages);
-    expect(providerBody).toContain(reviewContent);
+    expect(providerBody).toContain('indexedEvidenceDossier');
+    expect(providerBody).toContain('합성 질문');
+    expect(providerBody).not.toContain(reviewContent);
     expect(providerBody).not.toContain('오래된 검수 답변');
     expect(providerBody).not.toContain('오래된 제외 근거');
     expect(resumed?.meta.citations).toContainEqual(citation);

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from '../i18n';
-import type { ChatMessage, LLMProvider } from '../llm/providers';
+import { LLMProviderHttpError, type ChatMessage, type LLMProvider } from '../llm/providers';
 import {
   planIndexedEvidenceRust,
+  planModelContextRust,
   verifyIndexedEvidenceRust,
   type RustIndexedEvidencePlan,
   type RustIndexedEvidenceVerification,
@@ -220,6 +221,10 @@ function reviewOptions(
     indexedPaths: [RELEVANT, OTHER],
     scopes: [],
     corpus: corpusFixture(),
+    candidates: [
+      { path: RELEVANT, score: 2, source: 'bm25', rank: 1 },
+      { path: OTHER, score: 1, source: 'bm25', rank: 2 },
+    ],
     revisionReader: () => Promise.resolve('1:10'),
     provider: answerProvider().provider,
     ...overrides,
@@ -227,6 +232,193 @@ function reviewOptions(
 }
 
 describe('엔진 근거 기반 색인 검토', () => {
+  it('기본 review는 후보만 조회하고 all은 명시할 때 전체를 조회한다', async () => {
+    const corpus = corpusFixture();
+    const read = vi.spyOn(corpus, 'getEntriesByFilePaths');
+    const options = reviewOptions({
+      corpus,
+      candidates: [{ path: RELEVANT, score: 1, source: 'bm25', rank: 1 }],
+      deferAnswer: true,
+    });
+    const candidate = await reviewIndexedVault(options);
+    expect(read.mock.calls).toEqual([[[RELEVANT]]]);
+    expect(candidate.dossier.documentScope).toBe('candidates');
+    expect(candidate.totalFiles).toBe(1);
+    read.mockClear();
+    const all = await reviewIndexedVault({ ...options, documentScope: 'all' });
+    expect(read.mock.calls).toEqual([[[RELEVANT, OTHER]]]);
+    expect(all.dossier.documentScope).toBe('all');
+  });
+
+  it.each([
+    ['initializing', 'indexing', 'indexedReviewIndexing'],
+    ['indexing', 'indexing', 'indexedReviewIndexing'],
+    ['unavailable', 'engine-unavailable', 'indexedReviewSearchUnavailable'],
+  ] as const)(
+    '%s 상태는 LLM과 도구 없이 현재 엔진 상태를 반환한다',
+    async (candidatesState, outcome, messageKey) => {
+      const streamChat = vi.fn<LLMProvider['streamChat']>();
+      const result = await reviewIndexedVault(
+        reviewOptions({ candidatesState, provider: { streamChat } }),
+      );
+      expect(result.outcome).toBe(outcome);
+      expect(result.evidence).toEqual([]);
+      expect(result.content).toBe(t(messageKey));
+      expect(result.coverage.status).toBe('incomplete');
+      expect(streamChat).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['format', 'http'] as const)(
+    '%s 오류 후에도 verified 근거와 인용을 evidence-only로 반환한다',
+    async (failure) => {
+      const streamChat = vi.fn((...args: Parameters<LLMProvider['streamChat']>) => {
+        if (failure === 'http')
+          return Promise.reject(new LLMProviderHttpError('synthetic failure', 503));
+        args[1]({ content: '{"invalid":true}', done: false });
+        return Promise.resolve();
+      });
+      const result = await reviewIndexedVault(reviewOptions({ provider: { streamChat } }));
+      expect(streamChat).toHaveBeenCalledTimes(failure === 'format' ? 2 : 1);
+      expect(result.outcome).toBe('evidence-only');
+      expect(result.evidence).toHaveLength(1);
+      expect(result.dossier.evidence).toEqual(result.evidence);
+      expect(result.citations[0]).toMatchObject({ id: SOURCE_ID, status: 'verified' });
+      expect(result.content).toContain('> Quartz restarts');
+      expect(result.content).not.toContain('{"invalid"');
+      expect(result).not.toHaveProperty('toolFallback');
+      const payload: unknown = JSON.parse(String(streamChat.mock.calls[0]?.[0]?.[1]?.content));
+      expect(payload).toEqual(result.dossier);
+      expect(streamChat.mock.calls[0]?.[4]?.toolChoice).toBe('none');
+    },
+  );
+
+  it('provider의 AbortError는 evidence-only로 삼키지 않는다', async () => {
+    const streamChat = vi.fn(() => Promise.reject(new DOMException('cancelled', 'AbortError')));
+    await expect(
+      reviewIndexedVault(reviewOptions({ provider: { streamChat } })),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('검증 근거가 0개면 dossier와 no-evidence만 반환하고 모델을 호출하지 않는다', async () => {
+    const plan = planFixture();
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue({ ...plan, evidence: [], order: [] });
+    vi.mocked(verifyIndexedEvidenceRust).mockReturnValue({ statuses: [] });
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(reviewOptions({ provider }));
+    expect(calls).toHaveLength(0);
+    expect(result.outcome).toBe('no-evidence');
+    expect(result.dossier.evidence).toEqual([]);
+    expect(result.citations).toEqual([]);
+  });
+
+  it('후보가 없으면 기본 review는 저장소와 모델을 읽지 않고 빈 dossier를 반환한다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const corpus = corpusFixture();
+    const read = vi.spyOn(corpus, 'getEntriesByFilePaths');
+    const records = vi.spyOn(corpus, 'getFileIndexRecords');
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(
+      reviewOptions({ corpus, provider, candidates: undefined }),
+    );
+    expect(read).not.toHaveBeenCalled();
+    expect(records).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+    expect(result.outcome).toBe('no-evidence');
+    expect(result.coverage.requestedPaths).toEqual([]);
+  });
+
+  it('질문·검색 질문·이전 사용자 질문은 dossier에 보존한다', async () => {
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        provider,
+        question: 'Follow-up?',
+        scoringQuestion: 'Quartz cooling cycles',
+        previousUserQuestions: ['Original question?'],
+      }),
+    );
+    expect(result.dossier).toMatchObject({
+      question: 'Follow-up?',
+      scoringQuestion: 'Quartz cooling cycles',
+      previousUserQuestions: ['Original question?'],
+    });
+    const payload: unknown = JSON.parse(String(calls[0]?.[1]?.content));
+    expect(payload).toEqual(result.dossier);
+  });
+
+  it('입력 예산을 넘으면 모델을 호출하지 않고 evidence-only를 반환한다', async () => {
+    const { provider, calls } = answerProvider();
+    const budget = planModelContextRust({});
+    if (!budget) throw new Error('모델 예산 계약을 초기화하지 못했습니다.');
+    const contextBudget = { ...budget, inputBytes: 1 };
+    const result = await reviewIndexedVault(
+      reviewOptions({ provider: { ...provider, contextBudget } }),
+    );
+    expect(calls).toHaveLength(0);
+    expect(result.outcome).toBe('evidence-only');
+    expect(result.citations[0]?.status).toBe('verified');
+    expect(result.providerTransfer.sentFiles).toBe(0);
+  });
+
+  it('진행 중 취소와 늦은 provider 응답은 결과·콜백을 만들지 않는다', async () => {
+    const controller = new AbortController();
+    const onAnswer = vi.fn();
+    let finish: (() => void) | undefined;
+    let consume: Parameters<LLMProvider['streamChat']>[1] | undefined;
+    const streamChat = vi.fn((...args: Parameters<LLMProvider['streamChat']>) => {
+      consume = args[1];
+      return new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    });
+    const pending = reviewIndexedVault(
+      reviewOptions({ provider: { streamChat }, signal: controller.signal, onAnswer }),
+    );
+    const observed = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(streamChat).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await observed;
+    consume?.({ content: '{"late":true}', done: false });
+    finish?.();
+    await Promise.resolve();
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it('현재 원문 revision 조회가 멈춰도 취소는 즉시 완료된다', async () => {
+    const controller = new AbortController();
+    const revisionReader = vi.fn(() => new Promise<string | null>(() => undefined));
+    const pending = reviewIndexedVault(
+      reviewOptions({ revisionReader, signal: controller.signal }),
+    );
+    const outcome = pending.catch((error: unknown) => error);
+    await vi.waitFor(() => expect(revisionReader).toHaveBeenCalledTimes(1));
+    controller.abort();
+    const result: unknown = await Promise.race([
+      outcome,
+      new Promise((resolve) => setTimeout(() => resolve({ name: 'timeout' }), 100)),
+    ]);
+    expect(result).toMatchObject({ name: 'AbortError' });
+  });
+
+  it('evidence-only의 Markdown은 원문 이미지·링크·HTML을 실행하지 않는다', async () => {
+    const plan = planFixture();
+    const quote = '![tracking](https://example.com/image)\n<script>bad()</script>\n[[Private]]';
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue({
+      ...plan,
+      evidence: plan.evidence.map((item) => ({ ...item, quote })),
+    });
+    const result = await reviewIndexedVault(reviewOptions({ deferAnswer: true }));
+    expect(result.evidence[0]?.quote).toBe(quote);
+    expect(result.content).not.toContain('![');
+    expect(result.content).not.toContain('<script>');
+    expect(result.content).not.toContain('[[Private]]');
+    expect(result.content).toContain('&#60;script&#62;');
+    expect(result.content).toContain('\n> ');
+    expect(result.citations[0]?.preview).toBe(quote);
+  });
   beforeEach(() => {
     vi.mocked(planIndexedEvidenceRust).mockReturnValue(planFixture());
     vi.mocked(verifyIndexedEvidenceRust).mockReturnValue(verificationFixture());
@@ -238,19 +430,19 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(calls).toHaveLength(1);
     const instruction = calls[0]?.[0]?.content ?? '';
     expect(instruction).toContain(t('llmIndexedReviewAnswer'));
-    expect(result.toolFallback).toBe(false);
+    expect(result.outcome).toBe('answered');
     expect(result.citations).toHaveLength(1);
     expect(result.citations[0]?.filePath).toBe(RELEVANT);
     expect(result.citations[0]?.line).toBe(3);
     expect(result.content).toContain('두 번 냉각한 뒤');
   });
 
-  it('엔진이 선별하지 못하면 도구 fallback으로 표시하고 LLM을 부르지 않는다', async () => {
+  it('엔진이 없으면 engine-unavailable을 반환하고 LLM을 부르지 않는다', async () => {
     vi.mocked(planIndexedEvidenceRust).mockReturnValue(null);
     const { provider, calls } = answerProvider();
     const result = await reviewIndexedVault(reviewOptions({ provider }));
     expect(calls).toHaveLength(0);
-    expect(result.toolFallback).toBe(true);
+    expect(result.outcome).toBe('engine-unavailable');
     expect(result.engineUnavailable).toBe(true);
     expect(result.citations).toHaveLength(0);
   });
@@ -262,7 +454,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     );
     expect(calls).toHaveLength(0);
     expect(result.citations).toHaveLength(0);
-    expect(result.toolFallback).toBe(true);
+    expect(result.outcome).toBe('no-evidence');
   });
 
   it('stale로 제거된 근거는 채택·coverage에서 제거 이후 기준으로 다시 반영한다', async () => {
@@ -278,7 +470,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(calls).toHaveLength(1);
     expect(result.citations.map((citation) => citation.filePath)).toEqual([RELEVANT]);
     expect(result.providerTransfer.sentFiles).toBe(1);
-    expect(result.toolFallback).toBe(false);
+    expect(result.outcome).toBe('answered');
     // 제거된 문서는 채택 문서·coverage에서 빠지고 원문 재확인 실패 문서로만 남습니다.
     expect(result.coverageNotice).toBe(
       t('indexedReviewIncompleteNotice', {
@@ -288,14 +480,14 @@ describe('엔진 근거 기반 색인 검토', () => {
         rejected: 0,
         budgetExcluded: 0,
         notIndexed: 0,
-        unreviewed: 0,
+        unreviewed: 1,
         unreadable: 1,
       }),
     );
     expect(result.rejectedFiles).toBe(0);
   });
 
-  it('stale 제거로 결과가 비면 완료로 승격하지 않고 미완료 고지·도구 fallback을 유지한다', async () => {
+  it('stale 제거로 결과가 비면 no-evidence와 미완료 고지를 유지한다', async () => {
     vi.mocked(planIndexedEvidenceRust).mockReturnValue(twoDocumentPlan());
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
     const { provider, calls } = answerProvider();
@@ -304,7 +496,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     );
     expect(calls).toHaveLength(0);
     expect(result.citations).toHaveLength(0);
-    expect(result.toolFallback).toBe(true);
+    expect(result.outcome).toBe('no-evidence');
     expect(result.engineUnavailable).toBe(false);
     expect(result.coverageNotice).toBe(result.content);
     expect(result.content).toBe(
@@ -315,7 +507,7 @@ describe('엔진 근거 기반 색인 검토', () => {
         rejected: 0,
         budgetExcluded: 0,
         notIndexed: 0,
-        unreviewed: 0,
+        unreviewed: 2,
         unreadable: 2,
       }),
     );
@@ -405,7 +597,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.content).toContain('두 번 냉각한 뒤');
   });
 
-  it('supported에서 두 답변 시도가 실패하면 coverage와 답변 불가만 표시한다', async () => {
+  it('supported에서 두 답변 시도가 실패하면 coverage와 검증된 원문을 표시한다', async () => {
     const calls: ChatMessage[][] = [];
     const provider = {
       streamChat: (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
@@ -432,7 +624,10 @@ describe('엔진 근거 기반 색인 검토', () => {
       unreadable: 0,
     });
     expect(result.coverageNotice).toBe(coverage);
-    expect(result.content).toBe(`${coverage}\n\n${t('indexedReviewAnswerUnavailable')}`);
+    expect(result.content.startsWith(`${coverage}\n\n`)).toBe(true);
+    expect(result.content).toContain('> Quartz restarts');
+    expect(result.outcome).toBe('evidence-only');
+    expect(result.citations[0]?.status).toBe('verified');
     expect(result.content).not.toContain('검수 미완료');
   });
 
@@ -507,7 +702,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.coverageNotice).not.toContain('색인 범위 밖 제외 1개');
   });
 
-  it('미색인 문서가 있으면 supported가 아니라 미완료 고지에 수치를 남긴다', async () => {
+  it('후보 검토의 지원 상태와 전역 미색인 문서 수치를 구분한다', async () => {
     const plan = planFixture();
     vi.mocked(planIndexedEvidenceRust).mockReturnValue({
       ...plan,
@@ -516,7 +711,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     const { provider } = answerProvider();
     const result = await reviewIndexedVault(reviewOptions({ provider }));
     expect(result.coverageNotice).toBe(
-      t('indexedReviewIncompleteNotice', {
+      t('indexedReviewCoverage', {
         total: 2,
         accepted: 1,
         machineExcluded: 1,
@@ -603,8 +798,9 @@ describe('엔진 근거 기반 색인 검토', () => {
     const { provider, calls } = answerProvider();
     const result = await reviewIndexedVault(reviewOptions({ provider, deferAnswer: true }));
     expect(calls).toHaveLength(0);
-    const payload = JSON.parse(result.content) as { evidence: { quote: string }[] };
-    expect(payload.evidence[0]?.quote).toContain('cooling cycles');
+    expect(result.dossier.evidence[0]?.quote).toContain('cooling cycles');
+    expect(result.outcome).toBe('evidence-only');
+    expect(result.providerTransfer.sentFiles).toBe(0);
   });
 
   it('해시와 mtime:size는 비교 영역이 달라 해시 근거는 verified로 승격하지 않는다', async () => {
@@ -617,10 +813,13 @@ describe('엔진 근거 기반 색인 검토', () => {
     const result = await reviewIndexedVault(reviewOptions({ provider }));
     expect(calls).toHaveLength(0);
     expect(result.citations).toHaveLength(0);
-    expect(result.toolFallback).toBe(true);
+    expect(result.outcome).toBe('no-evidence');
   });
 
   it('색인에 청크 해시가 없으면 엔진 입력에서 제외한다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
     const corpus = corpusFixture();
     const stale: IndexedVaultCorpus = {
       getFileIndexRecords: () => corpus.getFileIndexRecords(),
@@ -636,14 +835,16 @@ describe('엔진 근거 기반 색인 검토', () => {
       scopes: [],
       corpus: stale,
     });
-    expect(search).toBeNull();
+    expect(search?.evidence).toEqual([]);
+    expect(search?.coverage.status).toBe('incomplete');
   });
 
   it('코퍼스 청크 sourceMtime(ms epoch)을 엔진 modifiedAt으로 배선한다', async () => {
     const sourceMtime = 1_700_000_000_000;
     const corpus = corpusFixture();
     const stamped: IndexedVaultCorpus = {
-      getFileIndexRecords: () => corpus.getFileIndexRecords(),
+      getFileIndexRecords: async () =>
+        (await corpus.getFileIndexRecords()).map((record) => ({ ...record, sourceMtime })),
       getEntriesByFilePaths: async (paths) =>
         (await corpus.getEntriesByFilePaths(paths)).map((entry) => ({
           ...entry,
