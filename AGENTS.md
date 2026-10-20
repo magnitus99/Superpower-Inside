@@ -30,8 +30,12 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 ## 서브에이전트
 
 - 작업은 기본값이 아니라 원칙으로 서브에이전트가 수행합니다. 가능한 작업은 반드시 서브에이전트에 위임하고, 본 모델은 조율·검증·통합을 맡습니다.
-- 프로젝트 서브에이전트(정의 원본: `.codex/agents/`): `ponytail_implementer`(구현), `design_specialist`(디자인), `philosophy_reviewer`(제품 철학 검토·제안 데모, 수동·범위 지정 전용). 내장 에이전트(`default`·`worker`·`explorer`)도 작업에 맞으면 사용합니다.
-- 위임 지시에는 범위·완료 기준·출력 형식을 명시합니다. 서브에이전트 결과는 그대로 신뢰하지 않고 본 모델이 검증한 뒤 통합합니다.
+- 프로젝트 서브에이전트(정의 원본: `.codex/agents/`): `repo_researcher`(읽기 전용 코드베이스 조사), `architecture_analyst`(읽기 전용 경계·불변식·실패 모드 분석), `web_researcher`(읽기 전용 외부 자료·공식 문서 조사), `verification_runner`(구현 동결 후 독립 검증), `code_reviewer`(고위험 변경의 독립 리뷰), `ponytail_implementer`(지정 경로 구현), `design_specialist`(디자인), `philosophy_reviewer`(제품 철학 검토·제안 데모, 수동·범위 지정 전용). 내장 에이전트(`default`·`worker`·`explorer`)는 위 역할에 맞지 않는 작은 작업에만 사용합니다.
+- 위임 패킷에는 목표, 비목표, 관련 경로·의심 호출 경로, 쓰기 권한, 필수 계약, 수용 기준, 검증 명령, 출력 형식, 중단 조건을 적습니다. 읽기 전용 역할에는 파일 수정·포맷터·패치·커밋 권한을 주지 않습니다.
+- 먼저 읽기 조사로 근거를 모으고, 메인이 변경 파일·계약·테스트를 동결한 뒤 쓰기 작업을 시작합니다. 구현 동결 후 검증과 리뷰를 병렬화합니다. 동시에 실행하는 서브에이전트는 프로젝트 설정의 상한(현재 4개)을 넘지 않으며, 쓰기 작업은 파일 소유권이 겹치지 않을 때만 최대 2개를 병렬 실행합니다.
+- `main.ts`, `src/settings.ts`, `src/i18n.ts`, `src/rag/rust-core.ts`, `generated/`, `package.json`, `package-lock.json`처럼 충돌 반경이 큰 파일은 한 번에 한 작성자만 소유합니다. 검증자와 리뷰어는 구현을 수정하지 않습니다.
+- 서브에이전트는 추가 서브에이전트를 만들지 않습니다. 조율은 메인이 맡으며, `philosophy_reviewer`가 `design_specialist`를 사용하는 제품 철학 데모 예외만 둡니다.
+- 서브에이전트 결과는 그대로 신뢰하지 않고 본 모델이 근거와 실제 상태를 검증한 뒤 통합합니다. 결과가 잘렸거나 조사 범위를 벗어났으면 빈칸을 추측으로 채우지 않고 다시 범위를 나눕니다.
 - 서브에이전트가 실패·중단·부분 완료로 끝나면 완료로 합치지 않습니다. 지시를 좁혀 1회 재시도하고, 다시 실패하면 본 모델로 진행하며 이유를 남깁니다.
 - 다음 경우에만 본 채팅 모델로 진행합니다: 서브에이전트가 해당 작업을 수행할 수 없을 때(도구·권한·모델 제약) 또는 적합한 서브에이전트가 없을 때(사용자가 지정한 모델·추론과 맞는 에이전트가 없는 경우 포함). 이때는 폴백 이유를 보고에 남깁니다. 사용자가 지정한 모델·추론은 에이전트 파일의 기본값보다 우선합니다.
 - 제품 철학 검토의 예외 조건은 아래 `제품 철학 검증` 절을 따릅니다.
@@ -40,13 +44,25 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 
 | 구분 | 실질 역할 | 모델 | 추론 | 도구 경계 |
 | --- | --- | --- | --- | --- |
-| 메인 채팅 | 조율·검증·통합 | `gpt-6.1-sol` | `high` | 웹 검색·병렬 도구 호출 지원 |
+| 메인 채팅 | 조율·검증·통합 | 사용자 선택(권장 `gpt-6.1-sol`) | 사용자 선택(권장 `high`) | 선택 모델의 웹 검색·병렬 도구 지원 여부를 따름 |
+| `repo_researcher` | 구현·호출부·테스트·git history 조사 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 읽기 전용, 웹 검색·병렬 도구 호출 미지원 |
+| `architecture_analyst` | 경계·데이터 흐름·불변식·실패 모드·옵션 비교 | `ccs-commandcode/meta/muse-spark-1.3-contributor` | `xhigh` | 읽기 전용, 웹 검색·병렬 도구 호출 미지원 |
+| `web_researcher` | 공식·1차 자료 인터넷 조사와 출처 검증 | `gpt-6.1-sol` | `high` | 읽기 전용, 웹 검색 지원 |
+| `verification_runner` | 독립 테스트·lint·typecheck·계약 검증 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 읽기 전용, 웹 검색·병렬 도구 호출 미지원 |
+| `code_reviewer` | 고위험 diff의 정확성·보안·회귀 리뷰 | `ccs-commandcode/claude-sonnet-5-5` | `high` | 읽기 전용, 웹 검색·병렬 도구 호출 미지원 |
 | `ponytail_implementer` | 구현 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 웹 검색·병렬 도구 호출 미지원 |
 | `philosophy_reviewer` | 제품 철학 1차 검토·지적·권고·데모 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 웹 검색·병렬 도구 호출 미지원 |
 | `design_specialist` | 디자인 조사·설계·데모 | `gpt-6.1-sol` | `high` | 웹 검색·병렬 도구 호출 지원 |
-| `design_specialist` 폴백 | 위와 동일 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | sol 스폰 불가 시에만 |
 
-- 웹 검색이나 병렬 도구 호출이 반드시 필요한 작업은 해당 기능을 지원하는 모델(메인 채팅·`design_specialist`)에 맡깁니다. ds 기반 에이전트에는 순차·로컬 근거로 대체 가능한 작업만 맡기고, 대체 사실을 보고에 남깁니다.
+- 인터넷·API·표준·보안 권고처럼 최신 외부 사실이 필요한 조사는 `web_researcher`가 맡고, 공식 또는 1차 자료의 실제 페이지·URL·날짜를 남깁니다. 웹을 지원하지 않는 에이전트에는 외부 조사를 요구하지 않고, 메인이 확인한 자료를 출처와 함께 전달합니다. 이 경우 독립적인 웹 조사로 표현하지 않습니다.
+- 고비용 모델은 판단 가치가 큰 작업에만 씁니다. `gpt-6.1-sol`은 고난도 아키텍처 충돌 해소·디자인·최종 판단에, `claude-sonnet-5-5`는 보안·데이터 손실·동시성 같은 고위험 리뷰와 `gpt-6.1-sol`을 쓸 수 없을 때의 디자인 폴백에 제한합니다. 반복 조사·구현·검증은 `deepseek-v4.1-flash`, `muse-spark-1.3-contributor`, `glm-5.3-flash`에 우선 배분합니다.
+- `architecture_analyst`의 기본값은 저비용 1차 분석이다. 여러 모듈·wire format·마이그레이션·동시성처럼 판단 비용이 큰 경우에만 명시적으로 `gpt-6.1-sol`/`high`로 재스폰해 교차 검증합니다. `web_researcher`는 출처 식별·비교가 필요한 기본 조사에 `gpt-6.1-sol`/`high`를 쓰고, 단일 사실의 좁은 확인은 `gpt-6-luna`/`high`로 명시적 override합니다.
+- 모델 폴백 순서는 `repo_researcher`·`verification_runner`·`ponytail_implementer` = `deepseek-v4.1-flash` → `glm-5.3-flash` → `muse-spark-1.3-contributor` → `gpt-6-luna`, `architecture_analyst` = `muse-spark-1.3-contributor` → `claude-sonnet-5-5` → `gpt-6.1-sol`, `web_researcher` = `gpt-6.1-sol` → `gpt-6-luna`, `code_reviewer` = `claude-sonnet-5-5` → `gpt-6.1-sol` → `muse-spark-1.3-contributor`, `design_specialist` = `gpt-6.1-sol` → `claude-sonnet-5-5` → `deepseek-v4.1-flash`입니다.
+- 모델 폴백은 provider 안의 일시적 모델 장애를 다루는 규칙이며, provider 전체 한도 소진을 우회하지 않습니다. `ccs-commandcode/*` 모델은 같은 한도 풀을 공유합니다. 한 provider가 모두 소진되면 다른 provider로 역할을 옮기거나 reset을 기다려야 합니다.
+- 위임 전에 현재 사용 가능한 모델과 5시간·주간·월간 잔여 한도를 확인합니다. 확인할 수 없으면 마지막 확인값과 시각을 밝히고, 현재값처럼 단정하지 않습니다. 비기본 aggregation 멤버의 자동 갱신은 지연될 수 있으므로 카드의 수동 새로고침 또는 provider의 usage 명령으로 확인합니다. 주간·월간 잔여가 20% 미만이거나 5시간 잔여가 10% 미만이면 비용이 큰 모델·대규모 조사 파동을 중단하고 저비용 단일 작업으로 전환하며, 10% 미만은 마감·검증·복구용으로 예약하고 새 서브에이전트 생성을 멈춥니다.
+- CC Switch aggregation mode는 provider 자동 failover를 제공하지 않습니다. 모델 호출이 실패하면 같은 역할을 폴백 모델로 1회 재스폰하고, 둘 다 실패하면 메인이 처리 이유를 남깁니다. OpenAI 공식 한도로 클라이언트가 잠기면 사용자 확인 없이 provider를 바꾼 것으로 표현하지 말고, CC Switch 기본 provider 전환과 Codex 재시작이 필요한 상태를 보고합니다.
+- 여러 provider를 섞는 aggregation에서는 classic subagent tools를 유지하고 프로젝트의 `features.multi_agent_v2 = false`를 보존합니다. 메인과 서브에이전트가 다른 provider에 있을 때 v2 암호화 작업 전달을 사용하면 작업을 읽지 못할 수 있습니다.
+- custom agent에 적은 모델·추론 조합은 활성 model catalog와 일치해야 합니다. catalog에서 빠진 모델은 spawn 실패로 이어지므로, 모델을 바꾸면 `.codex/agents/*.toml`과 이 표를 같은 변경에서 검증합니다.
 - ds 기반 에이전트의 도구 출력은 10,000바이트에서 잘립니다. 큰 파일은 한 번에 넘기지 말고 범위를 나눠 읽도록 위임 지시에도 적습니다.
 
 ## 제품·화면
