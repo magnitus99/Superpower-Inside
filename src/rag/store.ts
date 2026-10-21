@@ -150,6 +150,10 @@ export interface VectorStore {
   add(entries: VectorEntry[]): Promise<void>;
   replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void>;
   markFileIndexedWithoutVectors(record: Omit<FileIndexRecord, 'vectorCount'>): Promise<void>;
+  /** 내용은 같고 mtime/size만 변한 파일의 revision만 갱신하고 기존 벡터는 보존합니다. */
+  refreshFileIndexRevision(
+    record: Pick<FileIndexRecord, 'filePath' | 'sourceMtime' | 'sourceSize' | 'contentHash'>,
+  ): Promise<boolean>;
   removeByFilePath(filePath: string): Promise<number>;
   query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]>;
   search(request: VectorSearchRequest): Promise<VectorSearchResult[]>;
@@ -690,6 +694,52 @@ export class IndexedDbVectorStore implements VectorStore {
     }
     this.noteVectorMutation();
     this.invalidateRuntimeIndex();
+  }
+
+  async refreshFileIndexRevision(
+    record: Pick<FileIndexRecord, 'filePath' | 'sourceMtime' | 'sourceSize' | 'contentHash'>,
+  ): Promise<boolean> {
+    const existing = await this.db.fileIndex.get(record.filePath);
+    if (!existing) return false;
+    const updated = Date.now();
+    await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
+      await this.db.vectors
+        .where('filePath')
+        .equals(record.filePath)
+        .modify((vectorRecord) => {
+          vectorRecord.metadata = {
+            ...vectorRecord.metadata,
+            sourceMtime: record.sourceMtime,
+            sourceSize: record.sourceSize,
+            contentHash: record.contentHash,
+          };
+          vectorRecord.updated = updated;
+        });
+      await this.db.fileIndex.put({
+        ...existing,
+        sourceMtime: record.sourceMtime,
+        sourceSize: record.sourceSize,
+        contentHash: record.contentHash,
+        updated,
+      });
+    });
+    if (this.entriesCache) {
+      this.entriesCache = this.entriesCache.map((entry) =>
+        entry.metadata.filePath === record.filePath
+          ? {
+              ...entry,
+              metadata: {
+                ...entry.metadata,
+                sourceMtime: record.sourceMtime,
+                sourceSize: record.sourceSize,
+                contentHash: record.contentHash,
+              },
+            }
+          : entry,
+      );
+    }
+    this.searchEntriesCache.clear();
+    return true;
   }
 
   async removeByFilePath(filePath: string): Promise<number> {
@@ -1547,6 +1597,40 @@ export class MemoryVectorStore implements VectorStore {
   async markFileIndexedWithoutVectors(record: Omit<FileIndexRecord, 'vectorCount'>): Promise<void> {
     await this.removeByFilePath(record.filePath);
     this.emptyFileRecords.set(record.filePath, { ...record, vectorCount: 0 });
+  }
+
+  refreshFileIndexRevision(
+    record: Pick<FileIndexRecord, 'filePath' | 'sourceMtime' | 'sourceSize' | 'contentHash'>,
+  ): Promise<boolean> {
+    const emptyRecord = this.emptyFileRecords.get(record.filePath);
+    let found = false;
+    if (emptyRecord) {
+      this.emptyFileRecords.set(record.filePath, {
+        ...emptyRecord,
+        sourceMtime: record.sourceMtime,
+        sourceSize: record.sourceSize,
+        contentHash: record.contentHash,
+        updated: Date.now(),
+      });
+      found = true;
+    }
+    if (this.entries.some((entry) => entry.metadata.filePath === record.filePath)) {
+      this.entries = this.entries.map((entry) =>
+        entry.metadata.filePath === record.filePath
+          ? {
+              ...entry,
+              metadata: {
+                ...entry.metadata,
+                sourceMtime: record.sourceMtime,
+                sourceSize: record.sourceSize,
+                contentHash: record.contentHash,
+              },
+            }
+          : entry,
+      );
+      found = true;
+    }
+    return Promise.resolve(found);
   }
 
   async query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]> {

@@ -142,6 +142,73 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(runtime.getRagRuntimeState().lastAutoUpdateSkippedReason).toBe('newer-operation');
   });
 
+  it('대상이 없는 자동 인덱싱 tick은 running 상태나 재색인을 시작하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const { RAGIndexingScheduler } = await import('./src/rag/indexing-scheduler');
+    const file = {
+      path: 'clean.md',
+      name: 'clean.md',
+      basename: 'clean',
+      extension: 'md',
+      stat: { ctime: 1000, mtime: 1000, size: 1 },
+    } as TFile;
+    const indexPending = vi.fn(() =>
+      Promise.resolve({ indexed: 0, vectors: 0, skipped: 0, documents: [], errors: [] }),
+    );
+    const statuses: Array<{ running: boolean }> = [];
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 0,
+      indexFile: indexPending,
+      removeFile: () => Promise.resolve(0),
+      indexPending,
+      reindexAll: indexPending,
+      onStatusChange: (status) => statuses.push(status),
+    });
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      notice: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const runtime = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(runtime, {
+      app: createApp({ files: [file], contents: new Map([['clean.md', 'x']]) }),
+      settings: DEFAULT_SETTINGS,
+      unloaded: false,
+      vectorStore: {
+        getFileIndexRecords: vi.fn(() =>
+          Promise.resolve([
+            {
+              filePath: file.path,
+              sourceMtime: file.stat.mtime,
+              sourceSize: file.stat.size,
+              contentHash: 'hash',
+              indexedAt: 1,
+              embeddingProvider: DEFAULT_SETTINGS.rag.embeddingProvider,
+              embeddingModel: DEFAULT_SETTINGS.rag.embeddingModel,
+              hasCompleteMetadata: true,
+              vectorCount: 1,
+              updated: 1,
+            },
+          ]),
+        ),
+      },
+      vaultIndexer: {},
+      ragIndexingScheduler: scheduler,
+      ragPerformanceGuard: null,
+      ragIndexAbortController: null,
+      getLogger: () => logger,
+    });
+
+    await (runtime as unknown as { autoIndex(): Promise<void> }).autoIndex();
+
+    expect(indexPending).not.toHaveBeenCalled();
+    expect(statuses.some((status) => status.running)).toBe(false);
+    expect(runtime.isRagIndexing()).toBe(false);
+  });
+
   it('RAG 검색 준비는 corpus busy와 pending 색인 통계를 동기화한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;

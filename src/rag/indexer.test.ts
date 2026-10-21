@@ -801,6 +801,93 @@ describe('VaultIndexer 배치 인덱싱', () => {
     expect(persistSpy).not.toHaveBeenCalled();
   });
 
+  it('mtime만 바뀌고 내용 hash가 같으면 재임베딩 없이 vector·BM25 revision만 갱신한다', async () => {
+    const content = '변경되지 않은 본문';
+    const contentHash = createContentHash(content);
+    const vault = createVault(new Map([['note.md', content]]));
+    const file = vault.getFiles()[0];
+    const store = new MemoryVectorStore();
+    await store.add([
+      {
+        id: 'note.md::0::0',
+        vector: [1, 0],
+        metadata: {
+          filePath: file.path,
+          startLine: 0,
+          endLine: 0,
+          text: content,
+          sourceMtime: 1000,
+          sourceSize: content.length,
+          contentHash,
+          indexedAt: 1,
+          embeddingProvider: 'openai',
+          embeddingModel: 'text-embedding-3-small',
+        },
+      },
+    ]);
+    const bm25 = new IndexedDbBM25Index(createBm25DbName(), createAdapter());
+    await bm25.load();
+    bm25.addCorpusDocument({
+      id: 'note.md::0::0',
+      text: content,
+      sourcePath: file.path,
+      sourceMtime: 1000,
+      sourceSize: content.length,
+      contentHash,
+      indexedAt: 1,
+    });
+    try {
+      let embedBatchCalls = 0;
+      const indexer = new VaultIndexer(
+        vault,
+        store,
+        {
+          embed: () => Promise.resolve([1, 0]),
+          embedBatch: (texts) => {
+            embedBatchCalls += 1;
+            return Promise.resolve(texts.map(() => [1, 0]));
+          },
+        },
+        { ...createRagConfig(), enableBM25: true },
+        createChatConfig(),
+        bm25,
+      );
+      file.stat.mtime = 2000;
+      const refreshRevision = vi.spyOn(store, 'refreshFileIndexRevision');
+
+      const result = await indexer.indexFile(file);
+
+      expect(result).toEqual(expect.objectContaining({ indexed: 0, vectors: 0, skipped: 1 }));
+      expect(embedBatchCalls).toBe(0);
+      expect(await store.getFileIndexRecord(file.path)).toEqual(
+        expect.objectContaining({
+          sourceMtime: 2000,
+          sourceSize: content.length,
+          contentHash,
+          vectorCount: 1,
+        }),
+      );
+      expect((await store.getEntries())[0]?.metadata).toEqual(
+        expect.objectContaining({ sourceMtime: 2000, sourceSize: content.length }),
+      );
+      expect(await bm25.getCorpusDocumentsBySourcePaths([file.path])).toEqual([
+        expect.objectContaining({ sourceMtime: 2000, sourceSize: content.length, contentHash }),
+      ]);
+      await expect(
+        calculateRagStatus(vault, store, createRagConfig(), createChatConfig()),
+      ).resolves.toEqual(expect.objectContaining({ updateRequiredDocuments: [] }));
+      expect(refreshRevision).toHaveBeenCalledOnce();
+
+      await expect(indexer.indexFile(file)).resolves.toEqual(
+        expect.objectContaining({ indexed: 0, vectors: 0, skipped: 1 }),
+      );
+      expect(embedBatchCalls).toBe(0);
+      expect(refreshRevision).toHaveBeenCalledOnce();
+    } finally {
+      bm25.close();
+    }
+  });
+
   it('전체 재인덱싱 전에 BM25에 남은 stale 문서를 제거한다', async () => {
     const file = createFile('current.md', 1000, 80);
     const vault = createVault(new Map([[file.path, '현재 문서 내용']]));

@@ -668,6 +668,21 @@ export class IndexedDbBM25Index {
     return records.flatMap((record) => (record ? [toCorpusDocument(record)] : []));
   }
 
+  /** 내용은 같고 파일 revision만 변한 경우 토큰 재구축 없이 source metadata만 갱신합니다. */
+  async refreshSourceRevision(
+    sourcePath: string,
+    revision: Pick<BM25CorpusDocument, 'sourceMtime' | 'sourceSize' | 'contentHash'>,
+  ): Promise<number> {
+    await this.persist();
+    const updated = Date.now();
+    return this.db.documents.where('sourcePath').equals(sourcePath).modify((record) => {
+      record.sourceMtime = revision.sourceMtime;
+      record.sourceSize = revision.sourceSize;
+      record.contentHash = revision.contentHash;
+      record.updated = updated;
+    });
+  }
+
   async getCorpusDocumentsBySourcePaths(
     sourcePaths: readonly string[],
   ): Promise<BM25CorpusDocument[]> {

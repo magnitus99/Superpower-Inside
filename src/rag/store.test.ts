@@ -715,6 +715,38 @@ describe('VectorStore contract', () => {
     );
   });
 
+  it.each([
+    ['MemoryVectorStore', () => new MemoryVectorStore()],
+    ['IndexedDbVectorStore', () => createStore()],
+  ])('%s는 내용이 같을 때 벡터를 보존하며 파일 revision만 갱신한다', async (_name, create) => {
+    const store = create();
+    await store.replaceFileEntries('note.md', [createEntry('note.md', 0, [1, 0], 'a')]);
+
+    await expect(
+      store.refreshFileIndexRevision({
+        filePath: 'note.md',
+        sourceMtime: 2000,
+        sourceSize: 1,
+        contentHash: 'a',
+      }),
+    ).resolves.toBe(true);
+
+    expect(await store.getFileIndexRecord('note.md')).toEqual(
+      expect.objectContaining({
+        sourceMtime: 2000,
+        sourceSize: 1,
+        contentHash: 'a',
+        vectorCount: 1,
+      }),
+    );
+    const entries = await store.getEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe('note.md::0');
+    expect(entries[0]?.vector).toEqual([1, 0]);
+    expect(entries[0]?.metadata.sourceMtime).toBe(2000);
+    expect(entries[0]?.metadata.sourceSize).toBe(1);
+  });
+
   it('MemoryVectorStore 파일 인덱스 메타는 Rust plan으로 complete/incomplete를 구분한다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

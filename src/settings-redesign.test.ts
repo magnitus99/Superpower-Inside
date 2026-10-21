@@ -404,7 +404,7 @@ describe('설정 화면 리디자인 구조', () => {
     );
   });
 
-  it('인덱싱 시작 경로는 사전 단계를 준비 상태로 표시하고 finally에서 해제한다', () => {
+  it('수동 인덱싱은 준비 상태를 표시하고 자동 인덱싱 대상 확인은 숨긴 채 finally에서 해제한다', () => {
     const manualStart = mainSource.indexOf("id: 'reindex-vault'");
     const manualEnd = mainSource.indexOf("id: 'open-agent-diagnostics-view'", manualStart);
     const manual = mainSource.slice(manualStart, manualEnd);
@@ -422,9 +422,11 @@ describe('설정 화면 리디자인 구조', () => {
     const autoEnd = mainSource.indexOf('\n  private async initMCP', autoStart);
     const auto = mainSource.slice(autoStart, autoEnd);
     expect(autoStart).toBeGreaterThanOrEqual(0);
-    expect(auto).toContain('beginPreparation()');
+    expect(auto).toContain('beginPreparation({ publishStatus: false })');
     expect(auto).toContain('endPreparation(signal)');
-    expect(auto.indexOf('beginPreparation()')).toBeLessThan(auto.indexOf('calculateRagStatus('));
+    expect(auto.indexOf('beginPreparation({ publishStatus: false })')).toBeLessThan(
+      auto.indexOf('calculateRagStatus('),
+    );
     expect(auto.indexOf('endPreparation(signal)')).toBeGreaterThan(auto.indexOf('indexPending('));
   });
 

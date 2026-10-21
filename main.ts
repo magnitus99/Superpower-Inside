@@ -2943,9 +2943,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.refreshBus?.emit('rag', { status: 'partial', detail: t('ragPerformancePaused') });
       return;
     }
-    const signal = scheduler.beginPreparation();
+    // 대상 확인 단계는 숨기고, 실제 재색인 대상이 있을 때만 scheduler가 running을 표시합니다.
+    const signal = scheduler.beginPreparation({ publishStatus: false });
     try {
-      // 상태 계산·고아 정리 구간에도 라벨과 경과가 움직이도록 사전 단계를 먼저 표시합니다.
       const status = await calculateRagStatus(
         this.app.vault,
         vectorStore,

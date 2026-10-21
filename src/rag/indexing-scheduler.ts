@@ -135,6 +135,7 @@ export class RAGIndexingScheduler {
   private progress: RagIndexingSchedulerProgress | null = null;
   private startedAt: number | null = null;
   private preparing = false;
+  private preparationVisible = false;
   private preparationController: AbortController | null = null;
   private statusHeartbeat: number | null = null;
 
@@ -158,7 +159,11 @@ export class RAGIndexingScheduler {
   }
 
   isRunning(): boolean {
-    return this.preparing || this.parkedJob !== null || (this.draining && !this.cancelled);
+    return (
+      (this.preparing && this.preparationVisible) ||
+      this.parkedJob !== null ||
+      (this.draining && !this.cancelled)
+    );
   }
 
   scheduleFile(file: TFile, _reason: RagIndexingRequestReason): void {
@@ -217,6 +222,7 @@ export class RAGIndexingScheduler {
   cancel(): void {
     this.cancelled = true;
     this.preparing = false;
+    this.preparationVisible = false;
     this.preparationController?.abort();
     this.preparationController = null;
     this.abortController?.abort();
@@ -249,15 +255,23 @@ export class RAGIndexingScheduler {
    * 상태 계산·고아 정리·계획 같은 인덱싱 전 사전 단계를 실행 중으로 표시합니다.
    * 실제 작업이 시작되면 drain이 경과 시간을 이어받습니다.
    */
-  beginPreparation(): AbortSignal | undefined {
-    if (this.isRunning()) return this.preparationController?.signal;
+  beginPreparation(options: { publishStatus?: boolean } = {}): AbortSignal | undefined {
+    if (this.preparing || this.parkedJob !== null || (this.draining && !this.cancelled)) {
+      return this.preparationController?.signal;
+    }
     this.cancelled = false;
     this.preparationController = new AbortController();
     this.preparing = true;
-    this.phase = 'preparing';
-    this.startedAt = performance.now();
-    this.startStatusHeartbeat();
-    this.emitStatus();
+    this.preparationVisible = options.publishStatus !== false;
+    if (this.preparationVisible) {
+      this.phase = 'preparing';
+      this.startedAt = performance.now();
+      this.startStatusHeartbeat();
+      this.emitStatus();
+    } else {
+      this.phase = 'idle';
+      this.startedAt = null;
+    }
     return this.preparationController.signal;
   }
 
@@ -265,14 +279,16 @@ export class RAGIndexingScheduler {
   endPreparation(signal?: AbortSignal): void {
     if (signal && signal !== this.preparationController?.signal) return;
     if (!this.preparing) return;
+    const wasVisible = this.preparationVisible;
     this.preparing = false;
+    this.preparationVisible = false;
     this.preparationController = null;
-    if (!this.draining && !this.parkedJob) {
+    if (wasVisible && !this.draining && !this.parkedJob) {
       this.stopStatusHeartbeat();
       this.phase = 'idle';
       this.startedAt = null;
+      this.emitStatus();
     }
-    this.emitStatus();
   }
 
   resumeNow(): boolean {
@@ -323,6 +339,7 @@ export class RAGIndexingScheduler {
     if (this.draining || this.parkedJob) return;
     this.draining = true;
     this.preparing = false;
+    this.preparationVisible = false;
     this.startedAt = this.startedAt ?? performance.now();
     this.startStatusHeartbeat();
     this.emitStatus();

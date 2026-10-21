@@ -843,7 +843,36 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
     const sourceHash = createContentHash(content);
     await this.documentCorpus?.refreshFile(currentFile, options.signal);
-    if (await this.isCurrentFileIndexRecord(file, sourceHash)) {
+    const currentRecord = await this.vectorStore.getFileIndexRecord(file.path);
+    let revisionIsCurrent = false;
+    if (currentRecord && isCurrentFileIndexRecord(currentRecord, sourceHash, this.ragConfig)) {
+      const revisionChanged =
+        currentRecord.sourceMtime !== file.stat.mtime ||
+        currentRecord.sourceSize !== file.stat.size;
+      if (revisionChanged) {
+        try {
+          await this.bm25Index?.refreshSourceRevision(file.path, {
+            sourceMtime: file.stat.mtime,
+            sourceSize: file.stat.size,
+            contentHash: sourceHash,
+          });
+        } catch (error) {
+          this.logger.warn('BM25 source revision refresh failed; lexical metadata may remain stale.', {
+            data: { path: file.path },
+            error,
+          });
+        }
+      }
+      revisionIsCurrent = revisionChanged
+        ? await this.vectorStore.refreshFileIndexRevision({
+            filePath: file.path,
+            sourceMtime: file.stat.mtime,
+            sourceSize: file.stat.size,
+            contentHash: sourceHash,
+          })
+        : true;
+    }
+    if (revisionIsCurrent) {
       const skipped = finishIndexingResult(
         { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
         startedAt,
@@ -1248,10 +1277,6 @@ export class VaultIndexer {
     return this.vectorStore.withBatch(() => this.bm25Index!.withBatch(operation));
   }
 
-  private async isCurrentFileIndexRecord(file: TFile, contentHash: string): Promise<boolean> {
-    const record = await this.vectorStore.getFileIndexRecord(file.path);
-    return record ? isCurrentFileIndexRecord(record, file, contentHash, this.ragConfig) : false;
-  }
 }
 
 function selectAutomaticRecoveryFileIndices(
@@ -1270,14 +1295,13 @@ function selectAutomaticRecoveryFileIndices(
 
 function isCurrentFileIndexRecord(
   record: FileIndexRecord,
-  file: TFile,
   contentHash: string,
   ragConfig: RAGConfig,
 ): boolean {
   return (
     record.hasCompleteMetadata === true &&
-    record.sourceMtime === file.stat.mtime &&
-    record.sourceSize === file.stat.size &&
+    record.sourceMtime !== undefined &&
+    record.sourceSize !== undefined &&
     record.contentHash === contentHash &&
     record.embeddingProvider === ragConfig.embeddingProvider &&
     record.embeddingModel === ragConfig.embeddingModel
