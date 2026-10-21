@@ -632,6 +632,11 @@ export function plan_indexed_db_storage_layout_json(plugin_id: string, vault_ide
 export function plan_indexed_evidence_json(input: string): string;
 
 /**
+ * 비교 답변의 보존 대상 facet과 출처 상태를 계산합니다.
+ */
+export function plan_indexed_review_answer_plan_json(input: string): string;
+
+/**
  * 이름·검색 순위로 자료를 제거하지 않고 색인과 허용 범위의 교집합을 반환합니다.
  */
 export function plan_indexed_review_inventory_json(input: string): string;
@@ -640,6 +645,11 @@ export function plan_indexed_review_inventory_json(input: string): string;
  * 긴 한 줄도 생략하지 않고 모델의 요청 예산 안에 들어가는 원문 조각으로 나눕니다.
  */
 export function plan_indexed_review_segments_json(input: string, max_chars: number): string;
+
+/**
+ * 질문을 단일 검색 또는 비교 대상별 검색 facet으로 계획합니다.
+ */
+export function plan_indexed_search_queries_json(input: string): string;
 
 /**
  * MCP server 후보 순서를 Rust에서 계산한다.
@@ -1115,6 +1125,11 @@ export function validate_exclude_extension_input_json(input: string, existing_ex
 export function validate_exclude_path_input_json(input: string, existing_paths_json: string): string;
 
 /**
+ * 답변 문단이 계획한 facet과 실제 출처를 모두 지키는지 검증합니다.
+ */
+export function validate_indexed_review_answer_json(input: string): string;
+
+/**
  * 모든 원문 조각에 명시적 채택/제외가 있어야 완료하며 채택 구절은 원문과 대조합니다.
  */
 export function validate_indexed_review_json(segments_json: string, response: string): string;
@@ -1252,8 +1267,10 @@ export interface InitOutput {
     readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly plan_indexed_evidence_json: (a: number, b: number) => [number, number];
+    readonly plan_indexed_review_answer_plan_json: (a: number, b: number) => [number, number];
     readonly plan_indexed_review_inventory_json: (a: number, b: number) => [number, number];
     readonly plan_indexed_review_segments_json: (a: number, b: number, c: number) => [number, number];
+    readonly plan_indexed_search_queries_json: (a: number, b: number) => [number, number];
     readonly plan_mcp_server_candidates_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_merged_retrieval_candidates: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_merged_retrieval_candidates_by_entry_id: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
@@ -1345,6 +1362,7 @@ export interface InitOutput {
     readonly update_generated_artifact_registry_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly validate_exclude_extension_input_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_exclude_path_input_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validate_indexed_review_answer_json: (a: number, b: number) => [number, number];
     readonly validate_indexed_review_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_indexed_review_screen_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_mcp_json: (a: number, b: number) => [number, number];

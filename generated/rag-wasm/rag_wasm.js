@@ -2324,6 +2324,26 @@ export function plan_indexed_evidence_json(input) {
 }
 
 /**
+ * 비교 답변의 보존 대상 facet과 출처 상태를 계산합니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function plan_indexed_review_answer_plan_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_review_answer_plan_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 이름·검색 순위로 자료를 제거하지 않고 색인과 허용 범위의 교집합을 반환합니다.
  * @param {string} input
  * @returns {string}
@@ -2356,6 +2376,26 @@ export function plan_indexed_review_segments_json(input, max_chars) {
         const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.plan_indexed_review_segments_json(ptr0, len0, max_chars);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 질문을 단일 검색 또는 비교 대상별 검색 facet으로 계획합니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function plan_indexed_search_queries_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_search_queries_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -4394,6 +4434,26 @@ export function validate_exclude_path_input_json(input, existing_paths_json) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 답변 문단이 계획한 facet과 실제 출처를 모두 지키는지 검증합니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function validate_indexed_review_answer_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validate_indexed_review_answer_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
