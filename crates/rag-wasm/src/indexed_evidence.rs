@@ -564,7 +564,112 @@ fn parse_query(question: &str) -> (Vec<QueryToken>, Vec<QueryPhrase>) {
             &mut position,
         );
     }
+    prune_function_words(&mut tokens);
     (tokens, phrases)
+}
+
+/// 일반 검색어와 함께 쓰였을 때 변별력이 낮은 영어 기능어인지 반환합니다.
+fn is_english_function_word(token: &str) -> bool {
+    matches!(
+        token,
+        "a" | "am"
+            | "an"
+            | "and"
+            | "are"
+            | "as"
+            | "at"
+            | "be"
+            | "been"
+            | "being"
+            | "but"
+            | "by"
+            | "can"
+            | "could"
+            | "did"
+            | "do"
+            | "does"
+            | "for"
+            | "from"
+            | "had"
+            | "has"
+            | "have"
+            | "he"
+            | "her"
+            | "hers"
+            | "him"
+            | "his"
+            | "how"
+            | "i"
+            | "if"
+            | "in"
+            | "into"
+            | "is"
+            | "it"
+            | "its"
+            | "may"
+            | "me"
+            | "might"
+            | "my"
+            | "of"
+            | "on"
+            | "onto"
+            | "or"
+            | "our"
+            | "over"
+            | "she"
+            | "should"
+            | "than"
+            | "that"
+            | "the"
+            | "their"
+            | "them"
+            | "then"
+            | "these"
+            | "they"
+            | "this"
+            | "those"
+            | "to"
+            | "was"
+            | "we"
+            | "were"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "who"
+            | "whom"
+            | "whose"
+            | "why"
+            | "will"
+            | "with"
+            | "within"
+            | "without"
+            | "would"
+            | "you"
+            | "your"
+    )
+}
+
+/// 내용어가 있는 질의에서만 변별력 없는 비인용 기능어를 제거합니다.
+///
+/// `the`처럼 기능어만 검색한 경우에는 사용자가 그 단어 자체를 찾는
+/// Ctrl-F식 검색일 수 있으므로 그대로 보존합니다.
+fn prune_function_words(tokens: &mut Vec<QueryToken>) {
+    let has_content = tokens.iter().any(|token| {
+        !token.negated
+            && (token.phrase_index.is_some()
+                || token.explicit_field
+                || !is_english_function_word(&token.text))
+    });
+    if !has_content {
+        return;
+    }
+    tokens.retain(|token| {
+        token.negated
+            || token.phrase_index.is_some()
+            || token.explicit_field
+            || !is_english_function_word(&token.text)
+    });
 }
 
 /// 문서 본문에서 토큰 위치·빈도·행 시작점을 수집합니다.
@@ -1568,22 +1673,23 @@ fn sort_drafts(drafts: &mut [PassageDraft], max_documents: usize, max_passages: 
     candidate_depth(drafts, max_documents, max_passages)
 }
 
-/// 정렬된 후보 앞부분에서 증거 행과 예산 사용량을 만듭니다.
-fn collect_evidence_rows(
+/// 구절 행의 인용·문맥 문자 수입니다.
+fn draft_chars(draft: &PassageDraft) -> usize {
+    draft.quote.encode_utf16().count()
+        + draft.context_before.encode_utf16().count()
+        + draft.context_after.encode_utf16().count()
+}
+
+/// facet 예약·문서 다양성·점수 순서로 선택할 구절 인덱스를 정합니다.
+fn select_evidence_indices(
     drafts: &[PassageDraft],
     depth: usize,
     max_passages: usize,
     max_chars: usize,
-) -> (Vec<Value>, usize, bool) {
-    let mut evidence = Vec::new();
-    let mut seen_quotes = BTreeMap::<String, String>::new();
+) -> (BTreeSet<usize>, usize) {
     let mut used_chars = 0_usize;
     let mut selected = BTreeSet::<usize>::new();
-    let quote_chars = |draft: &PassageDraft| {
-        draft.quote.encode_utf16().count()
-            + draft.context_before.encode_utf16().count()
-            + draft.context_after.encode_utf16().count()
-    };
+    let mut selected_paths = BTreeSet::<String>::new();
     let nonzero_query_indexes = drafts
         .iter()
         .take(depth)
@@ -1609,12 +1715,30 @@ fn collect_evidence_rows(
                 .find(|(index, draft)| {
                     !selected.contains(index)
                         && draft.query_indexes.contains(&query_index)
-                        && used_chars.saturating_add(quote_chars(draft)) <= max_chars
+                        && used_chars.saturating_add(draft_chars(draft)) <= max_chars
                 })
         {
-            used_chars = used_chars.saturating_add(quote_chars(draft));
+            used_chars = used_chars.saturating_add(draft_chars(draft));
             selected.insert(index);
+            selected_paths.insert(draft.path.clone());
         }
+    }
+    // 같은 문서의 여러 구간이 예산을 독점하지 않도록 문서별 최상위 구간을 먼저 채웁니다.
+    // 이 단계 뒤에 남는 칸은 원래 점수 순서로 채워 깊은 문서 근거를 버리지 않습니다.
+    for (index, draft) in drafts.iter().take(depth).enumerate() {
+        if selected.len() >= max_passages {
+            break;
+        }
+        if selected.contains(&index) || selected_paths.contains(&draft.path) {
+            continue;
+        }
+        let chars = draft_chars(draft);
+        if used_chars.saturating_add(chars) > max_chars {
+            continue;
+        }
+        used_chars = used_chars.saturating_add(chars);
+        selected.insert(index);
+        selected_paths.insert(draft.path.clone());
     }
     for (index, draft) in drafts.iter().take(depth).enumerate() {
         if selected.len() >= max_passages {
@@ -1623,13 +1747,26 @@ fn collect_evidence_rows(
         if selected.contains(&index) {
             continue;
         }
-        let chars = quote_chars(draft);
+        let chars = draft_chars(draft);
         if used_chars.saturating_add(chars) > max_chars {
             break;
         }
         used_chars = used_chars.saturating_add(chars);
         selected.insert(index);
     }
+    (selected, used_chars)
+}
+
+/// 정렬된 후보 앞부분에서 증거 행과 예산 사용량을 만듭니다.
+fn collect_evidence_rows(
+    drafts: &[PassageDraft],
+    depth: usize,
+    max_passages: usize,
+    max_chars: usize,
+) -> (Vec<Value>, usize, bool) {
+    let (selected, used_chars) = select_evidence_indices(drafts, depth, max_passages, max_chars);
+    let mut evidence = Vec::new();
+    let mut seen_quotes = BTreeMap::<String, String>::new();
     for draft in drafts
         .iter()
         .take(depth)
@@ -2743,6 +2880,25 @@ mod tests {
     }
 
     #[test]
+    fn plan_reserves_one_passage_per_document_before_repeating_a_document() {
+        let plan = plan_of(&json!({
+            "question": "alpha",
+            "documents": [
+                {"path": "a.md", "text": "alpha ".repeat(12)},
+                {"path": "a.md", "text": "alpha ".repeat(8)},
+                {"path": "b.md", "text": "alpha"},
+            ],
+            "budget": {"maxDocuments": 3, "maxPassages": 2, "maxChars": 100_000},
+        }));
+        let paths = rows(&plan, "evidence")
+            .into_iter()
+            .filter_map(|row| row.get("path").and_then(Value::as_str).map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(paths.contains("a.md"));
+        assert!(paths.contains("b.md"));
+    }
+
+    #[test]
     fn plan_marks_duplicate_passages() {
         let plan = plan_of(&json!({
             "question": "설치 방법",
@@ -2805,6 +2961,36 @@ mod tests {
             get(get(&empty, "diagnostics"), "zeroHitReason").is_string(),
             "zero hit reason is reported"
         );
+    }
+
+    #[test]
+    fn plan_ignores_english_function_words_when_content_terms_exist() {
+        let plan = plan_of(&json!({
+            "question": "When does the copper valve close?",
+            "documents": [
+                {"path": "function-only.md", "text": "The answer is not recorded."},
+                {"path": "content.md", "text": "The copper valve closes after three pulses."},
+            ],
+        }));
+        let evidence = rows(&plan, "evidence");
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(
+            get(evidence.first().unwrap_or(&NULL), "path"),
+            &json!("content.md")
+        );
+        let tokens = rows(&plan, "queryTokens");
+        assert!(find_row(&tokens, "text", "the").is_none());
+        assert!(find_row(&tokens, "text", "copper").is_some());
+    }
+
+    #[test]
+    fn plan_preserves_a_query_that_contains_only_a_function_word() {
+        let plan = plan_of(&json!({
+            "question": "the",
+            "documents": [{"path": "a.md", "text": "The exact word appears here."}],
+        }));
+        assert_eq!(rows(&plan, "evidence").len(), 1);
+        assert!(find_row(&rows(&plan, "queryTokens"), "text", "the").is_some());
     }
 
     #[test]

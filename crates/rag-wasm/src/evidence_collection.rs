@@ -394,7 +394,7 @@ fn search_args(query: &str, path: &str) -> Value {
 }
 
 /// 비교 probe와 계획 facet이 함께 쓰는 검색 토큰 정규화입니다.
-fn focused_search_query(text: &str) -> String {
+fn focused_search_query(text: &str, limit: usize) -> String {
     let mut tokens = Vec::new();
     append_meaningful_tokens(&mut tokens, text);
     tokens.retain(|token| {
@@ -422,7 +422,7 @@ fn focused_search_query(text: &str) -> String {
     });
     tokens
         .into_iter()
-        .take(12)
+        .take(limit)
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
@@ -430,9 +430,43 @@ fn focused_search_query(text: &str) -> String {
         .collect::<String>()
 }
 
+/// 비교 subject 끝에 붙은 한국어 주제·주격 조사를 제거합니다.
+fn subject_search_query(text: &str) -> String {
+    focused_search_query(korean_subject_head(text), 12)
+}
+
+/// 문장 안에서 주제·주격 조사가 공백 앞에 붙은 첫 지점까지를 subject로 자릅니다.
+fn korean_subject_head(text: &str) -> &str {
+    for (index, character) in text.char_indices() {
+        if !matches!(character, '는' | '은' | '이' | '가') {
+            continue;
+        }
+        let end = index.saturating_add(character.len_utf8());
+        if text
+            .get(end..)
+            .and_then(|suffix| suffix.chars().next())
+            .is_none_or(char::is_whitespace)
+        {
+            return text.get(..index).unwrap_or(text);
+        }
+    }
+    text
+}
+
 /// 기존 비교 probe 분할에서 subject 정체성을 순서대로 보존합니다.
 fn comparison_subject_queries(question: &str) -> Vec<String> {
-    if !requires_multiple_source_evidence(question) {
+    let normalized = question.to_lowercase();
+    let interpretation = [
+        "어떻게 해석",
+        "해석하고",
+        "해석은",
+        "입장",
+        "관점",
+        "어떻게 보",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker));
+    if !requires_multiple_source_evidence(question) && !interpretation {
         return Vec::new();
     }
     let mut delimiters = Vec::<(usize, usize)>::new();
@@ -484,7 +518,7 @@ fn comparison_subject_queries(question: &str) -> Vec<String> {
     parts.push(question[start..].trim());
     parts
         .into_iter()
-        .map(focused_search_query)
+        .map(subject_search_query)
         .filter(|query| !query.is_empty())
         .take(2)
         .collect()
@@ -513,7 +547,7 @@ fn inside_quotes(text: &str, start: usize, end: usize) -> bool {
 
 /// 비교 구절을 독립 검색 입력으로 사용해 모델의 번역·분해에만 의존하지 않습니다.
 fn search_probes(question: &str, scopes: &[&str]) -> Vec<Value> {
-    let main = focused_search_query(question);
+    let main = focused_search_query(question, 12);
     if main.is_empty() {
         return Vec::new();
     }
@@ -1039,12 +1073,46 @@ mod tests {
     }
 
     #[test]
+    fn interpretation_question_with_connector_keeps_only_named_subject_heads() {
+        let plan: Value = serde_json::from_str(&plan_indexed_search_queries_json(
+            &json!({
+                "question": "가톨릭 성경과 네빌 고다드는 시편 51장을 어떻게 해석하고 있어?"
+            })
+            .to_string(),
+        ))
+        .unwrap_or(Value::Null);
+        assert_eq!(plan.get("mode"), Some(&json!("comparison")));
+        let facets = plan
+            .get("facets")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            facets.get(2).and_then(|facet| facet.get("query")),
+            Some(&json!("네빌 고다드"))
+        );
+    }
+
+    #[test]
     fn comparison_subjects_do_not_split_on_connectors_inside_quotes() {
         assert_eq!(
             comparison_subject_queries("Compare \"alpha and beta\" and gamma"),
             vec!["alpha beta".to_owned(), "gamma".to_owned()]
         );
         assert!(comparison_subject_queries("Compare \"alpha and beta\" values").is_empty());
+    }
+
+    #[test]
+    fn comparison_subjects_keep_distinguishing_tokens_after_a_shared_prefix() {
+        assert_eq!(
+            comparison_subject_queries(
+                "Compare New York City public transit and New York City housing"
+            ),
+            vec![
+                "new york city public transit".to_owned(),
+                "new york city housing".to_owned(),
+            ]
+        );
     }
 
     #[test]

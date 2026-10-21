@@ -325,7 +325,7 @@ function reviewOptions(
 }
 
 describe('엔진 근거 기반 색인 검토', () => {
-  it('기본 review는 후보만 조회하고 all은 명시할 때 전체를 조회한다', async () => {
+  it('기본 review와 명시적 all은 전체를 조회하고 candidates는 호환 목적으로만 후보를 조회한다', async () => {
     const corpus = corpusFixture();
     const read = vi.spyOn(corpus, 'getEntriesByFilePaths');
     const options = reviewOptions({
@@ -333,32 +333,42 @@ describe('엔진 근거 기반 색인 검토', () => {
       candidates: [{ path: RELEVANT, score: 1, source: 'bm25', rank: 1 }],
       deferAnswer: true,
     });
-    const candidate = await reviewIndexedVault(options);
+    const all = await reviewIndexedVault(options);
+    expect(read.mock.calls).toEqual([[[RELEVANT, OTHER]]]);
+    expect(all.dossier.documentScope).toBe('all');
+    expect(all.totalFiles).toBe(2);
+    read.mockClear();
+    const candidate = await reviewIndexedVault({ ...options, documentScope: 'candidates' });
     expect(read.mock.calls).toEqual([[[RELEVANT]]]);
     expect(candidate.dossier.documentScope).toBe('candidates');
     expect(candidate.totalFiles).toBe(1);
-    read.mockClear();
-    const all = await reviewIndexedVault({ ...options, documentScope: 'all' });
-    expect(read.mock.calls).toEqual([[[RELEVANT, OTHER]]]);
-    expect(all.dossier.documentScope).toBe('all');
   });
 
-  it.each([
-    ['initializing', 'indexing', 'indexedReviewIndexing'],
-    ['indexing', 'indexing', 'indexedReviewIndexing'],
-    ['unavailable', 'engine-unavailable', 'indexedReviewSearchUnavailable'],
-  ] as const)(
-    '%s 상태는 LLM과 도구 없이 현재 엔진 상태를 반환한다',
-    async (candidatesState, outcome, messageKey) => {
-      const streamChat = vi.fn<LLMProvider['streamChat']>();
+  it('indexing 상태만 LLM과 도구 없이 현재 엔진 상태를 반환한다', async () => {
+    const streamChat = vi.fn<LLMProvider['streamChat']>();
+    const result = await reviewIndexedVault(
+      reviewOptions({ candidatesState: 'indexing', provider: { streamChat } }),
+    );
+    expect(result.outcome).toBe('indexing');
+    expect(result.evidence).toEqual([]);
+    expect(result.content).toBe(t('indexedReviewIndexing'));
+    expect(result.coverage.status).toBe('incomplete');
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  it.each(['initializing', 'unavailable'] as const)(
+    '%s 후보 상태에서도 all 색인 lexical 검토를 계속한다',
+    async (candidatesState) => {
+      const corpus = corpusFixture();
+      const read = vi.spyOn(corpus, 'getEntriesByFilePaths');
+      const { provider, calls } = answerProvider();
       const result = await reviewIndexedVault(
-        reviewOptions({ candidatesState, provider: { streamChat } }),
+        reviewOptions({ candidates: [], candidatesState, corpus, provider }),
       );
-      expect(result.outcome).toBe(outcome);
-      expect(result.evidence).toEqual([]);
-      expect(result.content).toBe(t(messageKey));
-      expect(result.coverage.status).toBe('incomplete');
-      expect(streamChat).not.toHaveBeenCalled();
+      expect(read.mock.calls).toEqual([[[RELEVANT, OTHER]]]);
+      expect(calls).toHaveLength(1);
+      expect(result.outcome).toBe('answered');
+      expect(result.dossier.documentScope).toBe('all');
     },
   );
 
@@ -416,7 +426,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.citations).toEqual([]);
   });
 
-  it('후보가 없으면 기본 review는 저장소와 모델을 읽지 않고 빈 dossier를 반환한다', async () => {
+  it('후보 호환 모드에서 후보가 없으면 저장소와 모델을 읽지 않고 빈 dossier를 반환한다', async () => {
     const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
     vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
@@ -425,7 +435,12 @@ describe('엔진 근거 기반 색인 검토', () => {
     const records = vi.spyOn(corpus, 'getFileIndexRecords');
     const { provider, calls } = answerProvider();
     const result = await reviewIndexedVault(
-      reviewOptions({ corpus, provider, candidates: undefined }),
+      reviewOptions({
+        corpus,
+        provider,
+        candidates: undefined,
+        documentScope: 'candidates',
+      }),
     );
     expect(read).not.toHaveBeenCalled();
     expect(records).not.toHaveBeenCalled();
@@ -637,6 +652,16 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.content).toContain(missingNotice);
     expect(result.content).toContain(failedNotice);
     expect(result.coverageNotice).not.toContain(missingNotice);
+    expect(result.content.indexOf('> Quartz restarts')).toBeLessThan(
+      result.content.indexOf(missingNotice),
+    );
+    expect(result.content.indexOf(missingNotice)).toBeLessThan(
+      result.content.indexOf(failedNotice),
+    );
+    expect(result.content.indexOf(failedNotice)).toBeLessThan(
+      result.content.indexOf(result.coverageNotice),
+    );
+    expect(result.content.endsWith(result.coverageNotice)).toBe(true);
     expect(result.citations.map((citation) => citation.id)).toEqual([
       SOURCE_ID,
       OTHER_SOURCE_ID,
@@ -692,6 +717,13 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.content).not.toContain('**Beta**');
     expect(result.content).not.toContain('<tag>');
     expect(result.content).toContain('&#42;&#42;Beta&#42;&#42; &#60;tag&#62;');
+    expect(result.content.indexOf('Synthetic Alpha만 확인했습니다.')).toBeLessThan(
+      result.content.indexOf('&#42;&#42;Beta&#42;&#42; &#60;tag&#62;'),
+    );
+    expect(result.content.indexOf('&#42;&#42;Beta&#42;&#42; &#60;tag&#62;')).toBeLessThan(
+      result.content.indexOf(result.coverageNotice),
+    );
+    expect(result.content.endsWith(result.coverageNotice)).toBe(true);
     expect(result.citations.map((citation) => citation.id)).toEqual([SOURCE_ID]);
   });
 
@@ -870,6 +902,38 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.citations).toHaveLength(1);
   });
 
+  it('현재 원문을 같은 청킹 규칙으로 검증하면 raw-text quote 불일치를 stale로 오인하지 않는다', async () => {
+    const verify = vi.mocked(verifyIndexedEvidenceRust);
+    verify.mockReset();
+    verify.mockImplementation(verifiedStatuses);
+    const { provider, calls } = answerProvider();
+
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        provider,
+        sourceReader: () =>
+          Promise.resolve({
+            revision: '1:10',
+            text: '현재 원문 표식만 있는 합성 텍스트',
+            contentHash: 'hash-relevant',
+            chunks: [
+              {
+                text: 'Quartz restarts only after two cooling cycles.',
+                startLine: 3,
+                endLine: 4,
+              },
+            ],
+          }),
+      }),
+    );
+
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(calls).toHaveLength(1);
+    expect(result.outcome).toBe('answered');
+    expect(result.evidence).toHaveLength(1);
+    expect(result.citations[0]?.status).toBe('verified');
+  });
+
   it('큰 현재 원문은 인용 주변 window만 검증해 다른 근거를 막지 않는다', async () => {
     const verify = vi.mocked(verifyIndexedEvidenceRust);
     verify.mockReset();
@@ -956,19 +1020,18 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.citations).toHaveLength(0);
     expect(result.outcome).toBe('no-evidence');
     expect(result.engineUnavailable).toBe(false);
-    expect(result.coverageNotice).toBe(result.content);
-    expect(result.content).toBe(
-      t('indexedReviewIncompleteNotice', {
-        total: 2,
-        accepted: 0,
-        machineExcluded: 0,
-        rejected: 0,
-        budgetExcluded: 0,
-        notIndexed: 0,
-        unreviewed: 2,
-        unreadable: 2,
-      }),
-    );
+    const incomplete = t('indexedReviewIncompleteNotice', {
+      total: 2,
+      accepted: 0,
+      machineExcluded: 0,
+      rejected: 0,
+      budgetExcluded: 0,
+      notIndexed: 0,
+      unreviewed: 2,
+      unreadable: 2,
+    });
+    expect(result.coverageNotice).toBe(incomplete);
+    expect(result.content).toBe(`${t('indexedReviewNoEvidence')}\n\n${incomplete}`);
   });
 
   it('중복 vault 접두사는 첫 원문을 assistant로 전달해 정확한 ID로 한 번 교정한다', async () => {
@@ -1088,8 +1151,11 @@ describe('엔진 근거 기반 색인 검토', () => {
       unreadable: 0,
     });
     expect(result.coverageNotice).toBe(coverage);
-    expect(result.content.startsWith(`${coverage}\n\n`)).toBe(true);
     expect(result.content).toContain('> Quartz restarts');
+    expect(result.content.indexOf('> Quartz restarts')).toBeLessThan(
+      result.content.indexOf(coverage),
+    );
+    expect(result.content.endsWith(coverage)).toBe(true);
     expect(result.outcome).toBe('evidence-only');
     expect(result.citations[0]?.status).toBe('verified');
     expect(result.content).not.toContain('검수 미완료');
@@ -1115,8 +1181,11 @@ describe('엔진 근거 기반 색인 검토', () => {
     });
     expect(calls).toHaveLength(1);
     expect(result.coverageNotice).toBe(limited);
-    expect(result.content.startsWith(`${limited}\n\n`)).toBe(true);
     expect(result.content).toContain('두 번 냉각한 뒤');
+    expect(result.content.indexOf('두 번 냉각한 뒤')).toBeLessThan(
+      result.content.indexOf(limited),
+    );
+    expect(result.content.endsWith(limited)).toBe(true);
     expect(result.coverageNotice).not.toContain('검수 미완료');
   });
 
@@ -1144,7 +1213,10 @@ describe('엔진 근거 기반 색인 검토', () => {
       unreadable: 0,
     });
     expect(result.coverageNotice).toBe(incomplete);
-    expect(result.content.startsWith(`${incomplete}\n\n`)).toBe(true);
+    expect(result.content.indexOf('두 번 냉각한 뒤')).toBeLessThan(
+      result.content.indexOf(incomplete),
+    );
+    expect(result.content.endsWith(incomplete)).toBe(true);
     expect(result.content).not.toContain(
       t('indexedReviewLimitedNotice', {
         total: 2,
@@ -1166,7 +1238,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.coverageNotice).not.toContain('색인 범위 밖 제외 1개');
   });
 
-  it('후보 검토의 지원 상태와 전역 미색인 문서 수치를 구분한다', async () => {
+  it('전체 검토의 지원 상태와 전역 미색인 문서 수치를 구분한다', async () => {
     const plan = planFixture();
     vi.mocked(planIndexedEvidenceRust).mockReturnValue({
       ...plan,
@@ -1175,7 +1247,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     const { provider } = answerProvider();
     const result = await reviewIndexedVault(reviewOptions({ provider }));
     expect(result.coverageNotice).toBe(
-      t('indexedReviewCoverage', {
+      t('indexedReviewIncompleteNotice', {
         total: 2,
         accepted: 1,
         machineExcluded: 1,

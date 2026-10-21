@@ -1292,9 +1292,9 @@ export class ChatView extends ItemView {
         isDone &&
         content &&
         message.indexedReviewNotice &&
-        !content.startsWith(message.indexedReviewNotice)
+        !content.includes(message.indexedReviewNotice)
       ) {
-        content = `${message.indexedReviewNotice}\n\n${content}`;
+        content = `${content}\n\n${message.indexedReviewNotice}`;
       }
       message.content = content;
       message.reasoning = reasoning;
@@ -3133,26 +3133,34 @@ export class ChatView extends ItemView {
         const localSearchQuestion =
           promptContext.scoringQuestion ??
           expandVaultSearchQueryLocally(text, previousUserQuestions);
+        const mentionedTags = this.parseMentions(text)
+          .filter((mention) => mention.type === 'tag')
+          .map((mention) => mention.name);
+        const restrictedSearch = mentionedFolders.length > 0 || mentionedTags.length > 0;
         // 검색 화면과 같은 corpus·hybrid 후보·리비전 reader를 공유합니다.
         const searchSource = await collectIndexedSearchSource(
           {
             app: this.app,
             ragEngine: this.plugin.ragEngine,
             documentCorpus: this.plugin.documentCorpus,
+            getCandidateCount: () =>
+              this.plugin.getRagRuntimeState?.()?.ragStatus?.totalDocuments,
             isIndexing: () => isPluginSearching(this.plugin),
           },
           localSearchQuestion,
           abortController.signal,
           text,
+          true,
+          12_000,
         );
         const indexedPaths = searchSource ? await searchSource.getIndexedPaths() : [];
+        const reviewPaths = restrictedSearch
+          ? indexedPaths
+          : (searchSource?.reviewPaths ?? indexedPaths);
         const searchInventory = searchSource?.inventory;
-        const mentionedTags = this.parseMentions(text)
-          .filter((mention) => mention.type === 'tag')
-          .map((mention) => mention.name);
         const researchResult = await reviewIndexedVault({
           question: text,
-          indexedPaths,
+          indexedPaths: reviewPaths,
           scopes: mentionedFolders.map((folder) => folder.name),
           corpus: searchSource?.corpus,
           candidates: searchSource?.candidates,
@@ -3167,7 +3175,8 @@ export class ChatView extends ItemView {
           previousUserQuestions,
           scoringQuestion: localSearchQuestion,
           deferAnswer,
-          documentScope: wholeVaultResearch ? 'all' : 'candidates',
+          documentScope: 'all',
+          exhaustiveReview: restrictedSearch ? false : searchSource?.exhaustiveReview === true,
           isCurrent: () => this.plugin.getRetrievalReadiness() === 'ready',
           onDiagnostics: (diagnostics) => {
             if (!isChatRunActive(this.activeRun, run)) return;
@@ -4969,23 +4978,32 @@ export class ChatView extends ItemView {
               app: this.app,
               ragEngine: this.plugin.ragEngine,
               documentCorpus: this.plugin.documentCorpus,
+              getCandidateCount: () =>
+                this.plugin.getRagRuntimeState?.()?.ragStatus?.totalDocuments,
               isIndexing: () => isPluginSearching(this.plugin),
             },
             promptContext.scoringQuestion ?? currentQuestion,
             abortController.signal,
             currentQuestion,
+            true,
+            12_000,
           );
           const indexedPaths = resumeSource ? await resumeSource.getIndexedPaths() : [];
-          const resumeInventory = resumeSource?.inventory;
+          const resumeFolderScopes = this.parseMentions(currentQuestion)
+            .filter((mention) => mention.type === 'folder')
+            .map((mention) => mention.name);
           const resumeTags = this.parseMentions(currentQuestion)
             .filter((mention) => mention.type === 'tag')
             .map((mention) => mention.name);
+          const resumeRestricted = resumeFolderScopes.length > 0 || resumeTags.length > 0;
+          const reviewPaths = resumeRestricted
+            ? indexedPaths
+            : (resumeSource?.reviewPaths ?? indexedPaths);
+          const resumeInventory = resumeSource?.inventory;
           const researchResult = await reviewIndexedVault({
             question: currentQuestion,
-            indexedPaths,
-            scopes: this.parseMentions(currentQuestion)
-              .filter((mention) => mention.type === 'folder')
-              .map((mention) => mention.name),
+            indexedPaths: reviewPaths,
+            scopes: resumeFolderScopes,
             corpus: resumeSource?.corpus,
             candidates: resumeSource?.candidates,
             candidatesState: resumeSource?.candidatesState,
@@ -5000,7 +5018,8 @@ export class ChatView extends ItemView {
               promptContext.scoringQuestion ??
               expandVaultSearchQueryLocally(currentQuestion, previousUserQuestions),
             deferAnswer: true,
-            documentScope: 'candidates',
+            documentScope: 'all',
+            exhaustiveReview: resumeRestricted ? false : resumeSource?.exhaustiveReview === true,
             isCurrent: () => this.plugin.getRetrievalReadiness() === 'ready',
             signal: abortController.signal,
             onDiagnostics: (diagnostics) => {

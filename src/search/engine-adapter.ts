@@ -18,6 +18,7 @@ import {
   type IndexedSearchPlan,
   type RustIndexedEvidenceVerificationDocument,
 } from '../rag/rust-core';
+import { appLogger } from '../utils/logger';
 
 const VERIFICATION_WINDOW_BYTES = 1024 * 1024;
 const verificationEncoder = new TextEncoder();
@@ -25,7 +26,11 @@ const verificationEncoder = new TextEncoder();
 export interface IndexedSearchSource {
   corpus: IndexedVaultCorpus;
   getIndexedPaths(): Promise<readonly string[]>;
-  /** 하이브리드 검색이 지목한 후보 신호. 검색 화면은 이 범위 밖의 색인 본문을 읽지 않는다. */
+  /** exhaustive BM25가 성공했을 때 실제 본문을 검증할 후보 경로입니다. */
+  reviewPaths?: readonly string[];
+  /** 전체 색인 lexical 검토 성공 여부입니다. 생략하면 부분 후보 검토로 취급합니다. */
+  exhaustiveReview?: boolean;
+  /** 하이브리드 검색이 지목한 순위 prior입니다. 검토 범위는 전체 색인입니다. */
   candidates?: readonly (IndexedEvidenceCandidate & { queryIndex?: number })[];
   inventory?: IndexedEvidenceInventory;
   candidatesState?: SearchCandidateState;
@@ -35,12 +40,17 @@ export interface IndexedSearchSource {
   revisionReader?: (path: string) => Promise<string | null>;
   /** 답변 전에 채택 문서의 현재 원문을 다시 읽는 로컬 vault reader. */
   sourceReader?: (path: string, signal?: AbortSignal) => Promise<IndexedEvidenceSourceSnapshot>;
+  /** false면 현재 revision과 색인 quote를 검증하고 전체 원문 재추출은 생략합니다. */
+  verifyCurrentSource?: boolean;
 }
 
 /** 현재 vault 원문과 그 revision입니다. 읽을 수 없으면 두 값 모두 null입니다. */
 export interface IndexedEvidenceSourceSnapshot {
   revision: string | null;
   text: string | null;
+  contentHash?: string;
+  /** 원문을 색인과 같은 청킹 규칙으로 다시 나눈 검증 구간입니다. */
+  chunks?: readonly { text: string; startLine: number; endLine: number }[];
 }
 
 type IndexedVaultSearch = typeof searchIndexedVault;
@@ -55,36 +65,66 @@ export function createIndexedSearchPort(
 ): SearchPort {
   return async (request: SearchRequest): Promise<SearchResponse | null> => {
     const candidatesState = source.candidatesState ?? 'ready';
-    if (candidatesState === 'indexing' || candidatesState === 'initializing') {
+    if (candidatesState === 'indexing') {
       return createPendingSearchResponse(candidatesState, source.inventory);
     }
-    if (candidatesState === 'unavailable') return null;
     const { revisionReader } = source;
     // 현재 원문 리비전을 확인할 수 없으면 색인 사본을 verified 결과로 내보내지 않는다.
     if (!revisionReader) return null;
-    const indexedPaths = await source.getIndexedPaths();
+    const hasFilters = request.filters !== undefined;
+    const indexedPaths = hasFilters
+      ? await source.getIndexedPaths()
+      : (source.reviewPaths ?? (await source.getIndexedPaths()));
+    const exhaustiveReview = hasFilters ? false : source.exhaustiveReview === true;
+    const searchStarted = performance.now();
     const result = await search({
       question: request.query,
       indexedPaths,
       scopes: source.scopes ?? [],
       corpus: source.corpus,
       candidates: source.candidates,
-      documentScope: 'candidates',
+      documentScope: 'all',
+      exhaustiveReview,
       inventory: source.inventory,
       filters: request.filters,
       signal: request.signal,
     });
+    const searchMs = performance.now() - searchStarted;
     if (!result) return null;
+    appLogger.debug('Indexed search engine evidence ready.', {
+      source: 'search.evidence',
+      data: {
+        indexedPaths: indexedPaths.length,
+        engineEvidence: result.evidence.length,
+        engineDocuments: new Set(result.evidence.map((item) => item.path)).size,
+      },
+    });
+    const revisionStarted = performance.now();
     const revision = await keepCurrentRevision(result.evidence, revisionReader);
-    const current = source.sourceReader
+    const revisionMs = performance.now() - revisionStarted;
+    const sourceStarted = performance.now();
+    const current = source.verifyCurrentSource === false
+      ? { evidence: revision.evidence, staleDocuments: 0 }
+      : source.sourceReader
       ? await keepCurrentSourceEvidence(
           revision.evidence,
           source.sourceReader,
           request.signal,
         )
       : { evidence: revision.evidence, staleDocuments: 0 };
+    const sourceMs = performance.now() - sourceStarted;
     const response = toSearchResponse({ ...result, evidence: current.evidence });
     response.staleDocuments = revision.staleDocuments + current.staleDocuments;
+    appLogger.debug('Indexed search current-source verification finished.', {
+      source: 'search.evidence',
+      data: {
+        currentEvidence: current.evidence.length,
+        staleDocuments: response.staleDocuments,
+        searchMs,
+        revisionMs,
+        sourceMs,
+      },
+    });
     response.diagnostics.selectedDocuments = new Set(
       current.evidence.map((item) => item.path),
     ).size;
@@ -175,7 +215,7 @@ async function keepCurrentSourceEvidence(
 }
 
 function createPendingSearchResponse(
-  state: 'indexing' | 'initializing',
+  state: 'indexing',
   inventory: IndexedEvidenceInventory | undefined,
 ): SearchResponse {
   const indexedCount = inventory?.indexedCount ?? 0;
@@ -193,7 +233,7 @@ function createPendingSearchResponse(
       zeroHitReason: state,
     },
     coverage: {
-      documentScope: 'candidates',
+      documentScope: 'all',
       status: 'incomplete',
       reviewedDocuments: 0,
       unreviewedDocuments: inventory?.unreviewedCount ?? indexedCount,
@@ -209,13 +249,15 @@ async function keepCurrentRevision(
   revisionReader: (path: string) => Promise<string | null>,
 ): Promise<{ evidence: readonly IndexedEvidenceItem[]; staleDocuments: number }> {
   const currentByPath = new Map<string, string | null>();
-  for (const path of new Set(evidence.map((item) => item.path))) {
-    try {
-      currentByPath.set(path, await revisionReader(path));
-    } catch {
-      currentByPath.set(path, null);
-    }
-  }
+  await Promise.all(
+    [...new Set(evidence.map((item) => item.path))].map(async (path) => {
+      try {
+        currentByPath.set(path, await revisionReader(path));
+      } catch {
+        currentByPath.set(path, null);
+      }
+    }),
+  );
   const verified: IndexedEvidenceItem[] = [];
   const stalePaths = new Set<string>();
   for (const item of evidence) {

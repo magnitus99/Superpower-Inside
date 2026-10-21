@@ -3268,7 +3268,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
    * chat과 같은 factory(src/search/indexed-search-deps.ts)에서 만든다.
    */
   getSearchPort(): SearchPort | null {
-    return createPluginSearchPort(this);
+    return createPluginSearchPort({
+      app: this.app,
+      ragEngine: this.ragEngine,
+      documentCorpus: this.documentCorpus,
+      settings: this.settings,
+      isIndexing: () => this.isRagSearching(),
+      getCandidateCount: () => this.getRagRuntimeState().ragStatus?.totalDocuments,
+    });
   }
 
   private async openSearchView(): Promise<void> {

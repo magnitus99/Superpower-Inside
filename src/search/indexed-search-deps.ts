@@ -7,6 +7,8 @@ import type {
 import type { QueryResult, RAGQueryEngine } from '../rag/query';
 import { planIndexedSearchQueriesRust, type IndexedSearchPlan } from '../rag/rust-core';
 import { readSourceText } from '../rag/source-access';
+import { createContentHash } from '../rag/hash';
+import { chunkSourceDocument } from '../rag/source-document';
 import type { SuperpowerInsideSettings } from '../settings';
 import { appLogger } from '../utils/logger';
 import { getRagCandidateFiles } from '../utils/vault';
@@ -29,6 +31,8 @@ export interface IndexedSearchDepsHost {
   documentCorpus: IndexedSearchCorpus | null;
   /** 허용 범위 전체 경로. 없으면 미색인 수는 알 수 없어 0으로 둔다. */
   getCandidatePaths?: () => Promise<readonly string[]>;
+  /** 허용 범위 전체 수. 비용 큰 볼트 열거를 피할 때 사용합니다. */
+  getCandidateCount?: () => number | undefined;
   settings?: Pick<SuperpowerInsideSettings, 'rag' | 'chat'>;
   /** 재색인·초기화 중에는 부분 색인으로 답하지 않습니다. */
   isIndexing?: () => boolean;
@@ -37,6 +41,8 @@ export interface IndexedSearchDepsHost {
 const MAIN_CANDIDATE_LIMIT = 64;
 const SUBJECT_CANDIDATE_LIMIT = 32;
 const MAX_HYBRID_FACETS = 3;
+const EXHAUSTIVE_REVIEW_PATH_LIMIT = 32;
+const SEMANTIC_CANDIDATE_TIMEOUT_MS = 2_000;
 
 type IndexedSearchCandidate = IndexedEvidenceCandidate & { queryIndex?: number };
 
@@ -44,11 +50,14 @@ interface HybridCandidateResolution {
   candidates: readonly IndexedSearchCandidate[] | undefined;
   state: SearchCandidateState;
   failedFacetIds: readonly string[];
+  exhaustiveReview: boolean;
 }
 
 /** 색인 사본과 현재 원문 리비전(mtime:size)을 대조하는 reader. */
 export function createVaultRevisionReader(app: App): (path: string) => Promise<string | null> {
   return async (path) => {
+    const file = app.vault.getAbstractFileByPath?.(path);
+    if (file instanceof TFile) return `${file.stat.mtime}:${file.stat.size}`;
     const stat = await app.vault.adapter.stat(path);
     return stat ? `${stat.mtime}:${stat.size}` : null;
   };
@@ -57,6 +66,8 @@ export function createVaultRevisionReader(app: App): (path: string) => Promise<s
 /** 답변 전에 채택 문서의 현재 원문과 revision을 읽는 로컬 vault reader를 만듭니다. */
 export function createVaultSourceReader(
   app: App,
+  forceRefresh = true,
+  chunkConfig?: Pick<SuperpowerInsideSettings['rag'], 'chunkSize' | 'overlap'>,
 ): (path: string, signal?: AbortSignal) => Promise<IndexedEvidenceSourceSnapshot> {
   return async (path, signal) => {
     try {
@@ -65,17 +76,43 @@ export function createVaultSourceReader(
       if (!(file instanceof TFile)) return { revision: null, text: null };
       const before = await app.vault.adapter.stat(path);
       if (!before) return { revision: null, text: null };
-      const source = await readSourceText(app.vault, file, { signal, forceRefresh: true });
+      const source = await readSourceText(app.vault, file, { signal, forceRefresh });
       signal?.throwIfAborted();
       const after = await app.vault.adapter.stat(path);
       if (!after || before.mtime !== after.mtime || before.size !== after.size) {
         return { revision: null, text: null };
       }
+      let chunks: IndexedEvidenceSourceSnapshot['chunks'] = [];
+      if (chunkConfig) {
+        try {
+          chunks = chunkSourceDocument(file, source.text, chunkConfig, source.segments).map(
+            (chunk) => ({
+              text: chunk.text,
+              startLine: chunk.metadata.startLine + 1,
+              endLine: chunk.metadata.endLine + 1,
+            }),
+          );
+        } catch (error) {
+          appLogger.debug('Current source chunking failed; using raw verification window.', {
+            source: 'search.source-read',
+            data: { extension: file.extension ?? '' },
+            error,
+          });
+        }
+      }
       return {
         revision: `${after.mtime}:${after.size}`,
         text: source.text,
+        contentHash: createContentHash(source.text),
+        ...(chunks.length > 0 ? { chunks } : {}),
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      appLogger.debug('Vault source read failed; treating the document as stale.', {
+        source: 'search.source-read',
+        data: { extension: path.split('.').pop() ?? '' },
+        error,
+      });
       return { revision: null, text: null };
     }
   };
@@ -90,13 +127,23 @@ export async function collectIndexedSearchSource(
   query: string,
   signal?: AbortSignal,
   question = query,
+  forceRefreshSources = true,
+  semanticTimeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
 ): Promise<IndexedSearchSource | null> {
   const corpus = host.documentCorpus;
   if (!corpus) return null;
-  const sourceReader = createVaultSourceReader(host.app);
+  const startedAt = performance.now();
+  const sourceReader = createVaultSourceReader(
+    host.app,
+    forceRefreshSources,
+    host.settings?.rag,
+  );
   const indexedPaths = await corpus.getIndexedFilePaths();
+  const indexedPathsMs = performance.now() - startedAt;
   if (signal?.aborted) return null;
+  const inventoryStartedAt = performance.now();
   const inventory = await collectInventory(host, indexedPaths);
+  const inventoryMs = performance.now() - inventoryStartedAt;
   if (signal?.aborted) return null;
   const searchPlan = planIndexedSearchQueriesRust({
     question,
@@ -109,32 +156,111 @@ export async function collectIndexedSearchSource(
       getIndexedPaths: () => Promise.resolve(indexedPaths),
       candidates: undefined,
       candidatesState: 'unavailable',
+      exhaustiveReview: false,
       inventory,
       searchPlan: undefined,
       revisionReader: createVaultRevisionReader(host.app),
       sourceReader,
     };
   }
+  const candidateStartedAt = performance.now();
   const candidateResolution =
     indexedPaths.length === 0
       ? {
           candidates: undefined,
           state: host.isIndexing?.() === true ? ('indexing' as const) : ('unavailable' as const),
           failedFacetIds: [],
+          exhaustiveReview: false,
         }
       : host.isIndexing?.() === true
-        ? { candidates: undefined, state: 'indexing' as const, failedFacetIds: [] }
-        : await collectHybridCandidates(host.ragEngine, searchPlan, signal);
+        ? {
+            candidates: undefined,
+            state: 'indexing' as const,
+            failedFacetIds: [],
+            exhaustiveReview: false,
+          }
+        : await collectHybridCandidates(host.ragEngine, searchPlan, signal, semanticTimeoutMs);
+  const candidatesMs = performance.now() - candidateStartedAt;
+  const reviewPaths = candidateResolution.exhaustiveReview
+    ? selectExhaustiveReviewPaths(indexedPaths, candidateResolution.candidates)
+    : undefined;
+  const reviewPathSet = new Set(reviewPaths ?? []);
+  appLogger.debug('Indexed search source collected.', {
+    source: 'search.source',
+    data: {
+      indexedPaths: indexedPaths.length,
+      reviewPaths: reviewPaths?.length ?? null,
+      candidates: candidateResolution.candidates?.length ?? 0,
+      exhaustiveReview: candidateResolution.exhaustiveReview,
+      indexedPathsMs,
+      inventoryMs,
+      candidatesMs,
+      totalMs: performance.now() - startedAt,
+    },
+  });
   return {
     corpus,
     getIndexedPaths: () => Promise.resolve(indexedPaths),
-    candidates: candidateResolution.candidates,
+    candidates: candidateResolution.exhaustiveReview
+      ? candidateResolution.candidates?.filter((candidate) => reviewPathSet.has(candidate.path))
+      : candidateResolution.candidates,
+    reviewPaths,
+    exhaustiveReview: candidateResolution.exhaustiveReview,
     candidatesState: candidateResolution.state,
     inventory,
     searchPlan: { ...searchPlan, failedFacetIds: candidateResolution.failedFacetIds },
     revisionReader: createVaultRevisionReader(host.app),
     sourceReader,
   };
+}
+
+/**
+ * 전체 lexical match 중 원문 검증에 쓸 상위 경로만 고릅니다.
+ * 한 facet이 검토 예산을 독점하지 않도록 비교 질의는 facet별 순위를 번갈아 선택합니다.
+ */
+function selectExhaustiveReviewPaths(
+  indexedPaths: readonly string[],
+  candidates: readonly IndexedSearchCandidate[] | undefined,
+): string[] {
+  const indexed = new Set(indexedPaths);
+  const grouped = new Map<number, Map<string, IndexedSearchCandidate>>();
+  for (const candidate of candidates ?? []) {
+    if (!indexed.has(candidate.path)) continue;
+    const group = candidate.queryIndex ?? 0;
+    const byPath = grouped.get(group) ?? new Map<string, IndexedSearchCandidate>();
+    const current = byPath.get(candidate.path);
+    if (!current || candidate.rank < current.rank) byPath.set(candidate.path, candidate);
+    grouped.set(group, byPath);
+  }
+  const groups = new Map<number, string[]>();
+  for (const [group, byPath] of grouped) {
+    groups.set(
+      group,
+      [...byPath.values()]
+        .sort((left, right) => left.rank - right.rank || left.path.localeCompare(right.path))
+        .map((candidate) => candidate.path),
+    );
+  }
+  const selected: string[] = [];
+  const seen = new Set<string>();
+  const cursors = new Map<number, number>();
+  while (selected.length < EXHAUSTIVE_REVIEW_PATH_LIMIT) {
+    let added = false;
+    for (const group of [...groups.keys()].sort((left, right) => left - right)) {
+      const paths = groups.get(group) ?? [];
+      let cursor = cursors.get(group) ?? 0;
+      while (cursor < paths.length && seen.has(paths[cursor] ?? '')) cursor += 1;
+      const path = paths[cursor];
+      cursors.set(group, cursor + 1);
+      if (!path) continue;
+      seen.add(path);
+      selected.push(path);
+      added = true;
+      if (selected.length >= EXHAUSTIVE_REVIEW_PATH_LIMIT) break;
+    }
+    if (!added) break;
+  }
+  return selected;
 }
 
 /**
@@ -145,6 +271,14 @@ async function collectInventory(
   host: IndexedSearchDepsHost,
   indexedPaths: readonly string[],
 ): Promise<IndexedEvidenceInventory> {
+  const candidateCount = host.getCandidateCount?.();
+  if (Number.isSafeInteger(candidateCount) && candidateCount !== undefined && candidateCount >= 0) {
+    return {
+      indexedCount: indexedPaths.length,
+      unreviewedCount: 0,
+      notIndexedCount: Math.max(0, candidateCount - indexedPaths.length),
+    };
+  }
   const candidatePaths = await listCandidatePaths(host);
   const indexed = new Set(indexedPaths);
   return {
@@ -168,9 +302,15 @@ async function listCandidatePaths(
 /** 검색 화면이 쓰는 포트. 색인 저장소가 없으면 화면은 사용 불가 상태를 표시한다. */
 export function createPluginSearchPort(host: IndexedSearchDepsHost): SearchPort {
   return async (request) => {
-    const source = await collectIndexedSearchSource(host, request.query, request.signal);
+    const source = await collectIndexedSearchSource(
+      host,
+      request.query,
+      request.signal,
+      request.query,
+      false,
+    );
     if (!source) return null;
-    return createIndexedSearchPort(source)(request);
+    return createIndexedSearchPort({ ...source, verifyCurrentSource: false })(request);
   };
 }
 
@@ -182,47 +322,79 @@ async function collectHybridCandidates(
   engine: RAGQueryEngine | null,
   plan: IndexedSearchPlan,
   signal?: AbortSignal,
+  semanticTimeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
 ): Promise<HybridCandidateResolution> {
   if (!engine) {
-    return { candidates: undefined, state: 'initializing', failedFacetIds: [] };
+    return {
+      candidates: undefined,
+      state: 'initializing',
+      failedFacetIds: [],
+      exhaustiveReview: false,
+    };
   }
   signal?.throwIfAborted();
   const facets = plan.facets.slice(0, MAX_HYBRID_FACETS);
+  const facetLimit = Math.max(
+    1,
+    Math.ceil(EXHAUSTIVE_REVIEW_PATH_LIMIT / Math.max(1, facets.length)),
+  );
   const outcomes = await Promise.all(
     facets.map(async (facet) => {
-      signal?.throwIfAborted();
-      try {
-        const results = await engine.query(
-          facet.query,
-          facet.kind === 'question' ? MAIN_CANDIDATE_LIMIT : SUBJECT_CANDIDATE_LIMIT,
-          undefined,
-          undefined,
-          { signal, fastCandidates: true },
+      const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
+        Promise.resolve().then(() => engine.queryBm25Exhaustive(facet.query, facetLimit, signal)),
+        querySemanticCandidates(engine, facet, signal, semanticTimeoutMs),
+      ]);
+      if (signal?.aborted) {
+        const rejected = [bm25Outcome, semanticOutcome].find(
+          (outcome) => outcome.status === 'rejected',
         );
-        return { facet, results, failed: false } as const;
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        appLogger.warn('Hybrid facet candidates unavailable; preserving other facet results.', {
-          source: 'search.candidates',
-          error,
-        });
-        return { facet, results: [] as QueryResult[], failed: true } as const;
+        throw signal.reason ?? (rejected?.status === 'rejected' ? rejected.reason : undefined);
       }
+      if (bm25Outcome.status === 'rejected') {
+        appLogger.warn('Exhaustive BM25 unavailable; preserving semantic candidates.', {
+          source: 'search.candidates',
+          error: bm25Outcome.reason,
+        });
+      }
+      if (semanticOutcome.status === 'rejected') {
+        appLogger.warn('Hybrid facet candidates unavailable; preserving exhaustive BM25.', {
+          source: 'search.candidates',
+          error: semanticOutcome.reason,
+        });
+      }
+      const bm25 =
+        bm25Outcome.status === 'fulfilled' && bm25Outcome.value !== null
+          ? bm25Outcome.value
+          : null;
+      return {
+        facet,
+        bm25,
+        semantic:
+          semanticOutcome.status === 'fulfilled'
+            ? semanticOutcome.value
+            : ([] as QueryResult[]),
+        failed: bm25 === null,
+      } as const;
     }),
   );
   signal?.throwIfAborted();
   const failedFacetIds = outcomes.filter((outcome) => outcome.failed).map(({ facet }) => facet.id);
-  if (outcomes.length > 0 && failedFacetIds.length === outcomes.length) {
-    return {
-      candidates: undefined,
-      state: engine.getCandidateReadiness?.() ?? 'unavailable',
-      failedFacetIds,
-    };
-  }
+  const exhaustiveReview = outcomes.length > 0 && failedFacetIds.length === 0;
   const candidates: IndexedSearchCandidate[] = [];
   for (const outcome of outcomes) {
-    if (outcome.failed) continue;
-    outcome.results.forEach((result, index) => {
+    outcome.bm25?.forEach((match) => {
+      const candidate: IndexedSearchCandidate = {
+        path: match.path,
+        ...(match.startLine !== undefined ? { startLine: match.startLine } : {}),
+        ...(match.endLine !== undefined ? { endLine: match.endLine } : {}),
+        score: match.score,
+        source: 'bm25',
+        rank: match.rank,
+      };
+      if (plan.mode === 'comparison') candidate.queryIndex = outcome.facet.queryIndex;
+      candidates.push(candidate);
+    });
+    outcome.semantic.forEach((result, index) => {
       const candidate: IndexedSearchCandidate = {
         path: result.sourcePath,
         startLine: result.entry.metadata.startLine + 1,
@@ -238,18 +410,58 @@ async function collectHybridCandidates(
       candidates.push(candidate);
     });
   }
-  if (candidates.length === 0) {
+  if (candidates.length === 0 && !exhaustiveReview) {
     return {
       candidates: undefined,
       state: engine.getCandidateReadiness?.() ?? 'ready',
       failedFacetIds,
+      exhaustiveReview,
     };
   }
   return {
     candidates,
     state: 'ready',
     failedFacetIds,
+    exhaustiveReview,
   };
+}
+
+async function querySemanticCandidates(
+  engine: RAGQueryEngine,
+  facet: IndexedSearchPlan['facets'][number],
+  signal?: AbortSignal,
+  timeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
+): Promise<QueryResult[]> {
+  signal?.throwIfAborted();
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(signal?.reason);
+  signal?.addEventListener('abort', forwardAbort, { once: true });
+  const timerHost = typeof window === 'undefined' ? globalThis : window;
+  let timeout: ReturnType<typeof timerHost.setTimeout> | undefined;
+  const timedOut = new Promise<QueryResult[]>((resolve) => {
+    timeout = timerHost.setTimeout(() => {
+      controller.abort(new DOMException('semantic-candidate-timeout', 'TimeoutError'));
+      resolve([]);
+    }, timeoutMs);
+  });
+  const query = engine.query(
+    facet.query,
+    facet.kind === 'question' ? MAIN_CANDIDATE_LIMIT : SUBJECT_CANDIDATE_LIMIT,
+    undefined,
+    undefined,
+    { signal: controller.signal, excludedProviderIds: ['bm25'] },
+  ).catch((error: unknown) => {
+    if (signal?.aborted) throw error;
+    return [] as QueryResult[];
+  });
+  try {
+    const results = await Promise.race([query, timedOut]);
+    signal?.throwIfAborted();
+    return results;
+  } finally {
+    if (timeout !== undefined) timerHost.clearTimeout(timeout);
+    signal?.removeEventListener('abort', forwardAbort);
+  }
 }
 
 function candidateSource(result: QueryResult): IndexedEvidenceCandidate['source'] {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
-import type { QueryResult, RAGQueryEngine } from '../rag/query';
+import type { QueryResult, RAGQueryEngine, RAGQueryOptions } from '../rag/query';
 import type { IndexedSearchPlan } from '../rag/rust-core';
 import type { IndexedSearchCorpus } from './indexed-search-deps';
 import {
@@ -14,6 +14,13 @@ vi.mock('obsidian', () => ({
 }));
 
 const planIndexedSearchQueries = vi.hoisted(() => vi.fn());
+type QueryCall = (
+  question: string,
+  topK?: number,
+  minScore?: number,
+  prefixes?: readonly string[],
+  options?: RAGQueryOptions,
+) => Promise<QueryResult[]>;
 
 vi.mock('../rag/rust-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../rag/rust-core')>();
@@ -102,6 +109,7 @@ function queryResult(overrides: Partial<QueryResult> = {}): QueryResult {
 
 function engine(results: QueryResult[]): RAGQueryEngine {
   return {
+    queryBm25Exhaustive: () => Promise.resolve([]),
     query: (
       question: string,
       topK?: number,
@@ -184,6 +192,177 @@ describe('검색 의존성 factory', () => {
     await expect(source?.revisionReader?.('Synthetic/Missing.md')).resolves.toBeNull();
   });
 
+  it('100개 BM25 hit와 semantic top-k를 합집합 review 경로로 보존한다', async () => {
+    const indexedPaths = Array.from(
+      { length: 101 },
+      (_, index) => `Synthetic/Doc-${String(index).padStart(3, '0')}.md`,
+    );
+    planIndexedSearchQueries.mockReturnValue(singlePlan('합성 질의'));
+    const bm25Matches = indexedPaths.slice(1).map((path, index) => ({
+      path,
+      score: 100 - index,
+      rank: index + 1,
+    }));
+    const semantic = indexedPaths.slice(0, 2).map((path, index) =>
+      queryResult({
+        sourcePath: path,
+        retrievalSources: ['vector'],
+        entry: {
+          id: `semantic-${index}`,
+          vector: [],
+          metadata: {
+            filePath: path,
+            startLine: 0,
+            endLine: 0,
+            text: '합성 semantic 본문',
+          },
+        },
+        combinedScore: 2 - index / 10,
+      }),
+    );
+    const query = vi.fn<QueryCall>(() => Promise.resolve(semantic));
+    const queryBm25Exhaustive = vi.fn(() => Promise.resolve(bm25Matches));
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: { query, queryBm25Exhaustive } as unknown as RAGQueryEngine,
+        documentCorpus: {
+          ...corpus(),
+          getIndexedFilePaths: () => Promise.resolve(indexedPaths),
+        },
+      },
+      '합성 질의',
+    );
+
+    const call = query.mock.calls[0];
+    expect(call?.slice(0, 4)).toEqual(['합성 질의', 64, undefined, undefined]);
+    expect(call?.[4]?.excludedProviderIds).toEqual(['bm25']);
+    expect(call?.[4]?.signal).toBeInstanceOf(AbortSignal);
+    await expect(source?.getIndexedPaths()).resolves.toEqual(indexedPaths);
+    expect(source?.exhaustiveReview).toBe(true);
+    expect(source?.reviewPaths).toHaveLength(32);
+    expect(source?.reviewPaths).toContain(indexedPaths[0]);
+    expect(new Set(source?.candidates?.map((candidate) => candidate.path)).size).toBe(32);
+    expect(source?.candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: indexedPaths[0], source: 'vector' }),
+        expect.objectContaining({ path: indexedPaths[1], source: 'bm25' }),
+      ]),
+    );
+  });
+
+  it('semantic 실패는 exhaustive BM25 검토 범위를 축소하지 않는다', async () => {
+    planIndexedSearchQueries.mockReturnValue(singlePlan('합성 질의'));
+    const queryBm25Exhaustive = vi.fn(() =>
+      Promise.resolve([
+        { path: 'Synthetic/Alpha.md', score: 3, rank: 1 },
+        { path: 'Synthetic/Beta.md', score: 2, rank: 2 },
+      ]),
+    );
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: {
+          query: () => Promise.reject(new Error('synthetic semantic failure')),
+          queryBm25Exhaustive,
+          getCandidateReadiness: () => 'ready' as const,
+        } as unknown as RAGQueryEngine,
+        documentCorpus: corpus(),
+      },
+      '합성 질의',
+    );
+
+    expect(source?.exhaustiveReview).toBe(true);
+    expect(source?.reviewPaths).toEqual(['Synthetic/Alpha.md', 'Synthetic/Beta.md']);
+    expect(source?.candidatesState).toBe('ready');
+    expect(source?.searchPlan).toEqual({
+      ...singlePlan('합성 질의'),
+      failedFacetIds: [],
+    });
+  });
+
+  it('semantic 후보가 timeout되어도 exhaustive BM25 검토를 기다리지 않는다', async () => {
+    vi.useFakeTimers();
+    try {
+      planIndexedSearchQueries.mockReturnValue(singlePlan('합성 질의'));
+      const query = vi.fn<QueryCall>(() => new Promise<QueryResult[]>(() => {}));
+      const queryBm25Exhaustive = vi.fn(() =>
+        Promise.resolve([{ path: 'Synthetic/Alpha.md', score: 3, rank: 1 }]),
+      );
+      const pending = collectIndexedSearchSource(
+        {
+          app: app({}),
+          ragEngine: {
+            query,
+            queryBm25Exhaustive,
+          } as unknown as RAGQueryEngine,
+          documentCorpus: corpus(),
+        },
+        '합성 질의',
+      );
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      const source = await pending;
+
+      expect(source?.exhaustiveReview).toBe(true);
+      expect(source?.reviewPaths).toEqual(['Synthetic/Alpha.md']);
+      expect(source?.candidates).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('candidate 수가 있으면 허용 범위 전체 경로를 다시 열거하지 않는다', async () => {
+    planIndexedSearchQueries.mockReturnValue(singlePlan('합성 질의'));
+    const getCandidatePaths = vi.fn(() =>
+      Promise.resolve(['Synthetic/Alpha.md', 'Synthetic/Beta.md', 'Synthetic/New.md']),
+    );
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: {
+          query: () => Promise.resolve([]),
+          queryBm25Exhaustive: () => Promise.resolve([]),
+        } as unknown as RAGQueryEngine,
+        documentCorpus: corpus(),
+        getCandidatePaths,
+        getCandidateCount: () => 5,
+      },
+      '합성 질의',
+    );
+
+    expect(getCandidatePaths).not.toHaveBeenCalled();
+    expect(source?.inventory).toEqual({
+      indexedCount: 2,
+      unreviewedCount: 0,
+      notIndexedCount: 3,
+    });
+  });
+
+  it('exhaustive BM25가 미가용이면 전체 indexedPaths fallback을 유지한다', async () => {
+    planIndexedSearchQueries.mockReturnValue(singlePlan('합성 질의'));
+    const queryBm25Exhaustive = vi.fn(() => Promise.resolve(null));
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: {
+          query: () => Promise.resolve([queryResult()]),
+          queryBm25Exhaustive,
+        } as unknown as RAGQueryEngine,
+        documentCorpus: corpus(),
+      },
+      '합성 질의',
+    );
+
+    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', 32, undefined);
+    expect(source?.exhaustiveReview).toBe(false);
+    expect(source?.reviewPaths).toBeUndefined();
+    await expect(source?.getIndexedPaths()).resolves.toEqual([
+      'Synthetic/Alpha.md',
+      'Synthetic/Beta.md',
+    ]);
+  });
+
   it('comparison facet 후보를 queryIndex와 실패 facet 기록으로 보존한다', async () => {
     const plan = {
       mode: 'comparison',
@@ -212,7 +391,7 @@ describe('검색 의존성 factory', () => {
       ],
     } satisfies IndexedSearchPlan;
     planIndexedSearchQueries.mockReturnValue(plan);
-    const query = vi.fn(
+    const query = vi.fn<QueryCall>(
       (
         question: string,
         _topK?: number,
@@ -241,11 +420,16 @@ describe('검색 의존성 factory', () => {
         return Promise.reject(new Error('synthetic facet failure'));
       },
     );
+    const queryBm25Exhaustive = vi.fn((question: string) =>
+      question === '합성 베타'
+        ? Promise.reject(new Error('synthetic bm25 failure'))
+        : Promise.resolve([]),
+    );
 
     const source = await collectIndexedSearchSource(
       {
         app: app({}),
-        ragEngine: { query } as unknown as RAGQueryEngine,
+        ragEngine: { query, queryBm25Exhaustive } as unknown as RAGQueryEngine,
         documentCorpus: corpus(),
       },
       '합성 점수 질의',
@@ -259,27 +443,22 @@ describe('검색 의존성 factory', () => {
       scopes: [],
     });
     expect(query).toHaveBeenCalledTimes(3);
-    expect(query.mock.calls[0]).toEqual([
-      '계획된 점수 질의',
-      64,
-      undefined,
-      undefined,
-      { signal: undefined, fastCandidates: true },
-    ]);
-    expect(query.mock.calls[1]).toEqual([
-      '합성 알파',
-      32,
-      undefined,
-      undefined,
-      { signal: undefined, fastCandidates: true },
-    ]);
-    expect(query.mock.calls[2]).toEqual([
-      '합성 베타',
-      32,
-      undefined,
-      undefined,
-      { signal: undefined, fastCandidates: true },
-    ]);
+    const expectedCalls = [
+      { query: '계획된 점수 질의', limit: 64 },
+      { query: '합성 알파', limit: 32 },
+      { query: '합성 베타', limit: 32 },
+    ] as const;
+    for (const [index, expected] of expectedCalls.entries()) {
+      const queryCall = query.mock.calls[index];
+      expect(queryCall?.slice(0, 4)).toEqual([
+        expected.query,
+        expected.limit,
+        undefined,
+        undefined,
+      ]);
+      expect(queryCall?.[4]?.excludedProviderIds).toEqual(['bm25']);
+      expect(queryCall?.[4]?.signal).toBeInstanceOf(AbortSignal);
+    }
     expect(source?.candidates).toMatchObject([
       { path: 'Synthetic/Alpha.md', queryIndex: 0, rank: 1 },
       { path: 'Synthetic/Beta.md', queryIndex: 1, rank: 1 },
@@ -447,7 +626,7 @@ describe('검색 의존성 factory', () => {
     const path = 'Synthetic/Alpha.md';
     const reader = createVaultSourceReader(sourceApp(sourceFile(path, 10, 20), '합성 현재 원문'));
 
-    await expect(reader(path)).resolves.toEqual({
+    await expect(reader(path)).resolves.toMatchObject({
       revision: '10:20',
       text: '합성 현재 원문',
     });
@@ -456,5 +635,20 @@ describe('검색 의존성 factory', () => {
       revision: null,
       text: null,
     });
+  });
+
+  it('source reader는 현재 원문을 색인 청크 설정으로 검증 구간에 담는다', async () => {
+    const path = 'Synthetic/Alpha.md';
+    const reader = createVaultSourceReader(
+      sourceApp(sourceFile(path, 10, 20), '# Heading\nSynthetic body'),
+      true,
+      { chunkSize: 40, overlap: 0 },
+    );
+
+    const snapshot = await reader(path);
+
+    expect(snapshot.chunks?.length).toBeGreaterThan(0);
+    expect(snapshot.chunks?.[0]?.startLine).toBeGreaterThan(0);
+    expect(snapshot.chunks?.[0]?.text).toContain('Synthetic body');
   });
 });

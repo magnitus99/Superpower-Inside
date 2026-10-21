@@ -5224,6 +5224,8 @@ export interface RustIndexedEvidencePassage {
   sourceId: string;
   path: string;
   revision: string | null;
+  /** 현재 원문과 색인 입력의 동일성을 확인하는 선택적 파일 해시입니다. */
+  contentHash?: string;
   startLine: number;
   endLine: number;
   quote: string;

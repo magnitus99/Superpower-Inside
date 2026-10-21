@@ -28,7 +28,7 @@ function createReviewResult(
 ): IndexedVaultReviewResult {
   const coverage: IndexedVaultReviewResult['coverage'] = {
     status: 'supported',
-    documentScope: 'candidates',
+    documentScope: 'all',
     reviewedDocuments: 1,
     unreviewedDocuments: 0,
     notIndexedDocuments: 0,
@@ -46,7 +46,7 @@ function createReviewResult(
       scoringQuestion: '합성 질문',
       previousUserQuestions: [],
       queryPlan: { queryTokens: [], phrases: [] },
-      documentScope: 'candidates',
+      documentScope: 'all',
       evidence: [],
       coverage,
       diagnostics: null,
@@ -354,7 +354,52 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     expect(reviewIndexedVault).toHaveBeenCalledWith(
       expect.objectContaining({
         filters: { tags: ['synthetic-tag'] },
-        documentScope: 'candidates',
+        documentScope: 'all',
+        exhaustiveReview: false,
+      }),
+    );
+  });
+
+  it('전체 색인 수와 exhaustive review 경로를 분리해 전달한다', async () => {
+    const { view, context } = createView();
+    context.mockResolvedValue({
+      systemPrompt: null,
+      attachments: [],
+      citations: [],
+      warnings: [],
+      vaultSearchEnabled: true,
+    });
+    const matchedPath = 'Synthetic/Matched.md';
+    const queryBm25Exhaustive = vi.fn(() =>
+      Promise.resolve([{ path: matchedPath, score: 3, rank: 1 }]),
+    );
+    const plugin = (view as unknown as { plugin: Record<string, unknown> }).plugin;
+    Object.assign(view, {
+      plugin: {
+        ...plugin,
+        prepareRagForChat: vi.fn(),
+        ragEngine: {
+          query: () => Promise.resolve([]),
+          queryBm25Exhaustive,
+        },
+        documentCorpus: {
+          getIndexedFilePaths: () =>
+            Promise.resolve([matchedPath, 'Synthetic/Other.md']),
+          getEntriesByFilePaths: () => Promise.resolve([]),
+          getFileIndexRecords: () => Promise.resolve([]),
+        },
+      },
+    });
+    vi.mocked(reviewIndexedVault).mockResolvedValue(createReviewResult());
+
+    await view.handleSend('합성 전체 검토 질문');
+
+    expect(reviewIndexedVault).toHaveBeenCalledWith(
+      expect.objectContaining({
+        indexedPaths: [matchedPath],
+        exhaustiveReview: true,
+        inventory: { indexedCount: 2, unreviewedCount: 0, notIndexedCount: 0 },
+        documentScope: 'all',
       }),
     );
   });
@@ -420,7 +465,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     );
     await view.handleSend('합성 자료에 대한 질문');
     expect(reviewIndexedVault).toHaveBeenCalledWith(
-      expect.objectContaining({ deferAnswer: false, documentScope: 'candidates' }),
+      expect.objectContaining({ deferAnswer: false, documentScope: 'all' }),
     );
     expect(updateMessage).toHaveBeenCalledWith(
       expect.any(String),
@@ -507,7 +552,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     },
   );
 
-  it('명시적 deep 요청에만 전체 문서 범위를 전달한다', async () => {
+  it('일반 볼트 검토와 deep 요청 모두 전체 문서 범위를 전달한다', async () => {
     const { view, stream } = createView(0);
     Object.assign(view, {
       plugin: {
@@ -550,7 +595,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     });
     await view.handleSend('합성 자료와 @external 결과를 비교해줘');
     expect(reviewIndexedVault).toHaveBeenLastCalledWith(
-      expect.objectContaining({ documentScope: 'candidates', deferAnswer: true }),
+      expect.objectContaining({ documentScope: 'all', deferAnswer: true }),
     );
     expect(stream).toHaveBeenCalled();
     const body = JSON.stringify(stream.mock.calls[0]?.[0]);
@@ -876,7 +921,8 @@ describe('전수 검수 뒤 승인 대기 재개', () => {
         indexedPaths: ['Current/Fresh.md'],
         scopes: ['Current'],
         deferAnswer: true,
-        documentScope: 'candidates',
+        documentScope: 'all',
+        exhaustiveReview: false,
       }),
     );
     expect(runToolResponseLoop).toHaveBeenCalledOnce();

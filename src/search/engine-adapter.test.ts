@@ -11,7 +11,7 @@ function fixtureResult(): IndexedVaultSearchResult {
     requestedPaths: [],
     plannedPaths: [],
     unreviewedPaths: [],
-    documentScope: 'candidates' as const,
+    documentScope: 'all' as const,
     status: 'incomplete' as const,
     reviewedDocuments: 2,
     unreviewedDocuments: 1,
@@ -93,7 +93,7 @@ describe('색인 검색 포트 어댑터', () => {
     expect(response.phrases[0]?.tokens).toEqual(['cooling', 'cycle']);
     expect(response.diagnostics.truncated).toBe(true);
     expect(response.diagnostics.droppedDocuments.filtered).toBe(3);
-    expect(response.coverage.documentScope).toBe('candidates');
+    expect(response.coverage.documentScope).toBe('all');
     expect(response.coverage.unreviewedDocuments).toBe(1);
   });
 
@@ -121,10 +121,84 @@ describe('색인 검색 포트 어댑터', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.question).toBe('quartz cooling');
     expect(calls[0]?.indexedPaths).toEqual(['Synthetic/Relevant.md']);
-    expect(calls[0]?.documentScope).toBe('candidates');
+    expect(calls[0]?.documentScope).toBe('all');
     expect(calls[0]?.filters).toEqual({ extensions: ['md'], modifiedAfter: 1 });
     expect(calls[0]?.signal).toBe(controller.signal);
     expect(response?.evidence).toHaveLength(1);
+  });
+
+  it('reviewPaths를 검토 경로로 쓰고 exhaustiveReview를 엔진에 전달한다', async () => {
+    const calls: IndexedVaultSearchOptions[] = [];
+    const port = createIndexedSearchPort(
+      {
+        corpus,
+        getIndexedPaths: () => Promise.resolve(['Synthetic/Full.md', 'Synthetic/Review.md']),
+        reviewPaths: ['Synthetic/Review.md'],
+        exhaustiveReview: true,
+        inventory: { indexedCount: 5403, unreviewedCount: 0, notIndexedCount: 0 },
+        revisionReader: () => Promise.resolve('rev-1'),
+      },
+      (options) => {
+        calls.push(options);
+        return Promise.resolve(fixtureResult());
+      },
+    );
+
+    await port({ query: 'quartz' });
+
+    expect(calls[0]?.indexedPaths).toEqual(['Synthetic/Review.md']);
+    expect(calls[0]?.exhaustiveReview).toBe(true);
+    expect(calls[0]?.inventory?.indexedCount).toBe(5403);
+  });
+
+  it('필터 검색은 후보 subset 대신 전체 색인을 검토 경로로 사용한다', async () => {
+    const calls: IndexedVaultSearchOptions[] = [];
+    const port = createIndexedSearchPort(
+      {
+        corpus,
+        getIndexedPaths: () =>
+          Promise.resolve(['Synthetic/Full-A.md', 'Synthetic/Full-B.md', 'Synthetic/Review.md']),
+        reviewPaths: ['Synthetic/Review.md'],
+        exhaustiveReview: true,
+        inventory: { indexedCount: 3, unreviewedCount: 0, notIndexedCount: 0 },
+        revisionReader: () => Promise.resolve('rev-1'),
+      },
+      (options) => {
+        calls.push(options);
+        return Promise.resolve(fixtureResult());
+      },
+    );
+
+    await port({ query: 'quartz', filters: { extensions: ['md'] } });
+
+    expect(calls[0]?.indexedPaths).toEqual([
+      'Synthetic/Full-A.md',
+      'Synthetic/Full-B.md',
+      'Synthetic/Review.md',
+    ]);
+    expect(calls[0]?.exhaustiveReview).toBe(false);
+  });
+
+  it('verifyCurrentSource false는 검색 화면에서 전체 원문 재추출을 생략한다', async () => {
+    const sourceReader = vi.fn(() =>
+      Promise.resolve({ revision: 'rev-1', text: '현재 원문' }),
+    );
+    const port = createIndexedSearchPort(
+      {
+        corpus,
+        getIndexedPaths: () => Promise.resolve(['Synthetic/Relevant.md']),
+        revisionReader: () => Promise.resolve('rev-1'),
+        sourceReader,
+        verifyCurrentSource: false,
+      },
+      () => Promise.resolve(fixtureResult()),
+    );
+
+    const response = await port({ query: 'quartz' });
+
+    expect(sourceReader).not.toHaveBeenCalled();
+    expect(response?.evidence.length).toBeGreaterThan(0);
+    expect(response?.staleDocuments).toBe(0);
   });
 
   it('엔진이 null을 돌려주면 화면도 null을 받는다', async () => {
@@ -140,13 +214,13 @@ describe('색인 검색 포트 어댑터', () => {
     await expect(port({ query: 'quartz' })).resolves.toBeNull();
   });
 
-  it('후보 단계가 초기화 중이면 빈 no-candidate 대신 initializing 상태를 반환한다', async () => {
+  it('indexing 상태는 빈 no-candidate 대신 all 범위 pending 상태를 반환한다', async () => {
     const search = vi.fn(() => Promise.resolve(fixtureResult()));
     const port = createIndexedSearchPort(
       {
         corpus,
         getIndexedPaths: () => Promise.resolve(['Synthetic/Relevant.md']),
-        candidatesState: 'initializing',
+        candidatesState: 'indexing',
         inventory: { indexedCount: 1, unreviewedCount: 1, notIndexedCount: 0 },
         revisionReader: () => Promise.resolve('rev-1'),
       },
@@ -158,14 +232,42 @@ describe('색인 검색 포트 어댑터', () => {
     expect(search).not.toHaveBeenCalled();
     expect(response).not.toBeNull();
     expect(response?.evidence).toEqual([]);
-    expect(response?.diagnostics.zeroHitReason).toBe('initializing');
+    expect(response?.diagnostics.zeroHitReason).toBe('indexing');
     expect(response?.coverage).toMatchObject({
-      documentScope: 'candidates',
+      documentScope: 'all',
       status: 'incomplete',
       reviewedDocuments: 0,
       unreviewedDocuments: 1,
     });
   });
+
+  it.each(['initializing', 'unavailable'] as const)(
+    '%s 후보 상태에서도 all lexical 검토를 계속한다',
+    async (candidatesState) => {
+      const search = vi.fn<
+        (options: IndexedVaultSearchOptions) => Promise<IndexedVaultSearchResult>
+      >();
+      search.mockResolvedValue(fixtureResult());
+      const port = createIndexedSearchPort(
+        {
+          corpus,
+          getIndexedPaths: () => Promise.resolve(['Synthetic/Relevant.md']),
+          candidatesState,
+          inventory: { indexedCount: 1, unreviewedCount: 1, notIndexedCount: 0 },
+          revisionReader: () => Promise.resolve('rev-1'),
+        },
+        search,
+      );
+
+      const response = await port({ query: 'quartz' });
+
+      expect(search).toHaveBeenCalledOnce();
+      expect(search.mock.calls[0]?.[0].documentScope).toBe('all');
+      expect(response).not.toBeNull();
+      expect(response?.evidence).toHaveLength(1);
+      expect(response?.coverage.documentScope).toBe('all');
+    },
+  );
 
   it('현재 원문 리비전과 어긋난 구절은 결과에서 제외하고 coverage를 미완료로 낮춘다', async () => {
     const port = createIndexedSearchPort(

@@ -726,11 +726,10 @@ fn parse_answer_paragraphs(
             .iter()
             .filter_map(|id| plan.facets.iter().find(|facet| &facet.id == id))
             .collect::<Vec<_>>();
-        if sources.iter().any(|source| {
-            !cover_facets
-                .iter()
-                .any(|facet| facet.source_ids.iter().any(|source_id| source_id == source))
-        }) || !cover_facets.iter().all(|facet| {
+        // 추가 출처가 다른 supported facet에 속하는 것은 문단의 주장 범위를
+        // 넓히지 않으므로 허용합니다. 다만 covers에 적은 각 facet에는 반드시
+        // 해당 facet의 출처가 하나 이상 있어야 합니다.
+        if !cover_facets.iter().all(|facet| {
             facet
                 .source_ids
                 .iter()
@@ -1309,6 +1308,39 @@ mod tests {
             validation.get("reason"),
             Some(&json!("facet-source-mismatch"))
         );
+    }
+
+    #[test]
+    fn comparison_validation_allows_a_supported_extra_source() {
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": comparison_search_plan(),
+            "evidence": [
+                {"sourceId": "copper.md#L1-L1", "path": "copper.md", "quote": "Copper storage needs a latch.", "queryIndexes": [1]},
+                {"sourceId": "glass.md#L1-L1", "path": "glass.md", "quote": "Glass queue latency stays low.", "queryIndexes": [2]}
+            ]
+        }));
+        let validation = validate_answer_of(&json!({
+            "sourceIds": ["copper.md#L1-L1", "glass.md#L1-L1"],
+            "answerPlan": answer_plan,
+            "response": json!({"paragraphs": [
+                {
+                    "text": "Copper storage needs a latch.",
+                    "sources": ["copper.md#L1-L1", "glass.md#L1-L1"],
+                    "covers": ["subject-0"]
+                },
+                {
+                    "text": "Glass queue latency stays low.",
+                    "sources": ["glass.md#L1-L1"],
+                    "covers": ["subject-1"]
+                },
+                {
+                    "text": "The two systems are documented separately.",
+                    "sources": ["copper.md#L1-L1", "glass.md#L1-L1"],
+                    "covers": ["subject-0", "subject-1"]
+                }
+            ]}).to_string()
+        }));
+        assert_eq!(validation.get("valid"), Some(&json!(true)));
     }
 
     #[test]

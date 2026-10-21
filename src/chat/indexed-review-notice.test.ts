@@ -58,18 +58,18 @@ function createHarness(content = '합성 본문입니다.') {
 }
 
 describe('엔진 검토 고지와 근거 전용 렌더링', () => {
-  it('완료 본문 맨 앞에 고지를 한 번만 붙인다', () => {
+  it('완료 본문 뒤에 고지를 한 번만 붙이고 저장 본문 재렌더에서 중복하지 않는다', () => {
     const { view, message } = createHarness();
     view.updateMessage('answer', '합성 본문입니다.', true, undefined, undefined, {
       indexedReviewNotice: '합성 검수 고지',
     });
-    expect(message.content).toBe('합성 검수 고지\n\n합성 본문입니다.');
+    expect(message.content).toBe('합성 본문입니다.\n\n합성 검수 고지');
     expect(message.indexedReviewNotice).toBe('합성 검수 고지');
 
     view.updateMessage('answer', message.content, true, undefined, undefined, {
       indexedReviewNotice: '합성 검수 고지',
     });
-    expect(message.content).toBe('합성 검수 고지\n\n합성 본문입니다.');
+    expect(message.content).toBe('합성 본문입니다.\n\n합성 검수 고지');
   });
 
   it.each(['원문 근거만 표시합니다.', ''])(

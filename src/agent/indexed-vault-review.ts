@@ -68,10 +68,11 @@ export interface IndexedVaultSearchOptions {
   indexedPaths: readonly string[];
   scopes: readonly string[];
   corpus: IndexedVaultCorpus;
-  /** 저수준 검색 기본값은 `all`이며 일반 채팅 review는 `candidates`를 명시합니다. */
+  /** 후보는 검토 범위가 아니라 순위 prior이며 기본 검토는 전체 색인을 대상으로 합니다. */
   documentScope?: IndexedVaultDocumentScope;
   candidates?: readonly IndexedEvidenceCandidate[];
   inventory?: IndexedEvidenceInventory;
+  exhaustiveReview?: boolean;
   filters?: RustIndexedEvidenceFilters;
   budget?: IndexedEvidenceBudget;
   signal?: AbortSignal;
@@ -293,6 +294,7 @@ export async function searchIndexedVault(
   options.signal?.throwIfAborted();
   const budget = resolveEvidenceBudget(options.budget);
   const documentScope = options.documentScope ?? 'all';
+  const exhaustiveReview = options.exhaustiveReview === true;
   const requestedPaths = [
     ...new Set(
       documentScope === 'candidates'
@@ -318,6 +320,9 @@ export async function searchIndexedVault(
   }
   options.signal?.throwIfAborted();
   const byPath = new Map(records.map((record) => [record.filePath, record]));
+  const contentHashByPath = new Map(
+    records.map((record) => [record.filePath, record.contentHash] as const),
+  );
   const indexedPaths = scopedPaths.filter((path) => byPath.has(path));
   const scopeCount =
     documentScope === 'candidates'
@@ -462,9 +467,14 @@ export async function searchIndexedVault(
     budget: { maxPassages: budget.maxPassages, maxChars: budget.maxChars },
   });
   if (!merged) return null;
-  const plan = mergedEvidencePlan(plans, merged, budget, scannedPaths.size);
+  const evidenceWithHashes = merged.evidence.map((item) => {
+    const contentHash = contentHashByPath.get(item.path);
+    return contentHash ? { ...item, contentHash } : item;
+  });
+  const mergedWithHashes = { ...merged, evidence: evidenceWithHashes };
+  const plan = mergedEvidencePlan(plans, mergedWithHashes, budget, scannedPaths.size);
   if (!plan) return null;
-  const selected = new Set(merged.evidence.map((item) => evidenceRowKey(item)));
+  const selected = new Set(plan.evidence.map((item) => evidenceRowKey(item)));
   const rejected: IndexedEvidenceStatus[] = [];
   const reported = new Set<string>();
   for (const batchPlan of plans) {
@@ -486,7 +496,10 @@ export async function searchIndexedVault(
   const unreviewedDocuments = Math.max(
     finalInventory.unreviewedCount,
     plan.coverage.unreviewedDocuments,
-    unreviewedPaths.size + (documentScope === 'all' ? scopeCount - requestedPaths.length : 0),
+    unreviewedPaths.size +
+      (documentScope === 'all' && !exhaustiveReview
+        ? scopeCount - requestedPaths.length
+        : 0),
   );
   const notIndexedDocuments = Math.max(
     finalInventory.notIndexedCount,
@@ -506,7 +519,7 @@ export async function searchIndexedVault(
   const resultPlan = { ...plan, coverage: finalCoverage };
   return {
     plan: resultPlan,
-    evidence: merged.evidence,
+    evidence: plan.evidence,
     rejected,
     coverage: {
       ...finalCoverage,
@@ -558,6 +571,7 @@ export interface IndexedVaultReviewOptions {
   candidates?: readonly IndexedEvidenceCandidate[];
   candidatesState?: SearchCandidateState;
   inventory?: IndexedEvidenceInventory;
+  exhaustiveReview?: boolean;
   filters?: RustIndexedEvidenceFilters;
   searchPlan?: IndexedSearchPlan;
   /** 채택 문서의 현재 원문과 revision을 답변 전에 다시 읽는 로컬 vault reader입니다. */
@@ -616,10 +630,7 @@ export interface IndexedVaultReviewResult {
 }
 
 /** 원문에 포함된 링크·HTML·이미지·Markdown 구문은 표시용 문자로만 출력합니다. */
-function evidenceOnlyContent(
-  evidence: readonly IndexedEvidenceItem[],
-  limitations = '',
-): string {
+function evidenceOnlyContent(evidence: readonly IndexedEvidenceItem[]): string {
   const escape = (value: string): string =>
     value.replace(/[&<>\\`*_{}[\]()#+\-.!|~:$\r]/g, (character) => `&#${character.charCodeAt(0)};`);
   const body =
@@ -635,7 +646,7 @@ function evidenceOnlyContent(
           `\n\n- ${escape(item.path).replaceAll('\n', ' ')} (L${item.startLine}–L${item.endLine})`,
       )
       .join('\n\n');
-  return limitations ? `${body}\n\n${limitations}` : body;
+  return body;
 }
 
 /** 동적 facet label은 Markdown·HTML 제어문자를 표시용 엔티티로 바꿉니다. */
@@ -775,19 +786,22 @@ async function runIndexedVaultReview(
   try {
     options.onProgress?.({ phase: 'inventory', completedFiles: 0, totalFiles: 0 });
     emitDiagnostics();
-    const documentScope = options.documentScope ?? 'candidates';
-    const total = new Set(
+    const documentScope = options.documentScope ?? 'all';
+    const total =
       documentScope === 'candidates'
-        ? (options.candidates?.map((candidate) => candidate.path) ?? [])
-        : options.indexedPaths,
-    ).size;
+        ? new Set(options.candidates?.map((candidate) => candidate.path) ?? []).size
+        : Math.max(options.indexedPaths.length, options.inventory?.indexedCount ?? 0);
     if (
       options.candidatesState === 'initializing' ||
-      options.candidatesState === 'indexing' ||
       options.candidatesState === 'unavailable'
     ) {
-      const unavailable = options.candidatesState === 'unavailable';
-      const content = t(unavailable ? 'indexedReviewSearchUnavailable' : 'indexedReviewIndexing');
+      appLogger.warn('Hybrid candidates not ready; continuing with full indexed review.', {
+        source: 'chat.indexed-review',
+        data: { state: options.candidatesState },
+      });
+    }
+    if (options.candidatesState === 'indexing') {
+      const content = t('indexedReviewIndexing');
       const requestedPaths = [
         ...new Set(
           documentScope === 'candidates'
@@ -806,7 +820,7 @@ async function runIndexedVaultReview(
         unreviewedPaths: requestedPaths,
       };
       return {
-        outcome: unavailable ? 'engine-unavailable' : 'indexing',
+        outcome: 'indexing',
         dossier: {
           question: options.question,
           scoringQuestion: options.scoringQuestion ?? options.question,
@@ -841,6 +855,7 @@ async function runIndexedVaultReview(
             corpus: options.corpus,
             candidates: options.candidates,
             documentScope,
+            exhaustiveReview: options.exhaustiveReview,
             inventory: options.inventory,
             filters: options.filters,
             signal: options.signal,
@@ -909,7 +924,15 @@ async function runIndexedVaultReview(
     // 채택 문서만 현재 vault 원문과 revision으로 다시 검증합니다.
     const adoptedPaths = [...new Set(search.evidence.map((item) => item.path))];
     const stale = new Set<string>();
-    const currentSources = new Map<string, { revision: string; text: string }>();
+    const currentSources = new Map<
+      string,
+      {
+        revision: string;
+        text: string;
+        contentHash?: string;
+        chunks?: readonly { text: string; startLine: number; endLine: number }[];
+      }
+    >();
     for (const path of adoptedPaths) {
       const expected = search.evidence.find((item) => item.path === path)?.revision ?? null;
       let current: string | null = null;
@@ -922,6 +945,8 @@ async function runIndexedVaultReview(
             currentSources.set(path, {
               revision: snapshot.revision,
               text: snapshot.text,
+              ...(snapshot.contentHash ? { contentHash: snapshot.contentHash } : {}),
+              ...(snapshot.chunks ? { chunks: snapshot.chunks } : {}),
             });
           }
         } catch (error) {
@@ -967,6 +992,22 @@ async function runIndexedVaultReview(
           rejectedPaths.add(item.path);
           return false;
         }
+        if (source.chunks && source.chunks.length > 0) {
+          for (const chunk of source.chunks) {
+            verificationDocuments.set(
+              `${item.path}\u0000${chunk.startLine}\u0000${chunk.text.length}`,
+              {
+                path: item.path,
+                text: chunk.text,
+                startLine: chunk.startLine,
+                revision: source.revision,
+                indexed: true,
+                reviewState: 'reviewed',
+              },
+            );
+          }
+          return true;
+        }
         const document = verificationWindow(item, source);
         if (!document) {
           rejectedPaths.add(item.path);
@@ -975,39 +1016,54 @@ async function runIndexedVaultReview(
         verificationDocuments.set(`${item.path}\u0000${document.startLine}`, document);
         return true;
       });
-      evidence = verifiableEvidence;
-      const currentVerification = verifyIndexedEvidenceRust({
-        evidence: verifiableEvidence.map((item) => ({
-          sourceId: item.sourceId,
-          path: item.path,
-          quote: item.quote,
-          ...(item.revision !== null ? { revision: item.revision } : {}),
-          startLine: item.startLine,
-          endLine: item.endLine,
-        })),
-        documents: [...verificationDocuments.values()],
-        scopes: options.scopes,
-      });
-      if (!currentVerification) {
-        for (const item of verifiableEvidence) rejectedPaths.add(item.path);
-        evidence = [];
-        appLogger.warn('Current source verification unavailable; discarding evidence.', {
-          source: 'chat.indexed-review',
+      if (verifiableEvidence.length > 0) {
+        const currentVerification = verifyIndexedEvidenceRust({
+          evidence: verifiableEvidence.map((item) => ({
+            sourceId: item.sourceId,
+            path: item.path,
+            quote: item.quote,
+            ...(item.revision !== null ? { revision: item.revision } : {}),
+            startLine: item.startLine,
+            endLine: item.endLine,
+          })),
+          documents: [...verificationDocuments.values()],
+          scopes: options.scopes,
         });
-      } else {
-        const statuses = new Map(
-          currentVerification.statuses.map((status) => [status.sourceId, status]),
-        );
-        evidence = verifiableEvidence.filter((item) => {
-          if (statuses.get(item.sourceId)?.status === 'verified') return true;
-          rejectedPaths.add(item.path);
-          return false;
-        });
+        if (!currentVerification) {
+          for (const item of verifiableEvidence) rejectedPaths.add(item.path);
+          appLogger.warn('Current source verification unavailable; discarding unverified evidence.', {
+            source: 'chat.indexed-review',
+          });
+        } else {
+          const statuses = new Map(
+            currentVerification.statuses.map((status) => [status.sourceId, status]),
+          );
+          const rejectedByStatus = new Map<string, number>();
+          const rejectedByExtension = new Map<string, number>();
+          for (const item of verifiableEvidence) {
+            if (statuses.get(item.sourceId)?.status === 'verified') continue;
+            const status = statuses.get(item.sourceId)?.status ?? 'missing-status';
+            const extension = item.path.split('.').pop() ?? '';
+            rejectedByStatus.set(status, (rejectedByStatus.get(status) ?? 0) + 1);
+            rejectedByExtension.set(
+              extension,
+              (rejectedByExtension.get(extension) ?? 0) + 1,
+            );
+            rejectedPaths.add(item.path);
+          }
+          if (rejectedPaths.size > 0) {
+            appLogger.debug('Current source verification rejected evidence.', {
+              source: 'chat.indexed-review',
+              data: {
+                statuses: Object.fromEntries(rejectedByStatus),
+                extensions: Object.fromEntries(rejectedByExtension),
+              },
+            });
+          }
+        }
       }
       for (const path of rejectedPaths) stale.add(path);
-      if (rejectedPaths.size > 0) {
-        evidence = evidence.filter((item) => !rejectedPaths.has(item.path));
-      }
+      evidence = evidence.filter((item) => !rejectedPaths.has(item.path));
     }
     const answerPlan = options.searchPlan
       ? (planIndexedReviewAnswerPlanRust({
@@ -1109,10 +1165,11 @@ async function runIndexedVaultReview(
     emitDiagnostics();
     const comparisonLimitations = comparisonLimitNotice(options.searchPlan, answerPlan);
     const finishAsEvidenceOnly = (limitations: string): IndexedVaultReviewResult => {
-      const content =
+      const body =
         evidence.length === 0
-          ? [t('indexedReviewNoEvidence'), limitations].filter(Boolean).join('\n\n')
-          : notice + '\n\n' + evidenceOnlyContent(evidence, limitations);
+          ? t('indexedReviewNoEvidence')
+          : evidenceOnlyContent(evidence);
+      const content = [body, limitations, notice].filter(Boolean).join('\n\n');
       options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
       return {
         outcome: 'evidence-only',
@@ -1143,16 +1200,11 @@ async function runIndexedVaultReview(
       return finishAsEvidenceOnly(comparisonLimitations);
     }
     if (options.deferAnswer || evidence.length === 0) {
-      const baseContent =
+      const body =
         evidence.length === 0
-          ? hasIncompleteCoverage || limitedReview
-            ? notice
-            : t('indexedReviewNoEvidence')
-          : evidenceOnlyContent(evidence, comparisonLimitations);
-      const content =
-        evidence.length === 0 && comparisonLimitations
-          ? `${baseContent}\n\n${comparisonLimitations}`
-          : baseContent;
+          ? t('indexedReviewNoEvidence')
+          : evidenceOnlyContent(evidence);
+      const content = [body, comparisonLimitations, notice].filter(Boolean).join('\n\n');
       options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
       return {
         outcome: evidence.length === 0 ? 'no-evidence' : 'evidence-only',
@@ -1317,8 +1369,8 @@ async function runIndexedVaultReview(
     const resolved = answer !== null;
     const body = resolved
       ? [answer, comparisonLimitations].filter(Boolean).join('\n\n')
-      : evidenceOnlyContent(evidence, comparisonLimitations);
-    const content = notice + '\n\n' + body;
+      : [evidenceOnlyContent(evidence), comparisonLimitations].filter(Boolean).join('\n\n');
+    const content = [body, notice].filter(Boolean).join('\n\n');
     options.onAnswer?.(content);
     options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
     if (hasIncompleteCoverage || limitedReview || !resolved)

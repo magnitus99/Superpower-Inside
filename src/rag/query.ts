@@ -63,6 +63,14 @@ export interface QueryResult {
   keywordMatches: number;
 }
 
+export interface RAGExhaustiveBm25Match {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+  score: number;
+  rank: number;
+}
+
 export interface RAGQueryEngineOptions {
   corpusStore?: import('./corpus-store').RetrievalCorpusStore;
   getCandidatePaths?: () => Promise<ReadonlySet<string>>;
@@ -194,6 +202,55 @@ export class RAGQueryEngine {
       );
     }
     this.retrievalPipeline = new RagRetrievalPipeline(providers);
+  }
+
+  async queryBm25Exhaustive(
+    question: string,
+    limit?: number,
+    signal?: AbortSignal,
+  ): Promise<readonly RAGExhaustiveBm25Match[] | null> {
+    if (!this.bm25Index?.isReady) return null;
+    const totalDocs = this.bm25Index.totalDocs;
+    const normalizedLimit =
+      limit === undefined
+        ? totalDocs
+        : Math.max(0, Math.min(totalDocs, Math.floor(Number.isFinite(limit) ? limit : 0)));
+    if (normalizedLimit === 0) return [];
+    // 한 파일이 많은 청크를 차지해도 다른 파일의 후보를 잘라내지 않도록
+    // 전체 BM25 런타임을 조회하고, 반환 대표 경로만 limit로 제한합니다.
+    const lookupLimit = totalDocs;
+    const hits = await this.bm25Index.searchTopWithSources(
+      question,
+      lookupLimit,
+      signal,
+    );
+    if (!this.bm25Index.isReady) return null;
+    const seenPaths = new Set<string>();
+    const representatives = hits.filter((hit) => {
+      if (seenPaths.has(hit.sourcePath)) return false;
+      seenPaths.add(hit.sourcePath);
+      return seenPaths.size <= normalizedLimit;
+    });
+    const documents = await this.bm25Index.getCorpusDocumentsByIds(
+      representatives.map((hit) => hit.docId),
+    );
+    const documentById = new Map(documents.map((document) => [document.id, document]));
+    const representativeByPath = new Map(
+      representatives.map((hit) => [hit.sourcePath, hit] as const),
+    );
+    const matches: RAGExhaustiveBm25Match[] = [];
+    hits.forEach((hit, index) => {
+      if (representativeByPath.get(hit.sourcePath) !== hit) return;
+      const document = documentById.get(hit.docId);
+      matches.push({
+        path: hit.sourcePath,
+        ...(document?.startLine !== undefined ? { startLine: document.startLine + 1 } : {}),
+        ...(document?.endLine !== undefined ? { endLine: document.endLine + 1 } : {}),
+        score: hit.score,
+        rank: index + 1,
+      });
+    });
+    return matches;
   }
 
   async query(

@@ -3,6 +3,7 @@ import { planIndexedEvidenceRust, verifyIndexedEvidenceRust } from '../rag/rust-
 import { searchIndexedVault, type IndexedVaultCorpus } from './indexed-vault-review';
 import { buildSourceDocuments } from '../rag/source-document';
 import { toDocumentEntry } from '../rag/document-corpus-store';
+import { createIndexedSearchPort } from '../search/engine-adapter';
 import type { TFile } from 'obsidian';
 
 vi.mock('../rag/rust-core', async (importOriginal) => {
@@ -450,6 +451,76 @@ describe('색인 엔진 근거 선별', () => {
       status: 'incomplete',
     });
   });
+
+  it('exhaustiveReview는 5,403개 전체를 검토 완료로 유지하고 review subset 실패만 미검토로 센다', async () => {
+    const reviewPaths = Array.from(
+      { length: 100 },
+      (_, index) => `Synthetic/Exhaustive-${String(index).padStart(3, '0')}.md`,
+    );
+    const records = reviewPaths.map((filePath) => ({
+      filePath,
+      contentHash: `hash-${filePath}`,
+      sourceMtime: 1,
+      sourceSize: 10,
+      vectorCount: 1,
+      updated: 1,
+    }));
+    const entries = reviewPaths.map((filePath) => ({
+      id: `entry-${filePath}`,
+      vector: [],
+      metadata: {
+        filePath,
+        startLine: 0,
+        endLine: 0,
+        text: filePath.endsWith('000.md')
+          ? 'Quartz restarts after two cooling cycles.'
+          : `Synthetic indexed body ${filePath}`,
+        contentHash: `hash-${filePath}`,
+      },
+    }));
+    const exhaustiveCorpus: IndexedVaultCorpus = {
+      getEntriesByFilePaths: (paths) =>
+        Promise.resolve(entries.filter((entry) => paths.includes(entry.metadata.filePath))),
+      getFileIndexRecords: () => Promise.resolve(records),
+    };
+    const inventory = { indexedCount: 5403, unreviewedCount: 0, notIndexedCount: 0 };
+
+    const complete = await searchIndexedVault({
+      question: 'Quartz cooling cycles',
+      indexedPaths: reviewPaths,
+      scopes: [],
+      corpus: exhaustiveCorpus,
+      inventory,
+      exhaustiveReview: true,
+    });
+    expect(complete?.coverage).toMatchObject({
+      status: 'supported',
+      reviewedDocuments: 5403,
+      unreviewedDocuments: 0,
+      unreviewedPaths: [],
+    });
+
+    const missingPath = reviewPaths.at(-1);
+    if (!missingPath) throw new Error('synthetic review path missing');
+    const partial = await searchIndexedVault({
+      question: 'Quartz cooling cycles',
+      indexedPaths: reviewPaths,
+      scopes: [],
+      corpus: {
+        ...exhaustiveCorpus,
+        getFileIndexRecords: () =>
+          Promise.resolve(records.filter((record) => record.filePath !== missingPath)),
+      },
+      inventory,
+      exhaustiveReview: true,
+    });
+    expect(partial?.coverage).toMatchObject({
+      status: 'incomplete',
+      reviewedDocuments: 5402,
+      unreviewedDocuments: 1,
+      unreviewedPaths: [missingPath],
+    });
+  });
   beforeEach(() => {
     vi.mocked(planIndexedEvidenceRust).mockImplementation((input) => planFor(input) as never);
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation((input) => ({
@@ -537,6 +608,79 @@ describe('색인 엔진 근거 선별', () => {
     expect(requested).toEqual([RELEVANT, OTHER]);
     expect(searchResult?.coverage.documentScope).toBe('all');
     expect(searchResult?.scannedPaths).toBe(2);
+  });
+
+  it('후보가 일부여도 공통어를 전체 색인에서 평가해 후보 밖 근거를 선택한다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const paths = Array.from(
+      { length: 66 },
+      (_, index) => `Synthetic/Common-${String(index + 1).padStart(2, '0')}.md`,
+    );
+    const reviewPaths = paths.slice(0, 64);
+    const targetPath = reviewPaths[2];
+    if (!targetPath) throw new Error('synthetic target path missing');
+    const candidatePaths = paths.slice(0, 2);
+    const records = paths.map((filePath) => ({
+      filePath,
+      contentHash: `hash-${filePath}`,
+      sourceMtime: 1,
+      sourceSize: 10,
+      vectorCount: 1,
+      updated: 1,
+    }));
+    const entries = paths.map((filePath) => ({
+      id: `entry-${filePath}`,
+      vector: [],
+      metadata: {
+        filePath,
+        ...(filePath === targetPath ? { heading: 'sharedterm' } : {}),
+        startLine: 0,
+        endLine: 0,
+        text:
+          filePath === targetPath
+            ? Array.from({ length: 64 }, () => 'sharedterm').join(' ')
+            : `sharedterm synthetic document ${filePath}`,
+        contentHash: `hash-${filePath}`,
+      },
+    }));
+    const requested: string[] = [];
+    const corpus: IndexedVaultCorpus = {
+      getEntriesByFilePaths: (requestedPaths) => {
+        requested.push(...requestedPaths);
+        return Promise.resolve(
+          entries.filter((entry) => requestedPaths.includes(entry.metadata.filePath)),
+        );
+      },
+      getFileIndexRecords: () => Promise.resolve(records),
+    };
+    const port = createIndexedSearchPort(
+      {
+        corpus,
+        getIndexedPaths: () => Promise.resolve(paths),
+        reviewPaths,
+        exhaustiveReview: true,
+        inventory: { indexedCount: 5403, unreviewedCount: 0, notIndexedCount: 0 },
+        candidates: reviewPaths.map((path, index) => ({
+          path,
+          score: 1,
+          source: 'bm25' as const,
+          rank: index + 1,
+        })),
+        candidatesState: 'ready',
+        revisionReader: () => Promise.resolve('1:10'),
+      },
+      searchIndexedVault,
+    );
+
+    const response = await port({ query: 'sharedterm' });
+    const selectedPaths = new Set(response?.evidence.map((item) => item.path) ?? []);
+    expect(requested).toEqual(reviewPaths);
+    expect(response?.coverage.documentScope).toBe('all');
+    expect(response?.coverage.reviewedDocuments).toBe(5403);
+    expect(selectedPaths.has(targetPath)).toBe(true);
+    expect([...selectedPaths].some((path) => !candidatePaths.includes(path))).toBe(true);
   });
 
   it('candidates 모드는 후보 경로만 조회하면서 후보 신호와 coverage 범위를 보존한다', async () => {
