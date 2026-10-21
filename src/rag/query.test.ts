@@ -850,7 +850,7 @@ describe('RAGQueryEngine', () => {
     const store = new MemoryVectorStore();
     await store.add([
       createEntry('best.md', [1, 0], '질문과 가까운 문서'),
-      createEntry('weak.md', [0.7, 0.714], '약한 관련 문서'),
+      createEntry('weak.md', [0.45, 0.893], '약한 관련 문서'),
     ]);
     const engine = new RAGQueryEngine(store, createEmbeddingProvider([1, 0]), undefined, 0.3, 0.1);
 

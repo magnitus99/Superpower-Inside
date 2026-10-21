@@ -4,8 +4,15 @@ import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { qualityPlan } from './check-quality.mjs';
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 describe('검사 시점과 중복 제거', () => {
+  it('검색 품질 fixture 변경은 전체 테스트를 선택한다', () => {
+    expect(
+      qualityPlan(['src/rag/fixtures/embeddinggemma-cross-lingual.json']).tests,
+    ).toBe(true);
+  });
+
   it('미커밋 파일이 여러 개 있어도 릴리스 버전 수정 전에 멈춘다', () => {
     const root = mkdtempSync(join(tmpdir(), 'release-dirty-'));
     try {

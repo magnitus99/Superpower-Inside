@@ -10,7 +10,7 @@
     "copy:check:online": "node scripts/check-copy.mjs --online",
     "copy:fix": "node scripts/check-copy.mjs --fix",
     "dev": "npm run wasm:build && npm run ternlight:assets && node esbuild.config.mjs",
-    "build": "npm run wasm:build && npm run ternlight:assets && node esbuild.config.mjs production",
+    "build": "npm run wasm:build && npm run search:quality-gate && npm run ternlight:assets && node esbuild.config.mjs production",
     "lint": "eslint src/ main.ts",
     "review": "node scripts/validate-obsidian-review.mjs",
     "typecheck": "tsc --noEmit",
@@ -33,7 +33,8 @@
     "preview:build": "node scripts/obsidian-preview.mjs build",
     "preview": "node scripts/obsidian-preview.mjs serve",
     "release:check": "node scripts/run-fish.mjs scripts/check-release.fish",
-    "test:e2e:vault": "node scripts/search-eval/run-vault.mjs --vault .test-vault --queries 24 --timeout-min 180"
+    "test:e2e:vault": "node scripts/search-eval/run-vault.mjs --vault .test-vault --queries 24 --timeout-min 180",
+    "search:quality-gate": "vitest run src/rag/search-quality-gate.test.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "4.3.1",

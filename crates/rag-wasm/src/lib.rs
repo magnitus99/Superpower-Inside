@@ -226,6 +226,12 @@ const RELEVANT_RESULT_KEYWORD_COLUMN: usize = 3;
 const RELEVANT_RESULT_EVIDENCE_SCORE_COLUMN: usize = 4;
 /// RAG relevance window 후보 row의 노트 연결 best evidence rank column.
 const RELEVANT_RESULT_EVIDENCE_RANK_COLUMN: usize = 5;
+/// 교차언어 vector 결과가 최상위 의미 후보와 같은 후보군으로 채택되는 상대 점수 비율입니다.
+const VECTOR_RELATIVE_RELEVANCE_RATIO: f64 = 0.55;
+/// vector-only 후보군 안에서 최고 combined score와 허용되는 상대 점수 폭입니다.
+const VECTOR_RELATIVE_COMBINED_MARGIN: f64 = 0.18;
+/// 최고 BM25 점수 대비 노이즈로 간주할 상대 하한입니다.
+const BM25_SIGNIFICANT_SCORE_RATIO: f64 = 0.1;
 /// 기존 `TypeScript` MMR selection의 relevance 가중치.
 const MMR_RELEVANCE_WEIGHT: f64 = 0.72;
 /// 같은 파일 후보를 연속 선택하지 않기 위한 penalty.
@@ -1013,9 +1019,18 @@ pub fn select_relevant_result_indices(
     if sorted.is_empty() {
         return Box::default();
     }
+    let best_vector_score = best_relevant_vector_score(result_values, result_count);
     sorted.sort_by(compare_scored_rows_descending);
     let best_score = sorted.first().map_or(0.0, |row| row.score);
     let relative_threshold = threshold.max(best_score - 0.18);
+    let best_vector_combined_score =
+        best_vector_only_combined_score(result_values, result_count, source_offsets, source_codes);
+    let vector_combined_threshold = if best_vector_combined_score.is_finite() {
+        best_vector_combined_score - VECTOR_RELATIVE_COMBINED_MARGIN
+    } else {
+        relative_threshold
+    };
+    let relative_vector_threshold = best_vector_score * VECTOR_RELATIVE_RELEVANCE_RATIO;
     let has_bm25 = *has_bm25 >= 1.0;
 
     let mut selected = Vec::new();
@@ -1030,53 +1045,133 @@ pub fn select_relevant_result_indices(
         } else {
             relative_threshold
         };
-        let Some(vector_score) =
-            relevant_result_value(result_values, row.row_index, RELEVANT_RESULT_VECTOR_COLUMN)
-        else {
-            return Box::default();
-        };
-        let Some(bm25_score) =
-            relevant_result_value(result_values, row.row_index, RELEVANT_RESULT_BM25_COLUMN)
-        else {
-            return Box::default();
-        };
-        let Some(keyword_match_count) =
-            relevant_result_value(result_values, row.row_index, RELEVANT_RESULT_KEYWORD_COLUMN)
-        else {
-            return Box::default();
-        };
-        let Some(evidence_score) = relevant_result_value(
-            result_values,
-            row.row_index,
-            RELEVANT_RESULT_EVIDENCE_SCORE_COLUMN,
-        ) else {
-            return Box::default();
-        };
-        let Some(evidence_rank) = relevant_result_value(
-            result_values,
-            row.row_index,
-            RELEVANT_RESULT_EVIDENCE_RANK_COLUMN,
-        ) else {
-            return Box::default();
-        };
-        if is_relevant_result(
-            &[
-                row.score,
+        let Some(
+            [
                 vector_score,
                 bm25_score,
                 keyword_match_count,
-                source_aware_threshold,
-                bool_to_f64(has_bm25),
                 evidence_score,
                 evidence_rank,
             ],
+        ) = relevant_row_metrics(result_values, row.row_index)
+        else {
+            return Box::default();
+        };
+        let selected_by_relative_vector = passes_relative_vector_gate(
             result_source_codes,
-        ) {
+            vector_score,
+            row.score,
+            best_vector_score,
+            relative_vector_threshold,
+            vector_combined_threshold,
+            *threshold,
+        );
+        if selected_by_relative_vector
+            || is_relevant_result(
+                &[
+                    row.score,
+                    vector_score,
+                    bm25_score,
+                    keyword_match_count,
+                    source_aware_threshold,
+                    bool_to_f64(has_bm25),
+                    evidence_score,
+                    evidence_rank,
+                ],
+                result_source_codes,
+            )
+        {
             selected.push(row.row_index);
         }
     }
 
     collect_indices_as_f64(selected)
+}
+
+/// relevance selection에 필요한 한 row의 numeric metric을 순서대로 읽는다.
+fn relevant_row_metrics(result_values: &[f64], row_index: usize) -> Option<[f64; 5]> {
+    Some([
+        relevant_result_value(result_values, row_index, RELEVANT_RESULT_VECTOR_COLUMN)?,
+        relevant_result_value(result_values, row_index, RELEVANT_RESULT_BM25_COLUMN)?,
+        relevant_result_value(result_values, row_index, RELEVANT_RESULT_KEYWORD_COLUMN)?,
+        relevant_result_value(
+            result_values,
+            row_index,
+            RELEVANT_RESULT_EVIDENCE_SCORE_COLUMN,
+        )?,
+        relevant_result_value(
+            result_values,
+            row_index,
+            RELEVANT_RESULT_EVIDENCE_RANK_COLUMN,
+        )?,
+    ])
+}
+
+/// BM25가 붙지 않은 vector-only 후보군에서 최고 combined score를 찾는다.
+fn best_vector_only_combined_score(
+    result_values: &[f64],
+    result_count: usize,
+    source_offsets: &[u32],
+    source_codes: &[u8],
+) -> f64 {
+    let max_bm25_score = max_relevant_bm25_score(result_values, result_count);
+    let significant_bm25_score = max_bm25_score * BM25_SIGNIFICANT_SCORE_RATIO;
+    (0..result_count)
+        .filter_map(|row_index| {
+            let score =
+                relevant_result_value(result_values, row_index, RELEVANT_RESULT_SCORE_COLUMN)?;
+            let bm25_score =
+                relevant_result_value(result_values, row_index, RELEVANT_RESULT_BM25_COLUMN)?;
+            let sources = source_codes_for_result(source_offsets, source_codes, row_index)?;
+            let has_vector = sources
+                .iter()
+                .any(|source| matches!(*source, SOURCE_VECTOR | SOURCE_ANN));
+            let has_significant_bm25 = sources.contains(&SOURCE_BM25)
+                && bm25_score.is_finite()
+                && bm25_score >= significant_bm25_score;
+            (has_vector && !has_significant_bm25 && score.is_finite()).then_some(score)
+        })
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+/// 후보 window에서 가장 높은 유효 BM25 score를 찾는다.
+fn max_relevant_bm25_score(result_values: &[f64], result_count: usize) -> f64 {
+    (0..result_count)
+        .filter_map(|row_index| {
+            relevant_result_value(result_values, row_index, RELEVANT_RESULT_BM25_COLUMN)
+        })
+        .filter(|score| score.is_finite() && *score > 0.0)
+        .fold(0.0, f64::max)
+}
+
+/// 후보 window에서 가장 높은 유효 vector score를 찾는다.
+fn best_relevant_vector_score(result_values: &[f64], result_count: usize) -> f64 {
+    (0..result_count)
+        .filter_map(|row_index| {
+            relevant_result_value(result_values, row_index, RELEVANT_RESULT_VECTOR_COLUMN)
+        })
+        .filter(|score| score.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+/// vector 상위 후보가 키워드 없이도 같은 의미 후보군으로 남을 조건을 계산한다.
+fn passes_relative_vector_gate(
+    source_codes: &[u8],
+    vector_score: f64,
+    combined_score: f64,
+    best_vector_score: f64,
+    relative_vector_threshold: f64,
+    combined_threshold: f64,
+    minimum_score: f64,
+) -> bool {
+    let has_vector_source = source_codes
+        .iter()
+        .any(|source| matches!(*source, SOURCE_VECTOR | SOURCE_ANN));
+    has_vector_source
+        && best_vector_score.is_finite()
+        && best_vector_score >= minimum_score
+        && vector_score >= relative_vector_threshold
+        && combined_score >= combined_threshold
 }
 
 /// retrieval provider 후보를 entry별로 병합할 numeric plan을 계산한다.
@@ -5544,6 +5639,10 @@ fn resolve_bm25_candidate_entries(
         if candidates.len() >= candidate_limit {
             break;
         }
+        // 0점 hit이 모든 문서를 keyword 후보로 승격하면 교차언어 vector 순위를 왜곡합니다.
+        if !hit.score.is_finite() || hit.score <= 0.0 {
+            continue;
+        }
         let source_score = (hit.score / denominator).clamp(0.0, 1.0);
         if let Some(found_index) = found_index_by_id.get(hit.doc_id.as_str()).copied() {
             if let Some(entry) = found_entries.get(found_index)
@@ -5824,7 +5923,7 @@ fn select_diverse_index_plan(
                 heading_keys,
             );
             let max_similarity =
-                calculate_max_selected_similarity(candidate_index, &selected, &rows);
+                calculate_max_selected_similarity(candidate_index, &selected, &rows, source_keys);
             let novelty_penalty =
                 (1.0 - MMR_RELEVANCE_WEIGHT).mul_add(max_similarity, diversity_penalty);
             let selection_score = MMR_RELEVANCE_WEIGHT.mul_add(candidate_score, -novelty_penalty);
@@ -5957,13 +6056,21 @@ fn calculate_max_selected_similarity(
     candidate_index: usize,
     selected: &[usize],
     rows: &[&[f64]],
+    source_keys: &[u32],
 ) -> f64 {
     let mut max_similarity = 0.0_f64;
     let Some(candidate_vector) = rows.get(candidate_index).copied() else {
         return max_similarity;
     };
+    let Some(candidate_source_key) = source_keys.get(candidate_index) else {
+        return max_similarity;
+    };
 
     for selected_index in selected {
+        // 병렬 번역처럼 다른 파일의 의미가 유사한 근거는 같은 파일 중복으로 간주하지 않습니다.
+        if source_keys.get(*selected_index) != Some(candidate_source_key) {
+            continue;
+        }
         let Some(selected_vector) = rows.get(*selected_index).copied() else {
             continue;
         };
@@ -15493,6 +15600,130 @@ mod tests {
         );
     }
 
+    /// BM25가 준비된 볼트에서도 교차언어 vector 상위 후보는 고정 0.62 절대값 없이 상대 순위로 남아야 한다.
+    #[test]
+    fn selection_keeps_top_relative_vector_without_keyword_overlap() {
+        let result_values = [
+            0.397, 0.568, 0.0, 0.0, 0.0, 0.0, 0.202, 0.288, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let source_offsets = [0_u32, 1, 2];
+        let source_codes = [SOURCE_VECTOR, SOURCE_VECTOR];
+
+        let selected = select_relevant_result_indices(
+            &[0.3, 1.0],
+            &source_offsets,
+            &source_codes,
+            &result_values,
+        );
+
+        assert_eq!(
+            selected.to_vec(),
+            vec![0.0],
+            "최상위 교차언어 vector 후보만 relative relevance window에 남아야 한다",
+        );
+    }
+
+    /// 상위 vector와 충분히 가까운 교차언어 후보군은 함께 relevance window에 남아야 한다.
+    #[test]
+    fn selection_keeps_relative_vector_cluster() {
+        let result_values = [
+            0.500, 0.700, 0.0, 0.0, 0.0, 0.0, 0.450, 0.550, 0.0, 0.0, 0.0, 0.0, 0.390, 0.400, 0.0,
+            0.0, 0.0, 0.0,
+        ];
+        let source_offsets = [0_u32, 1, 2, 3];
+        let source_codes = [SOURCE_VECTOR, SOURCE_VECTOR, SOURCE_VECTOR];
+
+        let selected = select_relevant_result_indices(
+            &[0.3, 1.0],
+            &source_offsets,
+            &source_codes,
+            &result_values,
+        );
+
+        assert_eq!(
+            selected.to_vec(),
+            vec![0.0, 1.0, 2.0],
+            "상대 vector 비율 안의 병렬 후보군은 함께 남아야 한다",
+        );
+    }
+
+    /// 최고 BM25 대비 미미한 lexical 점수는 교차언어 vector 후보군을 combined window에서 밀어내지 않는다.
+    #[test]
+    fn selection_ignores_insignificant_bm25_for_parallel_vector_cluster() {
+        let result_values = [
+            0.839, 0.753, 1.0, 1.0, 0.0, 0.0, 0.703, 0.687, 0.035, 1.0, 0.0, 0.0, 0.643, 0.450,
+            0.020, 0.0, 0.0, 0.0,
+        ];
+        let source_offsets = [0_u32, 2, 4, 6];
+        let source_codes = [
+            SOURCE_VECTOR,
+            SOURCE_BM25,
+            SOURCE_VECTOR,
+            SOURCE_BM25,
+            SOURCE_VECTOR,
+            SOURCE_BM25,
+        ];
+
+        let selected = select_relevant_result_indices(
+            &[0.3, 1.0],
+            &source_offsets,
+            &source_codes,
+            &result_values,
+        );
+
+        assert_eq!(
+            selected.to_vec(),
+            vec![0.0, 1.0, 2.0],
+            "미미한 BM25 점수는 병렬 vector 후보군의 combined 하한을 오염시키면 안 된다",
+        );
+    }
+
+    /// vector 비율이 가까워도 vector-only combined window 밖이면 관련 후보에서 제외한다.
+    #[test]
+    fn selection_rejects_relative_vector_outside_combined_window() {
+        let result_values = [
+            0.900, 0.900, 0.0, 0.0, 0.0, 0.0, 0.600, 0.700, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let source_offsets = [0_u32, 1, 2];
+        let source_codes = [SOURCE_VECTOR, SOURCE_VECTOR];
+
+        let selected = select_relevant_result_indices(
+            &[0.3, 1.0],
+            &source_offsets,
+            &source_codes,
+            &result_values,
+        );
+
+        assert_eq!(
+            selected.to_vec(),
+            vec![0.0],
+            "vector-only combined window 밖의 후보는 제외해야 한다",
+        );
+    }
+
+    /// 최상위 vector 비율 밖으로 떨어진 후보는 lexical score가 있어도 vector gate로 통과하면 안 된다.
+    #[test]
+    fn selection_rejects_vector_outside_relative_window() {
+        let result_values = [
+            0.500, 0.700, 0.0, 0.0, 0.0, 0.0, 0.100, 0.300, 0.0, 0.0, 0.0, 0.0,
+        ];
+        let source_offsets = [0_u32, 1, 2];
+        let source_codes = [SOURCE_VECTOR, SOURCE_VECTOR];
+
+        let selected = select_relevant_result_indices(
+            &[0.3, 1.0],
+            &source_offsets,
+            &source_codes,
+            &result_values,
+        );
+
+        assert_eq!(
+            selected.to_vec(),
+            vec![0.0],
+            "상대 vector 비율 밖의 후보는 제외해야 한다",
+        );
+    }
+
     /// RRF score는 retrieval source별 weight와 rank smoothing을 보존해야 한다.
     #[test]
     fn rrf_score_matches_typescript_source_weights() {
@@ -15720,6 +15951,22 @@ mod tests {
         );
     }
 
+    /// 0점 BM25 hit은 검색 후보가 아니므로 vector-only 교차언어 후보의 source를 오염시키지 않는다.
+    #[test]
+    fn bm25_candidate_resolution_drops_zero_score_hits() {
+        assert_eq!(
+            plan_bm25_candidate_resolution_json(
+                r#"[{"docId":"zero","sourcePath":"zero.md","score":0},{"docId":"positive","sourcePath":"positive.md","score":0.8}]"#,
+                r#"[{"id":"zero","filePath":"zero.md","compatible":true},{"id":"positive","filePath":"positive.md","compatible":true}]"#,
+                r"[]",
+                2,
+                0.8,
+            ),
+            r#"[{"entrySet":"found","entryIndex":1,"sourceScore":1}]"#,
+            "0점 BM25 hit은 keyword 후보가 아니어야 한다",
+        );
+    }
+
     /// structural retrieval의 link/backlink/heading-neighbor 선택은 Rust plan이 담당한다.
     #[test]
     fn structural_retrieval_plans_links_and_heading_neighbors() {
@@ -15802,6 +16049,27 @@ mod tests {
             pair_value(&indexes, 1),
             2.0,
             "두 번째 후보는 같은 파일 중복보다 다른 파일이어야 한다",
+        );
+    }
+
+    /// 서로 다른 파일의 병렬 번역 근거는 의미가 유사해도 diversity 단계에서 제거하지 않는다.
+    #[test]
+    fn select_diverse_indices_preserves_parallel_sources() {
+        let scores = [0.80, 0.78, 0.70];
+        let vectors = [
+            1.0, 0.0, // 한국어 정답
+            0.999, 0.001, // 영어 병렬 정답
+            0.0, 1.0, // unrelated source
+        ];
+        let source_keys = [1_u32, 2, 3];
+        let heading_keys = [0_u32, 0, 0];
+
+        let indexes = select_diverse_indices(&scores, &vectors, 2, &source_keys, &heading_keys, 2);
+
+        assert_eq!(
+            indexes.to_vec(),
+            vec![0.0, 1.0],
+            "서로 다른 파일의 병렬 번역은 같은 파일 중복으로 감점하면 안 된다",
         );
     }
 
