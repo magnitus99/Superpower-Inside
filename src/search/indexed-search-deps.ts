@@ -24,6 +24,8 @@ export interface IndexedSearchDepsHost {
   /** 허용 범위 전체 경로. 없으면 미색인 수는 알 수 없어 0으로 둔다. */
   getCandidatePaths?: () => Promise<readonly string[]>;
   settings?: Pick<SuperpowerInsideSettings, 'rag' | 'chat'>;
+  /** 재색인·초기화 중에는 부분 색인으로 답하지 않습니다. */
+  isIndexing?: () => boolean;
 }
 
 const CANDIDATE_LIMIT = 64;
@@ -51,7 +53,10 @@ export async function collectIndexedSearchSource(
   if (signal?.aborted) return null;
   const inventory = await collectInventory(host, indexedPaths);
   if (signal?.aborted) return null;
-  const candidateResolution = await collectHybridCandidates(host.ragEngine, query, signal);
+  const candidateResolution =
+    host.isIndexing?.() === true
+      ? { candidates: undefined, state: 'indexing' as const }
+      : await collectHybridCandidates(host.ragEngine, query, signal);
   return {
     corpus,
     getIndexedPaths: () => Promise.resolve(indexedPaths),

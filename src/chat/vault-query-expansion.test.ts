@@ -24,6 +24,17 @@ describe('결정적 로컬 볼트 검색 계획', () => {
     });
   });
 
+  it('긴 질문은 핵심 용어와 240자 상한으로 압축한다', () => {
+    const question = Array.from(
+      { length: 32 },
+      (_, index) => `압력 센서 ${index} 교체 기록과 배관 점검 조건`,
+    ).join(' ');
+    const local = expandVaultSearchQueryLocally(question);
+    expect(local.length).toBeLessThanOrEqual(240);
+    expect(local.split(/\s+/u).length).toBeLessThanOrEqual(17);
+    expect(local).not.toBe(question);
+  });
+
   it('추가 개념이 없는 질문은 바꾸지 않는다', () => {
     const question = 'How does a pressure switch work?';
     expect(expandVaultSearchQueryLocally(question)).toBe(question);

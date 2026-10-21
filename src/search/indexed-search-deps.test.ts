@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { App } from 'obsidian';
 import type { QueryResult, RAGQueryEngine } from '../rag/query';
 import type { IndexedSearchCorpus } from './indexed-search-deps';
@@ -141,6 +141,23 @@ describe('검색 의존성 factory', () => {
 
     expect(source?.candidates).toBeUndefined();
     expect(source?.candidatesState).toBe('initializing');
+  });
+
+  it('재색인 중에는 부분 색인 후보를 만들지 않고 indexing 상태를 보존한다', async () => {
+    const query = vi.fn(() => Promise.resolve([]));
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: { query } as unknown as RAGQueryEngine,
+        documentCorpus: corpus(),
+        isIndexing: () => true,
+      },
+      '합성 질의',
+    );
+
+    expect(source?.candidates).toBeUndefined();
+    expect(source?.candidatesState).toBe('indexing');
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('취소된 요청은 후보를 만들지 않는다', async () => {
