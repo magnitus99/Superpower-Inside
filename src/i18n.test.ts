@@ -16,6 +16,90 @@ describe('UI 언어 계약', () => {
     expect(t('llmVaultInvestigationWorkflow')).not.toContain('superpower_inside_search');
   });
 
+  it.each(['ko', 'en'] as const)(
+    '%s 검토 안내는 영향을 먼저 두고 범위를 뒤에서 설명한다',
+    (lang) => {
+      setLanguage(lang);
+      const expectedCopy =
+        lang === 'ko'
+          ? ([
+              ['indexedReviewCoverage', '검토 참고'],
+              ['indexedReviewIncompleteNotice', '답변에 반영되지 않았습니다'],
+              ['indexedReviewLimitedNotice', '근거 예산'],
+              ['indexedReviewEvidenceOnly', '원문 근거를 먼저 보여 드립니다'],
+              [
+                'indexedReviewNoEvidence',
+                '이번 검색에서는 질문과 직접 일치하는 원문 근거를 찾지 못했습니다',
+              ],
+              ['indexedReviewComparisonMissing', '이번 검토 범위에서는'],
+              ['indexedReviewComparisonSearchFailed', '비교 범위가 일부 비어 있습니다'],
+              [
+                'searchStatusTruncated',
+                '색인 문서 {total}개를 검색한 뒤 원문 확인을 통과한 결과만 표시합니다',
+              ],
+              [
+                'llmIndexedReviewAnswer',
+                '지원되는 결론을 먼저 자연스럽게 쓰고, 범위·불확실성 안내는 결론 뒤에 짧게 덧붙이세요.',
+              ],
+            ] as const)
+          : ([
+              ['indexedReviewCoverage', 'Review note'],
+              ['indexedReviewIncompleteNotice', 'not reflected in the answer'],
+              ['indexedReviewLimitedNotice', 'evidence budget'],
+              ['indexedReviewEvidenceOnly', 'Verified original evidence is shown below'],
+              [
+                'indexedReviewNoEvidence',
+                'This search did not find an original passage that directly supports the question',
+              ],
+              ['indexedReviewComparisonMissing', 'in the reviewed scope'],
+              ['indexedReviewComparisonSearchFailed', 'comparison is only partly covered'],
+              [
+                'searchStatusTruncated',
+                'After searching {total} indexed documents, only results that pass source checks are shown',
+              ],
+              [
+                'llmIndexedReviewAnswer',
+                'State supported conclusions naturally first, then add a brief note about scope or uncertainty after the conclusion.',
+              ],
+            ] as const);
+      for (const [key, fragment] of expectedCopy) {
+        expect(t(key)).toContain(fragment);
+      }
+    },
+  );
+
+  it.each(['ko', 'en'] as const)('%s 검토 문구의 변수 자리표시자를 모두 보존한다', (lang) => {
+    setLanguage(lang);
+    const reviewPlaceholders = [
+      'total',
+      'accepted',
+      'machineExcluded',
+      'rejected',
+      'budgetExcluded',
+      'unreviewed',
+      'notIndexed',
+      'unreadable',
+    ] as const;
+    for (const key of [
+      'indexedReviewCoverage',
+      'indexedReviewIncompleteNotice',
+      'indexedReviewLimitedNotice',
+    ] as const) {
+      for (const placeholder of reviewPlaceholders) {
+        expect(t(key)).toContain('{' + placeholder + '}');
+      }
+    }
+    for (const [key, placeholders] of [
+      ['indexedReviewComparisonMissing', ['facets']],
+      ['indexedReviewComparisonSearchFailed', ['facets']],
+      ['searchStatusTruncated', ['total', 'candidate', 'selected']],
+    ] as const) {
+      for (const placeholder of placeholders) {
+        expect(t(key)).toContain('{' + placeholder + '}');
+      }
+    }
+  });
+
   it('저장된 언어가 없으면 Obsidian 호스트 언어를 지원 언어로 정규화한다', () => {
     expect(resolveUiLanguage(undefined, 'ko-KR')).toBe('ko');
     expect(resolveUiLanguage(undefined, 'en-US')).toBe('en');

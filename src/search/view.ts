@@ -449,6 +449,7 @@ export class SearchView extends ItemView {
           ? 'superpower-inside-search-diagnostic is-warning'
           : 'superpower-inside-search-diagnostic',
       text: t('searchStatusTruncated', {
+        total: response.coverage.reviewedDocuments,
         candidate: response.diagnostics.candidateDocuments,
         selected: response.diagnostics.selectedDocuments,
       }),

@@ -443,6 +443,7 @@ describe('검색 화면 구조', () => {
 
     expect(root.textOf()).toContain(
       t('searchStatusTruncated', {
+        total: candidateResponse.coverage.reviewedDocuments,
         candidate: candidateResponse.diagnostics.candidateDocuments,
         selected: candidateResponse.diagnostics.selectedDocuments,
       }),

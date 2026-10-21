@@ -3483,13 +3483,13 @@ const ko: I18nKeys = {
   indexedReviewIncomplete:
     '문서 전체 검토를 완료하지 못해 최종 답변을 생성하지 않았습니다. 누락된 판정·원문 인용·문맥 예산 또는 읽기 상태를 확인한 뒤 다시 시도하세요.',
   indexedReviewCoverage:
-    '검토 범위 문서 {total}개: 최종 채택 문서 {accepted}개, 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개.',
+    '검토 참고: 답변은 검토 범위에서 확인된 근거를 바탕으로 하며, 채택·제외 항목은 다음과 같습니다. 검토 범위 문서 {total}개 중 최종 채택 문서 {accepted}개, 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개.',
   indexedReviewIncompleteNotice:
-    '검수 미완료: 검토 범위 문서 {total}개 중 최종 채택 문서 {accepted}개. 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개. 답변은 최종 채택 문서 범위에 한정됩니다.',
+    '검토 참고: 일부 문서는 검토하지 못했거나 원문 재확인에 실패해 답변에 반영되지 않았습니다. 검토 범위 문서 {total}개 중 최종 채택 문서 {accepted}개, 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개. 답변은 최종 채택 문서 범위에 한정됩니다.',
   indexedReviewLimitedNotice:
-    '근거 범위 제한: 검토 범위 문서 {total}개 중 최종 채택 문서 {accepted}개. 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개. 실제 미검토·미색인·원문 재확인 실패 문서는 없으며, 답변은 예산 안에서 확인된 범위에 한정됩니다.',
+    '검토 참고: 검토 범위의 색인 문서는 모두 살펴봤지만, 근거 예산에 따라 일부 확인된 구간은 답변에서 제외했습니다. 검토 범위 문서 {total}개 중 최종 채택 문서 {accepted}개, 점수·필터로 제외된 후보 {machineExcluded}개, 원문 검증 제외 구간 {rejected}개, 원문 확인 후 예산 제외 구간 {budgetExcluded}개, 미검토 문서 {unreviewed}개, 미색인 문서 {notIndexed}개, 원문 재확인 실패 문서 {unreadable}개. 답변은 예산 안에서 확인된 근거에 한정됩니다.',
   indexedReviewEvidenceOnly:
-    '검색 엔진이 검증한 근거는 찾았지만 선택 모델이 답변을 구성하지 못해 아래 원문 근거를 그대로 표시합니다.',
+    '확인된 원문 근거를 먼저 보여 드립니다. 선택 모델이 서술형 답변을 끝까지 만들지 못한 경우에도 아래 내용은 검색 엔진이 원문을 확인한 근거입니다.',
   indexedReviewIndexing:
     '볼트 검색 색인을 준비하는 중입니다. 색인이 끝난 뒤 다시 질문해 주세요. 준비되지 않은 색인을 근거 없음으로 판단하지 않았습니다.',
   indexedReviewSearchUnavailable:
@@ -3497,13 +3497,14 @@ const ko: I18nKeys = {
   indexedReviewAnswerUnavailable:
     '검토한 근거로 최종 답변을 생성하지 못했습니다. 잠시 뒤 다시 시도하거나 모델 출력 설정을 확인하세요.',
   indexedReviewNoEvidence:
-    '엔진이 이 질문을 뒷받침하는 원문 구절을 확인하지 못했습니다. 일반 지식으로 답을 채우지 않았습니다. 색인 범위 밖 문서는 검색 대상이 아니었습니다. 검색 범위·색인 상태를 확인하거나 질문을 구체화하세요.',
+    '이번 검색에서는 질문과 직접 일치하는 원문 근거를 찾지 못했습니다. 볼트 전체에 관련 내용이 없다는 뜻은 아니며, 색인 범위 밖 문서나 이번 검색이 닿지 못한 문서가 있을 수 있습니다. 검색 범위·색인 상태를 확인하거나 질문을 더 구체화해 주세요.',
   indexedReviewComparisonMissing:
-    '검토 범위에서 비교 항목 {facets}의 검증 근거를 찾지 못했습니다. 이는 볼트 전체에 해당 내용이 없다는 뜻이 아닙니다.',
+    '이번 검토 범위에서는 비교 항목 {facets}의 검증된 근거를 찾지 못했습니다. 볼트 전체에 해당 내용이 없다는 뜻은 아니며, 다른 검색·색인 범위에서는 확인될 수 있습니다.',
   indexedReviewComparisonSearchFailed:
-    '비교 항목 {facets}의 facet 검색이 실패해 비교 범위가 불완전합니다.',
+    '비교 항목 {facets}의 검색을 끝까지 수행하지 못해 비교 범위가 일부 비어 있습니다. 관련 문서가 없다는 뜻은 아니며, 검색 상태를 확인한 뒤 다시 시도해 주세요.',
   llmIndexedReviewAnswer: [
     '이 호출은 toolChoice:none입니다. 재검색하거나 도구를 사용하지 말고 제공된 검증 근거만으로 현재 질문에 답하세요.',
+    '지원되는 결론을 먼저 자연스럽게 쓰고, 범위·불확실성 안내는 결론 뒤에 짧게 덧붙이세요.',
     'answerPlan이 있으면 requiredFacetIds의 supported facet별 핵심 주장을 먼저 제시하세요. 공통점·차이·충돌·조건·예외를 해당 근거에 연결하고, 양쪽 supported facet의 근거가 모두 있을 때만 직접 비교하거나 종합하세요.',
     'answerPlan.missingFacetIds와 searchPlan.failedFacetIds는 검토 범위에서 확인하지 못한 항목입니다. 해당 facet을 검증된 사실처럼 서술하거나 볼트 전체의 부재로 단정하지 마세요.',
     '근거가 지지하지 않는 인과·시간 순서·동일성을 추가하지 마세요. 각 문단의 covers에는 answerPlan facet ID만 넣고, 모든 requiredFacetIds를 다루세요. synthesisRequired이면 requiredFacetIds 전체를 covers에 넣고 각 facet의 source를 하나 이상 포함한 종합 문단을 반드시 작성하세요.',
@@ -3756,7 +3757,7 @@ const ko: I18nKeys = {
   searchStatusEmpty: "조건에 맞는 원문 구절을 찾지 못했습니다.",
   searchStatusEmptyReason: "검색 기록: {reason}",
   searchStatusUnmatched: "원문에서 찾지 못한 검색어: {terms}",
-  searchStatusTruncated: "일부 후보만 확인했습니다. 후보 문서 {candidate}개 중 {selected}개를 표시합니다.",
+  searchStatusTruncated: "색인 문서 {total}개를 검색한 뒤 원문 확인을 통과한 결과만 표시합니다. 이번에 확인한 후보 {candidate}개 중 문서 {selected}개를 표시합니다.",
   searchStatusFailed: "검색에 실패했습니다: {message}",
   searchStatusUnavailable: "검색 엔진을 아직 사용할 수 없습니다. 색인 상태를 확인하세요.",
   searchScoreNotice: "점수는 순위를 위한 관련도이며 원문 존재나 정확성의 확률이 아닙니다.",
@@ -5521,13 +5522,13 @@ const en: I18nKeys = {
   indexedReviewIncomplete:
     'The complete document review could not finish, so no final answer was generated. Check missing decisions, original quotations, context budget, or read failures before retrying.',
   indexedReviewCoverage:
-    'Checked {total} documents in scope: {accepted} documents finally adopted, {machineExcluded} candidates excluded by score and filter, {rejected} passages excluded by source verification, {budgetExcluded} passages excluded by budget after source verification, {unreviewed} unreviewed documents, {notIndexed} unindexed documents, {unreadable} documents that failed source re-verification.',
+    'Review note: the answer reflects evidence confirmed in the reviewed scope and the exclusions that affect it. Of {total} documents in scope, {accepted} were adopted; {machineExcluded} candidates were excluded by score or filters, {rejected} passages failed source verification, {budgetExcluded} verified passages were excluded by the evidence budget, {unreviewed} documents were not reviewed, {notIndexed} documents were not indexed, and {unreadable} documents could not be re-verified.',
   indexedReviewIncompleteNotice:
-    'Review incomplete: {accepted} of {total} documents in scope were finally adopted. {machineExcluded} candidates were excluded by score and filter, {rejected} passages by source verification, and {budgetExcluded} passages by budget after source verification; {unreviewed} documents remain unreviewed, {notIndexed} remain unindexed, and {unreadable} documents failed source re-verification. The answer is limited to the finally adopted documents.',
+    'Review note: some documents could not be reviewed or re-verified, so they were not reflected in the answer. Of {total} documents in scope, {accepted} were adopted; {machineExcluded} candidates were excluded by score or filters, {rejected} passages failed source verification, {budgetExcluded} verified passages were excluded by the evidence budget, {unreviewed} documents were not reviewed, {notIndexed} documents were not indexed, and {unreadable} documents could not be re-verified. The answer is limited to the adopted documents.',
   indexedReviewLimitedNotice:
-    'Evidence scope limited: {accepted} of {total} documents in scope were finally adopted. {machineExcluded} candidates were excluded by score and filter, {rejected} passages by source verification, and {budgetExcluded} passages by budget after source verification; {unreviewed} documents remain unreviewed, {notIndexed} remain unindexed, and {unreadable} documents failed source re-verification. The answer is limited to the evidence confirmed within the budget.',
+    'Review note: all indexed documents in scope were reviewed, but the evidence budget kept some verified passages out of the answer. Of {total} documents in scope, {accepted} were adopted; {machineExcluded} candidates were excluded by score or filters, {rejected} passages failed source verification, {budgetExcluded} verified passages were excluded by the evidence budget, {unreviewed} documents were not reviewed, {notIndexed} documents were not indexed, and {unreadable} documents could not be re-verified. The answer is limited to the evidence confirmed within the budget.',
   indexedReviewEvidenceOnly:
-    'The search engine found verified evidence, but the selected model could not compose an answer. The original evidence is shown below.',
+    'Verified original evidence is shown below. If the selected model did not complete a prose answer, the material below still reflects evidence confirmed against the original documents.',
   indexedReviewIndexing:
     'The vault search index is still being prepared. Ask again after indexing finishes. The incomplete index was not treated as evidence of absence.',
   indexedReviewSearchUnavailable:
@@ -5535,13 +5536,14 @@ const en: I18nKeys = {
   indexedReviewAnswerUnavailable:
     'The reviewed evidence could not be turned into a final answer. Retry later or check the model output settings.',
   indexedReviewNoEvidence:
-    'The engine could not confirm an original passage supporting this question. No answer was filled in from general knowledge. Documents outside the index scope were not searched. Check the search scope and index status, or refine the question.',
+    'This search did not find an original passage that directly supports the question. This does not mean the vault contains nothing relevant: documents outside the indexed scope or documents this search did not reach may still be relevant. Check the search scope and indexing status, or make the question more specific.',
   indexedReviewComparisonMissing:
-    'No verified evidence for the following comparison facets was found in the reviewed scope: {facets}. This does not mean the facets are absent from the entire vault.',
+    'No verified evidence for the comparison facets {facets} was found in the reviewed scope. This does not mean those facets are absent from the entire vault; another search or indexed scope may still contain them.',
   indexedReviewComparisonSearchFailed:
-    'Facet search failed for the following comparison facets, so the comparison scope is incomplete: {facets}.',
+    'The search for comparison facets {facets} could not be completed, so this comparison is only partly covered. This does not mean the relevant documents are absent; check the search status and try again.',
   llmIndexedReviewAnswer: [
     'This call uses toolChoice:none. Do not search again or use tools; answer the current question using only the supplied verified evidence.',
+    'State supported conclusions naturally first, then add a brief note about scope or uncertainty after the conclusion.',
     'When answerPlan is present, lead with the core claims for each supported facet in requiredFacetIds. Connect commonalities, differences, conflicts, conditions, and exceptions to that evidence. Compare or synthesize directly only when both supported facets have supplied evidence.',
     'answerPlan.missingFacetIds and searchPlan.failedFacetIds are items that could not be confirmed in the reviewed scope. Do not present those facets as verified facts or claim vault-wide absence.',
     'Do not add causality, chronology, or identity unsupported by evidence. Use only answerPlan facet IDs in each paragraph covers array and cover every requiredFacetIds entry. If synthesisRequired, include one synthesis paragraph that covers all requiredFacetIds and contains at least one source from each facet.',
@@ -5812,7 +5814,7 @@ const en: I18nKeys = {
   searchStatusEmpty: "No original passage matched the query.",
   searchStatusEmptyReason: "Search record: {reason}",
   searchStatusUnmatched: "Terms not found in the text: {terms}",
-  searchStatusTruncated: "Only part of the candidates were checked. Showing {selected} of {candidate} candidate documents.",
+  searchStatusTruncated: "After searching {total} indexed documents, only results that pass source checks are shown. Showing {selected} documents from {candidate} checked candidates.",
   searchStatusFailed: "Search failed: {message}",
   searchStatusUnavailable: "The search engine is not available yet. Check the index status.",
   searchScoreNotice: "Scores rank relevance; they are not proof that a passage exists or that a claim is correct.",
