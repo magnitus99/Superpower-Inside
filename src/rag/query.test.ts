@@ -38,6 +38,43 @@ describe('RAGQueryEngine', () => {
     );
   });
 
+  it('fast candidate mode는 느린 vector provider를 호출하지 않고 BM25 후보를 사용한다', async () => {
+    const store = new MemoryVectorStore();
+    const entry = createEntry('fast.md', [1, 0], 'synthetic fast evidence');
+    await store.add([entry]);
+    const embedding = createEmbeddingProvider([1, 0]);
+    const embed = vi.spyOn(embedding, 'embed');
+    const bm25 = await createBm25([]);
+    bm25.addCorpusDocument({
+      id: entry.id,
+      sourcePath: entry.metadata.filePath,
+      text: entry.metadata.text,
+      sourceMtime: entry.metadata.sourceMtime,
+      sourceSize: entry.metadata.sourceSize,
+      contentHash: entry.metadata.contentHash,
+    });
+    const vectorSearch = vi.spyOn(store, 'search');
+    const engine = new RAGQueryEngine(store, embedding, bm25, 1, 0, {
+      annEnabled: true,
+      corpusStore: store,
+    });
+
+    const results = await engine.query('synthetic', 2, 0, undefined, { fastCandidates: true });
+
+    expect(results.map((result) => result.sourcePath)).toContain('fast.md');
+    expect(vectorSearch).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(engine.getLastRetrievalDiagnostics()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'ivf-vector',
+          status: 'skipped',
+          skippedReason: 'previous-attempt-failed',
+        }),
+      ]),
+    );
+  });
+
   it('최종 후보가 줄어든 단계를 집계해 검색 진단에 남긴다', async () => {
     const store = new MemoryVectorStore();
     await store.add([

@@ -558,6 +558,8 @@ export interface IndexedVaultReviewOptions {
   previousUserQuestions?: readonly string[];
   scoringQuestion?: string;
   deferAnswer?: boolean;
+  /** 검색 도중 재색인·corpus refresh가 시작되면 결과를 폐기합니다. */
+  isCurrent?: () => boolean;
   signal?: AbortSignal;
   onProgress?: (progress: VaultResearchProgress) => void;
   onAnswer?: (content: string) => void;
@@ -906,6 +908,27 @@ async function runIndexedVaultReview(
       diagnostics: search.plan.diagnostics,
       notice,
     };
+    const indexingContent = t('indexedReviewIndexing');
+    const returnIndexing = (): IndexedVaultReviewResult => ({
+      outcome: 'indexing',
+      dossier: { ...dossier, notice: indexingContent },
+      evidence: [],
+      coverage: effectiveCoverage,
+      content: indexingContent,
+      citations: [],
+      processedFiles: reviewed,
+      totalFiles: total,
+      rejectedFiles: 0,
+      providerTransfer: { sentFiles: 0, sentPaths: [] },
+      coverageNotice: indexingContent,
+      diagnostics,
+      engineUnavailable: true,
+    });
+    // 검색 중 재색인·corpus refresh가 시작됐다면 이전 색인의 답을 게시하지 않습니다.
+    if (options.isCurrent?.() === false) {
+      options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
+      return returnIndexing();
+    }
     activePhase = 'answer';
     emitDiagnostics();
     if (options.deferAnswer || evidence.length === 0) {
@@ -1013,6 +1036,11 @@ async function runIndexedVaultReview(
         error,
       });
       answer = null;
+    }
+    // provider 응답 도중 재색인이 시작돼도 이전 색인 답변을 게시하지 않습니다.
+    if (options.isCurrent?.() === false) {
+      options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
+      return returnIndexing();
     }
     const resolved = answer !== null;
     const body = resolved ? answer : evidenceOnlyContent(evidence);

@@ -590,13 +590,29 @@ export default class SuperpowerInsidePlugin extends Plugin {
     );
   }
 
+  /** 검색에 사용할 색인·corpus·통계가 같은 세대에서 준비됐는지 확인합니다. */
+  isRagSearching(): boolean {
+    const status = this.eventDrivenRagStats;
+    return (
+      this.isRagIndexing() ||
+      this.vaultDocumentCorpus?.isBusy() === true ||
+      status === null ||
+      status.updateRequiredDocuments.length > 0
+    );
+  }
+
+  /** 검색 포트와 공유하는 동기 readiness 별칭입니다. */
+  isIndexing(): boolean {
+    return this.isRagSearching();
+  }
+
   /** 채팅 입력부에 보여 줄 검색 준비 상태입니다. 준비되지 않아도 질문은 보낼 수 있습니다. */
   getRetrievalReadiness(): ChatRetrievalReadiness {
     return resolveChatRetrievalReadiness({
       initializing: this.ragEngine === null || (this.ragRuntimeInitRunner?.isRunning() ?? false),
       failed: Boolean(this.lastRagRuntimeInitError || this.lastRagRuntimeInitSkippedReason),
       keywordIndex: this.getKeywordIndexState(),
-      indexing: this.isRagIndexing(),
+      indexing: this.isRagSearching(),
     });
   }
 

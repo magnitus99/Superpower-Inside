@@ -1,5 +1,13 @@
 import { ItemView, Menu, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
 import type { PluginLike } from '../settings';
+
+function isPluginSearching(plugin: PluginLike): boolean {
+  return (
+    (plugin as PluginLike & { isRagSearching?: () => boolean }).isRagSearching?.() ??
+    plugin.isRagIndexing?.() ??
+    false
+  );
+}
 import { resolveChatModelState } from './chat-model-state';
 import { buildStoredChatModelRef, prepareChatProviderForModel } from '../llm/provider-resolution';
 import type {
@@ -3018,6 +3026,30 @@ export class ChatView extends ItemView {
       dataBoundarySnapshot,
       ...userVariantMeta,
     });
+    const requiresVaultSearch = wholeVaultResearch || promptContext.vaultSearchEnabled === true;
+    const retrievalReadiness = this.plugin.getRetrievalReadiness?.() ?? 'ready';
+    if (requiresVaultSearch && retrievalReadiness !== 'ready') {
+      const content = t(
+        retrievalReadiness === 'preparing'
+          ? 'chatReadinessRagIndexingDetail'
+          : 'chatReadinessRagNotReadyDetail',
+      );
+      this.addMessage('assistant', content, undefined, undefined, {
+        providerKey: key,
+        providerLabel,
+        model: modelName,
+        providerCapability,
+        ...contextMeta,
+        ...toTurnMeta(),
+        ...assistantVariantMeta,
+        turnStage: 'complete',
+        status: 'complete',
+        stopReason: 'complete',
+      });
+      releaseSetupRun();
+      return;
+    }
+
     const toolModelKey = `${key}\u0000${modelName}`;
     let toolProtocol: ToolTranscriptProtocol =
       providerCapability.toolCalling && !this.compatibilityToolModels.has(toolModelKey)
@@ -3107,7 +3139,7 @@ export class ChatView extends ItemView {
             app: this.app,
             ragEngine: this.plugin.ragEngine,
             documentCorpus: this.plugin.documentCorpus,
-            isIndexing: () => this.plugin.isRagIndexing?.() === true,
+            isIndexing: () => isPluginSearching(this.plugin),
           },
           localSearchQuestion,
           abortController.signal,
@@ -3133,6 +3165,7 @@ export class ChatView extends ItemView {
           scoringQuestion: localSearchQuestion,
           deferAnswer,
           documentScope: wholeVaultResearch ? 'all' : 'candidates',
+          isCurrent: () => this.plugin.getRetrievalReadiness() === 'ready',
           onDiagnostics: (diagnostics) => {
             if (!isChatRunActive(this.activeRun, run)) return;
             indexedReviewDiagnostics = diagnostics;
@@ -4933,7 +4966,7 @@ export class ChatView extends ItemView {
               app: this.app,
               ragEngine: this.plugin.ragEngine,
               documentCorpus: this.plugin.documentCorpus,
-              isIndexing: () => this.plugin.isRagIndexing?.() === true,
+              isIndexing: () => isPluginSearching(this.plugin),
             },
             promptContext.scoringQuestion ?? currentQuestion,
             abortController.signal,
@@ -4962,6 +4995,7 @@ export class ChatView extends ItemView {
               expandVaultSearchQueryLocally(currentQuestion, previousUserQuestions),
             deferAnswer: true,
             documentScope: 'candidates',
+            isCurrent: () => this.plugin.getRetrievalReadiness() === 'ready',
             signal: abortController.signal,
             onDiagnostics: (diagnostics) => {
               if (!isChatRunActive(this.activeRun, run)) return;

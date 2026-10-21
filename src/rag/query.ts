@@ -84,6 +84,8 @@ export type RAGCandidateReadiness = 'ready' | 'initializing' | 'unavailable';
 export interface RAGQueryOptions {
   signal?: AbortSignal;
   excludedProviderIds?: readonly string[];
+  /** 일반 채팅의 candidate-first 경로는 BM25 후보를 우선하고 느린 보조 provider를 생략합니다. */
+  fastCandidates?: boolean;
   onRetrieved?: (
     results: readonly QueryResult[],
     diagnostics: readonly RetrievalProviderDiagnostic[],
@@ -213,14 +215,27 @@ export class RAGQueryEngine {
     const isInScope = (entry: VectorEntry): boolean =>
       (!candidatePaths || candidatePaths.has(entry.metadata.filePath)) &&
       this.isEntryInQueryScope(entry, filePathPrefixes);
-    const embeddingResolution = await this.resolveQueryEmbedding(question, options);
+    const excludedProviderIds =
+      options.fastCandidates && this.bm25Index?.isReady
+        ? [
+            ...(options.excludedProviderIds ?? []),
+            'query-embedding',
+            'exact-vector',
+            'ivf-vector',
+            'structural-graph',
+          ]
+        : options.excludedProviderIds;
+    const embeddingResolution = await this.resolveQueryEmbedding(question, {
+      ...options,
+      excludedProviderIds,
+    });
     const qVector = embeddingResolution.vector;
     const retrieval = await this.retrievalPipeline.retrieve(
       {
         question,
         queryVector: qVector,
         candidateLimit: topK * 8,
-        excludedProviderIds: options.excludedProviderIds,
+        excludedProviderIds,
         requireSourceRevision: this.corpusStore !== undefined,
         vectorFilter:
           qVector.length > 0

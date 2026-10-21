@@ -269,6 +269,17 @@ describe('엔진 근거 기반 색인 검토', () => {
     },
   );
 
+  it('검색 중 색인 세대가 바뀌면 provider 답변을 게시하지 않고 indexing으로 되돌린다', async () => {
+    const streamChat = vi.fn<LLMProvider['streamChat']>();
+    const result = await reviewIndexedVault(
+      reviewOptions({ isCurrent: () => false, provider: { streamChat } }),
+    );
+    expect(result.outcome).toBe('indexing');
+    expect(result.citations).toEqual([]);
+    expect(result.content).toBe(t('indexedReviewIndexing'));
+    expect(streamChat).not.toHaveBeenCalled();
+  });
+
   it.each(['format', 'http'] as const)(
     '%s 오류 후에도 verified 근거와 인용을 evidence-only로 반환한다',
     async (failure) => {

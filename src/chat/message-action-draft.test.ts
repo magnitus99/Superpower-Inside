@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatView } from './view';
 import type { ChatMessageWithMeta, SourceValidationWarning } from './types';
+import { t } from '../i18n';
 import { prepareChatProviderForModel } from '../llm/provider-resolution';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
 import type { LLMProvider } from '../llm/providers';
@@ -298,6 +299,31 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     });
     return { view, stream, context, chat, storedMessages };
   }
+
+  it('vault 질문은 ready가 아니면 provider를 호출하지 않고 색인 준비 안내만 남긴다', async () => {
+    const { view, context, stream, chat, storedMessages } = createView();
+    context.mockResolvedValue({
+      systemPrompt: null,
+      attachments: [],
+      citations: [],
+      warnings: [],
+      vaultSearchEnabled: true,
+    });
+    const plugin = (view as unknown as { plugin: Record<string, unknown> }).plugin;
+    Object.assign(view, { plugin: { ...plugin, getRetrievalReadiness: () => 'preparing' } });
+    vi.mocked(reviewIndexedVault).mockClear();
+
+    await view.handleSend('합성 볼트 질문');
+
+    expect(reviewIndexedVault).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+    expect(storedMessages.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: t('chatReadinessRagIndexingDetail'),
+      status: 'complete',
+    });
+  });
 
   it('태그 멘션을 검색 엔진 필터로 전달한다', async () => {
     const { view, context } = createView();

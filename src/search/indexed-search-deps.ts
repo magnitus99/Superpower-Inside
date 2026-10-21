@@ -54,9 +54,11 @@ export async function collectIndexedSearchSource(
   const inventory = await collectInventory(host, indexedPaths);
   if (signal?.aborted) return null;
   const candidateResolution =
-    host.isIndexing?.() === true
-      ? { candidates: undefined, state: 'indexing' as const }
-      : await collectHybridCandidates(host.ragEngine, query, signal);
+    indexedPaths.length === 0
+      ? { candidates: undefined, state: host.isIndexing?.() === true ? ('indexing' as const) : ('unavailable' as const) }
+      : host.isIndexing?.() === true
+        ? { candidates: undefined, state: 'indexing' as const }
+        : await collectHybridCandidates(host.ragEngine, query, signal);
   return {
     corpus,
     getIndexedPaths: () => Promise.resolve(indexedPaths),
@@ -119,7 +121,10 @@ async function collectHybridCandidates(
   if (!engine) return { candidates: undefined, state: 'initializing' };
   let results: QueryResult[];
   try {
-    results = await engine.query(query, CANDIDATE_LIMIT, undefined, undefined, { signal });
+    results = await engine.query(query, CANDIDATE_LIMIT, undefined, undefined, {
+      signal,
+      fastCandidates: true,
+    });
   } catch (error) {
     if (signal?.aborted) return { candidates: undefined, state: 'unavailable' };
     appLogger.warn('Hybrid query candidates unavailable; preserving search readiness.', {

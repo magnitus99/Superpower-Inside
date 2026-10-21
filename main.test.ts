@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it, vi } from 'vitest';
 import type { TFile } from 'obsidian';
 import { createFakeSecretStorage } from './src/test/secret-storage';
+import type { RagStatusSummary } from './src/rag/status';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -139,6 +140,50 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(indexPending).not.toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();
     expect(runtime.getRagRuntimeState().lastAutoUpdateSkippedReason).toBe('newer-operation');
+  });
+
+  it('RAG 검색 준비는 corpus busy와 pending 색인 통계를 동기화한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    const status: RagStatusSummary = {
+      totalDocuments: 2,
+      healthyDocuments: 2,
+      missingDocuments: 0,
+      staleDocuments: 0,
+      unknownDocuments: 0,
+      excludedDocuments: 0,
+      totalVectors: 2,
+      lastCalculatedAt: 1,
+      updateRequiredDocuments: [],
+    };
+    Object.assign(plugin, {
+      settings: { rag: { enableBM25: true } },
+      ragEngine: {},
+      ragRuntimeInitRunner: null,
+      lastRagRuntimeInitError: null,
+      lastRagRuntimeInitSkippedReason: null,
+      bm25Index: { isReady: true },
+      ragIndexAbortController: null,
+      ragIndexingScheduler: { isRunning: () => false },
+      vaultDocumentCorpus: { isBusy: () => false },
+      eventDrivenRagStats: status,
+    });
+
+    expect(plugin.getRetrievalReadiness()).toBe('ready');
+    Object.assign(plugin, {
+      eventDrivenRagStats: {
+        ...status,
+        updateRequiredDocuments: [
+          { path: 'synthetic.md', status: 'stale', reason: 'synthetic', mtime: 1, size: 1 },
+        ],
+      },
+    });
+    expect(plugin.getRetrievalReadiness()).toBe('preparing');
+    Object.assign(plugin, {
+      eventDrivenRagStats: status,
+      vaultDocumentCorpus: { isBusy: () => true },
+    });
+    expect(plugin.getRetrievalReadiness()).toBe('preparing');
   });
 
   it('RAG 런타임 재초기화가 중간에 실패하면 기존 인덱서를 복구한다', async () => {

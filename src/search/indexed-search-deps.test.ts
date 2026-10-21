@@ -160,6 +160,21 @@ describe('검색 의존성 factory', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
+  it('색인 경로가 0개이고 재색인도 아니면 빈 검색을 ready로 가장하지 않는다', async () => {
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: null,
+        documentCorpus: {
+          ...corpus(),
+          getIndexedFilePaths: () => Promise.resolve([]),
+        },
+      },
+      '합성 질의',
+    );
+    expect(source?.candidatesState).toBe('unavailable');
+  });
+
   it('취소된 요청은 후보를 만들지 않는다', async () => {
     const controller = new AbortController();
     controller.abort();

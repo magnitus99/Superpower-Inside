@@ -100,6 +100,21 @@ describe('파일 중심 문서 생명주기', () => {
       startLine: 0,
     });
   });
+  it('파일 읽기가 끝나기 전에는 busy이고 완료되면 해제된다', async () => {
+    const source = fixture('notes/busy.txt');
+    let resolveRead!: (text: string) => void;
+    source.read.mockReturnValueOnce(
+      new Promise<string>((resolve) => {
+        resolveRead = resolve;
+      }),
+    );
+    const refresh = source.corpus.refreshFile(source.file);
+    expect(source.corpus.isBusy()).toBe(true);
+    resolveRead('현재 원문 근거');
+    await refresh;
+    expect(source.corpus.isBusy()).toBe(false);
+  });
+
   it.each(['resolve', 'reject'] as const)(
     '원문 갱신 취소는 기존 문서를 보존하고 늦은 %s 결과가 새 갱신을 덮지 않는다',
     async (settlement) => {

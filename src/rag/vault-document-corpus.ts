@@ -40,6 +40,10 @@ export class VaultDocumentCorpus {
   isReadingPath(path: string): boolean {
     return this.readingPaths.has(path);
   }
+  /** 초기 전체 refresh나 개별 파일 read가 끝나지 않았으면 true입니다. */
+  isBusy(): boolean {
+    return this.refreshing !== null || this.readingPaths.size > 0;
+  }
   hasFailedPath(path: string): boolean {
     return this.failedPaths.has(path);
   }

@@ -312,7 +312,10 @@ export class SearchView extends ItemView {
     el.empty();
     el.removeClass(WARNING_CLASS);
     const state = this.host.getRagRuntimeState();
-    const indexing = this.host.isRagIndexing() || state.ragIndexingStatus?.running === true;
+    const indexing =
+      this.host.isRagIndexing() ||
+      state.ragIndexingStatus?.running === true ||
+      (state.ragStatus?.updateRequiredDocuments?.length ?? 0) > 0;
     if (indexing) {
       const progress = state.ragIndexingStatus?.progress ?? null;
       el.setText(
