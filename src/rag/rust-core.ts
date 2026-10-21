@@ -5080,6 +5080,79 @@ function resolveRustStringExport(name: string): ((input: string) => string) | nu
   return typeof candidate === 'function' ? (candidate as (input: string) => string) : null;
 }
 
+export interface RustIndexedSearchQueryInput {
+  question: string;
+  scoringQuestion?: string;
+  scopes?: readonly string[];
+}
+
+export interface RustIndexedSearchFacet {
+  id: string;
+  kind: 'question' | 'subject';
+  query: string;
+  queryIndex: number;
+  terms: readonly string[];
+}
+
+/** 검색 facet 계획입니다. failedFacetIds는 TS 수집 계층이 실행 결과를 덧붙입니다. */
+export interface IndexedSearchPlan {
+  mode: 'single' | 'comparison';
+  facets: readonly RustIndexedSearchFacet[];
+  failedFacetIds?: readonly string[];
+}
+
+export type RustIndexedSearchPlan = IndexedSearchPlan;
+
+export interface RustIndexedReviewEvidenceInput {
+  sourceId: string;
+  path: string;
+  quote: string;
+  queryIndexes?: readonly number[];
+}
+
+export interface RustIndexedReviewAnswerPlanInput {
+  searchPlan: IndexedSearchPlan;
+  evidence: readonly RustIndexedReviewEvidenceInput[];
+}
+
+export interface RustIndexedReviewAnswerFacet {
+  id: string;
+  kind: string;
+  label: string;
+  status: 'supported' | 'missing';
+  sourceIds: readonly string[];
+}
+
+export interface RustIndexedReviewAnswerPlan {
+  mode: 'single' | 'comparison';
+  facets: readonly RustIndexedReviewAnswerFacet[];
+  requiredFacetIds: readonly string[];
+  missingFacetIds: readonly string[];
+  synthesisRequired: boolean;
+}
+
+export interface RustIndexedReviewAnswerValidationInput {
+  sourceIds: readonly string[];
+  answerPlan: RustIndexedReviewAnswerPlan;
+  response: string;
+}
+
+export type RustIndexedReviewAnswerFailureReason =
+  | 'invalid-format'
+  | 'unknown-facet'
+  | 'unavailable-facet'
+  | 'facet-source-mismatch'
+  | 'missing-facet'
+  | 'missing-synthesis';
+
+export type RustIndexedReviewAnswerValidation =
+  | { valid: true; content: string }
+  | {
+      valid: false;
+      reason: RustIndexedReviewAnswerFailureReason;
+      missingFacetIds: readonly string[];
+    };
+
 export interface RustIndexedEvidenceDocument {
   path: string;
   text: string;
@@ -5100,6 +5173,7 @@ export interface RustIndexedEvidenceCandidate {
   score?: number;
   startLine?: number;
   endLine?: number;
+  queryIndex?: number;
 }
 
 export interface RustIndexedEvidenceInventory {
@@ -5163,6 +5237,8 @@ export interface RustIndexedEvidencePassage {
   fieldScore: number;
   exactSignals: readonly string[];
   fieldMatches?: readonly string[];
+  /** 비교 검색 후보를 만든 query index입니다. parser가 legacy 출력을 빈 배열로 보완합니다. */
+  queryIndexes?: readonly number[];
   negatedNearby: boolean;
   highlights: readonly { start: number; end: number }[];
   duplicateOf: string | null;
@@ -5223,6 +5299,8 @@ export interface RustIndexedEvidenceRef {
 export interface RustIndexedEvidenceVerificationDocument {
   path: string;
   text: string;
+  /** 문서 원문의 첫 줄에 대응하는 1 기반 절대 행입니다. */
+  startLine?: number;
   revision?: string;
   indexed?: boolean;
   reviewState?: 'reviewed' | 'unreviewed';
@@ -5261,6 +5339,125 @@ export interface RustIndexedEvidenceStatus {
 /** 채택 구절의 원문 존재·위치·리비전·스코프·검토 상태 검증 결과입니다. */
 export interface RustIndexedEvidenceVerification {
   statuses: readonly RustIndexedEvidenceStatus[];
+}
+
+const MAX_INDEXED_QUERY_INDEX = 3;
+
+function isIndexedQueryIndex(value: unknown): value is number {
+  return isNonNegativeSafeInteger(value) && value <= MAX_INDEXED_QUERY_INDEX;
+}
+
+function readIndexedQueryIndexes(value: unknown): number[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every(isIndexedQueryIndex)) return null;
+  return [...value];
+}
+
+function readStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value) || !value.every(isStringValue)) return null;
+  return [...value];
+}
+
+function readIndexedSearchFacet(value: unknown): RustIndexedSearchFacet | null {
+  if (!isStringRecordValueMap(value)) return null;
+  const terms = readStringArray(value.terms);
+  if (
+    !isStringValue(value.id) ||
+    (value.kind !== 'question' && value.kind !== 'subject') ||
+    !isStringValue(value.query) ||
+    !isIndexedQueryIndex(value.queryIndex) ||
+    !terms
+  )
+    return null;
+  return {
+    id: value.id,
+    kind: value.kind,
+    query: value.query,
+    queryIndex: value.queryIndex,
+    terms,
+  };
+}
+
+function readIndexedSearchPlan(value: unknown): IndexedSearchPlan | null {
+  if (!isStringRecordValueMap(value) || !Array.isArray(value.facets)) return null;
+  if (value.mode !== 'single' && value.mode !== 'comparison') return null;
+  if (value.facets.length > 3) return null;
+  const facets: RustIndexedSearchFacet[] = [];
+  for (const row of value.facets) {
+    const facet = readIndexedSearchFacet(row);
+    if (!facet) return null;
+    facets.push(facet);
+  }
+  return { mode: value.mode, facets };
+}
+
+function readIndexedReviewAnswerFacet(value: unknown): RustIndexedReviewAnswerFacet | null {
+  if (!isStringRecordValueMap(value)) return null;
+  const sourceIds = readStringArray(value.sourceIds);
+  if (
+    !isStringValue(value.id) ||
+    !isStringValue(value.kind) ||
+    !isStringValue(value.label) ||
+    (value.status !== 'supported' && value.status !== 'missing') ||
+    !sourceIds
+  )
+    return null;
+  return {
+    id: value.id,
+    kind: value.kind,
+    label: value.label,
+    status: value.status,
+    sourceIds,
+  };
+}
+
+function readIndexedReviewAnswerPlan(value: unknown): RustIndexedReviewAnswerPlan | null {
+  if (!isStringRecordValueMap(value) || !Array.isArray(value.facets)) return null;
+  if (value.mode !== 'single' && value.mode !== 'comparison') return null;
+  const requiredFacetIds = readStringArray(value.requiredFacetIds);
+  const missingFacetIds = readStringArray(value.missingFacetIds);
+  if (!requiredFacetIds || !missingFacetIds || typeof value.synthesisRequired !== 'boolean') {
+    return null;
+  }
+  const facets: RustIndexedReviewAnswerFacet[] = [];
+  for (const row of value.facets) {
+    const facet = readIndexedReviewAnswerFacet(row);
+    if (!facet) return null;
+    facets.push(facet);
+  }
+  return {
+    mode: value.mode,
+    facets,
+    requiredFacetIds,
+    missingFacetIds,
+    synthesisRequired: value.synthesisRequired,
+  };
+}
+
+function readIndexedReviewAnswerValidation(
+  value: unknown,
+): RustIndexedReviewAnswerValidation | null {
+  if (!isStringRecordValueMap(value) || typeof value.valid !== 'boolean') return null;
+  if (value.valid) {
+    return isStringValue(value.content) ? { valid: true, content: value.content } : null;
+  }
+  const reasons: readonly RustIndexedReviewAnswerFailureReason[] = [
+    'invalid-format',
+    'unknown-facet',
+    'unavailable-facet',
+    'facet-source-mismatch',
+    'missing-facet',
+    'missing-synthesis',
+  ];
+  const missingFacetIds = readStringArray(value.missingFacetIds);
+  if (!reasons.includes(value.reason as RustIndexedReviewAnswerFailureReason) || !missingFacetIds) {
+    return null;
+  }
+  return {
+    valid: false,
+    reason: value.reason as RustIndexedReviewAnswerFailureReason,
+    missingFacetIds,
+  };
 }
 
 function readIndexedEvidenceToken(value: unknown): RustIndexedEvidenceToken | null {
@@ -5312,6 +5509,7 @@ function readEvidenceHighlights(
 
 function readIndexedEvidencePassage(value: unknown): RustIndexedEvidencePassage | null {
   if (!isStringRecordValueMap(value)) return null;
+  const queryIndexes = readIndexedQueryIndexes(value.queryIndexes);
   if (
     !isStringValue(value.sourceId) ||
     !isStringValue(value.path) ||
@@ -5338,7 +5536,8 @@ function readIndexedEvidencePassage(value: unknown): RustIndexedEvidencePassage 
     !value.exactSignals.every(isStringValue) ||
     typeof value.negatedNearby !== 'boolean' ||
     !readEvidenceHighlights(value.highlights) ||
-    !(value.duplicateOf === null || isStringValue(value.duplicateOf))
+    !(value.duplicateOf === null || isStringValue(value.duplicateOf)) ||
+    !queryIndexes
   )
     return null;
   return {
@@ -5357,6 +5556,7 @@ function readIndexedEvidencePassage(value: unknown): RustIndexedEvidencePassage 
     proximityScore: value.proximityScore,
     fieldScore: value.fieldScore,
     fieldMatches: Array.isArray(value.fieldMatches) && value.fieldMatches.every(isStringValue) ? value.fieldMatches : [],
+    queryIndexes,
     exactSignals: value.exactSignals,
     negatedNearby: value.negatedNearby,
     duplicateOf: value.duplicateOf,
@@ -5510,9 +5710,65 @@ function readIndexedEvidenceVerification(value: unknown): RustIndexedEvidenceVer
   return { statuses };
 }
 
+/** 원 질문을 단일 검색 또는 비교 facet 검색 계획으로 계산합니다. */
+export function planIndexedSearchQueriesRust(
+  input: RustIndexedSearchQueryInput,
+): IndexedSearchPlan | null {
+  if (!ensureRustCore()) return null;
+  const run = resolveRustStringExport('plan_indexed_search_queries_json');
+  if (!run) return null;
+  try {
+    return readIndexedSearchPlan(JSON.parse(run(JSON.stringify(input))));
+  } catch {
+    return null;
+  }
+}
+
+/** 검색 facet과 근거 귀속으로 답변 facet 상태·필수 종합 여부를 계산합니다. */
+export function planIndexedReviewAnswerPlanRust(
+  input: RustIndexedReviewAnswerPlanInput,
+): RustIndexedReviewAnswerPlan | null {
+  if (!ensureRustCore()) return null;
+  if (
+    !input.evidence.every(
+      (evidence) =>
+        evidence.queryIndexes === undefined || evidence.queryIndexes.every(isIndexedQueryIndex),
+    )
+  )
+    return null;
+  const run = resolveRustStringExport('plan_indexed_review_answer_plan_json');
+  if (!run) return null;
+  try {
+    return readIndexedReviewAnswerPlan(JSON.parse(run(JSON.stringify(input))));
+  } catch {
+    return null;
+  }
+}
+
+/** 답변이 facet별 근거·필수 종합 계약을 만족하는지 검증합니다. */
+export function validateIndexedReviewAnswerRust(
+  input: RustIndexedReviewAnswerValidationInput,
+): RustIndexedReviewAnswerValidation | null {
+  if (!ensureRustCore()) return null;
+  const run = resolveRustStringExport('validate_indexed_review_answer_json');
+  if (!run) return null;
+  try {
+    return readIndexedReviewAnswerValidation(JSON.parse(run(JSON.stringify(input))));
+  } catch {
+    return null;
+  }
+}
+
 /** 질의 토큰 위치·필드·exact·부정 신호와 원문 구절 선택 계획을 계산합니다. */
 export function planIndexedEvidenceRust(input: RustIndexedEvidenceInput): RustIndexedEvidencePlan | null {
   if (!ensureRustCore()) return null;
+  if (
+    input.candidates?.some(
+      (candidate) =>
+        candidate.queryIndex !== undefined && !isIndexedQueryIndex(candidate.queryIndex),
+    )
+  )
+    return null;
   const run = resolveRustStringExport('plan_indexed_evidence_json');
   if (!run) return null;
   try {

@@ -20,6 +20,14 @@ const MAX_SEARCHES: usize = 64;
 const MAX_RESULT_BYTES: usize = 192 * 1024;
 /// 같은 모델에 허용하는 의미적 공백 검토 횟수입니다.
 const MAX_REVIEWS: usize = 3;
+/// 계획 bridge 호출 하나가 받는 `JSON` byte 상한입니다.
+const MAX_PLAN_INPUT_BYTES: usize = 8 * 1024 * 1024;
+/// 검색 계획 질문 하나의 byte 상한입니다.
+const MAX_SEARCH_PLAN_QUESTION_BYTES: usize = 16_384;
+/// 검색 계획이 받는 명시 범위 수 상한입니다.
+const MAX_SEARCH_PLAN_SCOPES: usize = 64;
+/// 검색 계획 query 하나의 안전 상한(문자 수)입니다.
+const MAX_SEARCH_QUERY_CHARS: usize = 320;
 /// 기존 하이브리드 검색 도구 이름입니다.
 const SEARCH: &str = "superpower_inside_search";
 /// 기존 원문 읽기 도구 이름입니다.
@@ -41,13 +49,26 @@ struct Passage {
 #[must_use]
 #[wasm_bindgen]
 pub fn plan_evidence_collection_json(input: &str) -> String {
-    if input.len() > 8 * 1024 * 1024 {
+    if input.len() > MAX_PLAN_INPUT_BYTES {
         return String::new();
     }
     let Ok(value) = serde_json::from_str::<Value>(input) else {
         return String::new();
     };
     collection_plan(&value).map_or_else(String::new, |plan| plan.to_string())
+}
+
+/// 질문을 단일 검색 또는 비교 대상별 검색 facet으로 계획합니다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_indexed_search_queries_json(input: &str) -> String {
+    if input.len() > MAX_PLAN_INPUT_BYTES {
+        return String::new();
+    }
+    let Ok(value) = serde_json::from_str::<Value>(input) else {
+        return String::new();
+    };
+    search_query_plan(&value).map_or_else(String::new, |plan| plan.to_string())
 }
 
 /// 검증한 수집 입력과 실행 결과입니다.
@@ -372,62 +393,134 @@ fn search_args(query: &str, path: &str) -> Value {
     json!({"query":query,"path":path,"limit":8,"mode":"auto","match":"any"})
 }
 
+/// 비교 probe와 계획 facet이 함께 쓰는 검색 토큰 정규화입니다.
+fn focused_search_query(text: &str) -> String {
+    let mut tokens = Vec::new();
+    append_meaningful_tokens(&mut tokens, text);
+    tokens.retain(|token| {
+        ![
+            "compare",
+            "comparison",
+            "and",
+            "versus",
+            "difference",
+            "differences",
+            "similarities",
+            "explain",
+            "between",
+            "공통점",
+            "차이",
+            "차이점",
+            "비교",
+            "설명",
+            "설명해줘",
+            "비교해줘",
+            "다른",
+            "같은",
+        ]
+        .contains(&token.as_str())
+    });
+    tokens
+        .into_iter()
+        .take(12)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_SEARCH_QUERY_CHARS)
+        .collect::<String>()
+}
+
+/// 기존 비교 probe 분할에서 subject 정체성을 순서대로 보존합니다.
+fn comparison_subject_queries(question: &str) -> Vec<String> {
+    if !requires_multiple_source_evidence(question) {
+        return Vec::new();
+    }
+    let mut delimiters = Vec::<(usize, usize)>::new();
+    for delimiter in [
+        " versus ", " vs ", " and ", " 및 ", "와 ", "과 ", "와의 ", "과의 ",
+    ] {
+        for (start, _) in question.char_indices() {
+            let Some(end) = start.checked_add(delimiter.len()) else {
+                continue;
+            };
+            let Some(candidate) = question.get(start..end) else {
+                continue;
+            };
+            if candidate.eq_ignore_ascii_case(delimiter) && !inside_quotes(question, start, end) {
+                delimiters.push((start, end));
+            }
+        }
+    }
+    delimiters.sort_by(|left, right| {
+        left.0.cmp(&right.0).then_with(|| {
+            right
+                .1
+                .saturating_sub(right.0)
+                .cmp(&left.1.saturating_sub(left.0))
+        })
+    });
+    let mut selected = Vec::<(usize, usize)>::new();
+    for delimiter in delimiters {
+        if selected
+            .last()
+            .is_some_and(|(_, previous_end)| delimiter.0 < *previous_end)
+        {
+            continue;
+        }
+        selected.push(delimiter);
+        if selected.len() == 2 {
+            break;
+        }
+    }
+    if selected.is_empty() {
+        return Vec::new();
+    }
+    let mut parts = Vec::new();
+    let mut start = 0_usize;
+    for (delimiter_start, delimiter_end) in selected {
+        parts.push(question[start..delimiter_start].trim());
+        start = delimiter_end;
+    }
+    parts.push(question[start..].trim());
+    parts
+        .into_iter()
+        .map(focused_search_query)
+        .filter(|query| !query.is_empty())
+        .take(2)
+        .collect()
+}
+
+/// 비교 구분자가 따옴표 안의 구문 일부인지 확인합니다.
+fn inside_quotes(text: &str, start: usize, end: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, byte) in bytes.iter().enumerate() {
+        let in_range = index >= start && index < end;
+        if in_range && quoted {
+            return true;
+        }
+        if *byte == b'"' && !escaped {
+            quoted = !quoted;
+        }
+        escaped = *byte == b'\\' && !escaped;
+        if *byte != b'\\' {
+            escaped = false;
+        }
+    }
+    false
+}
+
 /// 비교 구절을 독립 검색 입력으로 사용해 모델의 번역·분해에만 의존하지 않습니다.
 fn search_probes(question: &str, scopes: &[&str]) -> Vec<Value> {
-    let focused = |text: &str| {
-        let mut tokens = Vec::new();
-        append_meaningful_tokens(&mut tokens, text);
-        tokens.retain(|token| {
-            ![
-                "compare",
-                "comparison",
-                "and",
-                "versus",
-                "difference",
-                "differences",
-                "similarities",
-                "explain",
-                "between",
-                "공통점",
-                "차이",
-                "차이점",
-                "비교",
-                "설명",
-                "설명해줘",
-                "비교해줘",
-                "다른",
-                "같은",
-            ]
-            .contains(&token.as_str())
-        });
-        tokens
-            .into_iter()
-            .take(12)
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(320)
-            .collect::<String>()
-    };
-    let main = focused(question);
+    let main = focused_search_query(question);
     if main.is_empty() {
         return Vec::new();
     }
     let mut queries = vec![main];
-    if requires_multiple_source_evidence(question) {
-        let normalized = question.to_lowercase();
-        for delimiter in [
-            " versus ", " vs ", " and ", " 및 ", "와 ", "과 ", "와의 ", "과의 ",
-        ] {
-            if normalized.contains(delimiter) {
-                for part in normalized.split(delimiter).take(3) {
-                    let query = focused(part);
-                    if !query.is_empty() && !queries.contains(&query) {
-                        queries.push(query);
-                    }
-                }
-                break;
-            }
+    for query in comparison_subject_queries(question) {
+        if !queries.contains(&query) {
+            queries.push(query);
         }
     }
     let paths = search_scopes(scopes);
@@ -436,6 +529,78 @@ fn search_probes(question: &str, scopes: &[&str]) -> Vec<Value> {
         .flat_map(|query| paths.iter().map(move |path| search_args(query, path)))
         .take(MAX_SEARCHES)
         .collect()
+}
+
+/// 검색 입력을 검증하고 메인 질문과 최대 두 비교 subject facet을 만듭니다.
+fn search_query_plan(value: &Value) -> Option<Value> {
+    let question = value.get("question")?.as_str()?;
+    if question.len() > MAX_SEARCH_PLAN_QUESTION_BYTES || question.trim().is_empty() {
+        return None;
+    }
+    let scoring_question = match value.get("scoringQuestion") {
+        None | Some(Value::Null) => None,
+        Some(item) => Some(item.as_str()?),
+    };
+    if scoring_question
+        .is_some_and(|text| text.len() > MAX_SEARCH_PLAN_QUESTION_BYTES || text.trim().is_empty())
+    {
+        return None;
+    }
+    let scopes = match value.get("scopes") {
+        None => &[][..],
+        Some(Value::Null) => return None,
+        Some(item) => item.as_array()?.as_slice(),
+    };
+    if scopes.len() > MAX_SEARCH_PLAN_SCOPES {
+        return None;
+    }
+    let scopes = scopes
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()?;
+    if scopes.iter().any(|scope| !valid_path(scope)) {
+        return None;
+    }
+    let main = scoring_question
+        .unwrap_or(question)
+        .trim()
+        .chars()
+        .take(MAX_SEARCH_QUERY_CHARS)
+        .collect::<String>();
+    let subjects = comparison_subject_queries(question);
+    let comparison = subjects.len() >= 2;
+    let queries = if comparison {
+        std::iter::once(main)
+            .chain(subjects.into_iter().take(2))
+            .collect::<Vec<_>>()
+    } else {
+        vec![main]
+    };
+    let facets = queries
+        .iter()
+        .enumerate()
+        .map(|(query_index, query)| {
+            let mut terms = Vec::new();
+            append_meaningful_tokens(&mut terms, query);
+            let (id, kind) = if query_index == 0 {
+                ("question", "question")
+            } else {
+                (
+                    if query_index == 1 {
+                        "subject-0"
+                    } else {
+                        "subject-1"
+                    },
+                    "subject",
+                )
+            };
+            json!({"id":id,"kind":kind,"query":query,"queryIndex":query_index,"terms":terms})
+        })
+        .collect::<Vec<_>>();
+    Some(json!({
+        "mode": if comparison { "comparison" } else { "single" },
+        "facets": facets,
+    }))
 }
 
 /// 원문이 없는 저장 요약이나 행동이 일치하지 않는 결과는 근거로 세지 않습니다.
@@ -871,6 +1036,170 @@ mod tests {
                     .any(|query| query.contains("glass") || query.contains("유리"))
             );
         }
+    }
+
+    #[test]
+    fn comparison_subjects_do_not_split_on_connectors_inside_quotes() {
+        assert_eq!(
+            comparison_subject_queries("Compare \"alpha and beta\" and gamma"),
+            vec!["alpha beta".to_owned(), "gamma".to_owned()]
+        );
+        assert!(comparison_subject_queries("Compare \"alpha and beta\" values").is_empty());
+    }
+
+    #[test]
+    fn search_query_plan_preserves_comparison_subjects_and_order() {
+        for (question, first, second) in [
+            (
+                "Compare copper storage and glass queue latency",
+                "copper",
+                "glass",
+            ),
+            (
+                "구리 저장소와 유리 큐의 지연 차이를 설명해줘",
+                "구리",
+                "유리",
+            ),
+        ] {
+            let plan: Value = serde_json::from_str(&plan_indexed_search_queries_json(
+                &json!({"question": question, "scopes": ["Research"]}).to_string(),
+            ))
+            .unwrap_or(Value::Null);
+            assert_eq!(plan.get("mode"), Some(&json!("comparison")));
+            let facets = plan
+                .get("facets")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(facets.len(), 3);
+            let first_facet = facets.first().unwrap_or(&Value::Null);
+            let second_facet = facets.get(1).unwrap_or(&Value::Null);
+            let third_facet = facets.get(2).unwrap_or(&Value::Null);
+            assert_eq!(first_facet.get("id"), Some(&json!("question")));
+            assert_eq!(first_facet.get("queryIndex"), Some(&json!(0)));
+            assert_eq!(second_facet.get("id"), Some(&json!("subject-0")));
+            assert_eq!(second_facet.get("queryIndex"), Some(&json!(1)));
+            assert_eq!(third_facet.get("id"), Some(&json!("subject-1")));
+            assert_eq!(third_facet.get("queryIndex"), Some(&json!(2)));
+            assert!(
+                second_facet
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .is_some_and(|query| query.contains(first))
+            );
+            assert!(
+                third_facet
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .is_some_and(|query| query.contains(second))
+            );
+        }
+    }
+
+    #[test]
+    fn scoring_question_replaces_only_the_main_query() {
+        let plan: Value = serde_json::from_str(&plan_indexed_search_queries_json(
+            &json!({
+                "question": "Compare copper storage and glass queue latency",
+                "scoringQuestion": "  copper storage and glass queue latency reliability  ",
+                "scopes": ["Research"]
+            })
+            .to_string(),
+        ))
+        .unwrap_or(Value::Null);
+        assert_eq!(
+            plan.pointer("/facets/0/query"),
+            Some(&json!("copper storage and glass queue latency reliability"))
+        );
+        assert_eq!(
+            plan.pointer("/facets/1/query"),
+            Some(&json!("copper storage"))
+        );
+        assert_eq!(
+            plan.pointer("/facets/2/query"),
+            Some(&json!("glass queue latency"))
+        );
+        assert_eq!(
+            plan_indexed_search_queries_json(&json!({"question": ""}).to_string()),
+            ""
+        );
+    }
+
+    #[test]
+    fn search_query_plan_preserves_main_query_syntax() {
+        for (input, expected) in [
+            (
+                json!({"question": "  title:\"quoted phrase\" -deprecated Compare copper and glass  "}),
+                "title:\"quoted phrase\" -deprecated Compare copper and glass",
+            ),
+            (
+                json!({
+                    "question": "Compare copper and glass",
+                    "scoringQuestion": "  body:\"quoted phrase\" -deprecated  "
+                }),
+                "body:\"quoted phrase\" -deprecated",
+            ),
+        ] {
+            let plan: Value =
+                serde_json::from_str(&plan_indexed_search_queries_json(&input.to_string()))
+                    .unwrap_or(Value::Null);
+            assert_eq!(plan.pointer("/facets/0/query"), Some(&json!(expected)));
+        }
+    }
+
+    #[test]
+    fn search_query_plan_requires_two_valid_subject_facets_for_comparison() {
+        for question in ["구리·유리 차이", "Compare copper only"] {
+            let plan: Value = serde_json::from_str(&plan_indexed_search_queries_json(
+                &json!({"question": question}).to_string(),
+            ))
+            .unwrap_or(Value::Null);
+            assert_eq!(plan.get("mode"), Some(&json!("single")));
+            assert_eq!(
+                plan.get("facets").and_then(Value::as_array).map(Vec::len),
+                Some(1)
+            );
+        }
+
+        let duplicate_identity: Value = serde_json::from_str(&plan_indexed_search_queries_json(
+            &json!({"question": "Compare copper and copper"}).to_string(),
+        ))
+        .unwrap_or(Value::Null);
+        assert_eq!(duplicate_identity.get("mode"), Some(&json!("comparison")));
+        assert_eq!(
+            duplicate_identity
+                .get("facets")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(3)
+        );
+        assert_eq!(
+            duplicate_identity.pointer("/facets/1/query"),
+            Some(&json!("copper"))
+        );
+        assert_eq!(
+            duplicate_identity.pointer("/facets/2/query"),
+            Some(&json!("copper"))
+        );
+    }
+
+    #[test]
+    fn search_query_plan_keeps_subjects_with_the_maximum_scope_count() {
+        let scopes = (0..MAX_SEARCH_PLAN_SCOPES)
+            .map(|index| format!("Scope{index}"))
+            .collect::<Vec<_>>();
+        let plan: Value = serde_json::from_str(&plan_indexed_search_queries_json(
+            &json!({
+                "question": "Compare copper storage and glass queue latency",
+                "scopes": scopes
+            })
+            .to_string(),
+        ))
+        .unwrap_or(Value::Null);
+        assert_eq!(
+            plan.get("facets").and_then(Value::as_array).map(Vec::len),
+            Some(3)
+        );
     }
 
     #[test]

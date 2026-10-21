@@ -5,6 +5,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::wasm_bindgen;
 
+/// 검색 계획·근거·답변 검증 bridge 호출의 `JSON` byte 상한입니다.
+const MAX_ANSWER_INPUT_BYTES: usize = 8 * 1024 * 1024;
+/// 검색 계획 facet 수 상한입니다.
+const MAX_ANSWER_FACETS: usize = 3;
+/// 비교 답변 계획이 받는 근거 항목 수 상한입니다.
+const MAX_ANSWER_EVIDENCE: usize = 64;
+/// 답변이 인용할 수 있는 전체 source ID 수 상한입니다.
+const MAX_ANSWER_SOURCES: usize = 64;
+/// 답변 문단 수 상한입니다.
+const MAX_ANSWER_PARAGRAPHS: usize = 64;
+/// 검색 계획 query index의 wire 상한입니다.
+const MAX_QUERY_INDEX: usize = 3;
+/// 검색 계획 query 하나의 문자 수 상한입니다.
+const MAX_QUERY_CHARS: usize = 320;
+/// 문단 하나의 문자 수 상한입니다.
+const MAX_PARAGRAPH_CHARS: usize = 8000;
+/// 문단 하나가 인용할 수 있는 source 수 상한입니다.
+const MAX_PARAGRAPH_SOURCES: usize = 8;
+
 /// 이름·검색 순위로 자료를 제거하지 않고 색인과 허용 범위의 교집합을 반환합니다.
 #[must_use]
 #[wasm_bindgen]
@@ -142,6 +161,34 @@ pub fn render_indexed_review_answer_json(source_ids: &str, response: &str) -> St
     render_answer(source_ids, response).map_or_else(String::new, |value| value.to_string())
 }
 
+/// 비교 답변의 보존 대상 facet과 출처 상태를 계산합니다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_indexed_review_answer_plan_json(input: &str) -> String {
+    if input.len() > MAX_ANSWER_INPUT_BYTES {
+        return String::new();
+    }
+    let Ok(value) = serde_json::from_str::<Value>(input) else {
+        return String::new();
+    };
+    indexed_review_answer_plan(&value).map_or_else(String::new, |plan| plan.to_string())
+}
+
+/// 답변 문단이 계획한 facet과 실제 출처를 모두 지키는지 검증합니다.
+#[must_use]
+#[wasm_bindgen]
+pub fn validate_indexed_review_answer_json(input: &str) -> String {
+    if input.len() > MAX_ANSWER_INPUT_BYTES {
+        return invalid_answer("invalid-format", &[]).to_string();
+    }
+    let value = serde_json::from_str::<Value>(input).ok();
+    value
+        .as_ref()
+        .and_then(indexed_review_answer_validation)
+        .unwrap_or_else(|| invalid_answer("invalid-format", &[]))
+        .to_string()
+}
+
 /// 모든 답변 문단에 채택된 출처만 연결합니다.
 fn render_answer(source_ids: &str, response: &str) -> Option<Value> {
     let sources: BTreeSet<String> = serde_json::from_str(source_ids).ok()?;
@@ -182,6 +229,620 @@ fn render_answer(source_ids: &str, response: &str) -> Option<Value> {
         blocks.push(format!("{text} {}", citations.join(" ")));
     }
     Some(json!({"content": blocks.join("\n\n")}))
+}
+
+/// 검색 계획의 facet 하나입니다.
+struct ReviewSearchFacet {
+    /// 안정적인 facet ID입니다.
+    id: String,
+    /// `question`/`subject` 구분입니다.
+    kind: String,
+    /// 사용자 질문에서 보존한 query 원문입니다.
+    query: String,
+    /// 검색 계획 배열 순서와 같은 index입니다.
+    query_index: usize,
+}
+
+/// 답변 계획의 근거 하나입니다.
+struct ReviewAnswerEvidence {
+    /// 호스트가 부여한 실제 출처 ID입니다.
+    source_id: String,
+    /// 검색 계획의 query index 합집합입니다.
+    query_indexes: BTreeSet<usize>,
+}
+
+/// 답변 계획이 보존할 facet 상태입니다.
+struct ReviewAnswerPlanFacet {
+    /// 검색 계획 facet ID입니다.
+    id: String,
+    /// `question`/`subject` 구분입니다.
+    kind: String,
+    /// `supported`/`missing` 상태입니다.
+    status: &'static str,
+    /// 이 facet와 연결된 실제 출처 ID입니다.
+    source_ids: Vec<String>,
+}
+
+/// 검증한 검색 계획과 근거에서 답변 계획을 계산합니다.
+fn indexed_review_answer_plan(value: &Value) -> Option<Value> {
+    let search_plan = value.get("searchPlan")?;
+    let (mode, search_facets) = parse_review_search_plan(search_plan)?;
+    let evidence = parse_review_evidence(value.get("evidence")?)?;
+    let facets = search_facets
+        .iter()
+        .filter(|facet| mode == "single" || facet.kind == "subject")
+        .map(|facet| {
+            let source_ids = if mode == "single" {
+                unique_source_ids(evidence.iter().map(|item| item.source_id.as_str()))
+            } else {
+                let mut source_ids = Vec::new();
+                for item in &evidence {
+                    if item.query_indexes.contains(&facet.query_index)
+                        && !source_ids.contains(&item.source_id)
+                    {
+                        source_ids.push(item.source_id.clone());
+                    }
+                }
+                source_ids
+            };
+            ReviewAnswerPlanFacet {
+                id: facet.id.clone(),
+                kind: facet.kind.clone(),
+                status: if source_ids.is_empty() {
+                    "missing"
+                } else {
+                    "supported"
+                },
+                source_ids,
+            }
+        })
+        .collect::<Vec<_>>();
+    if facets.is_empty()
+        || facets.len() > MAX_ANSWER_FACETS
+        || facets
+            .iter()
+            .filter(|facet| facet.kind == "subject")
+            .count()
+            == 0
+            && mode == "comparison"
+    {
+        return None;
+    }
+    let required_facet_ids: Vec<String> = if mode == "single" {
+        facets.iter().map(|facet| facet.id.clone()).collect()
+    } else {
+        facets
+            .iter()
+            .filter(|facet| facet.status == "supported")
+            .map(|facet| facet.id.clone())
+            .collect()
+    };
+    let missing_facet_ids = facets
+        .iter()
+        .filter(|facet| facet.status == "missing")
+        .map(|facet| facet.id.clone())
+        .collect::<Vec<_>>();
+    let synthesis_required = mode == "comparison" && required_facet_ids.len() >= 2;
+    Some(json!({
+        "mode": mode,
+        "facets": facets.iter().map(|facet| json!({
+            "id": facet.id,
+            "kind": facet.kind,
+            "label": search_facets
+                .iter()
+                .find(|item| item.id == facet.id)
+                .map_or("", |item| item.query.as_str()),
+            "status": facet.status,
+            "sourceIds": facet.source_ids,
+        })).collect::<Vec<_>>(),
+        "requiredFacetIds": required_facet_ids,
+        "missingFacetIds": missing_facet_ids,
+        "synthesisRequired": synthesis_required,
+    }))
+}
+
+/// 검색 계획 wire를 검증하고 facet을 보존합니다.
+fn parse_review_search_plan(value: &Value) -> Option<(String, Vec<ReviewSearchFacet>)> {
+    let mode = value.get("mode")?.as_str()?.to_owned();
+    if !matches!(mode.as_str(), "single" | "comparison") {
+        return None;
+    }
+    let items = value.get("facets")?.as_array()?;
+    if items.is_empty()
+        || items.len() > MAX_ANSWER_FACETS
+        || mode == "single" && items.len() != 1
+        || mode == "comparison" && items.len() < 2
+    {
+        return None;
+    }
+    let mut seen = BTreeSet::new();
+    let mut facets = Vec::new();
+    for (position, item) in items.iter().enumerate() {
+        let id = item.get("id")?.as_str()?;
+        let expected_id = match position {
+            0 => "question",
+            1 => "subject-0",
+            2 => "subject-1",
+            _ => return None,
+        };
+        if id != expected_id || !seen.insert(id.to_owned()) {
+            return None;
+        }
+        let kind = item.get("kind")?.as_str()?.to_owned();
+        let expected_kind = if position == 0 { "question" } else { "subject" };
+        if kind != expected_kind {
+            return None;
+        }
+        let query = item.get("query")?.as_str()?.to_owned();
+        if query.trim().is_empty() || query.chars().count() > MAX_QUERY_CHARS {
+            return None;
+        }
+        let query_index = usize::try_from(item.get("queryIndex")?.as_u64()?).ok()?;
+        if query_index != position || query_index > MAX_QUERY_INDEX {
+            return None;
+        }
+        let terms = item
+            .get("terms")?
+            .as_array()?
+            .iter()
+            .map(|term| {
+                term.as_str()
+                    .filter(|term| !term.is_empty() && term.chars().count() <= 128)
+                    .map(str::to_owned)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        if terms.len() > 64 {
+            return None;
+        }
+        facets.push(ReviewSearchFacet {
+            id: id.to_owned(),
+            kind,
+            query,
+            query_index,
+        });
+    }
+    Some((mode, facets))
+}
+
+/// 답변 계획 입력의 근거를 검증합니다.
+fn parse_review_evidence(value: &Value) -> Option<Vec<ReviewAnswerEvidence>> {
+    let items = value.as_array()?;
+    if items.len() > MAX_ANSWER_EVIDENCE {
+        return None;
+    }
+    let mut evidence = Vec::new();
+    for item in items {
+        let source_id = item.get("sourceId")?.as_str()?;
+        let path = item.get("path")?.as_str()?;
+        let quote = item.get("quote")?.as_str()?;
+        if source_id.is_empty()
+            || source_id.len() > 4096
+            || source_id.contains("[vault:")
+            || !safe_path(path)
+            || quote.trim().is_empty()
+            || quote.len() > 2 * 1024 * 1024
+        {
+            return None;
+        }
+        let mut query_indexes = BTreeSet::new();
+        if let Some(indexes) = item.get("queryIndexes") {
+            let indexes = indexes.as_array()?;
+            if indexes.len() > MAX_QUERY_INDEX + 1 {
+                return None;
+            }
+            for index in indexes {
+                let index = usize::try_from(index.as_u64()?).ok()?;
+                if index > MAX_QUERY_INDEX {
+                    return None;
+                }
+                query_indexes.insert(index);
+            }
+        }
+        evidence.push(ReviewAnswerEvidence {
+            source_id: source_id.to_owned(),
+            query_indexes,
+        });
+    }
+    Some(evidence)
+}
+
+/// source ID를 입력 순서대로 중복 없이 보존합니다.
+fn unique_source_ids<'a>(sources: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut output = Vec::new();
+    for source in sources {
+        if !output.iter().any(|item| item == source) {
+            output.push(source.to_owned());
+        }
+    }
+    output
+}
+
+/// validator가 검증한 답변 계획입니다.
+struct ReviewAnswerPlan {
+    /// `single`/`comparison` 모드입니다.
+    mode: String,
+    /// 보존할 facet 상태입니다.
+    facets: Vec<ReviewAnswerPlanFacet>,
+    /// 반드시 다뤄야 할 facet ID입니다.
+    required_facet_ids: Vec<String>,
+    /// 하나의 문단에서 여러 facet을 종합해야 하는지입니다.
+    synthesis_required: bool,
+}
+
+/// validator가 검증한 답변 문단입니다.
+struct ReviewAnswerParagraph {
+    /// 이미 trim한 문단 본문입니다.
+    text: String,
+    /// 실제 source ID로 정규화한 인용 목록입니다.
+    sources: Vec<String>,
+    /// 이 문단이 다루는 facet ID입니다.
+    covers: BTreeSet<String>,
+}
+
+/// validator가 받는 실제 source ID 목록을 검증합니다.
+fn parse_answer_source_ids(value: &Value) -> Option<BTreeSet<String>> {
+    let items = value.as_array()?;
+    if items.len() > MAX_ANSWER_SOURCES {
+        return None;
+    }
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .filter(|source| {
+                    !source.is_empty() && source.len() <= 4096 && !source.contains("[vault:")
+                })
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// validator 입력의 답변 계획을 검증합니다.
+fn parse_review_answer_plan(value: &Value) -> Option<ReviewAnswerPlan> {
+    let mode = value.get("mode")?.as_str()?.to_owned();
+    if !matches!(mode.as_str(), "single" | "comparison") {
+        return None;
+    }
+    let items = value.get("facets")?.as_array()?;
+    if items.is_empty() || items.len() > MAX_ANSWER_FACETS {
+        return None;
+    }
+    let mut seen = BTreeSet::new();
+    let mut facets = Vec::new();
+    for item in items {
+        let id = item.get("id")?.as_str()?;
+        let kind = item.get("kind")?.as_str()?;
+        let label = item.get("label")?.as_str()?;
+        let status = item.get("status")?.as_str()?;
+        if id.is_empty()
+            || id.len() > 128
+            || !seen.insert(id.to_owned())
+            || !matches!(kind, "question" | "subject")
+            || label.trim().is_empty()
+            || label.chars().count() > MAX_QUERY_CHARS
+            || !matches!(status, "supported" | "missing")
+        {
+            return None;
+        }
+        let source_ids = item
+            .get("sourceIds")?
+            .as_array()?
+            .iter()
+            .map(|source| {
+                source
+                    .as_str()
+                    .filter(|source| !source.is_empty() && !source.contains("[vault:"))
+                    .map(str::to_owned)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        if source_ids.len() > MAX_ANSWER_EVIDENCE
+            || status == "supported" && source_ids.is_empty()
+            || status == "missing" && !source_ids.is_empty()
+        {
+            return None;
+        }
+        facets.push(ReviewAnswerPlanFacet {
+            id: id.to_owned(),
+            kind: kind.to_owned(),
+            status: if status == "supported" {
+                "supported"
+            } else {
+                "missing"
+            },
+            source_ids,
+        });
+    }
+    if mode == "single" {
+        let facet = facets.first()?;
+        if facets.len() != 1 || facet.kind != "question" || facet.id != "question" {
+            return None;
+        }
+    } else if facets.len() < 2 || facets.iter().any(|facet| facet.kind != "subject") {
+        return None;
+    }
+    let (required_facet_ids, synthesis_required) =
+        parse_review_answer_plan_contract(value, &mode, &facets)?;
+    Some(ReviewAnswerPlan {
+        mode,
+        facets,
+        required_facet_ids,
+        synthesis_required,
+    })
+}
+
+/// 답변 계획의 required·missing 목록과 synthesis 계약을 검증합니다.
+fn parse_review_answer_plan_contract(
+    value: &Value,
+    mode: &str,
+    facets: &[ReviewAnswerPlanFacet],
+) -> Option<(Vec<String>, bool)> {
+    let required_facet_ids = parse_facet_id_list(value.get("requiredFacetIds")?)?;
+    let missing_facet_ids = parse_facet_id_list(value.get("missingFacetIds")?)?;
+    let required = required_facet_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let missing = missing_facet_ids.iter().cloned().collect::<BTreeSet<_>>();
+    if required.len() != required_facet_ids.len() || missing.len() != missing_facet_ids.len() {
+        return None;
+    }
+    if mode == "single" {
+        let facet = facets.first()?;
+        if required != BTreeSet::from(["question".to_owned()])
+            || missing.contains("question") != (facet.status == "missing")
+            || missing.len() != usize::from(facet.status == "missing")
+        {
+            return None;
+        }
+    } else {
+        if required.iter().any(|id| missing.contains(id))
+            || required.len().saturating_add(missing.len()) != facets.len()
+            || !required
+                .iter()
+                .chain(missing.iter())
+                .all(|id| facets.iter().any(|facet| &facet.id == id))
+        {
+            return None;
+        }
+        for facet in facets {
+            if required.contains(&facet.id) != (facet.status == "supported")
+                || missing.contains(&facet.id) != (facet.status == "missing")
+            {
+                return None;
+            }
+        }
+    }
+    let synthesis_required = value.get("synthesisRequired")?.as_bool()?;
+    if synthesis_required
+        != (mode == "comparison"
+            && facets
+                .iter()
+                .filter(|facet| facet.status == "supported")
+                .count()
+                >= 2)
+    {
+        return None;
+    }
+    Some((required_facet_ids, synthesis_required))
+}
+
+/// facet ID 배열을 중복 없는 문자열 목록으로 검증합니다.
+fn parse_facet_id_list(value: &Value) -> Option<Vec<String>> {
+    let items = value.as_array()?;
+    if items.len() > MAX_ANSWER_FACETS {
+        return None;
+    }
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .filter(|id| !id.is_empty() && id.len() <= 128)
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// 답변 문단을 실제 source ID·facet coverage로 검증합니다.
+fn parse_answer_paragraphs(
+    response: &str,
+    plan: &ReviewAnswerPlan,
+    allowed_sources: &BTreeSet<String>,
+) -> Result<Vec<ReviewAnswerParagraph>, &'static str> {
+    let raw = super::extract_json_object(response).ok_or("invalid-format")?;
+    let value: Value = serde_json::from_str(raw).map_err(|_| "invalid-format")?;
+    let items = value
+        .get("paragraphs")
+        .and_then(Value::as_array)
+        .ok_or("invalid-format")?;
+    if items.is_empty() || items.len() > MAX_ANSWER_PARAGRAPHS {
+        return Err("invalid-format");
+    }
+    let question_id = plan
+        .facets
+        .iter()
+        .find(|facet| facet.kind == "question")
+        .map(|facet| facet.id.as_str());
+    let mut paragraphs = Vec::new();
+    for item in items {
+        let text = item
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| {
+                !text.is_empty()
+                    && text.chars().count() <= MAX_PARAGRAPH_CHARS
+                    && !text.contains("[vault:")
+            })
+            .ok_or("invalid-format")?;
+        let references = item
+            .get("sources")
+            .and_then(Value::as_array)
+            .ok_or("invalid-format")?;
+        if references.is_empty() || references.len() > MAX_PARAGRAPH_SOURCES {
+            return Err("invalid-format");
+        }
+        let sources = references
+            .iter()
+            .map(|reference| {
+                let reference = reference.as_str().ok_or("invalid-format")?;
+                if reference.contains("[vault:") {
+                    return Err("invalid-format");
+                }
+                if allowed_sources.contains(reference) {
+                    return Ok(reference.to_owned());
+                }
+                let normalized = reference
+                    .strip_prefix("vault:")
+                    .filter(|source| allowed_sources.contains(*source))
+                    .ok_or("invalid-format")?;
+                Ok(normalized.to_owned())
+            })
+            .collect::<Result<Vec<_>, &'static str>>()?;
+        let cover_values = match item.get("covers") {
+            None | Some(Value::Null) if plan.mode == "single" => None,
+            Some(Value::Null) | None => return Err("invalid-format"),
+            Some(value) => Some(value.as_array().ok_or("invalid-format")?),
+        };
+        let mut covers = BTreeSet::new();
+        if let Some(values) = cover_values {
+            if values.is_empty() || values.len() > MAX_ANSWER_FACETS {
+                return Err("invalid-format");
+            }
+            for value in values {
+                let id = value.as_str().ok_or("invalid-format")?;
+                if !covers.insert(id.to_owned()) {
+                    return Err("invalid-format");
+                }
+                let facet = plan
+                    .facets
+                    .iter()
+                    .find(|facet| facet.id == id)
+                    .ok_or("unknown-facet")?;
+                if facet.status != "supported" {
+                    return Err("unavailable-facet");
+                }
+            }
+        } else {
+            covers.insert(question_id.ok_or("invalid-format")?.to_owned());
+        }
+        let cover_facets = covers
+            .iter()
+            .filter_map(|id| plan.facets.iter().find(|facet| &facet.id == id))
+            .collect::<Vec<_>>();
+        if sources.iter().any(|source| {
+            !cover_facets
+                .iter()
+                .any(|facet| facet.source_ids.iter().any(|source_id| source_id == source))
+        }) || !cover_facets.iter().all(|facet| {
+            facet
+                .source_ids
+                .iter()
+                .any(|source_id| sources.contains(source_id))
+        }) {
+            return Err("facet-source-mismatch");
+        }
+        paragraphs.push(ReviewAnswerParagraph {
+            text: text.to_owned(),
+            sources,
+            covers,
+        });
+    }
+    Ok(paragraphs)
+}
+
+/// 답변 계획과 문단의 facet coverage·출처·종합 계약을 검증합니다.
+fn indexed_review_answer_validation(value: &Value) -> Option<Value> {
+    let allowed_sources = parse_answer_source_ids(value.get("sourceIds")?)?;
+    let plan = parse_review_answer_plan(value.get("answerPlan")?)?;
+    if plan
+        .facets
+        .iter()
+        .flat_map(|facet| facet.source_ids.iter())
+        .any(|source| !allowed_sources.contains(source))
+    {
+        return Some(invalid_answer("invalid-format", &[]));
+    }
+    let response = value.get("response")?.as_str()?;
+    let paragraphs = match parse_answer_paragraphs(response, &plan, &allowed_sources) {
+        Ok(paragraphs) => paragraphs,
+        Err(reason) => return Some(invalid_answer(reason, &[])),
+    };
+    let covered = paragraphs
+        .iter()
+        .flat_map(|paragraph| paragraph.covers.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let missing = plan
+        .required_facet_ids
+        .iter()
+        .filter(|id| !covered.contains(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Some(invalid_answer("missing-facet", &missing));
+    }
+    if plan.synthesis_required {
+        let full_cover = paragraphs
+            .iter()
+            .filter(|paragraph| {
+                plan.required_facet_ids
+                    .iter()
+                    .all(|id| paragraph.covers.contains(id))
+            })
+            .collect::<Vec<_>>();
+        let synthesized = full_cover.iter().any(|paragraph| {
+            plan.required_facet_ids.iter().all(|id| {
+                let facet = plan.facets.iter().find(|facet| &facet.id == id);
+                facet.is_some_and(|facet| {
+                    facet
+                        .source_ids
+                        .iter()
+                        .any(|source| paragraph.sources.contains(source))
+                })
+            })
+        });
+        if !synthesized {
+            let missing = if full_cover.is_empty() {
+                plan.required_facet_ids.clone()
+            } else {
+                plan.required_facet_ids
+                    .iter()
+                    .filter(|id| {
+                        let facet = plan.facets.iter().find(|facet| &facet.id == *id);
+                        !facet.is_some_and(|facet| {
+                            full_cover.iter().any(|paragraph| {
+                                facet
+                                    .source_ids
+                                    .iter()
+                                    .any(|source| paragraph.sources.contains(source))
+                            })
+                        })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            return Some(invalid_answer("missing-synthesis", &missing));
+        }
+    }
+    let content = paragraphs
+        .iter()
+        .map(|paragraph| {
+            let citations = paragraph
+                .sources
+                .iter()
+                .map(|source| format!("[{source}]"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{} {citations}", paragraph.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Some(json!({"valid": true, "content": content}))
+}
+
+/// 검증 실패 wire를 만듭니다.
+fn invalid_answer(reason: &str, missing_facet_ids: &[String]) -> Value {
+    json!({
+        "valid": false,
+        "reason": reason,
+        "missingFacetIds": missing_facet_ids,
+    })
 }
 
 /// 구간별 판정 누락·중복·허위 인용을 거부합니다.
@@ -503,6 +1164,346 @@ mod tests {
         }
     }
 
+    fn comparison_search_plan() -> Value {
+        json!({
+            "mode": "comparison",
+            "facets": [
+                {"id": "question", "kind": "question", "query": "copper glass", "queryIndex": 0, "terms": ["copper", "glass"]},
+                {"id": "subject-0", "kind": "subject", "query": "copper storage", "queryIndex": 1, "terms": ["copper", "storage"]},
+                {"id": "subject-1", "kind": "subject", "query": "glass latency", "queryIndex": 2, "terms": ["glass", "latency"]}
+            ]
+        })
+    }
+
+    fn answer_plan_of(input: &Value) -> Value {
+        serde_json::from_str(&plan_indexed_review_answer_plan_json(&input.to_string()))
+            .unwrap_or(Value::Null)
+    }
+
+    fn validate_answer_of(input: &Value) -> Value {
+        serde_json::from_str(&validate_indexed_review_answer_json(&input.to_string()))
+            .unwrap_or(Value::Null)
+    }
+
+    #[test]
+    fn comparison_answer_plan_supports_both_subjects_and_requires_synthesis() {
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": comparison_search_plan(),
+            "evidence": [
+                {"sourceId": "copper.md#L1-L1", "path": "copper.md", "quote": "Copper storage needs a latch.", "queryIndexes": [1]},
+                {"sourceId": "glass.md#L1-L1", "path": "glass.md", "quote": "Glass queue latency stays low.", "queryIndexes": [2]}
+            ]
+        }));
+        assert_eq!(answer_plan.get("mode"), Some(&json!("comparison")));
+        assert_eq!(
+            answer_plan.pointer("/facets/0/id"),
+            Some(&json!("subject-0"))
+        );
+        assert_eq!(
+            answer_plan.pointer("/facets/0/label"),
+            Some(&json!("copper storage"))
+        );
+        assert_eq!(
+            answer_plan.pointer("/facets/0/status"),
+            Some(&json!("supported"))
+        );
+        assert_eq!(
+            answer_plan.pointer("/facets/1/status"),
+            Some(&json!("supported"))
+        );
+        assert_eq!(
+            answer_plan.get("requiredFacetIds"),
+            Some(&json!(["subject-0", "subject-1"]))
+        );
+        assert_eq!(answer_plan.get("missingFacetIds"), Some(&json!([])));
+        assert_eq!(answer_plan.get("synthesisRequired"), Some(&json!(true)));
+
+        let validation = validate_answer_of(&json!({
+            "sourceIds": ["copper.md#L1-L1", "glass.md#L1-L1"],
+            "answerPlan": answer_plan,
+            "response": json!({"paragraphs": [{
+                "text": "Copper storage and glass latency have different constraints.",
+                "sources": ["copper.md#L1-L1", "glass.md#L1-L1"],
+                "covers": ["subject-0", "subject-1"]
+            }]}).to_string()
+        }));
+        assert_eq!(validation.get("valid"), Some(&json!(true)));
+        assert_eq!(
+            validation.get("content"),
+            Some(&json!(
+                "Copper storage and glass latency have different constraints. [copper.md#L1-L1] [glass.md#L1-L1]"
+            ))
+        );
+    }
+
+    #[test]
+    fn answer_plan_does_not_support_the_opposite_subject_from_a_shared_quote_term() {
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": comparison_search_plan(),
+            "evidence": [
+                {
+                    "sourceId": "copper.md#L1-L1",
+                    "path": "copper.md",
+                    "quote": "Copper and glass share a boundary.",
+                    "queryIndexes": [1]
+                }
+            ]
+        }));
+        assert_eq!(
+            answer_plan.pointer("/facets/0/status"),
+            Some(&json!("supported"))
+        );
+        assert_eq!(
+            answer_plan.pointer("/facets/1/status"),
+            Some(&json!("missing"))
+        );
+        assert_eq!(answer_plan.pointer("/facets/1/sourceIds"), Some(&json!([])));
+    }
+
+    #[test]
+    fn comparison_validation_rejects_incomplete_coverage() {
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": comparison_search_plan(),
+            "evidence": [
+                {"sourceId": "copper.md#L1-L1", "path": "copper.md", "quote": "Copper storage needs a latch.", "queryIndexes": [1]},
+                {"sourceId": "glass.md#L1-L1", "path": "glass.md", "quote": "Glass queue latency stays low.", "queryIndexes": [2]}
+            ]
+        }));
+        let validation = validate_answer_of(&json!({
+            "sourceIds": ["copper.md#L1-L1", "glass.md#L1-L1"],
+            "answerPlan": answer_plan,
+            "response": json!({"paragraphs": [{
+                "text": "Copper storage is documented.",
+                "sources": ["copper.md#L1-L1"],
+                "covers": ["subject-0"]
+            }]}).to_string()
+        }));
+        assert_eq!(validation.get("valid"), Some(&json!(false)));
+        assert_eq!(validation.get("reason"), Some(&json!("missing-facet")));
+        assert_eq!(
+            validation.get("missingFacetIds"),
+            Some(&json!(["subject-1"]))
+        );
+    }
+
+    #[test]
+    fn comparison_validation_rejects_sources_outside_the_covered_facet() {
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": comparison_search_plan(),
+            "evidence": [
+                {"sourceId": "copper.md#L1-L1", "path": "copper.md", "quote": "Copper storage needs a latch.", "queryIndexes": [1]},
+                {"sourceId": "glass.md#L1-L1", "path": "glass.md", "quote": "Glass queue latency stays low.", "queryIndexes": [2]}
+            ]
+        }));
+        let validation = validate_answer_of(&json!({
+            "sourceIds": ["copper.md#L1-L1", "glass.md#L1-L1"],
+            "answerPlan": answer_plan,
+            "response": json!({"paragraphs": [{
+                "text": "Copper storage is documented.",
+                "sources": ["glass.md#L1-L1"],
+                "covers": ["subject-0"]
+            }]}).to_string()
+        }));
+        assert_eq!(validation.get("valid"), Some(&json!(false)));
+        assert_eq!(
+            validation.get("reason"),
+            Some(&json!("facet-source-mismatch"))
+        );
+    }
+
+    #[test]
+    fn missing_comparison_subject_is_reported_but_not_required() {
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": comparison_search_plan(),
+            "evidence": [
+                {"sourceId": "copper.md#L1-L1", "path": "copper.md", "quote": "Copper storage needs a latch.", "queryIndexes": [1]}
+            ]
+        }));
+        assert_eq!(
+            answer_plan.get("requiredFacetIds"),
+            Some(&json!(["subject-0"]))
+        );
+        assert_eq!(
+            answer_plan.get("missingFacetIds"),
+            Some(&json!(["subject-1"]))
+        );
+        assert_eq!(answer_plan.get("synthesisRequired"), Some(&json!(false)));
+        let validation = validate_answer_of(&json!({
+            "sourceIds": ["copper.md#L1-L1"],
+            "answerPlan": answer_plan,
+            "response": json!({"paragraphs": [{
+                "text": "Copper storage is documented.",
+                "sources": ["copper.md#L1-L1"],
+                "covers": ["subject-0"]
+            }]}).to_string()
+        }));
+        assert_eq!(validation.get("valid"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn single_answer_plan_uses_question_coverage_when_covers_is_omitted() {
+        let search_plan = json!({
+            "mode": "single",
+            "facets": [
+                {"id": "question", "kind": "question", "query": "copper storage", "queryIndex": 0, "terms": ["copper", "storage"]}
+            ]
+        });
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": search_plan,
+            "evidence": [
+                {"sourceId": "copper.md#L1-L1", "path": "copper.md", "quote": "Copper storage needs a latch."}
+            ]
+        }));
+        assert_eq!(
+            answer_plan.get("requiredFacetIds"),
+            Some(&json!(["question"]))
+        );
+        assert_eq!(answer_plan.get("synthesisRequired"), Some(&json!(false)));
+        let empty_plan = answer_plan_of(&json!({
+            "searchPlan": search_plan,
+            "evidence": []
+        }));
+        assert_eq!(
+            empty_plan.get("requiredFacetIds"),
+            Some(&json!(["question"]))
+        );
+        assert_eq!(
+            empty_plan.get("missingFacetIds"),
+            Some(&json!(["question"]))
+        );
+        let validation = validate_answer_of(&json!({
+            "sourceIds": ["copper.md#L1-L1"],
+            "answerPlan": answer_plan,
+            "response": json!({"paragraphs": [{
+                "text": "Copper storage needs a latch.",
+                "sources": ["copper.md#L1-L1"]
+            }]}).to_string()
+        }));
+        assert_eq!(validation.get("valid"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn comparison_validation_rejects_multi_cover_paragraph_with_one_facet_source() {
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": comparison_search_plan(),
+            "evidence": [
+                {"sourceId": "copper.md#L1-L1", "path": "copper.md", "quote": "Copper storage needs a latch.", "queryIndexes": [1]},
+                {"sourceId": "glass.md#L1-L1", "path": "glass.md", "quote": "Glass queue latency stays low.", "queryIndexes": [2]}
+            ]
+        }));
+        let validation = validate_answer_of(&json!({
+            "sourceIds": ["copper.md#L1-L1", "glass.md#L1-L1"],
+            "answerPlan": answer_plan,
+            "response": json!({"paragraphs": [{
+                "text": "Copper storage and glass latency differ.",
+                "sources": ["copper.md#L1-L1"],
+                "covers": ["subject-0", "subject-1"]
+            }]}).to_string()
+        }));
+        assert_eq!(validation.get("valid"), Some(&json!(false)));
+        assert_eq!(
+            validation.get("reason"),
+            Some(&json!("facet-source-mismatch"))
+        );
+    }
+
+    #[test]
+    fn comparison_validation_requires_one_paragraph_covering_both_sources() {
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": comparison_search_plan(),
+            "evidence": [
+                {"sourceId": "copper.md#L1-L1", "path": "copper.md", "quote": "Copper storage needs a latch.", "queryIndexes": [1]},
+                {"sourceId": "glass.md#L1-L1", "path": "glass.md", "quote": "Glass queue latency stays low.", "queryIndexes": [2]}
+            ]
+        }));
+        let validation = validate_answer_of(&json!({
+            "sourceIds": ["copper.md#L1-L1", "glass.md#L1-L1"],
+            "answerPlan": answer_plan,
+            "response": json!({"paragraphs": [
+                {
+                    "text": "Copper storage needs a latch.",
+                    "sources": ["copper.md#L1-L1"],
+                    "covers": ["subject-0"]
+                },
+                {
+                    "text": "Glass queue latency stays low.",
+                    "sources": ["glass.md#L1-L1"],
+                    "covers": ["subject-1"]
+                }
+            ]}).to_string()
+        }));
+        assert_eq!(validation.get("valid"), Some(&json!(false)));
+        assert_eq!(validation.get("reason"), Some(&json!("missing-synthesis")));
+        assert_eq!(
+            validation.get("missingFacetIds"),
+            Some(&json!(["subject-0", "subject-1"]))
+        );
+    }
+
+    #[test]
+    fn answer_validation_distinguishes_unknown_and_unavailable_facets() {
+        let missing_plan = answer_plan_of(&json!({
+            "searchPlan": comparison_search_plan(),
+            "evidence": [
+                {"sourceId": "copper.md#L1-L1", "path": "copper.md", "quote": "Copper storage needs a latch.", "queryIndexes": [1]}
+            ]
+        }));
+        for (cover, expected) in [
+            ("question", "unknown-facet"),
+            ("subject-1", "unavailable-facet"),
+        ] {
+            let validation = validate_answer_of(&json!({
+                "sourceIds": ["copper.md#L1-L1"],
+                "answerPlan": missing_plan,
+                "response": json!({"paragraphs": [{
+                    "text": "Copper storage is documented.",
+                    "sources": ["copper.md#L1-L1"],
+                    "covers": [cover]
+                }]}).to_string()
+            }));
+            assert_eq!(validation.get("reason"), Some(&json!(expected)));
+        }
+    }
+
+    #[test]
+    fn answer_plan_rejects_duplicate_or_out_of_order_facets() {
+        let duplicate = json!({
+            "searchPlan": {"mode": "comparison", "facets": [
+                {"id": "question", "kind": "question", "query": "a b", "queryIndex": 0, "terms": ["a", "b"]},
+                {"id": "subject-0", "kind": "subject", "query": "a", "queryIndex": 1, "terms": ["a"]},
+                {"id": "subject-0", "kind": "subject", "query": "b", "queryIndex": 2, "terms": ["b"]}
+            ]},
+            "evidence": []
+        });
+        assert!(answer_plan_of(&duplicate).is_null());
+        let out_of_order = json!({
+            "searchPlan": {"mode": "single", "facets": [
+                {"id": "question", "kind": "question", "query": "a b", "queryIndex": 1, "terms": ["a", "b"]}
+            ]},
+            "evidence": []
+        });
+        assert!(answer_plan_of(&out_of_order).is_null());
+    }
+
+    #[test]
+    fn review_search_plan_single_mode_has_only_the_question_facet() {
+        let valid = json!({
+            "mode": "single",
+            "facets": [
+                {"id": "question", "kind": "question", "query": "\"quoted phrase\"", "queryIndex": 0, "terms": ["quoted", "phrase"]}
+            ]
+        });
+        assert!(parse_review_search_plan(&valid).is_some());
+        let with_subject = json!({
+            "mode": "single",
+            "facets": [
+                {"id": "question", "kind": "question", "query": "a b", "queryIndex": 0, "terms": ["a", "b"]},
+                {"id": "subject-0", "kind": "subject", "query": "a", "queryIndex": 1, "terms": ["a"]}
+            ]
+        });
+        assert!(parse_review_search_plan(&with_subject).is_none());
+    }
+
     #[test]
     fn inventory_keeps_every_visible_indexed_file_and_only_prioritizes_hits() {
         let paths = (0..2103)
@@ -540,7 +1541,7 @@ mod tests {
             .get("segments")
             .and_then(Value::as_array)
             .map_or(&[][..], Vec::as_slice);
-        assert!(!rows.is_empty());
+        assert_ne!(rows.len(), 0);
         assert_eq!(
             rows.iter()
                 .enumerate()

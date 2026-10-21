@@ -67,6 +67,8 @@ const MIN_CANDIDATE_DEPTH: usize = 8;
 const CANDIDATE_DEPTH_RATIO: f64 = 0.5;
 /// 병합 시 배치 내부 순위를 전역 순위로 완만하게 반영하는 `RRF` 상수입니다.
 const MERGE_RRF_K: f64 = 60.0;
+/// 검색 계획 facet query index의 wire 상한입니다.
+const MAX_CANDIDATE_QUERY_INDEX: usize = 3;
 
 /// 질의에서 파싱한 토큰 하나입니다.
 struct QueryToken {
@@ -210,6 +212,16 @@ struct ScannedDocument {
     line_starts: Vec<usize>,
 }
 
+/// 후보가 지목한 facet query와 실제 절대 행 범위입니다.
+struct CandidateFacetRange {
+    /// 검색 계획 facet query index입니다.
+    query_index: usize,
+    /// 후보가 지목한 시작 행입니다.
+    start_line: u64,
+    /// 후보가 지목한 끝 행입니다.
+    end_line: u64,
+}
+
 /// 후보 신호(기존 hybrid 검색 결과)를 `path`별로 병합한 사전 점수입니다.
 struct CandidatePrior {
     /// `RRF` 사전 점수입니다.
@@ -218,6 +230,10 @@ struct CandidatePrior {
     best_rank: usize,
     /// 후보가 지목한 가장 이른 절대 행 번호입니다.
     start_line: Option<u64>,
+    /// 이 경로에서 후보가 지목한 검색 facet별 행 범위입니다.
+    query_ranges: Vec<CandidateFacetRange>,
+    /// 행 범위가 없어도 비교 subject facet 후보임을 보존합니다.
+    has_comparison_facet: bool,
 }
 
 /// 계획 입력에서 검증한 필터·예산·문서 묶음입니다.
@@ -1066,6 +1082,8 @@ struct PassageDraft {
     matched: bool,
     /// 후보 신호의 가장 좋은 순위(없으면 `usize::MAX`)입니다.
     candidate_rank: usize,
+    /// 이 구절을 지목한 검색 facet query index 합집합입니다.
+    query_indexes: BTreeSet<usize>,
 }
 /// 원문 구절을 만들고 `phrase`·부정 신호를 반영합니다.
 fn build_passage(
@@ -1150,6 +1168,7 @@ fn build_passage(
         field_score: score.field_score,
         matched: !score.matched.is_empty(),
         candidate_rank: usize::MAX,
+        query_indexes: BTreeSet::new(),
         field_matches: score.field_matches.clone(),
         highlights,
     }
@@ -1159,7 +1178,7 @@ fn build_passage(
 ///
 /// 긍정 토큰이 하나 이상 매칭된 문서는 적응 임계로 탈락시키지 않고,
 /// 상위 후보 순위 안의 매칭 문서도 보존합니다.
-fn candidate_depth(drafts: &[PassageDraft], max_documents: usize) -> usize {
+fn candidate_depth(drafts: &[PassageDraft], max_documents: usize, max_passages: usize) -> usize {
     if drafts.is_empty() {
         return 0;
     }
@@ -1179,9 +1198,25 @@ fn candidate_depth(drafts: &[PassageDraft], max_documents: usize) -> usize {
                 && draft.candidate_rank <= PROTECTED_CANDIDATE_RANK
         })
         .count();
+    let mut facet_indexes = BTreeSet::new();
+    let mut facet_depth = 0;
+    for (index, draft) in drafts.iter().enumerate() {
+        for query_index in draft.query_indexes.iter().filter(|index| **index > 0) {
+            if facet_indexes.len() >= max_passages {
+                break;
+            }
+            if facet_indexes.insert(*query_index) {
+                facet_depth = index.saturating_add(1);
+            }
+        }
+        if facet_indexes.len() >= max_passages {
+            break;
+        }
+    }
     adaptive
         .max(matched)
         .max(protected)
+        .max(facet_depth)
         .min(max_documents)
         .min(drafts.len())
 }
@@ -1210,6 +1245,56 @@ fn candidate_prior_share(rank: f64, score: Option<f64>, source_best: Option<f64>
     CANDIDATE_RRF_SHARE.mul_add(rrf, CANDIDATE_SCORE_SHARE * ratio)
 }
 
+/// 후보 queryIndex를 검증합니다.
+fn candidate_query_index(entry: &Value) -> Result<Option<usize>, ()> {
+    match entry.get("queryIndex") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => {
+            let index = usize::try_from(value.as_u64().ok_or(())?).map_err(|_| ())?;
+            if index > MAX_CANDIDATE_QUERY_INDEX {
+                return Err(());
+            }
+            Ok(Some(index))
+        }
+    }
+}
+
+/// 후보 신호 하나를 path·source별 최고 순위와 점수로 병합합니다.
+fn merge_candidate_source(
+    merged: &mut BTreeMap<String, BTreeMap<String, CandidateSourceBest>>,
+    path: &str,
+    source: &str,
+    rank: usize,
+    score: Option<f64>,
+    start_line: Option<u64>,
+) {
+    let sources = merged.entry(path.to_owned()).or_default();
+    match sources.get_mut(source) {
+        Some(best) => {
+            best.rank = best.rank.min(rank);
+            best.score = match (best.score, score) {
+                (Some(left), Some(right)) => Some(left.max(right)),
+                (Some(left), None) => Some(left),
+                (None, Some(right)) => Some(right),
+                (None, None) => None,
+            };
+            if best.start_line.is_none() {
+                best.start_line = start_line;
+            }
+        }
+        None => {
+            sources.insert(
+                source.to_owned(),
+                CandidateSourceBest {
+                    rank,
+                    start_line,
+                    score,
+                },
+            );
+        }
+    }
+}
+
 /// 후보 신호 입력을 `path`별 사전 점수로 병합합니다.
 fn parse_candidates(value: Option<&Value>) -> Option<BTreeMap<String, CandidatePrior>> {
     let Some(item) = value else {
@@ -1221,6 +1306,8 @@ fn parse_candidates(value: Option<&Value>) -> Option<BTreeMap<String, CandidateP
     }
     let mut merged = BTreeMap::<String, BTreeMap<String, CandidateSourceBest>>::new();
     let mut source_best_scores = BTreeMap::<String, f64>::new();
+    let mut query_ranges = BTreeMap::<String, Vec<CandidateFacetRange>>::new();
+    let mut comparison_facet_paths = BTreeSet::<String>::new();
     for entry in array {
         let path = entry.get("path")?.as_str()?;
         if !safe_path(path) {
@@ -1237,31 +1324,26 @@ fn parse_candidates(value: Option<&Value>) -> Option<BTreeMap<String, CandidateP
             *best = best.max(score);
         }
         let start_line = entry.get("startLine").and_then(Value::as_u64);
-        let sources = merged.entry(path.to_owned()).or_default();
-        match sources.get_mut(&source) {
-            Some(best) => {
-                best.rank = best.rank.min(rank);
-                best.score = match (best.score, score) {
-                    (Some(left), Some(right)) => Some(left.max(right)),
-                    (Some(left), None) => Some(left),
-                    (None, Some(right)) => Some(right),
-                    (None, None) => None,
-                };
-                if best.start_line.is_none() {
-                    best.start_line = start_line;
-                }
-            }
-            None => {
-                sources.insert(
-                    source,
-                    CandidateSourceBest {
-                        rank,
-                        start_line,
-                        score,
-                    },
-                );
-            }
+        let end_line = entry.get("endLine").and_then(Value::as_u64);
+        let query_index = candidate_query_index(entry).ok()?;
+        if query_index.is_some_and(|query_index| query_index > 0) {
+            comparison_facet_paths.insert(path.to_owned());
         }
+        if let (Some(query_index), Some(start_line), Some(end_line)) =
+            (query_index, start_line, end_line)
+            && start_line >= 1
+            && end_line >= start_line
+        {
+            query_ranges
+                .entry(path.to_owned())
+                .or_default()
+                .push(CandidateFacetRange {
+                    query_index,
+                    start_line,
+                    end_line,
+                });
+        }
+        merge_candidate_source(&mut merged, path, &source, rank, score, start_line);
     }
     let mut candidates = BTreeMap::new();
     for (path, sources) in merged {
@@ -1279,12 +1361,16 @@ fn parse_candidates(value: Option<&Value>) -> Option<BTreeMap<String, CandidateP
                 start_line = best.start_line;
             }
         }
+        let path_query_ranges = query_ranges.remove(&path).unwrap_or_default();
+        let has_comparison_facet = comparison_facet_paths.contains(&path);
         candidates.insert(
             path,
             CandidatePrior {
                 prior,
                 best_rank,
                 start_line,
+                query_ranges: path_query_ranges,
+                has_comparison_facet,
             },
         );
     }
@@ -1471,7 +1557,7 @@ fn plan_input(value: &Value) -> Option<PlanInput> {
 
 /// 원문 구절·진단 계획을 조립합니다.
 /// 계획 후보를 점수·경로·행 순으로 정렬하고 후보 깊이를 반환합니다.
-fn sort_drafts(drafts: &mut [PassageDraft], max_documents: usize) -> usize {
+fn sort_drafts(drafts: &mut [PassageDraft], max_documents: usize, max_passages: usize) -> usize {
     drafts.sort_by(|left, right| {
         right
             .score
@@ -1479,7 +1565,7 @@ fn sort_drafts(drafts: &mut [PassageDraft], max_documents: usize) -> usize {
             .then_with(|| left.path.cmp(&right.path))
             .then_with(|| left.start_line.cmp(&right.start_line))
     });
-    candidate_depth(drafts, max_documents)
+    candidate_depth(drafts, max_documents, max_passages)
 }
 
 /// 정렬된 후보 앞부분에서 증거 행과 예산 사용량을 만듭니다.
@@ -1492,20 +1578,64 @@ fn collect_evidence_rows(
     let mut evidence = Vec::new();
     let mut seen_quotes = BTreeMap::<String, String>::new();
     let mut used_chars = 0_usize;
-    let mut truncated = drafts.len() > depth;
-    for draft in drafts.iter().take(depth) {
-        if evidence.len() >= max_passages {
-            truncated = true;
-            break;
-        }
-        let quote_chars = draft.quote.encode_utf16().count()
+    let mut selected = BTreeSet::<usize>::new();
+    let quote_chars = |draft: &PassageDraft| {
+        draft.quote.encode_utf16().count()
             + draft.context_before.encode_utf16().count()
-            + draft.context_after.encode_utf16().count();
-        if used_chars.saturating_add(quote_chars) > max_chars {
-            truncated = true;
+            + draft.context_after.encode_utf16().count()
+    };
+    let nonzero_query_indexes = drafts
+        .iter()
+        .take(depth)
+        .flat_map(|draft| draft.query_indexes.iter().copied())
+        .filter(|index| *index > 0)
+        .collect::<BTreeSet<_>>();
+    for query_index in nonzero_query_indexes {
+        if selected.len() >= max_passages {
             break;
         }
-        used_chars = used_chars.saturating_add(quote_chars);
+        if selected.iter().any(|index| {
+            drafts
+                .get(*index)
+                .is_some_and(|draft| draft.query_indexes.contains(&query_index))
+        }) {
+            continue;
+        }
+        if let Some((index, draft)) =
+            drafts
+                .iter()
+                .take(depth)
+                .enumerate()
+                .find(|(index, draft)| {
+                    !selected.contains(index)
+                        && draft.query_indexes.contains(&query_index)
+                        && used_chars.saturating_add(quote_chars(draft)) <= max_chars
+                })
+        {
+            used_chars = used_chars.saturating_add(quote_chars(draft));
+            selected.insert(index);
+        }
+    }
+    for (index, draft) in drafts.iter().take(depth).enumerate() {
+        if selected.len() >= max_passages {
+            break;
+        }
+        if selected.contains(&index) {
+            continue;
+        }
+        let chars = quote_chars(draft);
+        if used_chars.saturating_add(chars) > max_chars {
+            break;
+        }
+        used_chars = used_chars.saturating_add(chars);
+        selected.insert(index);
+    }
+    for draft in drafts
+        .iter()
+        .take(depth)
+        .enumerate()
+        .filter_map(|(index, draft)| selected.contains(&index).then_some(draft))
+    {
         let key = normalize_phrase(&draft.quote);
         let duplicate_of = seen_quotes.get(&key).cloned();
         if duplicate_of.is_none() {
@@ -1536,9 +1666,14 @@ fn collect_evidence_rows(
                 .collect::<Vec<_>>(),
             "negatedNearby": draft.negated_nearby,
             "duplicateOf": duplicate_of,
+            "queryIndexes": draft.query_indexes.iter().copied().collect::<Vec<_>>(),
         }));
     }
-    (evidence, used_chars, truncated)
+    (
+        evidence,
+        used_chars,
+        drafts.len() > depth || selected.len() < depth,
+    )
 }
 /// 정렬된 후보에서 증거 행을 만듭니다.
 fn build_evidence_rows(
@@ -1547,7 +1682,7 @@ fn build_evidence_rows(
     max_passages: usize,
     max_chars: usize,
 ) -> (Vec<Value>, usize, usize, bool, usize) {
-    let depth = sort_drafts(drafts, max_documents);
+    let depth = sort_drafts(drafts, max_documents, max_passages);
     let threshold = drafts
         .first()
         .map_or(0.0, |draft| draft.score * CANDIDATE_DEPTH_RATIO);
@@ -1567,6 +1702,13 @@ fn plan_evidence(value: &Value) -> Option<Value> {
     let terms = positive_terms(&tokens);
     let kinds = term_kinds(&tokens);
     let negated = negated_terms(&tokens);
+    let has_positive_phrase = phrases
+        .iter()
+        .any(|phrase| !phrase.negated && !phrase.text.is_empty());
+    let has_comparison_facets = input
+        .candidates
+        .values()
+        .any(|candidate| candidate.has_comparison_facet);
     let statistics = batch_statistics(&input.documents, &terms)?;
     let allowed = allowed_fields(&tokens);
     let atomic = atomic_identifiers(&tokens);
@@ -1594,7 +1736,21 @@ fn plan_evidence(value: &Value) -> Option<Value> {
         let anchor =
             select_anchor(document, &score.matched, &phrase_offsets, candidate_start).unwrap_or(0);
         let mut draft = build_passage(document, anchor, &score, prior, &phrases, &negated);
+        if has_positive_phrase && !has_comparison_facets && draft.phrase_matches == 0 {
+            continue;
+        }
         draft.candidate_rank = prior_rank;
+        if let Some(candidate) = input.candidates.get(&document.path) {
+            draft.query_indexes.extend(
+                candidate
+                    .query_ranges
+                    .iter()
+                    .filter(|range| {
+                        draft.start_line <= range.end_line && draft.end_line >= range.start_line
+                    })
+                    .map(|range| range.query_index),
+            );
+        }
         drafts.push(draft);
     }
     let (evidence, depth, used_chars, truncated, below_threshold) = build_evidence_rows(
@@ -1917,6 +2073,30 @@ fn parse_verify_documents(value: Option<&Value>) -> Option<Vec<VerifyDocument>> 
     Some(documents)
 }
 
+/// 같은 구절이 여러 번 나와도 요청한 절대 행과 일치하는 위치가 있는지 확인합니다.
+fn quote_line_matches(
+    document: &VerifyDocument,
+    quote: &str,
+    start_line: Option<u64>,
+    end_line: Option<u64>,
+) -> bool {
+    let Some(expected_start) = start_line else {
+        return false;
+    };
+    !quote.is_empty()
+        && document.text.match_indices(quote).any(|(index, _)| {
+            let start_ok = line_of(&document.text, document.start_line, index) == expected_start;
+            let end_ok = end_line.is_none_or(|expected_end| {
+                line_of(
+                    &document.text,
+                    document.start_line,
+                    index.saturating_add(quote.len()).saturating_sub(1),
+                ) == expected_end
+            });
+            start_ok && end_ok
+        })
+}
+
 /// 후보 문서 하나의 구절 상태를 검증합니다.
 fn verify_quote(
     item: &EvidenceRef,
@@ -1925,21 +2105,10 @@ fn verify_quote(
 ) -> VerifiedQuote {
     let mut best: Option<(u8, VerifiedQuote)> = None;
     for document in candidates {
-        let quote_index = document.text.find(&item.quote);
-        let exists = !item.quote.is_empty() && quote_index.is_some();
-        let line_matches = item.start_line.map(|expected| {
-            quote_index.is_some_and(|index| {
-                let start_ok = line_of(&document.text, document.start_line, index) == expected;
-                let end_ok = item.end_line.is_none_or(|end| {
-                    line_of(
-                        &document.text,
-                        document.start_line,
-                        index.saturating_add(item.quote.len()).saturating_sub(1),
-                    ) == end
-                });
-                start_ok && end_ok
-            })
-        });
+        let exists = !item.quote.is_empty() && document.text.contains(&item.quote);
+        let line_matches = item
+            .start_line
+            .map(|_| quote_line_matches(document, &item.quote, item.start_line, item.end_line));
         let revision_state = match (item.revision.as_deref(), document.revision.as_deref()) {
             (Some(left), Some(right)) if left == right => "match",
             (Some(_), Some(_)) => "mismatch",
@@ -2103,6 +2272,8 @@ struct MergeEntry {
     quote: String,
     /// 원래 출처 id입니다.
     source_id: String,
+    /// 이 구절을 지목한 검색 facet query index입니다.
+    query_indexes: BTreeSet<usize>,
     /// 인용과 문맥의 `UTF-16` 문자 수입니다.
     chars: usize,
 }
@@ -2158,6 +2329,17 @@ fn merge_entry(value: &Value) -> Option<MergeEntry> {
         .get("contextAfter")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let query_indexes = match value.get("queryIndexes") {
+        None | Some(Value::Null) => BTreeSet::new(),
+        Some(values) => values
+            .as_array()?
+            .iter()
+            .map(|value| {
+                let index = usize::try_from(value.as_u64()?).ok()?;
+                (index <= MAX_CANDIDATE_QUERY_INDEX).then_some(index)
+            })
+            .collect::<Option<BTreeSet<_>>>()?,
+    };
     let chars = crate::text_len(&quote)
         .saturating_add(crate::text_len(context_before))
         .saturating_add(crate::text_len(context_after));
@@ -2177,6 +2359,7 @@ fn merge_entry(value: &Value) -> Option<MergeEntry> {
         end_line,
         quote,
         source_id,
+        query_indexes,
         chars,
     })
 }
@@ -2294,10 +2477,7 @@ fn select_merge_entries(
     });
     let mut seen = BTreeSet::<(String, u64, u64, String)>::new();
     let mut duplicates_dropped = 0_usize;
-    let mut selected = Vec::new();
-    let mut used_chars = 0_usize;
-    let mut budget_dropped = 0_usize;
-    let mut truncated = false;
+    let mut unique = Vec::with_capacity(sorted.len());
     for entry in sorted {
         let key = (
             entry.path.clone(),
@@ -2309,14 +2489,55 @@ fn select_merge_entries(
             duplicates_dropped = duplicates_dropped.saturating_add(1);
             continue;
         }
-        if selected.len() >= max_passages || used_chars.saturating_add(entry.chars) > max_chars {
-            budget_dropped = budget_dropped.saturating_add(1);
-            truncated = true;
+        unique.push(entry);
+    }
+    let mut selected_indices = BTreeSet::new();
+    let mut reserved_query_indexes = BTreeSet::new();
+    let mut used_chars = 0_usize;
+    for (index, entry) in unique.iter().enumerate() {
+        let has_unreserved = entry
+            .query_indexes
+            .iter()
+            .any(|query_index| *query_index > 0 && !reserved_query_indexes.contains(query_index));
+        if !has_unreserved {
+            continue;
+        }
+        if selected_indices.len() >= max_passages {
+            break;
+        }
+        if used_chars.saturating_add(entry.chars) > max_chars {
             continue;
         }
         used_chars = used_chars.saturating_add(entry.chars);
-        selected.push(entry);
+        selected_indices.insert(index);
+        reserved_query_indexes.extend(
+            entry
+                .query_indexes
+                .iter()
+                .copied()
+                .filter(|query_index| *query_index > 0),
+        );
     }
+    for (index, entry) in unique.iter().enumerate() {
+        if selected_indices.contains(&index) {
+            continue;
+        }
+        if selected_indices.len() >= max_passages {
+            break;
+        }
+        if used_chars.saturating_add(entry.chars) > max_chars {
+            continue;
+        }
+        used_chars = used_chars.saturating_add(entry.chars);
+        selected_indices.insert(index);
+    }
+    let budget_dropped = unique.len().saturating_sub(selected_indices.len());
+    let truncated = budget_dropped > 0;
+    let selected = unique
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, entry)| selected_indices.contains(&index).then_some(entry))
+        .collect::<Vec<_>>();
     (
         selected,
         duplicates_dropped,
@@ -2750,6 +2971,17 @@ mod tests {
     }
 
     #[test]
+    fn verify_accepts_a_later_occurrence_at_the_requested_absolute_line() {
+        let verified = verify_of(&json!({
+            "evidence": [{"sourceId": "repeat.md#L3-L3", "path": "repeat.md", "startLine": 3, "endLine": 3, "quote": "알파 베타"}],
+            "documents": [{"path": "repeat.md", "text": "알파 베타\n\n알파 베타", "indexed": true, "reviewState": "reviewed"}],
+        }));
+        let status = first_row(&verified, "statuses");
+        assert_eq!(get(&status, "status"), &json!("verified"));
+        assert_eq!(get(&status, "lineMatches"), &json!(true));
+    }
+
+    #[test]
     fn plan_atomic_identifier_field_match_orders_full_identifier_first() {
         let plan = plan_of(&json!({
             "question": "orbital-qa7-handoff",
@@ -3013,6 +3245,59 @@ mod tests {
     }
 
     #[test]
+    fn quoted_phrase_rejects_partial_term_and_forced_candidate_only_matches() {
+        let plan = plan_of(&json!({
+            "question": "\"quartz handshake\"",
+            "documents": [
+                {"path": "exact.md", "text": "The quartz handshake completes first."},
+                {"path": "partial.md", "text": "Quartz startup notes without the required adjacency."},
+            ],
+            "candidates": [
+                {"path": "partial.md", "source": "bm25", "rank": 1, "score": 1.0}
+            ],
+        }));
+        let evidence = rows(&plan, "evidence");
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(
+            get(evidence.first().unwrap_or(&NULL), "path"),
+            &json!("exact.md")
+        );
+        assert!(
+            evidence
+                .iter()
+                .all(|item| get(item, "phraseMatches").as_u64().unwrap_or_default() > 0)
+        );
+    }
+
+    #[test]
+    fn comparison_facets_are_not_removed_by_the_main_facet_phrase_filter() {
+        let plan = plan_of(&json!({
+            "question": "Compare \"alpha beta\" and gamma",
+            "documents": [
+                {"path": "alpha.md", "text": "Alpha beta is exact."},
+                {"path": "gamma.md", "text": "Gamma is documented separately."},
+            ],
+            "candidates": [
+                {"path": "alpha.md", "source": "bm25", "rank": 1, "score": 1.0, "startLine": 1, "endLine": 1, "queryIndex": 1},
+                {"path": "gamma.md", "source": "bm25", "rank": 1, "score": 1.0, "startLine": 1, "endLine": 1, "queryIndex": 2}
+            ],
+            "budget": {"maxPassages": 2},
+        }));
+        let evidence = rows(&plan, "evidence");
+        assert_eq!(evidence.len(), 2);
+        assert!(
+            evidence
+                .iter()
+                .any(|item| get(item, "path") == &json!("alpha.md"))
+        );
+        assert!(
+            evidence
+                .iter()
+                .any(|item| get(item, "path") == &json!("gamma.md"))
+        );
+    }
+
+    #[test]
     fn verify_finds_quote_in_later_chunk() {
         let report = verify_of(&json!({
             "evidence": [{"sourceId": "c.md#L50-L50", "path": "c.md", "revision": "h1", "startLine": 50, "endLine": 50, "quote": "알파 베타"}],
@@ -3251,6 +3536,38 @@ mod tests {
     }
 
     #[test]
+    fn merge_reserves_both_facets_before_the_global_fill() {
+        let merged = merge_of(&json!({
+            "plans": [
+                plan(&json!([
+                    {"sourceId": "a-copper.md#L1-L1", "path": "a-copper.md", "startLine": 1, "endLine": 1, "quote": "copper", "score": 1.0, "queryIndexes": [1]}
+                ]), None),
+                plan(&json!([
+                    {"sourceId": "b-filler.md#L1-L1", "path": "b-filler.md", "startLine": 1, "endLine": 1, "quote": "filler", "score": 1.0}
+                ]), None),
+                plan(&json!([
+                    {"sourceId": "c-glass.md#L1-L1", "path": "c-glass.md", "startLine": 1, "endLine": 1, "quote": "glass", "score": 0.1, "queryIndexes": [2]}
+                ]), None)
+            ],
+            "budget": {"maxPassages": 2},
+        }));
+        let evidence = rows(&merged, "evidence");
+        let paths = evidence
+            .iter()
+            .filter_map(|row| row.get("path").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["a-copper.md", "c-glass.md"]);
+        assert_eq!(
+            merged_get(merged_get(&merged, "diagnostics"), "budgetDropped"),
+            &json!(1)
+        );
+        assert_eq!(
+            merged_get(merged_get(&merged, "diagnostics"), "truncated"),
+            &json!(true)
+        );
+    }
+
+    #[test]
     fn merge_keeps_source_ids_unique() {
         let merged = merge_of(&json!({
             "plans": [
@@ -3422,6 +3739,106 @@ mod tests {
         assert!(paths.contains(&"weak-c.md"), "matched weak document kept");
         let diagnostics = get(&plan, "diagnostics");
         assert_eq!(get(diagnostics, "truncated"), &json!(false));
+    }
+
+    #[test]
+    fn plan_reserves_a_passage_for_each_nonzero_query_index() {
+        let plan = plan_of(&json!({
+            "question": "Compare copper and glass",
+            "documents": [
+                {"path": "copper-a.md", "text": "copper copper copper copper"},
+                {"path": "copper-b.md", "text": "copper copper copper"},
+                {"path": "copper-c.md", "text": "copper copper"},
+                {"path": "glass.md", "text": "glass"}
+            ],
+            "candidates": [
+                {"path": "copper-a.md", "source": "bm25", "rank": 1, "score": 100.0, "queryIndex": 1, "startLine": 1, "endLine": 1},
+                {"path": "copper-b.md", "source": "bm25", "rank": 2, "score": 90.0, "queryIndex": 1, "startLine": 1, "endLine": 1},
+                {"path": "copper-c.md", "source": "bm25", "rank": 3, "score": 80.0, "queryIndex": 1, "startLine": 1, "endLine": 1},
+                {"path": "glass.md", "source": "bm25", "rank": 4, "score": 1.0, "queryIndex": 2, "startLine": 1, "endLine": 1}
+            ],
+            "budget": {"maxDocuments": 4, "maxPassages": 2}
+        }));
+        let evidence = rows(&plan, "evidence");
+        assert_eq!(evidence.len(), 2);
+        let copper = find_row(&evidence, "path", "copper-a.md").unwrap_or(&NULL);
+        let glass = find_row(&evidence, "path", "glass.md").unwrap_or(&NULL);
+        assert_eq!(rows(copper, "queryIndexes"), vec![json!(1)]);
+        assert_eq!(rows(glass, "queryIndexes"), vec![json!(2)]);
+    }
+
+    #[test]
+    fn plan_assigns_query_indexes_only_to_overlapping_passages_of_the_same_path() {
+        let plan = plan_of(&json!({
+            "question": "Compare copper and glass",
+            "documents": [
+                {"path": "shared.md", "text": "copper storage", "startLine": 1},
+                {"path": "shared.md", "text": "glass latency", "startLine": 100}
+            ],
+            "candidates": [
+                {"path": "shared.md", "source": "bm25", "rank": 1, "score": 100.0, "queryIndex": 1, "startLine": 1, "endLine": 1},
+                {"path": "shared.md", "source": "bm25", "rank": 2, "score": 1.0, "queryIndex": 2, "startLine": 100, "endLine": 100}
+            ],
+            "budget": {"maxPassages": 1}
+        }));
+        let evidence = rows(&plan, "evidence");
+        let first = evidence.first().unwrap_or(&NULL);
+        assert_eq!(get(first, "path"), &json!("shared.md"));
+        assert_eq!(get(first, "startLine"), &json!(1));
+        assert_eq!(rows(first, "queryIndexes"), vec![json!(1)]);
+    }
+
+    #[test]
+    fn plan_does_not_assign_a_query_index_without_a_candidate_range() {
+        let plan = plan_of(&json!({
+            "question": "Compare copper and glass",
+            "documents": [{"path": "shared.md", "text": "copper and glass"}],
+            "candidates": [
+                {"path": "shared.md", "source": "bm25", "rank": 1, "score": 1.0, "queryIndex": 1}
+            ]
+        }));
+        let evidence = rows(&plan, "evidence");
+        let first = evidence.first().unwrap_or(&NULL);
+        assert_eq!(rows(first, "queryIndexes"), Vec::<Value>::new());
+    }
+
+    #[test]
+    fn plan_protects_a_sparse_facet_passage_beyond_the_adaptive_depth() {
+        let draft = |score: f64, query_index: Option<usize>| super::PassageDraft {
+            path: format!("draft-{query_index:?}.md"),
+            revision: None,
+            start_line: 1,
+            end_line: 1,
+            quote: String::new(),
+            context_before: String::new(),
+            context_after: String::new(),
+            score,
+            signal: String::new(),
+            phrase_matches: 0,
+            negated_nearby: false,
+            exact: std::collections::BTreeSet::new(),
+            highlights: Vec::new(),
+            field_score: 0.0,
+            field_matches: std::collections::BTreeSet::new(),
+            matched: score > 0.0,
+            candidate_rank: query_index.map_or(usize::MAX, |_| 1000),
+            query_indexes: query_index.into_iter().collect(),
+        };
+        let mut drafts = (0..8)
+            .map(|index| draft(100.0 - f64::from(index), None))
+            .collect::<Vec<_>>();
+        drafts.push(draft(0.0, Some(2)));
+        assert_eq!(super::candidate_depth(&drafts, 16, 2), 9);
+    }
+
+    #[test]
+    fn plan_rejects_query_indexes_above_the_wire_limit() {
+        let input = json!({
+            "question": "quartz",
+            "documents": [{"path": "a.md", "text": "quartz"}],
+            "candidates": [{"path": "a.md", "source": "bm25", "rank": 1, "queryIndex": 4}]
+        });
+        assert_eq!(plan_indexed_evidence_json(&input.to_string()), "");
     }
     #[test]
 

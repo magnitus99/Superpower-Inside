@@ -66,7 +66,7 @@ pub use performance_guard::plan_rag_performance_guard_json;
 
 mod chat_input;
 mod evidence_collection;
-pub use evidence_collection::plan_evidence_collection_json;
+pub use evidence_collection::{plan_evidence_collection_json, plan_indexed_search_queries_json};
 /// 위치·필드 기반 `BM25` 질의 parser와 구문 검증.
 mod bm25_query;
 mod indexed_evidence;
@@ -75,8 +75,9 @@ pub use indexed_evidence::{
 };
 mod indexed_review;
 pub use indexed_review::{
-    plan_indexed_review_inventory_json, plan_indexed_review_segments_json,
-    render_indexed_review_answer_json, score_indexed_review_segments_json,
+    plan_indexed_review_answer_plan_json, plan_indexed_review_inventory_json,
+    plan_indexed_review_segments_json, render_indexed_review_answer_json,
+    score_indexed_review_segments_json, validate_indexed_review_answer_json,
     validate_indexed_review_json, validate_indexed_review_screen_json,
 };
 /// 완료된 채팅 세션의 제목 요약 입력과 정규화.

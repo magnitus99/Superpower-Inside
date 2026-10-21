@@ -1,4 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const rustWireExports = vi.hoisted(() => ({
+  plan_indexed_search_queries_json: vi.fn<(input: string) => string>(),
+  plan_indexed_review_answer_plan_json: vi.fn<(input: string) => string>(),
+  validate_indexed_review_answer_json: vi.fn<(input: string) => string>(),
+  plan_indexed_evidence_json: vi.fn<(input: string) => string>(),
+}));
+
+vi.mock('../../generated/rag-wasm/rag_wasm.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../generated/rag-wasm/rag_wasm.js')>();
+  rustWireExports.plan_indexed_evidence_json.mockImplementation(actual.plan_indexed_evidence_json);
+  return { ...actual, ...rustWireExports };
+});
 
 import {
   calculateRecallAtKRust,
@@ -59,7 +72,10 @@ import {
   planResearchAnswerContractRust,
   mergeIndexedEvidencePlansRust,
   planIndexedEvidenceRust,
+  planIndexedReviewAnswerPlanRust,
+  planIndexedSearchQueriesRust,
   verifyIndexedEvidenceRust,
+  validateIndexedReviewAnswerRust,
   planResearchProviderLedgerTransitionRust,
   planResearchProviderRequestBudgetRust,
   planMergedRetrievalCandidatesByEntryIdRust,
@@ -83,7 +99,17 @@ import {
   shouldAppendMcpPathHintRust,
   getMcpConnectionStateRust,
   shouldOfferContext7ForPromptRust,
+  type RustIndexedReviewAnswerPlan,
+  type RustIndexedReviewAnswerPlanInput,
+  type RustIndexedReviewAnswerValidationInput,
 } from './rust-core';
+
+beforeEach(() => {
+  rustWireExports.plan_indexed_search_queries_json.mockReset();
+  rustWireExports.plan_indexed_review_answer_plan_json.mockReset();
+  rustWireExports.validate_indexed_review_answer_json.mockReset();
+  rustWireExports.plan_indexed_evidence_json.mockClear();
+});
 
 describe('Rust WASM RAG core bridge', () => {
   it('내장 WASM을 동기 초기화해 토큰화한다', () => {
@@ -2289,6 +2315,172 @@ describe('planIndexedEvidenceRust / verifyIndexedEvidenceRust', () => {
     expect(['verified', 'quote-missing', 'position-mismatch']).toContain(
       verification?.statuses[0].status,
     );
+  });
+});
+
+describe('indexed search/answer wire wrappers', () => {
+  function evidencePlanWire(queryIndexes?: readonly number[]): string {
+    return JSON.stringify({
+      queryTokens: [],
+      phrases: [],
+      evidence: [
+        {
+          sourceId: 'notes/alpha.md#L1-L1',
+          path: 'notes/alpha.md',
+          revision: null,
+          startLine: 1,
+          endLine: 1,
+          quote: 'alpha',
+          contextBefore: '',
+          contextAfter: '',
+          score: 1,
+          rank: 1,
+          signal: 'lexical',
+          phraseMatches: 1,
+          proximityScore: 1,
+          fieldScore: 1,
+          exactSignals: [],
+          fieldMatches: [],
+          negatedNearby: false,
+          highlights: [],
+          duplicateOf: null,
+          ...(queryIndexes === undefined ? {} : { queryIndexes }),
+        },
+      ],
+      order: ['notes/alpha.md#L1-L1'],
+      diagnostics: {
+        candidateDepth: 1,
+        candidateDocuments: 1,
+        selectedDocuments: 1,
+        truncated: false,
+        droppedDocuments: { budget: 0, belowThreshold: 0, filtered: 0 },
+        zeroHitReason: null,
+        unmatchedTerms: [],
+        candidateChunks: 1,
+        selectedChunks: 1,
+        missingCandidatePaths: 0,
+      },
+      coverage: {
+        status: 'supported',
+        reviewedDocuments: 1,
+        unreviewedDocuments: 0,
+        notIndexedDocuments: 0,
+      },
+      budget: { maxDocuments: 64, maxPassages: 24, maxChars: 262144, usedChars: 5 },
+    });
+  }
+
+  it('plans search facets through the dynamic generated export', () => {
+    const input = {
+      question: 'Compare alpha and beta',
+      scoringQuestion: 'alpha beta reliability',
+      scopes: [] as string[],
+    };
+    const wire = {
+      mode: 'comparison',
+      facets: [
+        { id: 'question', kind: 'question', query: 'alpha beta', queryIndex: 0, terms: ['alpha', 'beta'] },
+        { id: 'subject-0', kind: 'subject', query: 'alpha', queryIndex: 1, terms: ['alpha'] },
+      ],
+    };
+    rustWireExports.plan_indexed_search_queries_json.mockReturnValue(JSON.stringify(wire));
+
+    expect(planIndexedSearchQueriesRust(input)).toEqual(wire);
+    expect(rustWireExports.plan_indexed_search_queries_json).toHaveBeenCalledWith(
+      JSON.stringify(input),
+    );
+  });
+
+  it('plans and validates indexed review answers through dynamic exports', () => {
+    const answerPlan: RustIndexedReviewAnswerPlan = {
+      mode: 'single',
+      facets: [
+        {
+          id: 'question',
+          kind: 'question',
+          label: 'alpha',
+          status: 'supported',
+          sourceIds: ['notes/alpha.md#L1-L1'],
+        },
+      ],
+      requiredFacetIds: ['question'],
+      missingFacetIds: [],
+      synthesisRequired: false,
+    };
+    const planInput: RustIndexedReviewAnswerPlanInput = {
+      searchPlan: {
+        mode: 'single',
+        facets: [
+          { id: 'question', kind: 'question', query: 'alpha', queryIndex: 0, terms: ['alpha'] },
+        ],
+      },
+      evidence: [
+        {
+          sourceId: 'notes/alpha.md#L1-L1',
+          path: 'notes/alpha.md',
+          quote: 'alpha',
+          queryIndexes: [0],
+        },
+      ],
+    };
+    const validationInput: RustIndexedReviewAnswerValidationInput = {
+      sourceIds: ['notes/alpha.md#L1-L1'],
+      answerPlan,
+      response: '{"paragraphs":[]}',
+    };
+    rustWireExports.plan_indexed_review_answer_plan_json.mockReturnValue(
+      JSON.stringify(answerPlan),
+    );
+    rustWireExports.validate_indexed_review_answer_json.mockReturnValue(
+      JSON.stringify({ valid: true, content: 'alpha' }),
+    );
+
+    expect(planIndexedReviewAnswerPlanRust(planInput)).toEqual(answerPlan);
+    expect(validateIndexedReviewAnswerRust(validationInput)).toEqual({
+      valid: true,
+      content: 'alpha',
+    });
+    expect(rustWireExports.plan_indexed_review_answer_plan_json).toHaveBeenCalledWith(
+      JSON.stringify(planInput),
+    );
+    expect(rustWireExports.validate_indexed_review_answer_json).toHaveBeenCalledWith(
+      JSON.stringify(validationInput),
+    );
+  });
+
+  it('preserves indexed evidence query indexes and backfills legacy output', () => {
+    const input = {
+      question: 'alpha',
+      documents: [{ path: 'notes/alpha.md', text: 'alpha' }],
+    };
+    rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire([1, 3]));
+    expect(planIndexedEvidenceRust(input)?.evidence[0].queryIndexes).toEqual([1, 3]);
+
+    rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire());
+    expect(planIndexedEvidenceRust(input)?.evidence[0].queryIndexes).toEqual([]);
+  });
+
+  it.each([-1, 4, 1.5])('rejects invalid indexed evidence query index %s', (queryIndex) => {
+    const input = {
+      question: 'alpha',
+      documents: [{ path: 'notes/alpha.md', text: 'alpha' }],
+    };
+    rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire([queryIndex]));
+    expect(planIndexedEvidenceRust(input)).toBeNull();
+
+    expect(
+      planIndexedEvidenceRust({
+        ...input,
+        candidates: [
+          {
+            path: 'notes/alpha.md',
+            source: 'bm25',
+            rank: 1,
+            queryIndex,
+          },
+        ],
+      }),
+    ).toBeNull();
   });
 });
 
