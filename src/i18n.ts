@@ -166,8 +166,6 @@ export interface I18nKeys {
   generalStatusTitle: string;
   generalStatusDesc: string;
   generalAllReady: string;
-  generalIndexingInProgressTitle: string;
-  generalIndexingInProgressDetail: string;
   generalBasicsTitle: string;
   generalBasicsDesc: string;
   generalDiagnosticsTitle: string;
@@ -666,6 +664,8 @@ export interface I18nKeys {
   chatReadinessRagIndexingDetail: string;
   chatReadinessRagNotReady: string;
   chatReadinessRagNotReadyDetail: string;
+  ragRetrievalDegradedAction: string;
+  ragRetrievalPreparingAction: string;
   chatReadinessPrepareDocuments: string;
   chatReadinessSelectModelAction: string;
   chatReadinessConfigureProviderAction: string;
@@ -1382,6 +1382,18 @@ export interface I18nKeys {
   ragIndexingDetailPlanning: string;
   ragIndexingDetailProgress: string;
   ragIndexingPhaseWithChunks: string;
+  ragIndexingProgressFilesLabel: string;
+  ragIndexingProgressCurrentFileLabel: string;
+  ragIndexingProgressElapsedLabel: string;
+  ragIndexingProgressRemainingLabel: string;
+  ragIndexingProgressFilesValue: string;
+  ragIndexingProgressChunkValue: string;
+  ragIndexingProgressFileValue: string;
+  ragIndexingProgressPdfLabel: string;
+  ragIndexingProgressPdfValue: string;
+  ragIndexingProgressEtaApprox: string;
+  ragIndexingProgressEtaValue: string;
+  ragIndexingProgressEtaCalculating: string;
   ragSourcePageProgress: string;
   ragIndexingResult: string;
   ragPhaseFile: string;
@@ -1970,8 +1982,6 @@ const ko: I18nKeys = {
   generalStatusTitle: '현재 상태',
   generalStatusDesc: '채팅과 검색을 바로 사용할 수 있는지 확인하고 필요한 다음 행동만 안내합니다.',
   generalAllReady: '현재 바로 처리할 항목이 없습니다.',
-  generalIndexingInProgressTitle: '노트 검색 인덱싱이 진행 중입니다.',
-  generalIndexingInProgressDetail: '남은 작업과 진행 상황은 노트 검색 탭에서 확인할 수 있습니다.',
   generalBasicsTitle: '기본 설정',
   generalBasicsDesc: '표시 언어와 채팅·명령어에 사용할 기본 모델을 정합니다.',
   generalDiagnosticsTitle: '진단',
@@ -2492,10 +2502,13 @@ const ko: I18nKeys = {
     '기존 연결에서 사용할 모델을 선택하세요. 모델이 없으면 AI 연결 설정에서 등록할 수 있습니다.',
   chatReadinessRagIndexing: '검색 준비 중',
   chatReadinessRagIndexingDetail:
-    '인덱스를 갱신하는 동안 최신 문서가 답변 근거에서 빠질 수 있습니다.',
+    '검색 엔진과 색인을 준비하고 있습니다. 준비가 끝날 때까지 최신 문서가 답변 근거에서 빠질 수 있습니다.',
   chatReadinessRagNotReady: '검색 준비 안 됨',
   chatReadinessRagNotReadyDetail:
-    '키워드 색인이 준비되지 않아 일부 문서가 검색되지 않거나 답변이 느려질 수 있습니다.',
+    '검색 엔진 또는 키워드 색인이 준비되지 않아 일부 문서가 검색되지 않거나 답변이 느려질 수 있습니다.',
+  ragRetrievalDegradedAction: '검색 설정과 키워드 색인 상태를 확인하세요.',
+  ragRetrievalPreparingAction:
+    '검색 엔진과 색인을 자동으로 준비하고 있습니다. 완료될 때까지 기다려 주세요.',
   chatReadinessPrepareDocuments: '문서 준비',
   chatReadinessSelectModelAction: '모델 선택',
   chatReadinessConfigureProviderAction: 'AI 연결 설정',
@@ -3277,6 +3290,18 @@ const ko: I18nKeys = {
   ragIndexingDetailPlanning: '준비 중 {current}/{total}개 파일 · 인덱싱 완료 {completed}개',
   ragIndexingDetailProgress: '인덱싱 완료 {completed}/{total}개 파일',
   ragIndexingPhaseWithChunks: '{phase} · 현재 파일 {completed}/{total} 청크',
+  ragIndexingProgressFilesLabel: '파일',
+  ragIndexingProgressCurrentFileLabel: '현재 파일',
+  ragIndexingProgressElapsedLabel: '경과',
+  ragIndexingProgressRemainingLabel: '남은 시간',
+  ragIndexingProgressFilesValue: '{completed} / {total}',
+  ragIndexingProgressChunkValue: '{completed} / {total} 청크',
+  ragIndexingProgressFileValue: '파일 {current} / {total}',
+  ragIndexingProgressPdfLabel: 'PDF',
+  ragIndexingProgressPdfValue: '{page} / {total} 페이지',
+  ragIndexingProgressEtaApprox: '약 {eta}',
+  ragIndexingProgressEtaValue: '{eta}',
+  ragIndexingProgressEtaCalculating: '계산 중',
   ragSourcePageProgress: 'PDF 읽는 중 · {page}/{total}페이지',
   ragIndexingResult: '{documents}개 문서, {vectors}개 벡터',
   ragPhaseFile: '변경 파일',
@@ -3924,8 +3949,6 @@ const en: I18nKeys = {
   generalStatusDesc:
     'See whether chat and search are ready, with only the next useful action surfaced.',
   generalAllReady: 'Nothing needs immediate attention.',
-  generalIndexingInProgressTitle: 'Note search indexing is in progress.',
-  generalIndexingInProgressDetail: 'Check the Note search tab for remaining work and progress.',
   generalBasicsTitle: 'Essentials',
   generalBasicsDesc: 'Choose your display language and the default model for chat and commands.',
   generalDiagnosticsTitle: 'Diagnostics',
@@ -4480,10 +4503,13 @@ const en: I18nKeys = {
     'Choose a model from your connection. If none is available, add one in AI connection settings.',
   chatReadinessRagIndexing: 'Preparing search',
   chatReadinessRagIndexingDetail:
-    'While the index updates, the newest documents may not be used as evidence yet.',
+    'Search engine and index are being prepared. Until they are ready, the newest documents may be missing from answer evidence.',
   chatReadinessRagNotReady: 'Search not ready',
   chatReadinessRagNotReadyDetail:
-    'The keyword index is unavailable, so some documents may not be searched and answers may take longer.',
+    'The search engine or keyword index is not ready, so some documents may not be searched and answers may take longer.',
+  ragRetrievalDegradedAction: 'Check the search settings and keyword index status.',
+  ragRetrievalPreparingAction:
+    'The search engine and index are being prepared automatically. Wait until preparation finishes.',
   chatReadinessPrepareDocuments: 'Prepare documents',
   chatReadinessSelectModelAction: 'Select model',
   chatReadinessConfigureProviderAction: 'Set up AI connection',
@@ -5280,6 +5306,18 @@ const en: I18nKeys = {
   ragIndexingDetailPlanning: 'Preparing file {current}/{total} · {completed} files indexed',
   ragIndexingDetailProgress: '{completed}/{total} files indexed',
   ragIndexingPhaseWithChunks: '{phase} · current file {completed}/{total} chunks',
+  ragIndexingProgressFilesLabel: 'Files',
+  ragIndexingProgressCurrentFileLabel: 'Current file',
+  ragIndexingProgressElapsedLabel: 'Elapsed',
+  ragIndexingProgressRemainingLabel: 'Remaining',
+  ragIndexingProgressFilesValue: '{completed} / {total}',
+  ragIndexingProgressChunkValue: '{completed} / {total} chunks',
+  ragIndexingProgressFileValue: 'File {current} / {total}',
+  ragIndexingProgressPdfLabel: 'PDF',
+  ragIndexingProgressPdfValue: '{page} / {total} pages',
+  ragIndexingProgressEtaApprox: 'About {eta}',
+  ragIndexingProgressEtaValue: '{eta}',
+  ragIndexingProgressEtaCalculating: 'Calculating',
   ragSourcePageProgress: 'Reading PDF · page {page}/{total}',
   ragIndexingResult: '{documents} documents, {vectors} vectors',
   ragPhaseFile: 'Changed file',

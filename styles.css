@@ -2166,6 +2166,55 @@ button.superpower-inside-prompt-danger-btn:disabled {
   overflow-wrap: anywhere;
 }
 
+.superpower-inside-rag-overview-progress {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.superpower-inside-rag-overview-progress[hidden] {
+  display: none;
+}
+
+.superpower-inside-rag-overview-progress-item {
+  display: grid;
+  grid-template-columns: var(--superpower-inside-tone-mark) minmax(4.25rem, 6.5rem) minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 6px;
+  min-width: 0;
+}
+
+.superpower-inside-rag-overview-progress-item::before {
+  content: '';
+  align-self: center;
+  inline-size: 4px;
+  block-size: 4px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.superpower-inside-rag-overview-progress-label {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--superpower-inside-type-detail);
+  font-weight: var(--superpower-inside-weight-detail);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-rag-overview-progress-value {
+  min-width: 0;
+  color: var(--text-normal);
+  font-size: var(--superpower-inside-type-value);
+  font-weight: var(--superpower-inside-weight-value);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .superpower-inside-rag-overview-actions {
   display: flex;
   align-items: center;

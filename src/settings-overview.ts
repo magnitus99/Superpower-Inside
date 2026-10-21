@@ -1,3 +1,4 @@
+import type { ChatRetrievalReadiness } from './chat/chat-readiness';
 import type { MCPConnectionState, MCPServerConnectionStatus } from './mcp/connection-state';
 import type { RagStatusSummary } from './rag/status';
 import { t } from './i18n';
@@ -28,6 +29,14 @@ export interface SettingsOverviewRuntimeState {
   mcpConnectionState: MCPConnectionState;
   mcpServers: readonly SettingsOverviewMcpServerState[];
   isRagIndexing: boolean;
+  retrievalReadiness: ChatRetrievalReadiness;
+}
+
+export function resolveSettingsRetrievalReadiness(
+  retrievalReadiness: ChatRetrievalReadiness,
+  ragRuntimeStarted: boolean,
+): ChatRetrievalReadiness {
+  return retrievalReadiness === 'preparing' && !ragRuntimeStarted ? 'ready' : retrievalReadiness;
 }
 
 export interface SettingsOverviewMcpServerState {
@@ -73,6 +82,7 @@ export interface SettingsOverviewSnapshot {
   mcpRows: SettingsOverviewStatusRow[];
   chat: SettingsOverviewMetric;
   attentionItems: SettingsOverviewAttentionItem[];
+  retrievalReadiness: ChatRetrievalReadiness;
 }
 
 interface ProviderSource {
@@ -98,6 +108,7 @@ export function buildSettingsOverviewSnapshot(input: {
     rag,
     mcp,
     chat,
+    retrievalReadiness: input.runtime.retrievalReadiness,
   });
 
   return {
@@ -108,6 +119,7 @@ export function buildSettingsOverviewSnapshot(input: {
     mcpRows,
     chat,
     attentionItems,
+    retrievalReadiness: input.runtime.retrievalReadiness,
   };
 }
 
@@ -266,6 +278,28 @@ function buildRagMetric(
   runtime: SettingsOverviewRuntimeState,
 ): SettingsOverviewMetric {
   const status = runtime.ragStatus;
+  if (runtime.retrievalReadiness === 'degraded') {
+    return {
+      id: 'rag',
+      label: 'RAG',
+      value: t('chatReadinessRagNotReady'),
+      statusLabel: t('chatReadinessRagNotReady'),
+      detail: t('chatReadinessRagNotReadyDetail'),
+      tone: 'danger',
+      target: 'rag',
+    };
+  }
+  if (runtime.retrievalReadiness === 'preparing') {
+    return {
+      id: 'rag',
+      label: 'RAG',
+      value: t('chatReadinessRagIndexing'),
+      statusLabel: t('chatReadinessRagIndexing'),
+      detail: t('chatReadinessRagIndexingDetail'),
+      tone: 'neutral',
+      target: 'rag',
+    };
+  }
   if (runtime.isRagIndexing) {
     return {
       id: 'rag',
@@ -445,6 +479,7 @@ function buildAttentionItems(input: {
   rag: SettingsOverviewMetric;
   mcp: SettingsOverviewMetric;
   chat: SettingsOverviewMetric;
+  retrievalReadiness: ChatRetrievalReadiness;
 }): SettingsOverviewAttentionItem[] {
   const items: SettingsOverviewAttentionItem[] = [];
 
@@ -486,6 +521,17 @@ function buildAttentionItems(input: {
       tone: 'warning',
       target: hasModels ? 'general' : 'providers',
       actionLabel: t(hasModels ? 'overviewOpenGeneral' : 'overviewOpenProviders'),
+    });
+  }
+
+  if (input.retrievalReadiness === 'degraded') {
+    items.push({
+      id: 'rag-retrieval-degraded',
+      label: t('chatReadinessRagNotReady'),
+      detail: t('chatReadinessRagNotReadyDetail'),
+      tone: 'danger',
+      target: 'rag',
+      actionLabel: t('overviewOpenRag'),
     });
   }
 

@@ -13,10 +13,11 @@ vi.mock('obsidian', () => ({
   PluginSettingTab: class {},
   Setting: class {},
 }));
-import { setLanguage } from './i18n';
+import { setLanguage, t } from './i18n';
 import type { RagStatusSummary } from './rag/status';
 import {
   buildSettingsOverviewSnapshot,
+  resolveSettingsRetrievalReadiness,
   type SettingsOverviewRuntimeState,
 } from './settings-overview';
 import { DEFAULT_SETTINGS, type SuperpowerInsideSettings } from './settings';
@@ -45,6 +46,7 @@ function buildRuntime(
     mcpConnectionState: 'idle',
     mcpServers: [],
     isRagIndexing: false,
+    retrievalReadiness: 'ready',
     ...override,
   };
 }
@@ -63,6 +65,16 @@ function buildRagStatus(override: Partial<RagStatusSummary> = {}): RagStatusSumm
     ...override,
   };
 }
+
+describe('resolveSettingsRetrievalReadiness', () => {
+  it.each([
+    ['preparing', false, 'ready'],
+    ['preparing', true, 'preparing'],
+    ['degraded', false, 'degraded'],
+  ] as const)('%s + started=%s -> %s', (readiness, started, expected) => {
+    expect(resolveSettingsRetrievalReadiness(readiness, started)).toBe(expected);
+  });
+});
 
 describe('설정 Overview snapshot', () => {
   beforeEach(() => {
@@ -315,6 +327,57 @@ describe('설정 Overview snapshot', () => {
       '검색 설정',
       'MCP 설정',
     ]);
+  });
+
+  it('검색 준비 중과 제한 상태를 RAG 최신 상태보다 우선한다', () => {
+    const preparing = buildSettingsOverviewSnapshot({
+      settings: buildSettings(),
+      runtime: buildRuntime({
+        ragStatus: buildRagStatus(),
+        isRagIndexing: true,
+        retrievalReadiness: 'preparing',
+      }),
+    });
+
+    expect(preparing.retrievalReadiness).toBe('preparing');
+    expect(preparing.rag).toMatchObject({
+      value: t('chatReadinessRagIndexing'),
+      statusLabel: t('chatReadinessRagIndexing'),
+      detail: t('chatReadinessRagIndexingDetail'),
+      tone: 'neutral',
+      target: 'rag',
+    });
+    expect(preparing.rag.value).not.toBe(t('overviewLatest'));
+    expect(preparing.attentionItems.map((item) => item.id)).not.toContain(
+      'rag-retrieval-degraded',
+    );
+
+    const degraded = buildSettingsOverviewSnapshot({
+      settings: buildSettings(),
+      runtime: buildRuntime({
+        ragStatus: buildRagStatus(),
+        isRagIndexing: true,
+        retrievalReadiness: 'degraded',
+      }),
+    });
+
+    expect(degraded.retrievalReadiness).toBe('degraded');
+    expect(degraded.rag).toMatchObject({
+      value: t('chatReadinessRagNotReady'),
+      statusLabel: t('chatReadinessRagNotReady'),
+      detail: t('chatReadinessRagNotReadyDetail'),
+      tone: 'danger',
+      target: 'rag',
+    });
+    expect(degraded.rag.value).not.toBe(t('overviewLatest'));
+    expect(degraded.attentionItems).toContainEqual({
+      id: 'rag-retrieval-degraded',
+      label: t('chatReadinessRagNotReady'),
+      detail: t('chatReadinessRagNotReadyDetail'),
+      tone: 'danger',
+      target: 'rag',
+      actionLabel: t('overviewOpenRag'),
+    });
   });
 
   it('선택할 채팅 모델이 없는 첫 사용은 연결 설정으로 안내한다', () => {

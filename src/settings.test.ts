@@ -1703,6 +1703,77 @@ describe('RAG indexing ETA settings label', () => {
   });
 });
 
+class RagOverviewTestElement {
+  readonly children: RagOverviewTestElement[] = [];
+  readonly attrs: Record<string, string> = {};
+  textContent = '';
+  hidden = false;
+  setTextCalls = 0;
+  private readonly classes = new Set<string>();
+  readonly classList = {
+    add: (...names: string[]): void => {
+      for (const name of names) this.classes.add(name);
+    },
+    remove: (...names: string[]): void => {
+      for (const name of names) this.classes.delete(name);
+    },
+    contains: (name: string): boolean => this.classes.has(name),
+  };
+
+  constructor(cls = '') {
+    this.classList.add(...cls.split(' ').filter(Boolean));
+  }
+
+  setText(value: string): void {
+    this.setTextCalls += 1;
+    this.textContent = value;
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attrs[name] = value;
+  }
+
+  createEl(
+    _tagName: string,
+    options: { cls?: string; text?: string } = {},
+  ): RagOverviewTestElement {
+    const child = new RagOverviewTestElement(options.cls);
+    child.textContent = options.text ?? '';
+    this.children.push(child);
+    return child;
+  }
+
+  empty(): void {
+    this.children.splice(0);
+    this.textContent = '';
+  }
+
+  insertBefore(
+    node: RagOverviewTestElement,
+    reference: RagOverviewTestElement,
+  ): RagOverviewTestElement {
+    this.children.splice(this.children.indexOf(reference), 0, node);
+    return node;
+  }
+
+  querySelector(selector: string): RagOverviewTestElement | null {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  querySelectorAll(selector: string): RagOverviewTestElement[] {
+    const matches: RagOverviewTestElement[] = [];
+    for (const child of this.children) {
+      if (child.matches(selector)) matches.push(child);
+      matches.push(...child.querySelectorAll(selector));
+    }
+    return matches;
+  }
+
+  private matches(selector: string): boolean {
+    return selector.startsWith('.') && this.classes.has(selector.slice(1));
+  }
+}
+
 describe('RAG indexing preparation label', () => {
   it('사전 단계 라벨은 준비 상태와 경과를 보여준다', () => {
     vi.useFakeTimers();
@@ -1727,7 +1798,7 @@ describe('RAG indexing preparation label', () => {
     vi.useRealTimers();
   });
 
-  it('사전 단계에는 이전 통계 대신 상태 확인 중 문구로 detail을 갱신한다', () => {
+  it('사전 단계에는 공유 준비 상태와 중립 tone으로 detail을 갱신한다', () => {
     vi.useFakeTimers();
     setLanguage('ko');
     const plugin = {
@@ -1743,33 +1814,37 @@ describe('RAG indexing preparation label', () => {
         },
       })),
       isRagIndexing: () => true,
+      getRetrievalReadiness: () => 'preparing',
       getRagPerformanceGuardState: () => null,
       settings: { rag: { autoUpdateEnabled: false } },
     };
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
-    const texts = new Map<string, string>();
-    const stub = (key: string) => ({
-      setText: (value: string) => texts.set(key, value),
-      setAttribute: () => undefined,
+    const grid = new RagOverviewTestElement();
+    const copy = grid.createEl('div', { cls: 'superpower-inside-rag-overview-copy' });
+    const status = copy.createEl('div', {
+      cls: 'superpower-inside-rag-overview-status is-warning',
+    });
+    const detail = copy.createEl('div', {
+      cls: 'superpower-inside-rag-overview-detail',
     });
     Object.assign(tab as unknown as Record<string, unknown>, {
-      ragStatusGrid: {
-        querySelector: (selector: string) =>
-          selector.includes('overview-detail') ? stub('detail') : stub('status'),
-      },
-      ragStatusTimestamp: stub('timestamp'),
+      ragStatusGrid: grid,
+      ragStatusTimestamp: new RagOverviewTestElement(),
     });
 
     (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
 
-    expect(texts.get('detail')).toBe(t('ragIndexingDetailPreparing'));
-    expect(texts.get('status')).toBe(
-      t('ragIndexingRunningElapsedQueued', {
-        phase: t('ragPhasePreparing'),
-        queued: 0,
-        elapsed: '0s',
-      }),
-    );
+    const progress = grid.querySelector('.superpower-inside-rag-overview-progress');
+    expect(status.textContent).toBe(t('chatReadinessRagIndexing'));
+    expect(detail.textContent).toBe(t('chatReadinessRagIndexingDetail'));
+    expect(status.classList.contains('is-warning')).toBe(false);
+    expect(status.classList.contains('is-neutral')).toBe(false);
+    expect(progress?.hidden).toBe(true);
+    expect(status.attrs).toMatchObject({
+      role: 'status',
+      'aria-live': 'polite',
+      'aria-atomic': 'true',
+    });
     vi.useRealTimers();
   });
 });
@@ -1783,6 +1858,7 @@ describe('RAG indexing progress panel', () => {
         ragStatus: { totalDocuments: 5, updateRequiredDocuments: [{}] },
       }),
       isRagIndexing: () => running,
+      getRetrievalReadiness: () => (running ? 'preparing' : 'ready'),
       getRagPerformanceGuardState: () => null,
     };
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
@@ -1830,36 +1906,158 @@ describe('RAG indexing progress panel', () => {
         },
       }),
       isRagIndexing: () => true,
+      getRetrievalReadiness: () => 'preparing',
       getRagPerformanceGuardState: () => null,
       settings: { rag: { autoUpdateEnabled: false } },
     };
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
-    const texts = new Map<string, string>();
-    const stub = (key: string) => ({
-      setText: (value: string) => texts.set(key, value),
-      setAttribute: () => undefined,
+    const grid = new RagOverviewTestElement();
+    const copy = grid.createEl('div', { cls: 'superpower-inside-rag-overview-copy' });
+    const status = copy.createEl('div', {
+      cls: 'superpower-inside-rag-overview-status',
+    });
+    const detail = copy.createEl('div', {
+      cls: 'superpower-inside-rag-overview-detail',
     });
     Object.assign(tab, {
-      ragStatusGrid: {
-        querySelector: (selector: string) =>
-          selector.includes('overview-detail') ? stub('detail') : stub('status'),
-      },
+      ragStatusGrid: grid,
     });
     (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
-    expect(texts.get('status')).toBe(
+    const progress = grid.querySelector('.superpower-inside-rag-overview-progress');
+    if (!progress) throw new Error('progress list not rendered');
+
+    expect(status.textContent).toBe(t('chatReadinessRagIndexing'));
+    expect(status.textContent).not.toMatch(/\d/u);
+    expect(detail.hidden).toBe(true);
+    expect(progress.hidden).toBe(false);
+    expect(
+      progress.children.map(
+        (item) => item.querySelector('.superpower-inside-rag-overview-progress-label')?.textContent,
+      ),
+    ).toEqual(
       language === 'ko'
-        ? '인덱싱 준비: 4/9개 파일 확인 중 · 2s 경과'
-        : 'Preparing index: checking file 4/9 · 2s elapsed',
+        ? ['파일', '현재 파일', '경과', '남은 시간']
+        : ['Files', 'Current file', 'Elapsed', 'Remaining'],
     );
-    expect(texts.get('detail')).toBe(
+    expect(
+      progress.children.map(
+        (item) => item.querySelector('.superpower-inside-rag-overview-progress-value')?.textContent,
+      ),
+    ).toEqual(
       language === 'ko'
-        ? '준비 중 4/9개 파일 · 인덱싱 완료 0개'
-        : 'Preparing file 4/9 · 0 files indexed',
+        ? ['0 / 9', '파일 4 / 9', '2s', '계산 중']
+        : ['0 / 9', 'File 4 / 9', '2s', 'Calculating'],
+    );
+    expect(progress.attrs).not.toHaveProperty('role');
+    for (const item of progress.children) expect(item.attrs).not.toHaveProperty('aria-live');
+  });
+
+  it.each(['ko', 'en'] as const)('PDF 페이지 진행을 현재 파일 행에서 보존한다 (%s)', (language) => {
+    setLanguage(language);
+    const plugin = {
+      getRagRuntimeState: () => ({
+        ragStatus: null,
+        ragIndexingStatus: {
+          running: true,
+          phase: 'file',
+          progress: {
+            event: 'file-chunks',
+            startedAtMs: 0,
+            nowMs: 61000,
+            totalFiles: 3,
+            completedFiles: 1,
+            currentFileIndex: 1,
+            currentFileTotalChunks: 4,
+            currentFileEmbeddedChunks: 2,
+            sourcePage: 1234,
+            sourcePageCount: 4567,
+            eta: null,
+          },
+        },
+      }),
+      isRagIndexing: () => true,
+      getRetrievalReadiness: () => 'preparing',
+      getRagPerformanceGuardState: () => null,
+      settings: { rag: { autoUpdateEnabled: false } },
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const grid = new RagOverviewTestElement();
+    const copy = grid.createEl('div', { cls: 'superpower-inside-rag-overview-copy' });
+    copy.createEl('div', { cls: 'superpower-inside-rag-overview-status' });
+    copy.createEl('div', { cls: 'superpower-inside-rag-overview-detail' });
+    Object.assign(tab, { ragStatusGrid: grid });
+
+    (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
+
+    const progress = copy.querySelector('.superpower-inside-rag-overview-progress');
+    if (!progress) throw new Error('progress list not rendered');
+    expect(
+      progress.children.map(
+        (item) => item.querySelector('.superpower-inside-rag-overview-progress-label')?.textContent,
+      ),
+    ).toEqual(
+      language === 'ko' ? ['파일', 'PDF', '경과', '남은 시간'] : ['Files', 'PDF', 'Elapsed', 'Remaining'],
+    );
+    expect(
+      progress.children.map(
+        (item) => item.querySelector('.superpower-inside-rag-overview-progress-value')?.textContent,
+      ),
+    ).toEqual(
+      language === 'ko'
+        ? ['1 / 3', '1,234 / 4,567 페이지', '1m 1s', '계산 중']
+        : ['1 / 3', '1,234 / 4,567 pages', '1m 1s', 'Calculating'],
     );
   });
 
-  it('진행 중에는 상태 줄과 바로 아래 숫자 줄을 같은 실행 스냅샷으로 갱신한다', () => {
+  it('통계 copy wrapper가 없으면 루트에 상태 DOM을 만들지 않는다', () => {
+    setLanguage('ko');
+    const plugin = {
+      getRagRuntimeState: () => ({
+        ragStatus: null,
+        ragIndexingStatus: {
+          running: true,
+          phase: 'all',
+          progress: {
+            event: 'batch-complete',
+            startedAtMs: 0,
+            nowMs: 1000,
+            totalFiles: 3,
+            completedFiles: 1,
+            currentFileTotalChunks: 0,
+            currentFileEmbeddedChunks: 0,
+            eta: null,
+          },
+        },
+      }),
+      isRagIndexing: () => true,
+      getRetrievalReadiness: () => 'preparing',
+      getRagPerformanceGuardState: () => null,
+      settings: { rag: { autoUpdateEnabled: false } },
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const grid = new RagOverviewTestElement();
+    const timestamp = new RagOverviewTestElement();
+    Object.assign(tab, { ragStatusGrid: grid, ragStatusTimestamp: timestamp });
+
+    (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
+
+    expect(grid.children).toEqual([]);
+    expect(timestamp.textContent).toContain('인덱싱 중: 전체 재인덱싱');
+  });
+
+  it('진행 중에는 짧은 헤드라인과 고정 메트릭 행만 같은 실행 스냅샷으로 갱신한다', () => {
     setLanguage('en');
+    const progress = {
+      event: 'batch-complete' as const,
+      startedAtMs: 0,
+      nowMs: 10000,
+      totalFiles: 10,
+      completedFiles: 3,
+      currentFileIndex: 5,
+      currentFileTotalChunks: 15,
+      currentFileEmbeddedChunks: 6,
+      eta: { remainingMs: 18000, confidence: 'medium' as 'medium' | 'high' },
+    };
     const plugin = {
       getRagRuntimeState: vi.fn(() => ({
         ragStatus: null,
@@ -1870,44 +2068,67 @@ describe('RAG indexing progress panel', () => {
           phase: 'all',
           queuedFiles: 0,
           lastResult: null,
-          progress: {
-            event: 'batch-complete',
-            startedAtMs: 0,
-            nowMs: 10000,
-            totalFiles: 10,
-            completedFiles: 3,
-            currentFileTotalChunks: 0,
-            currentFileEmbeddedChunks: 0,
-            eta: { remainingMs: 18000, confidence: 'medium' },
-          },
+          progress,
         },
       })),
+      getRagStatus: vi.fn(),
       isRagIndexing: () => true,
+      getRetrievalReadiness: () => 'preparing',
       getRagPerformanceGuardState: () => null,
       settings: { rag: { autoUpdateEnabled: false } },
     };
     const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
-    const texts = new Map<string, string>();
-    const stub = (key: string) => ({
-      setText: (value: string) => texts.set(key, value),
-      setAttribute: () => undefined,
+    const grid = new RagOverviewTestElement();
+    const copy = grid.createEl('div', { cls: 'superpower-inside-rag-overview-copy' });
+    const status = copy.createEl('div', {
+      cls: 'superpower-inside-rag-overview-status',
     });
+    const detail = copy.createEl('div', {
+      cls: 'superpower-inside-rag-overview-detail',
+    });
+    const action = new RagOverviewTestElement();
+    const timestamp = new RagOverviewTestElement();
     Object.assign(tab as unknown as Record<string, unknown>, {
-      ragStatusGrid: {
-        querySelector: (selector: string) =>
-          selector.includes('overview-detail') ? stub('detail') : stub('status'),
-      },
-      ragStatusTimestamp: stub('timestamp'),
+      ragStatusGrid: grid,
+      ragStatusAction: action,
+      ragStatusTimestamp: timestamp,
     });
 
     (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
 
-    Object.assign(tab, { ragStatusAction: stub('action') });
+    const progressEl = grid.querySelector('.superpower-inside-rag-overview-progress');
+    if (!progressEl) throw new Error('progress list not rendered');
+    const progressItems = [...progressEl.children];
+    expect(status.textContent).toBe(t('chatReadinessRagIndexing'));
+    expect(status.setTextCalls).toBe(1);
+    expect(status.attrs).toMatchObject({
+      role: 'status',
+      'aria-live': 'polite',
+      'aria-atomic': 'true',
+    });
+    expect(detail.hidden).toBe(true);
+    expect(
+      progressEl.children.map(
+        (item) => item.querySelector('.superpower-inside-rag-overview-progress-value')?.textContent,
+      ),
+    ).toEqual(['3 / 10', '6 / 15 chunks', '10s', 'About 18s']);
+
+    progress.nowMs = 11000;
+    progress.completedFiles = 4;
+    progress.currentFileEmbeddedChunks = 7;
+    progress.eta.confidence = 'high';
     (tab as unknown as { updateRagIndexingProgress(): void }).updateRagIndexingProgress();
-    expect(texts.get('action')).toBe(t('settingsAuto130'));
-    const label = 'Indexing: Full reindex - 3/10 files · 10s elapsed, ETA about 18s';
-    expect(texts.get('status')).toBe(label);
-    expect(texts.get('detail')).toBe('3/10 files indexed');
-    expect(texts.get('timestamp')).toBe(`Current status: ${label}`);
+
+    expect(action.textContent).toBe(t('settingsAuto130'));
+    expect(status.textContent).toBe(t('chatReadinessRagIndexing'));
+    expect(status.setTextCalls).toBe(1);
+    expect(progressEl.children).toEqual(progressItems);
+    expect(
+      progressEl.children.map(
+        (item) => item.querySelector('.superpower-inside-rag-overview-progress-value')?.textContent,
+      ),
+    ).toEqual(['4 / 10', '7 / 15 chunks', '11s', '18s']);
+    expect(timestamp.textContent).toContain('4/10');
+    expect(plugin.getRagStatus).not.toHaveBeenCalled();
   });
 });

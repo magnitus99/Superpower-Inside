@@ -113,7 +113,9 @@ import {
 } from './mcp/context7';
 import {
   buildSettingsOverviewSnapshot,
+  resolveSettingsRetrievalReadiness,
   type SettingsOverviewRuntimeState,
+  type SettingsOverviewSnapshot,
 } from './settings-overview';
 import { type AppLogger, type LoggerConfig } from './utils/logger';
 interface StandardMcpServerEntry {
@@ -1080,6 +1082,8 @@ export interface PluginLike {
     lastAutoUpdateResult: IndexingResult | null;
     lastInitError: string | null;
     lastInitSkippedReason: string | null;
+    initRunning: boolean;
+    lastInitStartedAt: number | null;
   };
   saveSettings(options?: { reinitRag?: boolean; reinitMcp?: boolean }): Promise<{
     success: boolean;
@@ -1455,6 +1459,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private isRebuildingEmbeddingSection = false;
   private defaultModelDropdownEl: HTMLSelectElement | null = null;
   private generalStatusBody: HTMLElement | null = null;
+  private generalStatusSignature: string | null = null;
   // RefreshAction 인스턴스 (생명주기 == 탭 활성화 기간)
   private mcpStatusRefresh: RefreshAction | null = null;
   private excludeCountRenderer: (() => void) | null = null;
@@ -1649,6 +1654,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.disposeEmbeddingCaution?.();
     this.disposeEmbeddingCaution = null;
     this.generalStatusBody = null;
+    this.generalStatusSignature = null;
     this.chatStatusBody = null;
     this.chatModelDropdownEl = null;
     this.defaultModelDropdownEl = null;
@@ -1684,6 +1690,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (bus) {
       this.refreshBusUnsubscribers.push(
         bus.on('rag', (result) => {
+          this.refreshGeneralStatusSection();
           if (this.plugin.isRagIndexing()) {
             this.updateRagIndexingProgress();
             return;
@@ -1691,7 +1698,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           this.updateRagStats(result.detail);
           this.refreshStatsGrid();
           this.refreshFileTypeSummary();
-          this.refreshGeneralStatusSection();
         }),
       );
 
@@ -2205,11 +2211,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.renderGeneralStatus(section.body);
   }
   private renderGeneralStatus(containerEl: HTMLElement): void {
-    containerEl.empty();
     const snapshot = buildSettingsOverviewSnapshot({
       settings: this.plugin.settings,
       runtime: this.buildOverviewRuntimeState(),
     });
+    const signature = this.getGeneralStatusSignature(snapshot);
+    if (this.generalStatusSignature === signature) return;
+    this.generalStatusSignature = signature;
+    containerEl.empty();
     const primaryAttention = snapshot.attentionItems[0];
     if (primaryAttention) {
       this.createSettingsActionRow(containerEl, {
@@ -2222,14 +2231,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           if (primaryAttention.target === 'general') this.defaultModelDropdownEl?.focus();
         },
       });
-    } else if (
-      this.plugin.isRagIndexing() ||
-      this.plugin.getRagRuntimeState().ragIndexingStatus?.running === true
-    ) {
-      // 인덱싱이 돌아가는 동안은 조치가 없다고 단정하지 않고 진행 안내와 이동 동선을 제공합니다.
+    } else if (snapshot.retrievalReadiness === 'preparing') {
+      // 채팅과 같은 검색 준비 상태를 사용해 초기화·색인 로딩·문서 갱신을 동일하게 안내합니다.
       this.createSettingsActionRow(containerEl, {
-        label: t('generalIndexingInProgressTitle'),
-        detail: t('generalIndexingInProgressDetail'),
+        label: t('chatReadinessRagIndexing'),
+        detail: t('chatReadinessRagIndexingDetail'),
         actionLabel: t('tabRag'),
         tone: 'info',
         onActivate: () => this.switchTab('rag'),
@@ -2257,6 +2263,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         onActivate: () => this.switchTab(metric.target),
       });
     }
+  }
+  private getGeneralStatusSignature(snapshot: SettingsOverviewSnapshot): string {
+    return JSON.stringify({
+      attentionItems: snapshot.attentionItems,
+      metrics: snapshot.metrics,
+      providerRows: snapshot.providerRows,
+      mcpRows: snapshot.mcpRows,
+      retrievalReadiness: snapshot.retrievalReadiness,
+    });
   }
   private buildGeneralBasicsSection(containerEl: HTMLElement): void {
     const section = this.createSettingsSection(containerEl, t('generalBasicsTitle'), {
@@ -2543,6 +2558,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private buildOverviewRuntimeState(): SettingsOverviewRuntimeState {
     const runtime = this.plugin.getRagRuntimeState();
     const registry = this.plugin.mcpRegistry;
+    const ragRuntimeStarted = runtime.initRunning || runtime.lastInitStartedAt !== null;
     return {
       ragStatus: runtime.ragStatus,
       mcpConnectionState: this.plugin.mcpConnectionState ?? 'idle',
@@ -2552,6 +2568,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         error: registry?.getLastError(server.name),
       })),
       isRagIndexing: this.plugin.isRagIndexing(),
+      retrievalReadiness: resolveSettingsRetrievalReadiness(
+        this.plugin.getRetrievalReadiness(),
+        ragRuntimeStarted,
+      ),
     };
   }
   private buildProvidersTab(containerEl: HTMLElement): void {
@@ -2712,12 +2732,29 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (!statusSection) return;
     this.renderMCPStatus(statusSection);
   }
-  private getIndexingStatusLabel(): string {
-    const status = this.plugin.getRagRuntimeState().ragIndexingStatus;
+  private getIndexingStatusLabel(
+    status: RagIndexingSchedulerStatus | null = this.plugin.getRagRuntimeState().ragIndexingStatus,
+  ): string {
     if (!status) return this.plugin.isRagIndexing() ? t('settingsAuto077') : t('settingsAuto078');
     if (status.phase === 'paused') return t('ragPerformancePaused');
     if (status.running) {
       return this.formatRunningRagIndexingStatus(status);
+    }
+    if (status.lastResult) {
+      return t('settingsAuto080', {
+        v0: status.lastResult.indexed,
+        v1: status.lastResult.vectors,
+      });
+    }
+    return t('settingsAuto078');
+  }
+  private getIndexingStatusHeadline(
+    status: RagIndexingSchedulerStatus | null = this.plugin.getRagRuntimeState().ragIndexingStatus,
+  ): string {
+    if (!status) return this.plugin.isRagIndexing() ? t('settingsAuto077') : t('settingsAuto078');
+    if (status.phase === 'paused') return t('ragPerformancePaused');
+    if (status.running) {
+      return t('ragIndexingRunning', { phase: this.formatRagIndexingPhase(status.phase) });
     }
     if (status.lastResult) {
       return t('settingsAuto080', {
@@ -3569,40 +3606,54 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
    */
   private updateRagIndexingProgress(): void {
     const runtime = this.plugin.getRagRuntimeState();
+    const isRunning = this.plugin.isRagIndexing();
+    const guardState = this.plugin.getRagPerformanceGuardState();
+    const retrievalReadiness = this.plugin.getRetrievalReadiness();
     this.updateRagControlStates(runtime.ragStatus);
     this.ragStatusAction?.setText(
-      runtime.ragStatus
-        ? this.getRagActionMessage(runtime.ragStatus, this.plugin.getRagPerformanceGuardState())
-        : t('settingsAuto130'),
+      this.getRagActionMessage(runtime.ragStatus, guardState, retrievalReadiness),
     );
-    const label = this.getIndexingStatusLabel();
-    const statusEl = this.ragStatusGrid?.querySelector<HTMLElement>(
-      '.superpower-inside-rag-overview-status',
+    const overviewCopy = this.ragStatusGrid?.querySelector<HTMLElement>(
+      '.superpower-inside-rag-overview-copy',
     );
-    if (statusEl) {
-      statusEl.setText(label);
-      statusEl.setAttribute('role', 'status');
-    }
-    const progress = runtime.ragIndexingStatus?.progress;
-    const detailEl = this.ragStatusGrid?.querySelector<HTMLElement>(
-      '.superpower-inside-rag-overview-detail',
-    );
-    if (detailEl) {
-      if (progress && progress.totalFiles > 0) {
-        detailEl.setText(
-          t(progress.event === 'plan' ? 'ragIndexingDetailPlanning' : 'ragIndexingDetailProgress', {
-            current: Math.min((progress.currentFileIndex ?? -1) + 1, progress.totalFiles),
-            completed: Math.min(progress.completedFiles, progress.totalFiles),
-            total: progress.totalFiles,
-          }),
-        );
-      } else if (runtime.ragIndexingStatus?.running) {
-        // 사전 단계에는 이전 통계가 stale로 남지 않도록 현재 확인 중임을 알립니다.
-        detailEl.setText(t('ragIndexingDetailPreparing'));
-      }
+    if (overviewCopy) {
+      const indexingStatus = runtime.ragIndexingStatus;
+      const isPaused = guardState?.mode === 'paused' || indexingStatus?.phase === 'paused';
+      const headline = isPaused
+        ? t('ragPerformancePaused')
+        : retrievalReadiness === 'degraded'
+          ? t('chatReadinessRagNotReady')
+          : retrievalReadiness === 'preparing'
+            ? t('chatReadinessRagIndexing')
+            : this.getIndexingStatusHeadline(indexingStatus);
+      const detail =
+        isPaused || retrievalReadiness === 'ready'
+          ? isRunning
+            ? t('ragIndexingDetailPreparing')
+            : undefined
+          : retrievalReadiness === 'degraded'
+            ? t('chatReadinessRagNotReadyDetail')
+            : t('chatReadinessRagIndexingDetail');
+      const tone =
+        isPaused || retrievalReadiness === 'degraded'
+          ? 'danger'
+          : retrievalReadiness === 'preparing'
+            ? 'neutral'
+            : isRunning
+              ? 'warning'
+              : undefined;
+      this.renderRagOverview(
+        overviewCopy,
+        headline,
+        detail,
+        tone,
+        isRunning ? indexingStatus : null,
+      );
     }
     if (this.ragStatusTimestamp) {
-      this.ragStatusTimestamp.setText(t('settingsAuto115', { v0: label }));
+      this.ragStatusTimestamp.setText(
+        t('settingsAuto115', { v0: this.getIndexingStatusLabel(runtime.ragIndexingStatus) }),
+      );
     }
   }
 
@@ -3638,7 +3689,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         const status = await this.getRagStatus();
         if (!isCurrentView()) return;
         if (status) {
-          this.renderRagStatusSummary(status, indexingDetail);
+          this.renderRagStatusSummary(status);
           timestampEl.setText(
             indexingDetail
               ? t('settingsAuto116', {
@@ -3671,11 +3722,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     const copy = row.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
     copy.createDiv({ cls: 'superpower-inside-rag-overview-title', text: t('ragOverviewTitle') });
-    const statusEl = copy.createDiv({
+    copy.createDiv({
       cls: 'superpower-inside-rag-overview-status is-danger',
       text: t('ragOverviewUnavailable'),
+      attr: { role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' },
     });
-    statusEl.setAttribute('role', 'status');
     copy.createDiv({ cls: 'superpower-inside-rag-overview-detail', text: detail });
 
     const actions = row.createDiv({ cls: 'superpower-inside-rag-overview-actions' });
@@ -3703,58 +3754,229 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.ragStatusAction.empty();
     this.ragStatusDetails.empty();
   }
-  private renderRagStatusSummary(status: RagStatusSummary, indexingDetail?: string): void {
+  private renderRagStatusSummary(status: RagStatusSummary): void {
     if (!this.ragStatusGrid || !this.ragStatusAction || !this.ragStatusDetails) return;
     const guardState = this.plugin.getRagPerformanceGuardState();
+    const retrievalReadiness = this.plugin.getRetrievalReadiness();
     const updateCount = status.updateRequiredDocuments.length;
     const healthyCount = Math.max(0, status.totalDocuments - updateCount);
     const isRunning = this.plugin.isRagIndexing();
-    const isPaused = guardState?.mode === 'paused';
-    const tone = isPaused ? 'danger' : isRunning || updateCount > 0 ? 'warning' : 'success';
+    const indexingStatus = isRunning ? this.plugin.getRagRuntimeState().ragIndexingStatus : null;
+    const isPaused = guardState?.mode === 'paused' || indexingStatus?.phase === 'paused';
+    const tone =
+      isPaused || retrievalReadiness === 'degraded'
+        ? 'danger'
+        : retrievalReadiness === 'preparing'
+          ? 'neutral'
+          : isRunning || updateCount > 0
+            ? 'warning'
+            : 'success';
     const statusLabel = isPaused
       ? t('ragPerformancePaused')
-      : isRunning
-        ? (indexingDetail ?? this.getIndexingStatusLabel())
-        : updateCount > 0
-          ? t('ragOverviewNeedsUpdate', { count: updateCount })
-          : status.totalDocuments > 0
-            ? t('ragOverviewReady')
-            : t('ragOverviewEmpty');
+      : retrievalReadiness === 'degraded'
+        ? t('chatReadinessRagNotReady')
+        : retrievalReadiness === 'preparing'
+          ? t('chatReadinessRagIndexing')
+          : isRunning
+            ? this.getIndexingStatusHeadline(indexingStatus)
+            : updateCount > 0
+              ? t('ragOverviewNeedsUpdate', { count: updateCount })
+              : status.totalDocuments > 0
+                ? t('ragOverviewReady')
+                : t('ragOverviewEmpty');
+    const detail =
+      isPaused || retrievalReadiness === 'ready'
+        ? isRunning
+          ? t('ragIndexingDetailPreparing')
+          : t('ragOverviewDetail', {
+              healthy: healthyCount,
+              total: status.totalDocuments,
+              auto: this.getAutoUpdateLabel(),
+            })
+        : retrievalReadiness === 'degraded'
+          ? t('chatReadinessRagNotReadyDetail')
+          : t('chatReadinessRagIndexingDetail');
     this.ragStatusGrid.empty();
     const row = this.ragStatusGrid.createDiv({
       cls: 'superpower-inside-rag-row superpower-inside-rag-overview-row',
     });
     const copy = row.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
     copy.createDiv({ cls: 'superpower-inside-rag-overview-title', text: t('ragOverviewTitle') });
-    const statusEl = copy.createDiv({
-      cls: `superpower-inside-rag-overview-status is-${tone}`,
-      text: statusLabel,
-    });
-    statusEl.setAttribute('role', 'status');
-    copy.createDiv({
-      cls: 'superpower-inside-rag-overview-detail',
-      text: t('ragOverviewDetail', {
-        healthy: healthyCount,
-        total: status.totalDocuments,
-        auto: this.getAutoUpdateLabel(),
-      }),
-    });
+    this.renderRagOverview(
+      copy,
+      statusLabel,
+      detail,
+      tone,
+      indexingStatus,
+    );
     this.ragStatusAction.empty();
-    this.ragStatusAction.setText(this.getRagActionMessage(status, guardState));
+    this.ragStatusAction.setText(
+      this.getRagActionMessage(status, guardState, retrievalReadiness),
+    );
     this.ragStatusDetails.empty();
   }
+  private renderRagOverview(
+    containerEl: HTMLElement,
+    headline: string,
+    detailText: string | undefined,
+    tone: 'success' | 'warning' | 'danger' | 'neutral' | undefined,
+    indexingStatus: RagIndexingSchedulerStatus | null,
+  ): void {
+    let statusEl = containerEl.querySelector<HTMLElement>('.superpower-inside-rag-overview-status');
+    if (!statusEl) {
+      statusEl = containerEl.createDiv({ cls: 'superpower-inside-rag-overview-status' });
+    }
+    if (tone) {
+      statusEl.classList.remove('is-success', 'is-warning', 'is-danger');
+      if (tone !== 'neutral') statusEl.classList.add(`is-${tone}`);
+    }
+    if (statusEl.textContent !== headline) statusEl.setText(headline);
+    statusEl.setAttribute('role', 'status');
+    statusEl.setAttribute('aria-live', 'polite');
+    statusEl.setAttribute('aria-atomic', 'true');
+
+    let detailEl = containerEl.querySelector<HTMLElement>('.superpower-inside-rag-overview-detail');
+    let progressEl = containerEl.querySelector<HTMLElement>(
+      '.superpower-inside-rag-overview-progress',
+    );
+    if (!progressEl) {
+      progressEl = containerEl.createEl('ul', {
+        cls: 'superpower-inside-rag-overview-progress',
+      });
+      if (detailEl) containerEl.insertBefore(progressEl, detailEl);
+    }
+    if (!detailEl) {
+      detailEl = containerEl.createDiv({ cls: 'superpower-inside-rag-overview-detail' });
+    }
+
+    const progress = indexingStatus?.running ? indexingStatus.progress : null;
+    const rows =
+      progress && progress.totalFiles > 0 ? this.getRagIndexingProgressRows(progress) : null;
+    if (!rows) {
+      progressEl.hidden = true;
+      detailEl.hidden = false;
+      if (detailText !== undefined && detailEl.textContent !== detailText) {
+        detailEl.setText(detailText);
+      }
+      return;
+    }
+
+    let labels = progressEl.querySelectorAll<HTMLElement>(
+      '.superpower-inside-rag-overview-progress-label',
+    );
+    let values = progressEl.querySelectorAll<HTMLElement>(
+      '.superpower-inside-rag-overview-progress-value',
+    );
+    if (labels.length !== rows.length || values.length !== rows.length) {
+      progressEl.empty();
+      for (const row of rows) {
+        const item = progressEl.createEl('li', {
+          cls: 'superpower-inside-rag-overview-progress-item',
+        });
+        item.createEl('span', {
+          cls: 'superpower-inside-rag-overview-progress-label',
+          text: row.label,
+        });
+        item.createEl('span', {
+          cls: 'superpower-inside-rag-overview-progress-value',
+          text: row.value,
+        });
+      }
+      labels = progressEl.querySelectorAll<HTMLElement>(
+        '.superpower-inside-rag-overview-progress-label',
+      );
+      values = progressEl.querySelectorAll<HTMLElement>(
+        '.superpower-inside-rag-overview-progress-value',
+      );
+    }
+    rows.forEach((row, index) => {
+      const labelEl = labels[index];
+      const valueEl = values[index];
+      if (labelEl && labelEl.textContent !== row.label) labelEl.setText(row.label);
+      if (valueEl && valueEl.textContent !== row.value) valueEl.setText(row.value);
+    });
+    progressEl.hidden = false;
+    detailEl.hidden = true;
+  }
+  private getRagIndexingProgressRows(
+    progress: NonNullable<RagIndexingSchedulerStatus['progress']>,
+  ): { label: string; value: string }[] {
+    const completedFiles = Math.min(progress.completedFiles, progress.totalFiles);
+    const currentFile = Math.min((progress.currentFileIndex ?? -1) + 1, progress.totalFiles);
+    const sourcePageCount = progress.sourcePageCount ?? 0;
+    const currentFileLabel =
+      sourcePageCount > 0
+        ? t('ragIndexingProgressPdfLabel')
+        : t('ragIndexingProgressCurrentFileLabel');
+    const currentFileValue =
+      sourcePageCount > 0
+        ? t('ragIndexingProgressPdfValue', {
+            page: progress.sourcePage ?? 0,
+            total: sourcePageCount,
+          })
+        : progress.event !== 'plan' && progress.currentFileTotalChunks > 0
+        ? t('ragIndexingProgressChunkValue', {
+            completed: Math.min(
+              progress.currentFileEmbeddedChunks,
+              progress.currentFileTotalChunks,
+            ),
+            total: progress.currentFileTotalChunks,
+          })
+        : t('ragIndexingProgressFileValue', {
+            current: currentFile,
+            total: progress.totalFiles,
+          });
+    const eta = progress.eta;
+    const etaValue =
+      progress.event === 'plan' ||
+      !eta ||
+      eta.remainingMs === null ||
+      eta.confidence === 'calculating' ||
+      eta.confidence === 'low'
+        ? t('ragIndexingProgressEtaCalculating')
+        : eta.confidence === 'medium'
+          ? t('ragIndexingProgressEtaApprox', {
+              eta: this.formatEtaDuration(eta.remainingMs),
+            })
+          : t('ragIndexingProgressEtaValue', {
+              eta: this.formatEtaDuration(eta.remainingMs),
+            });
+    return [
+      {
+        label: t('ragIndexingProgressFilesLabel'),
+        value: t('ragIndexingProgressFilesValue', {
+          completed: completedFiles,
+          total: progress.totalFiles,
+        }),
+      },
+      { label: currentFileLabel, value: currentFileValue },
+      {
+        label: t('ragIndexingProgressElapsedLabel'),
+        value: this.formatEtaDuration(Math.max(0, progress.nowMs - progress.startedAtMs)),
+      },
+      { label: t('ragIndexingProgressRemainingLabel'), value: etaValue },
+    ];
+  }
   private getRagActionMessage(
-    status: RagStatusSummary,
+    status: RagStatusSummary | null,
     guardState: PerformanceGuardState | null,
+    retrievalReadiness: ChatRetrievalReadiness,
   ): string {
     if (guardState?.mode === 'paused') {
       return t('settingsAuto131', {
         v0: String(guardState.lastSlowReason ?? guardState.reason ?? t('settingsAuto132')),
       });
     }
+    if (retrievalReadiness === 'degraded') {
+      return t('ragRetrievalDegradedAction');
+    }
     if (this.plugin.isRagIndexing()) {
       return t('settingsAuto130');
     }
+    if (retrievalReadiness === 'preparing') {
+      return t('ragRetrievalPreparingAction');
+    }
+    if (!status) return t('settingsAuto130');
     const updateCount = status.updateRequiredDocuments.length;
     if (updateCount > 0) return t('settingsAuto133', { v0: updateCount });
     if (status.totalDocuments > 0) return t('settingsAuto134');

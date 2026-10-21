@@ -382,22 +382,24 @@ describe('설정 화면 리디자인 구조', () => {
     expect(settingsSource).toContain('options.value !== options.statusLabel');
   });
 
-  it('General 상태는 인덱싱 중이면 준비 완료 대신 진행 안내와 이동 동선을 보여준다', () => {
+  it('General 상태는 공유 검색 준비 상태로 준비 완료 대신 진행 안내와 이동 동선을 보여준다', () => {
     const methodStart = settingsSource.indexOf('private renderGeneralStatus(');
     const methodEnd = settingsSource.indexOf('\n  private buildGeneralBasicsSection', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
 
     expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(methodSource).toContain('this.plugin.isRagIndexing()');
-    expect(methodSource).toContain("t('generalIndexingInProgressTitle')");
-    expect(methodSource).toContain("t('generalIndexingInProgressDetail')");
+    expect(methodSource).toContain("snapshot.retrievalReadiness === 'preparing'");
+    expect(methodSource).toContain("t('chatReadinessRagIndexing')");
+    expect(methodSource).toContain("t('chatReadinessRagIndexingDetail')");
     expect(methodSource).toContain("this.switchTab('rag')");
     expect(methodSource).toContain("actionLabel: t('tabRag')");
-    // 조치 필요 항목이 있으면 인덱싱 안내보다 먼저 보여주고, 준비 완료 문구는 마지막에 남습니다.
+    expect(methodSource).not.toContain('this.plugin.isRagIndexing()');
+    expect(methodSource).not.toContain("t('generalIndexingInProgressTitle')");
+    // 조치 필요 항목이 있으면 준비 중 안내보다 먼저 보여주고, 준비 완료 문구는 마지막에 남습니다.
     expect(methodSource.indexOf('const primaryAttention')).toBeLessThan(
-      methodSource.indexOf("t('generalIndexingInProgressTitle')"),
+      methodSource.indexOf("t('chatReadinessRagIndexing')"),
     );
-    expect(methodSource.indexOf("t('generalIndexingInProgressTitle')")).toBeLessThan(
+    expect(methodSource.indexOf("t('chatReadinessRagIndexing')")).toBeLessThan(
       methodSource.indexOf("t('generalAllReady')"),
     );
   });
@@ -462,9 +464,51 @@ describe('설정 화면 리디자인 구조', () => {
       const callback = renderSource.slice(start, next < 0 ? undefined : next);
       expect(callback).toContain('this.refreshGeneralStatusSection()');
     }
+    const ragStart = renderSource.indexOf("bus.on('rag'");
+    const ragEnd = renderSource.indexOf('bus.on(', ragStart + 1);
+    const ragCallback = renderSource.slice(ragStart, ragEnd);
+    expect(ragCallback.indexOf('this.refreshGeneralStatusSection()')).toBeLessThan(
+      ragCallback.indexOf('if (this.plugin.isRagIndexing())'),
+    );
     expect(refreshSource).toContain('this.generalStatusBody');
     expect(refreshSource).toContain('statusBody.isConnected');
     expect(refreshSource).not.toContain('this.buildGeneralTab');
+  });
+
+  it('General 상태는 같은 snapshot의 heartbeat에서 재렌더하지 않고 reset 시 signature를 지운다', () => {
+    const renderStart = settingsSource.indexOf('private renderGeneralStatus(');
+    const renderEnd = settingsSource.indexOf('\n  private buildGeneralBasicsSection', renderStart);
+    const renderSource = settingsSource.slice(renderStart, renderEnd);
+    const helperStart = settingsSource.indexOf('private getGeneralStatusSignature(');
+    const helperEnd = settingsSource.indexOf('\n  private ', helperStart + 1);
+    const helperSource = settingsSource.slice(helperStart, helperEnd);
+    const resetStart = settingsSource.indexOf('private resetRagDomReferences(): void');
+    const resetEnd = settingsSource.indexOf('\n  display(): void', resetStart);
+    const resetSource = settingsSource.slice(resetStart, resetEnd);
+    const runtimeStart = settingsSource.indexOf('private buildOverviewRuntimeState(');
+    const runtimeEnd = settingsSource.indexOf('\n  private buildProvidersTab', runtimeStart);
+    const runtimeSource = settingsSource.slice(runtimeStart, runtimeEnd);
+
+    expect(renderSource).toContain('this.getGeneralStatusSignature(snapshot)');
+    expect(renderSource).toContain('this.generalStatusSignature === signature');
+    expect(renderSource).toContain('this.generalStatusSignature = signature');
+    expect(renderSource).toContain('return;');
+    for (const key of [
+      'attentionItems',
+      'metrics',
+      'providerRows',
+      'mcpRows',
+      'retrievalReadiness',
+    ]) {
+      expect(helperSource).toContain(key);
+    }
+    expect(resetSource).toContain('this.generalStatusSignature = null');
+    expect(runtimeSource).toContain(
+      'const ragRuntimeStarted = runtime.initRunning || runtime.lastInitStartedAt !== null',
+    );
+    expect(runtimeSource).toContain('resolveSettingsRetrievalReadiness(');
+    expect(runtimeSource).toContain('this.plugin.getRetrievalReadiness()');
+    expect(runtimeSource).toContain('ragRuntimeStarted');
   });
 
   it('Chat 탭은 현재 동작, 응답 기본값, 저장, 도구 사용 순서로 읽힌다', () => {
@@ -706,16 +750,113 @@ describe('설정 화면 리디자인 구조', () => {
     const methodStart = settingsSource.indexOf('private updateRagIndexingProgress(');
     const methodEnd = settingsSource.indexOf('\n  updateRagStats(', methodStart);
     const methodSource = settingsSource.slice(methodStart, methodEnd);
+    const summaryStart = settingsSource.indexOf('private renderRagStatusSummary(');
+    const summaryEnd = settingsSource.indexOf('\n  private getRagActionMessage', summaryStart);
+    const summarySource = settingsSource.slice(summaryStart, summaryEnd);
+    const overviewStart = settingsSource.indexOf('private renderRagOverview(');
+    const overviewEnd = settingsSource.indexOf(
+      '\n  private getRagIndexingProgressRows',
+      overviewStart,
+    );
+    const overviewSource = settingsSource.slice(overviewStart, overviewEnd);
 
     expect(subscriptionStart).toBeGreaterThanOrEqual(0);
     expect(subscriptionSource).toContain('this.plugin.isRagIndexing()');
     expect(subscriptionSource).toContain('this.updateRagIndexingProgress()');
     expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(methodSource).toContain('.superpower-inside-rag-overview-status');
-    expect(methodSource).toContain('.superpower-inside-rag-overview-detail');
+    expect(overviewSource).toContain('.superpower-inside-rag-overview-status');
+    expect(overviewSource).toContain('.superpower-inside-rag-overview-detail');
+    expect(overviewSource).toContain('.superpower-inside-rag-overview-progress');
+    expect(methodSource).toContain('.superpower-inside-rag-overview-copy');
+    expect(methodSource).toContain('this.renderRagOverview(');
+    expect(summarySource).toContain('this.renderRagOverview(');
     expect(methodSource).not.toContain('this.getRagStatus()');
     expect(methodSource).not.toContain('this.updateRagStatsSection()');
     expect(methodSource).not.toContain('this.updateRagUpdateList()');
+    expect(styles).toContain('.superpower-inside-rag-overview-progress');
+    expect(styles).toContain('.superpower-inside-rag-overview-progress-label');
+    expect(styles).toContain('.superpower-inside-rag-overview-progress-value');
+    expect(styles).toMatch(
+      /\.superpower-inside-rag-overview-progress\s*\{[^}]*list-style:\s*none/s,
+    );
+    expect(styles).toMatch(
+      /\.superpower-inside-rag-overview-progress-item\s*\{[^}]*grid-template-columns:/s,
+    );
+    expect(styles).toMatch(
+      /\.superpower-inside-rag-overview-progress\[hidden\]\s*\{\s*display:\s*none;\s*\}/s,
+    );
+    expect(styles).toMatch(
+      /\.superpower-inside-rag-overview-progress-value\s*\{[^}]*font-variant-numeric:\s*tabular-nums;[^}]*overflow-wrap:\s*anywhere/s,
+    );
+  });
+
+  it('RAG 상태 요약과 진행 갱신은 공유 readiness와 action 우선순위를 따른다', () => {
+    const progressStart = settingsSource.indexOf('private updateRagIndexingProgress(');
+    const progressEnd = settingsSource.indexOf('\n  updateRagStats(', progressStart);
+    const progressSource = settingsSource.slice(progressStart, progressEnd);
+    const summaryStart = settingsSource.indexOf('private renderRagStatusSummary(');
+    const summaryEnd = settingsSource.indexOf('\n  private renderRagOverview(', summaryStart);
+    const summarySource = settingsSource.slice(summaryStart, summaryEnd);
+    const overviewStart = summaryEnd;
+    const overviewEnd = settingsSource.indexOf(
+      '\n  private getRagIndexingProgressRows',
+      overviewStart,
+    );
+    const overviewSource = settingsSource.slice(overviewStart, overviewEnd);
+    const actionStart = settingsSource.indexOf('private getRagActionMessage(');
+    const actionEnd = settingsSource.indexOf('\n  private getAutoUpdateLabel', actionStart);
+    const actionSource = settingsSource.slice(actionStart, actionEnd);
+    const readiness = 'const retrievalReadiness = this.plugin.getRetrievalReadiness();';
+
+    for (const source of [progressSource, summarySource]) {
+      expect(source).toContain(readiness);
+      expect(source).toContain("retrievalReadiness === 'degraded'");
+      expect(source).toContain("retrievalReadiness === 'preparing'");
+      expect(source).toContain("t('chatReadinessRagNotReady')");
+      expect(source).toContain("t('chatReadinessRagNotReadyDetail')");
+      expect(source).toContain("t('chatReadinessRagIndexing')");
+      expect(source).toContain("t('chatReadinessRagIndexingDetail')");
+      expect(source).toContain("'danger'");
+      expect(source).toContain("'neutral'");
+    }
+
+    const statusLabelStart = summarySource.indexOf('const statusLabel =');
+    const statusDetailStart = summarySource.indexOf('const detail =', statusLabelStart);
+    const statusLabelSource = summarySource.slice(statusLabelStart, statusDetailStart);
+    const statusOrder = [
+      'isPaused',
+      "retrievalReadiness === 'degraded'",
+      "retrievalReadiness === 'preparing'",
+      "t('ragOverviewReady')",
+    ].map((value) => statusLabelSource.indexOf(value));
+    expect(statusOrder).toEqual([...statusOrder].sort((left, right) => left - right));
+
+    expect(overviewSource).toContain("tone: 'success' | 'warning' | 'danger' | 'neutral' | undefined");
+    expect(overviewSource).toContain(
+      "statusEl.classList.remove('is-success', 'is-warning', 'is-danger')",
+    );
+    expect(overviewSource).not.toContain('is-neutral');
+
+    for (const value of [
+      "guardState?.mode === 'paused'",
+      "retrievalReadiness === 'degraded'",
+      'this.plugin.isRagIndexing()',
+      "retrievalReadiness === 'preparing'",
+      'const updateCount',
+    ]) {
+      expect(actionSource).toContain(value);
+    }
+    const actionOrder = [
+      "guardState?.mode === 'paused'",
+      "retrievalReadiness === 'degraded'",
+      'this.plugin.isRagIndexing()',
+      "retrievalReadiness === 'preparing'",
+      'const updateCount',
+    ].map((value) => actionSource.indexOf(value));
+    expect(actionOrder).toEqual([...actionOrder].sort((left, right) => left - right));
+    expect(actionSource).toContain("t('settingsAuto130')");
+    expect(actionSource).toContain("t('ragRetrievalDegradedAction')");
+    expect(actionSource).toContain("t('ragRetrievalPreparingAction')");
   });
 
   it('Providers 탭은 현재 상태와 연결 목록 순서로 공통 workspace를 사용한다', () => {
