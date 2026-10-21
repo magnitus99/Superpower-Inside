@@ -13,17 +13,34 @@ import type {
   SearchRequest,
   SearchResponse,
 } from './engine-port';
+import {
+  verifyIndexedEvidenceRust,
+  type IndexedSearchPlan,
+  type RustIndexedEvidenceVerificationDocument,
+} from '../rag/rust-core';
+
+const VERIFICATION_WINDOW_BYTES = 1024 * 1024;
+const verificationEncoder = new TextEncoder();
 
 export interface IndexedSearchSource {
   corpus: IndexedVaultCorpus;
   getIndexedPaths(): Promise<readonly string[]>;
   /** 하이브리드 검색이 지목한 후보 신호. 검색 화면은 이 범위 밖의 색인 본문을 읽지 않는다. */
-  candidates?: readonly IndexedEvidenceCandidate[];
+  candidates?: readonly (IndexedEvidenceCandidate & { queryIndex?: number })[];
   inventory?: IndexedEvidenceInventory;
   candidatesState?: SearchCandidateState;
   scopes?: readonly string[];
+  searchPlan?: IndexedSearchPlan;
   /** 색인 리비전과 현재 vault 리비전(mtime:size)을 대조하는 reader. 없으면 결과를 verified로 표시하지 않는다. */
   revisionReader?: (path: string) => Promise<string | null>;
+  /** 답변 전에 채택 문서의 현재 원문을 다시 읽는 로컬 vault reader. */
+  sourceReader?: (path: string, signal?: AbortSignal) => Promise<IndexedEvidenceSourceSnapshot>;
+}
+
+/** 현재 vault 원문과 그 revision입니다. 읽을 수 없으면 두 값 모두 null입니다. */
+export interface IndexedEvidenceSourceSnapshot {
+  revision: string | null;
+  text: string | null;
 }
 
 type IndexedVaultSearch = typeof searchIndexedVault;
@@ -59,15 +76,101 @@ export function createIndexedSearchPort(
     });
     if (!result) return null;
     const revision = await keepCurrentRevision(result.evidence, revisionReader);
-    const response = toSearchResponse({ ...result, evidence: revision.evidence });
-    response.staleDocuments = revision.staleDocuments;
+    const current = source.sourceReader
+      ? await keepCurrentSourceEvidence(
+          revision.evidence,
+          source.sourceReader,
+          request.signal,
+        )
+      : { evidence: revision.evidence, staleDocuments: 0 };
+    const response = toSearchResponse({ ...result, evidence: current.evidence });
+    response.staleDocuments = revision.staleDocuments + current.staleDocuments;
     response.diagnostics.selectedDocuments = new Set(
-      revision.evidence.map((item) => item.path),
+      current.evidence.map((item) => item.path),
     ).size;
-    if (revision.staleDocuments > 0 && response.coverage.status === 'supported') {
+    if (response.staleDocuments > 0 && response.coverage.status === 'supported') {
       response.coverage.status = 'incomplete';
     }
     return response;
+  };
+}
+
+/** 현재 원문의 인용 주변 구간을 작은 verifier 문서로 만듭니다. */
+function currentVerificationWindow(
+  item: IndexedEvidenceItem,
+  snapshot: IndexedEvidenceSourceSnapshot,
+): RustIndexedEvidenceVerificationDocument | null {
+  if (snapshot.revision === null || snapshot.text === null) return null;
+  const lines = snapshot.text.split('\n');
+  if (lines.length === 0) return null;
+  const start = Math.max(1, Math.min(item.startLine, lines.length) - 3);
+  const end = Math.min(lines.length, Math.max(item.endLine, item.startLine) + 3);
+  const text = lines.slice(start - 1, end).join('\n') + (end < lines.length ? '\n' : '');
+  if (verificationEncoder.encode(text).byteLength > VERIFICATION_WINDOW_BYTES) return null;
+  return {
+    path: item.path,
+    text,
+    startLine: start,
+    revision: snapshot.revision,
+    indexed: true,
+    reviewState: 'reviewed',
+  };
+}
+
+/** 화면 검색도 답변과 같은 최신 원문·절대 행·revision 경계를 통과시킵니다. */
+async function keepCurrentSourceEvidence(
+  evidence: readonly IndexedEvidenceItem[],
+  reader: NonNullable<IndexedSearchSource['sourceReader']>,
+  signal?: AbortSignal,
+): Promise<{ evidence: readonly IndexedEvidenceItem[]; staleDocuments: number }> {
+  if (evidence.length === 0) return { evidence, staleDocuments: 0 };
+  const paths = [...new Set(evidence.map((item) => item.path))];
+  const snapshots = await Promise.all(
+    paths.map(async (path) => {
+      signal?.throwIfAborted();
+      try {
+        return [path, await reader(path, signal)] as const;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        return [path, { revision: null, text: null }] as const;
+      }
+    }),
+  );
+  const byPath = new Map(snapshots);
+  const documents = new Map<string, RustIndexedEvidenceVerificationDocument>();
+  const rejectedPaths = new Set<string>();
+  for (const item of evidence) {
+    const snapshot = byPath.get(item.path);
+    const document = snapshot ? currentVerificationWindow(item, snapshot) : null;
+    if (!document) {
+      rejectedPaths.add(item.path);
+      continue;
+    }
+    documents.set(`${item.path}\u0000${document.startLine}`, document);
+  }
+  const candidates = evidence.filter((item) => !rejectedPaths.has(item.path));
+  const verification = verifyIndexedEvidenceRust({
+    evidence: candidates.map((item) => ({
+      sourceId: item.sourceId,
+      path: item.path,
+      quote: item.quote,
+      ...(item.revision !== null ? { revision: item.revision } : {}),
+      startLine: item.startLine,
+      endLine: item.endLine,
+    })),
+    documents: [...documents.values()],
+  });
+  if (!verification) {
+    for (const item of candidates) rejectedPaths.add(item.path);
+    return { evidence: [], staleDocuments: rejectedPaths.size };
+  }
+  const statuses = new Map(verification.statuses.map((status) => [status.sourceId, status]));
+  for (const item of candidates) {
+    if (statuses.get(item.sourceId)?.status !== 'verified') rejectedPaths.add(item.path);
+  }
+  return {
+    evidence: candidates.filter((item) => !rejectedPaths.has(item.path)),
+    staleDocuments: rejectedPaths.size,
   };
 }
 

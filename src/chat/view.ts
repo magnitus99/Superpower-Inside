@@ -3143,6 +3143,7 @@ export class ChatView extends ItemView {
           },
           localSearchQuestion,
           abortController.signal,
+          text,
         );
         const indexedPaths = searchSource ? await searchSource.getIndexedPaths() : [];
         const searchInventory = searchSource?.inventory;
@@ -3159,6 +3160,8 @@ export class ChatView extends ItemView {
           inventory: searchInventory,
           filters: mentionedTags.length > 0 ? { tags: mentionedTags } : undefined,
           revisionReader: searchSource?.revisionReader,
+          sourceReader: searchSource?.sourceReader,
+          searchPlan: searchSource?.searchPlan,
           provider,
           systemPrompt: getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt),
           previousUserQuestions,
@@ -4970,6 +4973,7 @@ export class ChatView extends ItemView {
             },
             promptContext.scoringQuestion ?? currentQuestion,
             abortController.signal,
+            currentQuestion,
           );
           const indexedPaths = resumeSource ? await resumeSource.getIndexedPaths() : [];
           const resumeInventory = resumeSource?.inventory;
@@ -4988,6 +4992,8 @@ export class ChatView extends ItemView {
             inventory: resumeInventory,
             filters: resumeTags.length > 0 ? { tags: resumeTags } : undefined,
             revisionReader: resumeSource?.revisionReader,
+            sourceReader: resumeSource?.sourceReader,
+            searchPlan: resumeSource?.searchPlan,
             provider,
             previousUserQuestions,
             scoringQuestion:

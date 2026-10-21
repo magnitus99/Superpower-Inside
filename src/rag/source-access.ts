@@ -77,6 +77,13 @@ export async function readSourceText(
       options,
       false,
     );
+  if (options.forceRefresh === true) {
+    return waitForRead(
+      extractSourceText(extractor, vault, file, { ...options, forceRefresh: true }),
+      options,
+      extractor === 'pdf',
+    );
+  }
 
   const key = sourceCacheKey(vault, file);
   const owner = cacheGeneration;
@@ -158,17 +165,22 @@ async function extractSourceText(
 ): Promise<SourceText> {
   if (extractor === 'pdf') {
     const cache = pdfCache;
-    const cached = await cache?.get(file.path, file.stat.mtime, file.stat.size).catch(() => {
-      appLogger.warn('PDF cache read failed.', { source: 'rag.pdf.cache' });
-      return undefined;
-    });
+    const cached =
+      options.forceRefresh === true
+        ? undefined
+        : await cache?.get(file.path, file.stat.mtime, file.stat.size).catch(() => {
+            appLogger.warn('PDF cache read failed.', { source: 'rag.pdf.cache' });
+            return undefined;
+          });
     options.signal?.throwIfAborted();
     if (cached) return cached;
     const source = await extractPdfSourceText(vault, file, options);
     options.signal?.throwIfAborted();
-    await cache?.put(file.path, file.stat.mtime, file.stat.size, source).catch(() => {
-      appLogger.warn('PDF cache write failed.', { source: 'rag.pdf.cache' });
-    });
+    if (options.forceRefresh !== true) {
+      await cache?.put(file.path, file.stat.mtime, file.stat.size, source).catch(() => {
+        appLogger.warn('PDF cache write failed.', { source: 'rag.pdf.cache' });
+      });
+    }
     return source;
   }
 

@@ -16,6 +16,8 @@ export interface PdfSourceText {
 export interface PdfReadOptions {
   signal?: AbortSignal;
   onProgress?: (page: number, pageCount: number) => void;
+  /** 원문 재검증처럼 캐시된 추출문을 신뢰하면 안 되는 읽기에서 사용합니다. */
+  forceRefresh?: boolean;
 }
 interface PdfWorkerResponse {
   id: number;

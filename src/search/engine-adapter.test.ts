@@ -184,6 +184,53 @@ describe('색인 검색 포트 어댑터', () => {
     expect(response?.coverage.status).toBe('incomplete');
   });
 
+  it('현재 원문 구절과 절대 행이 어긋나면 검색 화면에서도 제외한다', async () => {
+    const port = createIndexedSearchPort(
+      {
+        corpus,
+        getIndexedPaths: () => Promise.resolve(['Synthetic/Relevant.md']),
+        revisionReader: () => Promise.resolve('rev-1'),
+        sourceReader: () =>
+          Promise.resolve({ revision: 'rev-1', text: '다른 현재 원문' }),
+      },
+      () => Promise.resolve(fixtureResult()),
+    );
+
+    const response = await port({ query: 'quartz' });
+    expect(response?.evidence).toEqual([]);
+    expect(response?.staleDocuments).toBe(1);
+    expect(response?.diagnostics.selectedDocuments).toBe(0);
+    expect(response?.coverage.status).toBe('incomplete');
+  });
+
+  it('현재 원문 구절과 절대 행이 맞으면 검색 화면 결과를 유지한다', async () => {
+    const result = fixtureResult();
+    const evidence = result.evidence[0];
+    if (!evidence) throw new Error('fixture evidence missing');
+    const matchingResult = {
+      ...result,
+      evidence: [{ ...evidence, endLine: 3 }],
+    };
+    const port = createIndexedSearchPort(
+      {
+        corpus,
+        getIndexedPaths: () => Promise.resolve(['Synthetic/Relevant.md']),
+        revisionReader: () => Promise.resolve('rev-1'),
+        sourceReader: () =>
+          Promise.resolve({
+            revision: 'rev-1',
+            text: '첫 줄\n둘째 줄\nQuartz restarts after cooling cycles.\n넷째 줄',
+          }),
+      },
+      () => Promise.resolve(matchingResult),
+    );
+
+    const response = await port({ query: 'quartz' });
+    expect(response?.evidence).toHaveLength(1);
+    expect(response?.staleDocuments).toBe(0);
+    expect(response?.coverage.status).toBe('incomplete');
+  });
+
   it('리비전 reader가 없으면 색인 사본을 결과로 내보내지 않는다', async () => {
     const port = createIndexedSearchPort(
       { corpus, getIndexedPaths: () => Promise.resolve(['Synthetic/Relevant.md']) },

@@ -3,10 +3,14 @@ import { t } from '../i18n';
 import { LLMProviderHttpError, type ChatMessage, type LLMProvider } from '../llm/providers';
 import {
   planIndexedEvidenceRust,
+  planIndexedReviewAnswerPlanRust,
   planModelContextRust,
+  validateIndexedReviewAnswerRust,
   verifyIndexedEvidenceRust,
+  type IndexedSearchPlan,
   type RustIndexedEvidencePlan,
   type RustIndexedEvidenceVerification,
+  type RustIndexedReviewAnswerPlan,
 } from '../rag/rust-core';
 import {
   reviewIndexedVault,
@@ -20,6 +24,8 @@ vi.mock('../rag/rust-core', async (importOriginal) => {
   return {
     ...actual,
     planIndexedEvidenceRust: vi.fn(actual.planIndexedEvidenceRust),
+    planIndexedReviewAnswerPlanRust: vi.fn(actual.planIndexedReviewAnswerPlanRust),
+    validateIndexedReviewAnswerRust: vi.fn(actual.validateIndexedReviewAnswerRust),
     verifyIndexedEvidenceRust: vi.fn(actual.verifyIndexedEvidenceRust),
   };
 });
@@ -27,6 +33,7 @@ vi.mock('../rag/rust-core', async (importOriginal) => {
 const RELEVANT = 'Synthetic/Relevant.md';
 const OTHER = 'Synthetic/Other.md';
 const SOURCE_ID = RELEVANT + '#L3-L4';
+const OTHER_SOURCE_ID = OTHER + '#L1-L1';
 
 function corpusFixture(): IndexedVaultCorpus {
   const records = [
@@ -179,6 +186,75 @@ function twoDocumentPlan(): RustIndexedEvidencePlan {
   };
 }
 
+function comparisonEvidencePlan(): RustIndexedEvidencePlan {
+  const plan = twoDocumentPlan();
+  const first = plan.evidence[0];
+  const second = plan.evidence[1];
+  if (!first || !second) throw new Error('comparison fixture without two passages');
+  return {
+    ...plan,
+    evidence: [
+      { ...first, queryIndexes: [1] },
+      { ...second, queryIndexes: [2] },
+    ],
+  };
+}
+
+const COMPARISON_SEARCH_PLAN: IndexedSearchPlan = {
+  mode: 'comparison',
+  facets: [
+    {
+      id: 'question',
+      kind: 'question',
+      query: 'Compare Synthetic Alpha and Synthetic Beta',
+      queryIndex: 0,
+      terms: ['compare'],
+    },
+    {
+      id: 'subject-0',
+      kind: 'subject',
+      query: 'Synthetic Alpha',
+      queryIndex: 1,
+      terms: ['alpha'],
+    },
+    {
+      id: 'subject-1',
+      kind: 'subject',
+      query: 'Synthetic Beta',
+      queryIndex: 2,
+      terms: ['beta'],
+    },
+  ],
+};
+
+function comparisonAnswerPlan(
+  overrides: Partial<RustIndexedReviewAnswerPlan> = {},
+): RustIndexedReviewAnswerPlan {
+  return {
+    mode: 'comparison',
+    facets: [
+      {
+        id: 'subject-0',
+        kind: 'subject',
+        label: 'Synthetic Alpha',
+        status: 'supported',
+        sourceIds: [SOURCE_ID],
+      },
+      {
+        id: 'subject-1',
+        kind: 'subject',
+        label: 'Synthetic Beta',
+        status: 'supported',
+        sourceIds: [OTHER_SOURCE_ID],
+      },
+    ],
+    requiredFacetIds: ['subject-0', 'subject-1'],
+    missingFacetIds: [],
+    synthesisRequired: true,
+    ...overrides,
+  };
+}
+
 function verifiedStatuses(input: Parameters<typeof verifyIndexedEvidenceRust>[0]) {
   return {
     statuses: input.evidence.map((item) => ({
@@ -210,6 +286,23 @@ function answerProvider(): { provider: LLMProvider; calls: ChatMessage[][] } {
     },
   } as unknown as LLMProvider;
   calls.length = 0;
+  return { provider, calls };
+}
+
+function scriptedAnswerProvider(responses: readonly string[]): {
+  provider: LLMProvider;
+  calls: ChatMessage[][];
+} {
+  const calls: ChatMessage[][] = [];
+  let attempt = 0;
+  const provider = {
+    streamChat: async (messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+      calls.push(messages);
+      consume({ content: responses[Math.min(attempt, responses.length - 1)] ?? '' });
+      attempt += 1;
+      return Promise.resolve();
+    },
+  } as unknown as LLMProvider;
   return { provider, calls };
 }
 
@@ -435,6 +528,227 @@ describe('엔진 근거 기반 색인 검토', () => {
     vi.mocked(verifyIndexedEvidenceRust).mockReturnValue(verificationFixture());
   });
 
+  it('비교 답변의 missing facet은 같은 모델로 정확히 한 번 교정한 뒤 채택한다', async () => {
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue(comparisonEvidencePlan());
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    const answerPlan = comparisonAnswerPlan();
+    vi.mocked(planIndexedReviewAnswerPlanRust).mockReset();
+    vi.mocked(planIndexedReviewAnswerPlanRust).mockReturnValue(answerPlan);
+    const validate = vi.mocked(validateIndexedReviewAnswerRust);
+    validate.mockReset();
+    validate
+      .mockReturnValueOnce({
+        valid: false,
+        reason: 'missing-facet',
+        missingFacetIds: ['subject-1'],
+      })
+      .mockReturnValueOnce({
+        valid: true,
+        content: `종합한 비교 답변 [${SOURCE_ID}] [${OTHER_SOURCE_ID}]`,
+      });
+    const { provider, calls } = scriptedAnswerProvider([
+      JSON.stringify({ paragraphs: [] }),
+      JSON.stringify({ paragraphs: [] }),
+    ]);
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        provider,
+        searchPlan: COMPARISON_SEARCH_PLAN,
+        candidates: [
+          { path: RELEVANT, score: 2, source: 'bm25', rank: 1, queryIndex: 1 },
+          { path: OTHER, score: 1, source: 'bm25', rank: 2, queryIndex: 2 },
+        ],
+      }),
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(result.diagnostics.counts.answerCorrectionRequests).toBe(1);
+    expect(calls[1]?.at(-1)?.content).toContain('missing-facet');
+    expect(calls[1]?.at(-1)?.content).toContain('subject-1');
+    expect(planIndexedReviewAnswerPlanRust).toHaveBeenCalledWith({
+      searchPlan: COMPARISON_SEARCH_PLAN,
+      evidence: [
+        { sourceId: SOURCE_ID, path: RELEVANT, quote: planFixture().evidence[0]?.quote, queryIndexes: [1] },
+        {
+          sourceId: OTHER_SOURCE_ID,
+          path: OTHER,
+          quote: 'Delivery schedule for the northern region.',
+          queryIndexes: [2],
+        },
+      ],
+    });
+    expect(result.outcome).toBe('answered');
+    expect(result.content).toContain('종합한 비교 답변');
+    expect(result.citations.map((citation) => citation.id)).toEqual([
+      SOURCE_ID,
+      OTHER_SOURCE_ID,
+    ]);
+  });
+
+  it('두 번 모두 missing facet이면 불완전한 답변을 게시하지 않고 검증 근거로 폴백한다', async () => {
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue(comparisonEvidencePlan());
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    const answerPlan = comparisonAnswerPlan({
+      facets: [
+        {
+          id: 'subject-0',
+          kind: 'subject',
+          label: 'Synthetic Alpha',
+          status: 'supported',
+          sourceIds: [SOURCE_ID],
+        },
+        {
+          id: 'subject-1',
+          kind: 'subject',
+          label: 'Synthetic Beta',
+          status: 'missing',
+          sourceIds: [],
+        },
+      ],
+      requiredFacetIds: ['subject-0'],
+      missingFacetIds: ['subject-1'],
+      synthesisRequired: false,
+    });
+    vi.mocked(planIndexedReviewAnswerPlanRust).mockReturnValue(answerPlan);
+    vi.mocked(validateIndexedReviewAnswerRust).mockReturnValue({
+      valid: false,
+      reason: 'missing-facet',
+      missingFacetIds: ['subject-0'],
+    });
+    const incompleteAnswer = '불완전한 비교 본문';
+    const { provider, calls } = scriptedAnswerProvider([incompleteAnswer, incompleteAnswer]);
+    const failedPlan: IndexedSearchPlan = {
+      ...COMPARISON_SEARCH_PLAN,
+      failedFacetIds: ['subject-1'],
+    };
+    const result = await reviewIndexedVault(
+      reviewOptions({ provider, searchPlan: failedPlan }),
+    );
+    const missingNotice = t('indexedReviewComparisonMissing', { facets: 'Synthetic Beta' });
+    const failedNotice = t('indexedReviewComparisonSearchFailed', {
+      facets: 'Synthetic Beta',
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(result.outcome).toBe('evidence-only');
+    expect(result.content).not.toContain(incompleteAnswer);
+    expect(result.content).toContain('> Quartz restarts');
+    expect(result.content).toContain('> Delivery schedule');
+    expect(result.content).toContain(missingNotice);
+    expect(result.content).toContain(failedNotice);
+    expect(result.coverageNotice).not.toContain(missingNotice);
+    expect(result.citations.map((citation) => citation.id)).toEqual([
+      SOURCE_ID,
+      OTHER_SOURCE_ID,
+    ]);
+  });
+
+  it('한쪽 facet만 지원되면 그 facet만 답하고 missing label을 안전한 한계 고지로 덧붙인다', async () => {
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue(comparisonEvidencePlan());
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    const unsafeLabel = 'Synthetic **Beta** <tag>';
+    const answerPlan = comparisonAnswerPlan({
+      facets: [
+        {
+          id: 'subject-0',
+          kind: 'subject',
+          label: 'Synthetic Alpha',
+          status: 'supported',
+          sourceIds: [SOURCE_ID],
+        },
+        {
+          id: 'subject-1',
+          kind: 'subject',
+          label: unsafeLabel,
+          status: 'missing',
+          sourceIds: [],
+        },
+      ],
+      requiredFacetIds: ['subject-0'],
+      missingFacetIds: ['subject-1'],
+      synthesisRequired: false,
+    });
+    vi.mocked(planIndexedReviewAnswerPlanRust).mockReturnValue(answerPlan);
+    vi.mocked(validateIndexedReviewAnswerRust).mockReturnValue({
+      valid: true,
+      content: `Synthetic Alpha만 확인했습니다. [${SOURCE_ID}]`,
+    });
+    const { provider, calls } = scriptedAnswerProvider(['valid response']);
+    const result = await reviewIndexedVault(
+      reviewOptions({ provider, searchPlan: COMPARISON_SEARCH_PLAN }),
+    );
+    const payload: unknown = JSON.parse(String(calls[0]?.[1]?.content));
+
+    expect(calls).toHaveLength(1);
+    expect(payload).toMatchObject({
+      answerPlan: {
+        requiredFacetIds: ['subject-0'],
+        missingFacetIds: ['subject-1'],
+      },
+    });
+    expect(result.outcome).toBe('answered');
+    expect(result.content).toContain('Synthetic Alpha만 확인했습니다.');
+    expect(result.content).not.toContain('Synthetic Beta answer claim');
+    expect(result.content).not.toContain('**Beta**');
+    expect(result.content).not.toContain('<tag>');
+    expect(result.content).toContain('&#42;&#42;Beta&#42;&#42; &#60;tag&#62;');
+    expect(result.citations.map((citation) => citation.id)).toEqual([SOURCE_ID]);
+  });
+
+  it('answer plan을 계산할 수 없으면 provider를 호출하지 않고 검증 근거만 반환한다', async () => {
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue(comparisonEvidencePlan());
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    vi.mocked(planIndexedReviewAnswerPlanRust).mockReturnValue(null);
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(
+      reviewOptions({ provider, searchPlan: COMPARISON_SEARCH_PLAN }),
+    );
+
+    expect(calls).toHaveLength(0);
+    expect(result.outcome).toBe('evidence-only');
+    expect(result.content).toContain('> Quartz restarts');
+    expect(result.content).toContain('> Delivery schedule');
+    expect(result.citations).toHaveLength(2);
+  });
+
+  it('비교 가능한 supported subject가 없으면 provider를 호출하지 않는다', async () => {
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue(comparisonEvidencePlan());
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    vi.mocked(planIndexedReviewAnswerPlanRust).mockReturnValue({
+      mode: 'comparison',
+      facets: [
+        {
+          id: 'subject-0',
+          kind: 'subject',
+          label: 'Synthetic Alpha',
+          status: 'missing',
+          sourceIds: [],
+        },
+        {
+          id: 'subject-1',
+          kind: 'subject',
+          label: 'Synthetic Beta',
+          status: 'missing',
+          sourceIds: [],
+        },
+      ],
+      requiredFacetIds: [],
+      missingFacetIds: ['subject-0', 'subject-1'],
+      synthesisRequired: false,
+    });
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(
+      reviewOptions({ provider, searchPlan: COMPARISON_SEARCH_PLAN }),
+    );
+
+    expect(calls).toHaveLength(0);
+    expect(result.outcome).toBe('evidence-only');
+    expect(result.content).toContain(
+      t('indexedReviewComparisonMissing', { facets: 'Synthetic Alpha, Synthetic Beta' }),
+    );
+    expect(result.citations).toHaveLength(2);
+  });
+
   it('엔진이 채택·검증한 근거만 인용하고 최종 해석 한 번만 호출한다', async () => {
     const { provider, calls } = answerProvider();
     const result = await reviewIndexedVault(reviewOptions({ provider }));
@@ -446,6 +760,139 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.citations[0]?.filePath).toBe(RELEVANT);
     expect(result.citations[0]?.line).toBe(3);
     expect(result.content).toContain('두 번 냉각한 뒤');
+  });
+
+  it('현재 원문 재검증에서 quote-missing이면 provider 없이 근거와 인용을 비운다', async () => {
+    const verify = vi.mocked(verifyIndexedEvidenceRust);
+    verify.mockReset();
+    const rejected: RustIndexedEvidenceVerification = {
+      statuses: verificationFixture().statuses.map((status) => ({
+        ...status,
+        status: 'quote-missing',
+        exists: false,
+        lineMatches: null,
+      })),
+    };
+    verify.mockReturnValueOnce(verificationFixture()).mockReturnValueOnce(rejected);
+    const { provider, calls } = answerProvider();
+    const currentText = '민감한 현재 원문 표식';
+    const indexedQuote = planFixture().evidence[0]?.quote;
+    if (!indexedQuote) throw new Error('indexed quote missing');
+
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        provider,
+        sourceReader: () => Promise.resolve({ revision: '1:10', text: currentText }),
+      }),
+    );
+
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(verify.mock.calls[1]?.[0].documents).toMatchObject([
+      { path: RELEVANT, revision: '1:10', text: currentText },
+    ]);
+    expect(calls).toHaveLength(0);
+    expect(result.evidence).toEqual([]);
+    expect(result.citations).toEqual([]);
+    expect(result.outcome).toBe('no-evidence');
+    expect(result.coverage.status).toBe('incomplete');
+    expect(result.coverage.unreviewedPaths).toContain(RELEVANT);
+    expect(result.content).not.toContain(currentText);
+    expect(result.content).not.toContain(indexedQuote);
+  });
+
+  it('revision이 같아도 현재 원문 text가 없으면 stale로 제외한다', async () => {
+    const verify = vi.mocked(verifyIndexedEvidenceRust);
+    verify.mockReset();
+    verify.mockReturnValue(verificationFixture());
+    const sourceReader = vi.fn(() =>
+      Promise.resolve({ revision: '1:10', text: null }),
+    );
+    const { provider, calls } = answerProvider();
+
+    const result = await reviewIndexedVault(reviewOptions({ provider, sourceReader }));
+
+    expect(sourceReader).toHaveBeenCalledTimes(1);
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(0);
+    expect(result.evidence).toEqual([]);
+    expect(result.citations).toEqual([]);
+    expect(result.outcome).toBe('no-evidence');
+    expect(result.coverage.status).toBe('incomplete');
+    expect(result.coverage.unreviewedPaths).toContain(RELEVANT);
+  });
+
+  it('현재 원문 Rust 검증이 null이면 fail closed하고 provider를 호출하지 않는다', async () => {
+    const verify = vi.mocked(verifyIndexedEvidenceRust);
+    verify.mockReset();
+    verify.mockReturnValueOnce(verificationFixture()).mockReturnValueOnce(null);
+    const { provider, calls } = answerProvider();
+    const currentText = '현재 원문 표식';
+
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        provider,
+        sourceReader: () => Promise.resolve({ revision: '1:10', text: currentText }),
+      }),
+    );
+
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(calls).toHaveLength(0);
+    expect(result.evidence).toEqual([]);
+    expect(result.citations).toEqual([]);
+    expect(result.outcome).toBe('no-evidence');
+    expect(result.coverage.status).toBe('incomplete');
+    expect(result.coverage.unreviewedPaths).toContain(RELEVANT);
+    expect(result.content).not.toContain(currentText);
+  });
+
+  it('현재 원문 재검증을 통과하면 두 번째 검증 뒤 answer를 유지한다', async () => {
+    const verify = vi.mocked(verifyIndexedEvidenceRust);
+    verify.mockReset();
+    verify.mockImplementation(verifiedStatuses);
+    const currentText =
+      '첫 줄\n둘째 줄\nQuartz restarts only after two cooling cycles.\n넷째 줄';
+    const { provider, calls } = answerProvider();
+
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        provider,
+        sourceReader: () => Promise.resolve({ revision: '1:10', text: currentText }),
+      }),
+    );
+
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(verify.mock.calls[1]?.[0].documents).toMatchObject([
+      { path: RELEVANT, revision: '1:10', text: currentText },
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(result.outcome).toBe('answered');
+    expect(result.evidence).toHaveLength(1);
+    expect(result.citations).toHaveLength(1);
+  });
+
+  it('큰 현재 원문은 인용 주변 window만 검증해 다른 근거를 막지 않는다', async () => {
+    const verify = vi.mocked(verifyIndexedEvidenceRust);
+    verify.mockReset();
+    verify.mockImplementation(verifiedStatuses);
+    const currentText =
+      '첫 줄\n둘째 줄\nQuartz restarts only after two cooling cycles.\n' +
+      'filler line\n'.repeat(180_000);
+    const { provider, calls } = answerProvider();
+
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        provider,
+        sourceReader: () => Promise.resolve({ revision: '1:10', text: currentText }),
+      }),
+    );
+
+    expect(verify).toHaveBeenCalledTimes(2);
+    const documents = verify.mock.calls[1]?.[0].documents ?? [];
+    expect(documents).toHaveLength(1);
+    expect(documents[0]?.text.length).toBeLessThan(1000);
+    expect(calls).toHaveLength(1);
+    expect(result.outcome).toBe('answered');
+    expect(result.evidence).toHaveLength(1);
   });
 
   it('엔진이 없으면 engine-unavailable을 반환하고 LLM을 부르지 않는다', async () => {
@@ -552,7 +999,10 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(calls[1]).toContainEqual({ role: 'assistant', content: invalidAnswer });
     expect(calls[1]?.at(-1)).toEqual({
       role: 'user',
-      content: t('llmIndexedReviewAnswerCorrection'),
+      content: t('llmIndexedReviewAnswerCorrection', {
+        reason: 'invalid-format',
+        facets: '-',
+      }),
     });
     expect(calls[0]?.[0]?.content).toContain('sourceId를 그대로 복사');
     expect(calls[1]?.at(-1)?.content).toContain('vault: 접두사를 붙이지');
@@ -603,7 +1053,10 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(calls[1]?.some((message) => message.role === 'assistant')).toBe(false);
     expect(calls[1]?.at(-1)).toEqual({
       role: 'user',
-      content: t('llmIndexedReviewAnswerCorrection'),
+      content: t('llmIndexedReviewAnswerCorrection', {
+        reason: 'invalid-format',
+        facets: '-',
+      }),
     });
     expect(result.content).toContain('두 번 냉각한 뒤');
   });

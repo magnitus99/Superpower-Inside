@@ -1,14 +1,20 @@
-import type { App } from 'obsidian';
+import { TFile, type App } from 'obsidian';
 import type {
   IndexedEvidenceCandidate,
   IndexedEvidenceInventory,
   IndexedVaultCorpus,
 } from '../agent/indexed-vault-review';
 import type { QueryResult, RAGQueryEngine } from '../rag/query';
+import { planIndexedSearchQueriesRust, type IndexedSearchPlan } from '../rag/rust-core';
+import { readSourceText } from '../rag/source-access';
 import type { SuperpowerInsideSettings } from '../settings';
 import { appLogger } from '../utils/logger';
 import { getRagCandidateFiles } from '../utils/vault';
-import { createIndexedSearchPort, type IndexedSearchSource } from './engine-adapter';
+import {
+  createIndexedSearchPort,
+  type IndexedEvidenceSourceSnapshot,
+  type IndexedSearchSource,
+} from './engine-adapter';
 import type { SearchCandidateState, SearchPort } from './engine-port';
 
 /** 색인 본문·BM25 기록·파일 인덱스 기록을 함께 들고 있는 저장소. */
@@ -28,13 +34,50 @@ export interface IndexedSearchDepsHost {
   isIndexing?: () => boolean;
 }
 
-const CANDIDATE_LIMIT = 64;
+const MAIN_CANDIDATE_LIMIT = 64;
+const SUBJECT_CANDIDATE_LIMIT = 32;
+const MAX_HYBRID_FACETS = 3;
+
+type IndexedSearchCandidate = IndexedEvidenceCandidate & { queryIndex?: number };
+
+interface HybridCandidateResolution {
+  candidates: readonly IndexedSearchCandidate[] | undefined;
+  state: SearchCandidateState;
+  failedFacetIds: readonly string[];
+}
 
 /** 색인 사본과 현재 원문 리비전(mtime:size)을 대조하는 reader. */
 export function createVaultRevisionReader(app: App): (path: string) => Promise<string | null> {
   return async (path) => {
     const stat = await app.vault.adapter.stat(path);
     return stat ? `${stat.mtime}:${stat.size}` : null;
+  };
+}
+
+/** 답변 전에 채택 문서의 현재 원문과 revision을 읽는 로컬 vault reader를 만듭니다. */
+export function createVaultSourceReader(
+  app: App,
+): (path: string, signal?: AbortSignal) => Promise<IndexedEvidenceSourceSnapshot> {
+  return async (path, signal) => {
+    try {
+      signal?.throwIfAborted();
+      const file = app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) return { revision: null, text: null };
+      const before = await app.vault.adapter.stat(path);
+      if (!before) return { revision: null, text: null };
+      const source = await readSourceText(app.vault, file, { signal, forceRefresh: true });
+      signal?.throwIfAborted();
+      const after = await app.vault.adapter.stat(path);
+      if (!after || before.mtime !== after.mtime || before.size !== after.size) {
+        return { revision: null, text: null };
+      }
+      return {
+        revision: `${after.mtime}:${after.size}`,
+        text: source.text,
+      };
+    } catch {
+      return { revision: null, text: null };
+    }
   };
 }
 
@@ -46,26 +89,51 @@ export async function collectIndexedSearchSource(
   host: IndexedSearchDepsHost,
   query: string,
   signal?: AbortSignal,
+  question = query,
 ): Promise<IndexedSearchSource | null> {
   const corpus = host.documentCorpus;
   if (!corpus) return null;
+  const sourceReader = createVaultSourceReader(host.app);
   const indexedPaths = await corpus.getIndexedFilePaths();
   if (signal?.aborted) return null;
   const inventory = await collectInventory(host, indexedPaths);
   if (signal?.aborted) return null;
+  const searchPlan = planIndexedSearchQueriesRust({
+    question,
+    scoringQuestion: query,
+    scopes: [],
+  });
+  if (!searchPlan) {
+    return {
+      corpus,
+      getIndexedPaths: () => Promise.resolve(indexedPaths),
+      candidates: undefined,
+      candidatesState: 'unavailable',
+      inventory,
+      searchPlan: undefined,
+      revisionReader: createVaultRevisionReader(host.app),
+      sourceReader,
+    };
+  }
   const candidateResolution =
     indexedPaths.length === 0
-      ? { candidates: undefined, state: host.isIndexing?.() === true ? ('indexing' as const) : ('unavailable' as const) }
+      ? {
+          candidates: undefined,
+          state: host.isIndexing?.() === true ? ('indexing' as const) : ('unavailable' as const),
+          failedFacetIds: [],
+        }
       : host.isIndexing?.() === true
-        ? { candidates: undefined, state: 'indexing' as const }
-        : await collectHybridCandidates(host.ragEngine, query, signal);
+        ? { candidates: undefined, state: 'indexing' as const, failedFacetIds: [] }
+        : await collectHybridCandidates(host.ragEngine, searchPlan, signal);
   return {
     corpus,
     getIndexedPaths: () => Promise.resolve(indexedPaths),
     candidates: candidateResolution.candidates,
     candidatesState: candidateResolution.state,
     inventory,
+    searchPlan: { ...searchPlan, failedFacetIds: candidateResolution.failedFacetIds },
     revisionReader: createVaultRevisionReader(host.app),
+    sourceReader,
   };
 }
 
@@ -112,41 +180,75 @@ export function createPluginSearchPort(host: IndexedSearchDepsHost): SearchPort 
  */
 async function collectHybridCandidates(
   engine: RAGQueryEngine | null,
-  query: string,
+  plan: IndexedSearchPlan,
   signal?: AbortSignal,
-): Promise<{
-  candidates: readonly IndexedEvidenceCandidate[] | undefined;
-  state: SearchCandidateState;
-}> {
-  if (!engine) return { candidates: undefined, state: 'initializing' };
-  let results: QueryResult[];
-  try {
-    results = await engine.query(query, CANDIDATE_LIMIT, undefined, undefined, {
-      signal,
-      fastCandidates: true,
-    });
-  } catch (error) {
-    if (signal?.aborted) return { candidates: undefined, state: 'unavailable' };
-    appLogger.warn('Hybrid query candidates unavailable; preserving search readiness.', {
-      source: 'search.candidates',
-      error,
-    });
-    return { candidates: undefined, state: engine.getCandidateReadiness?.() ?? 'unavailable' };
+): Promise<HybridCandidateResolution> {
+  if (!engine) {
+    return { candidates: undefined, state: 'initializing', failedFacetIds: [] };
   }
-  if (results.length === 0) {
-    return { candidates: undefined, state: engine.getCandidateReadiness?.() ?? 'ready' };
+  signal?.throwIfAborted();
+  const facets = plan.facets.slice(0, MAX_HYBRID_FACETS);
+  const outcomes = await Promise.all(
+    facets.map(async (facet) => {
+      signal?.throwIfAborted();
+      try {
+        const results = await engine.query(
+          facet.query,
+          facet.kind === 'question' ? MAIN_CANDIDATE_LIMIT : SUBJECT_CANDIDATE_LIMIT,
+          undefined,
+          undefined,
+          { signal, fastCandidates: true },
+        );
+        return { facet, results, failed: false } as const;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        appLogger.warn('Hybrid facet candidates unavailable; preserving other facet results.', {
+          source: 'search.candidates',
+          error,
+        });
+        return { facet, results: [] as QueryResult[], failed: true } as const;
+      }
+    }),
+  );
+  signal?.throwIfAborted();
+  const failedFacetIds = outcomes.filter((outcome) => outcome.failed).map(({ facet }) => facet.id);
+  if (outcomes.length > 0 && failedFacetIds.length === outcomes.length) {
+    return {
+      candidates: undefined,
+      state: engine.getCandidateReadiness?.() ?? 'unavailable',
+      failedFacetIds,
+    };
+  }
+  const candidates: IndexedSearchCandidate[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.failed) continue;
+    outcome.results.forEach((result, index) => {
+      const candidate: IndexedSearchCandidate = {
+        path: result.sourcePath,
+        startLine: result.entry.metadata.startLine + 1,
+        endLine:
+          result.entry.metadata.endLine === undefined
+            ? undefined
+            : result.entry.metadata.endLine + 1,
+        score: result.combinedScore,
+        source: candidateSource(result),
+        rank: index + 1,
+      };
+      if (plan.mode === 'comparison') candidate.queryIndex = outcome.facet.queryIndex;
+      candidates.push(candidate);
+    });
+  }
+  if (candidates.length === 0) {
+    return {
+      candidates: undefined,
+      state: engine.getCandidateReadiness?.() ?? 'ready',
+      failedFacetIds,
+    };
   }
   return {
-    candidates: results.map((result, index) => ({
-      path: result.sourcePath,
-      startLine: result.entry.metadata.startLine + 1,
-      endLine:
-        result.entry.metadata.endLine === undefined ? undefined : result.entry.metadata.endLine + 1,
-      score: result.combinedScore,
-      source: candidateSource(result),
-      rank: index + 1,
-    })),
+    candidates,
     state: 'ready',
+    failedFacetIds,
   };
 }
 

@@ -4,10 +4,13 @@ import { prepareProviderRequest } from '../llm/request-budget';
 import {
   mergeIndexedEvidencePlansRust,
   planIndexedEvidenceRust,
+  planIndexedReviewAnswerPlanRust,
   planModelContextRust,
   planTurnUsageRust,
   renderIndexedReviewAnswerRust,
+  validateIndexedReviewAnswerRust,
   verifyIndexedEvidenceRust,
+  type IndexedSearchPlan,
   type RustIndexedEvidenceBudget,
   type RustIndexedEvidenceCoverage,
   type RustIndexedEvidenceDocument,
@@ -16,9 +19,12 @@ import {
   type RustIndexedEvidencePassage,
   type RustIndexedEvidencePlan,
   type RustIndexedEvidenceStatus,
+  type RustIndexedEvidenceVerificationDocument,
+  type RustIndexedReviewAnswerPlan,
 } from '../rag/rust-core';
 import type { FileIndexRecord, VectorEntry } from '../rag/store';
 import type { SourceCitation, TurnUsageSnapshot } from '../chat/types';
+import type { IndexedEvidenceSourceSnapshot } from '../search/engine-adapter';
 import type { SearchCandidateState } from '../search/engine-port';
 import { appLogger } from '../utils/logger';
 import { selectAnswerCitations } from './citation-selection';
@@ -39,6 +45,7 @@ export interface IndexedEvidenceCandidate {
   score: number;
   source: 'bm25' | 'lexical' | 'vector' | 'ann' | 'structural';
   rank: number;
+  queryIndex?: number;
 }
 
 /** 색인 전체 규모(이번 배치 밖 미검토 포함)를 엔진에 알리는 계약입니다. */
@@ -176,6 +183,7 @@ function evidenceRevision(record: FileIndexRecord | undefined, entry: VectorEntr
 const RUST_INPUT_MAX_DOCUMENTS = 4096;
 const RUST_INPUT_MAX_BYTES = 8 * 1024 * 1024;
 const RUST_DOCUMENT_MAX_BYTES = 2 * 1024 * 1024;
+const VERIFICATION_WINDOW_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
 
 /** payload 상한(문서 수·바이트)에 맞춰 자르고, 단독으로 상한을 넘는 청크는 미검토로 분리합니다. */
@@ -551,7 +559,10 @@ export interface IndexedVaultReviewOptions {
   candidatesState?: SearchCandidateState;
   inventory?: IndexedEvidenceInventory;
   filters?: RustIndexedEvidenceFilters;
-  /** 채택 문서의 현재 vault 리비전을 확인하는 caller 주입 reader입니다. */
+  searchPlan?: IndexedSearchPlan;
+  /** 채택 문서의 현재 원문과 revision을 답변 전에 다시 읽는 로컬 vault reader입니다. */
+  sourceReader?: (path: string, signal?: AbortSignal) => Promise<IndexedEvidenceSourceSnapshot>;
+  /** sourceReader가 없을 때 채택 문서의 현재 vault 리비전만 확인하는 caller 주입 reader입니다. */
   revisionReader?: (path: string) => Promise<string | null>;
   provider: Pick<LLMProvider, 'streamChat' | 'contextBudget'>;
   systemPrompt?: string;
@@ -577,6 +588,8 @@ export interface IndexedEvidenceDossier {
   coverage: IndexedVaultSearchCoverage;
   diagnostics: IndexedEvidencePlan['diagnostics'] | null;
   notice: string;
+  searchPlan?: IndexedSearchPlan;
+  answerPlan?: RustIndexedReviewAnswerPlan;
 }
 
 export type IndexedReviewOutcome =
@@ -603,10 +616,13 @@ export interface IndexedVaultReviewResult {
 }
 
 /** 원문에 포함된 링크·HTML·이미지·Markdown 구문은 표시용 문자로만 출력합니다. */
-function evidenceOnlyContent(evidence: readonly IndexedEvidenceItem[]): string {
+function evidenceOnlyContent(
+  evidence: readonly IndexedEvidenceItem[],
+  limitations = '',
+): string {
   const escape = (value: string): string =>
     value.replace(/[&<>\\`*_{}[\]()#+\-.!|~:$\r]/g, (character) => `&#${character.charCodeAt(0)};`);
-  return (
+  const body =
     t('indexedReviewEvidenceOnly') +
     '\n\n' +
     evidence
@@ -618,8 +634,77 @@ function evidenceOnlyContent(evidence: readonly IndexedEvidenceItem[]): string {
             .join('\n') +
           `\n\n- ${escape(item.path).replaceAll('\n', ' ')} (L${item.startLine}–L${item.endLine})`,
       )
-      .join('\n\n')
+      .join('\n\n');
+  return limitations ? `${body}\n\n${limitations}` : body;
+}
+
+/** 동적 facet label은 Markdown·HTML 제어문자를 표시용 엔티티로 바꿉니다. */
+function plainFacetLabel(label: string): string {
+  return label
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[&<>\\`*_{}[\]()#+\-.!|~:$]/g, (character) => `&#${character.charCodeAt(0)};`);
+}
+
+function facetLabels(
+  facetIds: readonly string[],
+  plan: IndexedSearchPlan | RustIndexedReviewAnswerPlan | undefined,
+): string {
+  return facetIds
+    .map((id) => {
+      const facet = plan?.facets.find((item) => item.id === id);
+      const label = facet ? ('label' in facet ? facet.label : facet.query) : id;
+      return plainFacetLabel(label);
+    })
+    .join(', ');
+}
+
+/** 비교 검색·답변 계획의 미확인 한계를 기존 coverage와 분리해 만듭니다. */
+function comparisonLimitNotice(
+  searchPlan: IndexedSearchPlan | undefined,
+  answerPlan: RustIndexedReviewAnswerPlan | undefined,
+): string {
+  if (searchPlan?.mode !== 'comparison') return '';
+  const notices: string[] = [];
+  if (answerPlan && answerPlan.missingFacetIds.length > 0) {
+    notices.push(
+      t('indexedReviewComparisonMissing', {
+        facets: facetLabels(answerPlan.missingFacetIds, answerPlan),
+      }),
+    );
+  }
+  if ((searchPlan.failedFacetIds?.length ?? 0) > 0) {
+    notices.push(
+      t('indexedReviewComparisonSearchFailed', {
+        facets: facetLabels(searchPlan.failedFacetIds ?? [], searchPlan),
+      }),
+    );
+  }
+  return notices.join('\n\n');
+}
+
+/** 현재 원문 전체가 아니라 인용 주변의 절대 행 구간만 verifier에 넘깁니다. */
+function verificationWindow(
+  item: IndexedEvidenceItem,
+  source: { revision: string; text: string },
+): RustIndexedEvidenceVerificationDocument | null {
+  const lines = source.text.split('\n');
+  if (lines.length === 0) return null;
+  const start = Math.max(1, Math.min(item.startLine, lines.length) - 3);
+  const end = Math.min(
+    lines.length,
+    Math.max(item.endLine, item.startLine) + 3,
   );
+  const text = lines.slice(start - 1, end).join('\n') + (end < lines.length ? '\n' : '');
+  if (encoder.encode(text).byteLength > VERIFICATION_WINDOW_BYTES) return null;
+  return {
+    path: item.path,
+    text,
+    startLine: start,
+    revision: source.revision,
+    indexed: true,
+    reviewState: 'reviewed',
+  };
 }
 
 export async function reviewIndexedVault(
@@ -732,6 +817,7 @@ async function runIndexedVaultReview(
           coverage,
           diagnostics: null,
           notice: content,
+          ...(options.searchPlan ? { searchPlan: options.searchPlan } : {}),
         },
         evidence: [],
         coverage,
@@ -794,6 +880,7 @@ async function runIndexedVaultReview(
         coverage,
         diagnostics: null,
         notice: content,
+        ...(options.searchPlan ? { searchPlan: options.searchPlan } : {}),
       };
       appLogger.warn('Indexed evidence engine unavailable.', {
         source: 'chat.indexed-review',
@@ -819,33 +906,120 @@ async function runIndexedVaultReview(
     diagnostics.counts.extractedSegments = search.evidence.length;
     activePhase = 'map';
     options.onProgress?.({ phase: 'map', completedFiles: 0, totalFiles: total });
-    // 채택 문서만 현재 vault 리비전과 대조합니다.
+    // 채택 문서만 현재 vault 원문과 revision으로 다시 검증합니다.
     const adoptedPaths = [...new Set(search.evidence.map((item) => item.path))];
     const stale = new Set<string>();
+    const currentSources = new Map<string, { revision: string; text: string }>();
     for (const path of adoptedPaths) {
       const expected = search.evidence.find((item) => item.path === path)?.revision ?? null;
       let current: string | null = null;
-      // 원문 리비전을 한 번 더 확인하고, 그래도 어긋나면 verified로 승격하지 않습니다.
-      for (let attempt = 0; attempt < 2; attempt++) {
+      if (options.sourceReader) {
         check();
         try {
-          current = options.revisionReader
-            ? await interruptible(options.revisionReader(path))
-            : null;
+          const snapshot = await interruptible(options.sourceReader(path, options.signal));
+          current = snapshot.revision;
+          if (snapshot.revision !== null && snapshot.text !== null) {
+            currentSources.set(path, {
+              revision: snapshot.revision,
+              text: snapshot.text,
+            });
+          }
         } catch (error) {
           check();
           if (error instanceof Error && error.name === 'AbortError') throw error;
           current = null;
-          appLogger.warn('Source revision read failed; treating the document as stale.', {
-            source: 'chat.indexed-review',
-            error,
-          });
         }
-        if (current !== null && current === expected) break;
+      } else {
+        // sourceReader가 없는 legacy 경로는 기존 stat-only 재확인을 유지합니다.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          check();
+          try {
+            current = options.revisionReader
+              ? await interruptible(options.revisionReader(path))
+              : null;
+          } catch (error) {
+            check();
+            if (error instanceof Error && error.name === 'AbortError') throw error;
+            current = null;
+            appLogger.warn('Source revision read failed; treating the document as stale.', {
+              source: 'chat.indexed-review',
+            });
+          }
+          if (current !== null && current === expected) break;
+        }
       }
-      if (expected === null || current === null || current !== expected) stale.add(path);
+      if (
+        expected === null ||
+        current === null ||
+        current !== expected ||
+        (options.sourceReader !== undefined && !currentSources.has(path))
+      ) {
+        stale.add(path);
+      }
     }
-    const evidence = search.evidence.filter((item) => !stale.has(item.path));
+    let evidence = search.evidence.filter((item) => !stale.has(item.path));
+    if (options.sourceReader && evidence.length > 0) {
+      const verificationDocuments = new Map<string, RustIndexedEvidenceVerificationDocument>();
+      const rejectedPaths = new Set<string>();
+      const verifiableEvidence = evidence.filter((item) => {
+        const source = currentSources.get(item.path);
+        if (!source) {
+          rejectedPaths.add(item.path);
+          return false;
+        }
+        const document = verificationWindow(item, source);
+        if (!document) {
+          rejectedPaths.add(item.path);
+          return false;
+        }
+        verificationDocuments.set(`${item.path}\u0000${document.startLine}`, document);
+        return true;
+      });
+      evidence = verifiableEvidence;
+      const currentVerification = verifyIndexedEvidenceRust({
+        evidence: verifiableEvidence.map((item) => ({
+          sourceId: item.sourceId,
+          path: item.path,
+          quote: item.quote,
+          ...(item.revision !== null ? { revision: item.revision } : {}),
+          startLine: item.startLine,
+          endLine: item.endLine,
+        })),
+        documents: [...verificationDocuments.values()],
+        scopes: options.scopes,
+      });
+      if (!currentVerification) {
+        for (const item of verifiableEvidence) rejectedPaths.add(item.path);
+        evidence = [];
+        appLogger.warn('Current source verification unavailable; discarding evidence.', {
+          source: 'chat.indexed-review',
+        });
+      } else {
+        const statuses = new Map(
+          currentVerification.statuses.map((status) => [status.sourceId, status]),
+        );
+        evidence = verifiableEvidence.filter((item) => {
+          if (statuses.get(item.sourceId)?.status === 'verified') return true;
+          rejectedPaths.add(item.path);
+          return false;
+        });
+      }
+      for (const path of rejectedPaths) stale.add(path);
+      if (rejectedPaths.size > 0) {
+        evidence = evidence.filter((item) => !rejectedPaths.has(item.path));
+      }
+    }
+    const answerPlan = options.searchPlan
+      ? (planIndexedReviewAnswerPlanRust({
+          searchPlan: options.searchPlan,
+          evidence: evidence.map((item) => ({
+            sourceId: item.sourceId,
+            path: item.path,
+            quote: item.quote,
+            ...(item.queryIndexes !== undefined ? { queryIndexes: item.queryIndexes } : {}),
+          })),
+        }) ?? undefined)
+      : undefined;
     const citations = new Map<string, SourceCitation>();
     for (const item of evidence) {
       citations.set(item.sourceId, {
@@ -907,6 +1081,8 @@ async function runIndexedVaultReview(
       coverage: effectiveCoverage,
       diagnostics: search.plan.diagnostics,
       notice,
+      ...(options.searchPlan ? { searchPlan: options.searchPlan } : {}),
+      ...(answerPlan ? { answerPlan } : {}),
     };
     const indexingContent = t('indexedReviewIndexing');
     const returnIndexing = (): IndexedVaultReviewResult => ({
@@ -931,13 +1107,52 @@ async function runIndexedVaultReview(
     }
     activePhase = 'answer';
     emitDiagnostics();
-    if (options.deferAnswer || evidence.length === 0) {
+    const comparisonLimitations = comparisonLimitNotice(options.searchPlan, answerPlan);
+    const finishAsEvidenceOnly = (limitations: string): IndexedVaultReviewResult => {
       const content =
+        evidence.length === 0
+          ? [t('indexedReviewNoEvidence'), limitations].filter(Boolean).join('\n\n')
+          : notice + '\n\n' + evidenceOnlyContent(evidence, limitations);
+      options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
+      return {
+        outcome: 'evidence-only',
+        dossier,
+        evidence,
+        coverage: effectiveCoverage,
+        content,
+        citations: [...citations.values()],
+        processedFiles: reviewed,
+        totalFiles: total,
+        rejectedFiles: verificationRejected,
+        providerTransfer: { sentFiles: 0, sentPaths: [] },
+        coverageNotice: notice,
+        diagnostics,
+        engineUnavailable: false,
+      };
+    };
+    if (options.searchPlan && !answerPlan) {
+      appLogger.warn('Indexed answer plan unavailable; returning verified evidence only.', {
+        source: 'chat.indexed-review',
+      });
+      return finishAsEvidenceOnly(comparisonLimitations);
+    }
+    if (answerPlan?.mode === 'comparison' && answerPlan.requiredFacetIds.length === 0) {
+      appLogger.warn('Indexed comparison has no supported subject facet; returning verified evidence only.', {
+        source: 'chat.indexed-review',
+      });
+      return finishAsEvidenceOnly(comparisonLimitations);
+    }
+    if (options.deferAnswer || evidence.length === 0) {
+      const baseContent =
         evidence.length === 0
           ? hasIncompleteCoverage || limitedReview
             ? notice
             : t('indexedReviewNoEvidence')
-          : evidenceOnlyContent(evidence);
+          : evidenceOnlyContent(evidence, comparisonLimitations);
+      const content =
+        evidence.length === 0 && comparisonLimitations
+          ? `${baseContent}\n\n${comparisonLimitations}`
+          : baseContent;
       options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
       return {
         outcome: evidence.length === 0 ? 'no-evidence' : 'evidence-only',
@@ -960,6 +1175,10 @@ async function runIndexedVaultReview(
     const usage: TokenUsage[][] = [];
     const requestAnswer = async (
       previousAnswer?: string,
+      correction: { reason: string; facets: string } = {
+        reason: 'invalid-format',
+        facets: '-',
+      },
     ): Promise<{ raw: string; rendered: string | null }> => {
       check();
       if (!budget) throw new Error(t('vaultResearchContractUnavailable'));
@@ -979,7 +1198,10 @@ async function runIndexedVaultReview(
         if (previousAnswer.trim()) {
           messages.push({ role: 'assistant', content: previousAnswer });
         }
-        messages.push({ role: 'user', content: t('llmIndexedReviewAnswerCorrection') });
+        messages.push({
+          role: 'user',
+          content: t('llmIndexedReviewAnswerCorrection', correction),
+        });
       }
       const prepared = prepareProviderRequest(messages, undefined, budget.inputBytes);
       const updates: TokenUsage[] = [];
@@ -1017,7 +1239,7 @@ async function runIndexedVaultReview(
       check();
       return {
         raw: content,
-        rendered: content.trim()
+        rendered: !answerPlan && content.trim()
           ? renderIndexedReviewAnswerRust([...citations.keys()], content)
           : null,
       };
@@ -1026,8 +1248,58 @@ async function runIndexedVaultReview(
     try {
       // 정상 해석 1회와 결정적 인용 형식 오류 교정 1회까지만 허용합니다.
       const first = await requestAnswer();
-      answer = first.rendered;
-      if (answer === null) answer = (await requestAnswer(first.raw)).rendered;
+      if (answerPlan) {
+        const firstValidation = validateIndexedReviewAnswerRust({
+          sourceIds: [...citations.keys()],
+          answerPlan,
+          response: first.raw,
+        });
+        if (firstValidation?.valid) {
+          answer = firstValidation.content;
+        } else {
+          const reason =
+            firstValidation && !firstValidation.valid
+              ? firstValidation.reason
+              : 'validator-unavailable';
+          const missingFacetIds =
+            firstValidation && !firstValidation.valid ? firstValidation.missingFacetIds : [];
+          appLogger.warn('Indexed answer failed facet validation; attempting one correction.', {
+            source: 'chat.indexed-review',
+            data: { reason, missingFacetIds },
+          });
+          const corrected = await requestAnswer(first.raw, {
+            reason,
+            facets: missingFacetIds.join(', ') || '-',
+          });
+          const correctedValidation = validateIndexedReviewAnswerRust({
+            sourceIds: [...citations.keys()],
+            answerPlan,
+            response: corrected.raw,
+          });
+          if (correctedValidation?.valid) {
+            answer = correctedValidation.content;
+          } else {
+            const correctedReason =
+              correctedValidation && !correctedValidation.valid
+                ? correctedValidation.reason
+                : 'validator-unavailable';
+            const correctedMissingFacetIds =
+              correctedValidation && !correctedValidation.valid
+                ? correctedValidation.missingFacetIds
+                : [];
+            appLogger.warn('Indexed answer correction failed; returning verified evidence only.', {
+              source: 'chat.indexed-review',
+              data: {
+                reason: correctedReason,
+                missingFacetIds: correctedMissingFacetIds,
+              },
+            });
+          }
+        }
+      } else {
+        answer = first.rendered;
+        if (answer === null) answer = (await requestAnswer(first.raw)).rendered;
+      }
     } catch (error) {
       check();
       if (error instanceof Error && error.name === 'AbortError') throw error;
@@ -1043,7 +1315,9 @@ async function runIndexedVaultReview(
       return returnIndexing();
     }
     const resolved = answer !== null;
-    const body = resolved ? answer : evidenceOnlyContent(evidence);
+    const body = resolved
+      ? [answer, comparisonLimitations].filter(Boolean).join('\n\n')
+      : evidenceOnlyContent(evidence, comparisonLimitations);
     const content = notice + '\n\n' + body;
     options.onAnswer?.(content);
     options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });

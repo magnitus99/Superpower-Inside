@@ -1555,6 +1555,8 @@ export interface I18nKeys {
   indexedReviewSearchUnavailable: string;
   indexedReviewAnswerUnavailable: string;
   indexedReviewNoEvidence: string;
+  indexedReviewComparisonMissing: string;
+  indexedReviewComparisonSearchFailed: string;
   llmIndexedReviewAnswer: string;
   llmIndexedReviewAnswerCorrection: string;
   chatInputBudgetExceeded: string;
@@ -3496,10 +3498,26 @@ const ko: I18nKeys = {
     '검토한 근거로 최종 답변을 생성하지 못했습니다. 잠시 뒤 다시 시도하거나 모델 출력 설정을 확인하세요.',
   indexedReviewNoEvidence:
     '엔진이 이 질문을 뒷받침하는 원문 구절을 확인하지 못했습니다. 일반 지식으로 답을 채우지 않았습니다. 색인 범위 밖 문서는 검색 대상이 아니었습니다. 검색 범위·색인 상태를 확인하거나 질문을 구체화하세요.',
-  llmIndexedReviewAnswer:
-    '엔진이 원문 존재·위치·리비전을 확인한 구절만 제공되었습니다. 제공된 근거만으로 현재 질문에 직접 답하세요. 사전지식으로 사실을 추가하지 마세요. 문서별 주장과 조건·예외·상충을 구별하고, 여러 문서를 연결한 해석은 전제가 되는 문서 근거를 함께 밝히세요. 각 사실·해석에는 입력 evidence의 sourceId를 그대로 복사해 인접하게 인용하세요. sources에는 vault: 접두사를 붙이지 마세요. 확인하지 못한 연결 고리는 미확인으로 남기고, 근거가 없으면 그 한계를 답하세요. 사용자 지침의 언어·형식·분량을 따르세요. JSON만 반환하세요: {"paragraphs":[{"text":"답변 문단","sources":["evidence의 sourceId 그대로"]}]}. 모든 문단에 1~8개의 채택된 출처가 필요합니다. text에는 [vault:] 마커를 넣지 마세요.',
-  llmIndexedReviewAnswerCorrection:
-    '이전 응답이 비어 있거나 허용된 JSON 답변 형식으로 변환할 수 없습니다. 질문과 제공된 검증 근거만 사용해 최종 답변을 다시 작성하세요. 허용 sourceId는 입력 evidence의 sourceId와 정확히 같습니다. 그대로 복사하고 vault: 접두사를 붙이지 마세요. 모든 문단에 1~8개의 허용 sourceId를 넣고 JSON만 반환하세요: {"paragraphs":[{"text":"답변 문단","sources":["evidence의 sourceId 그대로"]}]}. text에는 [vault:] 마커를 넣지 마세요. 도구 호출이나 진행 설명 없이 답변만 반환하세요.',
+  indexedReviewComparisonMissing:
+    '검토 범위에서 비교 항목 {facets}의 검증 근거를 찾지 못했습니다. 이는 볼트 전체에 해당 내용이 없다는 뜻이 아닙니다.',
+  indexedReviewComparisonSearchFailed:
+    '비교 항목 {facets}의 facet 검색이 실패해 비교 범위가 불완전합니다.',
+  llmIndexedReviewAnswer: [
+    '이 호출은 toolChoice:none입니다. 재검색하거나 도구를 사용하지 말고 제공된 검증 근거만으로 현재 질문에 답하세요.',
+    'answerPlan이 있으면 requiredFacetIds의 supported facet별 핵심 주장을 먼저 제시하세요. 공통점·차이·충돌·조건·예외를 해당 근거에 연결하고, 양쪽 supported facet의 근거가 모두 있을 때만 직접 비교하거나 종합하세요.',
+    'answerPlan.missingFacetIds와 searchPlan.failedFacetIds는 검토 범위에서 확인하지 못한 항목입니다. 해당 facet을 검증된 사실처럼 서술하거나 볼트 전체의 부재로 단정하지 마세요.',
+    '근거가 지지하지 않는 인과·시간 순서·동일성을 추가하지 마세요. 각 문단의 covers에는 answerPlan facet ID만 넣고, 모든 requiredFacetIds를 다루세요. synthesisRequired이면 requiredFacetIds 전체를 covers에 넣고 각 facet의 source를 하나 이상 포함한 종합 문단을 반드시 작성하세요.',
+    '각 사실·해석에는 입력 evidence의 sourceId를 그대로 복사해 인접하게 인용하세요. sources에는 vault: 접두사를 붙이지 말고 문단마다 1~8개의 채택된 출처를 넣으세요. text에는 [vault:] 마커를 넣지 마세요.',
+    'answerPlan이 있으면 covers는 모든 문단에서 필수입니다. answerPlan이 없는 legacy searchPlan 경로에서는 covers를 생략할 수 있습니다. 사용자 지침의 언어·형식·분량을 따르세요.',
+    'JSON만 반환하세요: {"paragraphs":[{"text":string,"sources":string[],"covers":string[]}]}',
+  ].join('\n'),
+  llmIndexedReviewAnswerCorrection: [
+    '이전 응답이 answerPlan 계약을 통과하지 못했습니다. 실패 사유: {reason}. 누락 facet ID: {facets}.',
+    '이 호출은 toolChoice:none입니다. 도구를 호출하지 말고 질문과 제공된 검증 근거만 사용해 최종 답변을 한 번만 다시 작성하세요.',
+    'supported facet만 covers에 넣고 모든 requiredFacetIds를 다루세요. answerPlan이 없는 legacy 경로에서는 covers를 생략할 수 있습니다. synthesisRequired이면 requiredFacetIds 전체와 각 facet의 source를 포함한 종합 문단이 필요합니다. missing facet을 근거 없이 채우거나 볼트 전체의 부재로 단정하지 마세요.',
+    '허용 sourceId는 입력 evidence의 sourceId와 정확히 같습니다. sources에는 vault: 접두사를 붙이지 말고 모든 문단에 1~8개의 허용 sourceId를 넣으세요. JSON만 반환하세요: {"paragraphs":[{"text":string,"sources":string[],"covers":string[]}]}',
+    '도구 호출이나 진행 설명 없이 답변만 반환하세요.',
+  ].join('\n'),
   llmToolEvidenceContract: [
     '최신 사용자 요청과 모든 하위 질문을 해결하세요. 연결된 자료에 대한 답변은 필요한 도구로 확인하세요.',
     '성공한 도구 결과의 사실을 최종 답변에 반영하고 제공된 출처 ID·경로·URL을 보존하세요. 도구를 썼다는 진행 보고만으로 끝내지 마세요.',
@@ -5518,10 +5536,26 @@ const en: I18nKeys = {
     'The reviewed evidence could not be turned into a final answer. Retry later or check the model output settings.',
   indexedReviewNoEvidence:
     'The engine could not confirm an original passage supporting this question. No answer was filled in from general knowledge. Documents outside the index scope were not searched. Check the search scope and index status, or refine the question.',
-  llmIndexedReviewAnswer:
-    'Only passages whose original text, position, and revision the engine verified are supplied. Answer the current question directly using ONLY supplied evidence. Do not add facts from prior knowledge. Distinguish document claims, conditions, exceptions, and conflicts. For interpretations connecting documents, identify the documented premises. Cite each fact or interpretation with the exact sourceId copied verbatim from the input evidence. Do not add a vault: prefix to any sourceId. Leave unsupported links unresolved; state evidence limits instead of filling gaps. Follow the user language, format, and length. Return JSON only: {"paragraphs":[{"text":"answer paragraph","sources":["exact evidence sourceId"]}]}. Every paragraph needs 1-8 adopted sources. Do not put [vault:] markers inside text.',
-  llmIndexedReviewAnswerCorrection:
-    'The previous response was empty or could not be converted to the required JSON answer format. Rewrite the final answer using only the question and supplied verified evidence. Allowed sourceIds are exactly the sourceId values in the input evidence. Copy them verbatim and do not add a vault: prefix. Every paragraph must cite 1-8 allowed sourceIds. Return JSON only: {"paragraphs":[{"text":"answer paragraph","sources":["exact evidence sourceId"]}]}. Do not put [vault:] markers inside text. Return only the answer, with no tool calls or progress report.',
+  indexedReviewComparisonMissing:
+    'No verified evidence for the following comparison facets was found in the reviewed scope: {facets}. This does not mean the facets are absent from the entire vault.',
+  indexedReviewComparisonSearchFailed:
+    'Facet search failed for the following comparison facets, so the comparison scope is incomplete: {facets}.',
+  llmIndexedReviewAnswer: [
+    'This call uses toolChoice:none. Do not search again or use tools; answer the current question using only the supplied verified evidence.',
+    'When answerPlan is present, lead with the core claims for each supported facet in requiredFacetIds. Connect commonalities, differences, conflicts, conditions, and exceptions to that evidence. Compare or synthesize directly only when both supported facets have supplied evidence.',
+    'answerPlan.missingFacetIds and searchPlan.failedFacetIds are items that could not be confirmed in the reviewed scope. Do not present those facets as verified facts or claim vault-wide absence.',
+    'Do not add causality, chronology, or identity unsupported by evidence. Use only answerPlan facet IDs in each paragraph covers array and cover every requiredFacetIds entry. If synthesisRequired, include one synthesis paragraph that covers all requiredFacetIds and contains at least one source from each facet.',
+    'Cite each fact or interpretation with the exact sourceId copied verbatim from the input evidence. Do not add a vault: prefix to sources, and include 1-8 adopted sources in every paragraph. Do not put [vault:] markers inside text.',
+    'When answerPlan is present, covers is required in every paragraph. In the legacy searchPlan path without answerPlan, covers may be omitted. Follow the user language, format, and length.',
+    'Return JSON only: {"paragraphs":[{"text":string,"sources":string[],"covers":string[]}]}',
+  ].join('\n'),
+  llmIndexedReviewAnswerCorrection: [
+    'The previous response did not satisfy the answerPlan contract. Failure reason: {reason}. Missing facet IDs: {facets}.',
+    'This call uses toolChoice:none. Do not call tools; rewrite the final answer exactly once using only the question and supplied verified evidence.',
+    'Include only supported facets in covers and cover every requiredFacetIds entry. In the legacy path without answerPlan, covers may be omitted. If synthesisRequired, include a synthesis paragraph containing all requiredFacetIds and at least one source from each facet. Do not fill missing facets without evidence or claim vault-wide absence.',
+    'Allowed sourceIds are exactly the sourceId values in the input evidence. Do not add a vault: prefix to sources, and include 1-8 allowed sourceIds in every paragraph. Return JSON only: {"paragraphs":[{"text":string,"sources":string[],"covers":string[]}]}',
+    'Return only the answer, with no tool calls or progress report.',
+  ].join('\n'),
   llmToolEvidenceContract: [
     'Complete the latest user objective and every subquestion. Verify claims about connected data with the necessary tools.',
     'Use facts from successful tool results in the final answer and preserve supplied source IDs, paths, or URLs. Do not finish with only a report that tools were used.',

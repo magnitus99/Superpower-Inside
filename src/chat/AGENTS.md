@@ -26,6 +26,9 @@
 - Vault Context와 성공한 도구 결과를 출처로 인정합니다. 검색 후보·생성된 요약·저장된 출처 위치는 원문 검증을 대체하지 않습니다. 근거 부족·실패·제한된 검색을 문서 부재로 단정하지 않습니다.
 - 설정 화면·채팅 입력·검색 화면은 같은 RAG readiness 스냅샷을 사용합니다. corpus refresh·pending update·indexing이 하나라도 진행 중이면 부분 색인으로 답하지 않고 preparing/indexing으로 표시합니다.
 - 일반 볼트 질문은 candidate-first 엔진 검색·검증 → dossier → LLM 1회 해석 경로를 사용합니다. 기본 documentScope는 candidates이며 후보 밖 문서 본문을 읽거나 전체 색인을 검수했다고 표현하지 않습니다. 전체 all 스캔은 사용자가 명시한 deep 조사에만 사용합니다. 검색·랭킹·근거 선별·존재·행 위치·리비전 검증은 엔진이 담당하며 LLM은 검증된 dossier만 해석합니다. 정상 해석은 1회이고 검색 코어가 허용한 인용 형식 교정만 추가할 수 있습니다. 제외·미색인·미검토 문서는 검토 완료로 표현하지 않습니다.
+- 답변 전에 채택 문서의 현재 vault 원문을 다시 읽고 quote·절대 행·revision을 Rust로 재검증합니다. mtime:size 일치만으로 색인 사본의 인용을 verified로 승격하지 않으며, 재검증 실패는 해당 근거와 answer plan을 제외한 incomplete 범위로 처리합니다.
+- 비교 질문은 Rust가 만든 facet별 후보 검색과 후보 queryIndex의 근거 귀속을 사용합니다. supported facet별 주장과 양쪽 supported 근거가 모두 있는 종합만 허용하며, missing facet을 supported로 승격하거나 근거 없는 직접 비교를 만들지 않습니다.
+- facet 검색 실패·미확인은 문서 부재가 아닙니다. answerPlan 계약을 통과하지 못한 답변은 같은 모델로 정확히 1회 교정하고, 다시 실패하거나 answerPlan을 계산할 수 없으면 provider 답변을 게시하지 않고 검증된 evidence-only로 종료합니다.
 - 엔진이 전달한 근거 구간의 주변 맥락·조건·예외·상충 근거를 해석에 반영하고, 복합 질문의 주장과 문서 간 관계를 출처에 연결합니다. 직접 확인한 사실과 문서의 전제를 연결한 추론을 구분하며, 근거 없는 빈칸을 사전지식으로 채우지 않습니다. BM25·벡터·하이브리드 검색과 도구 호출의 조율은 제품 책임이며 모델의 자발적 호출에만 맡기지 않습니다.
 - 엔진 채택·필터 제외·검증 실패·예산 제외·미검토·미색인·읽기 실패를 구분하고 coverage 고지를 보존합니다. 엔진 검증 실패(quote-missing·position-mismatch·revision-mismatch·out-of-scope)는 사유와 함께 제외하며 모델의 관련성 판단으로 표현하지 않습니다. engine-unavailable·indexing·no-evidence·evidence-only는 반환된 content와 검증 citations를 그대로 표시하고 종료합니다. 일반 볼트 질문을 native search/read/list/links/related 도구 루프로 넘기지 않습니다. evidence-only 표시 본문은 JSON으로 파싱하지 않습니다.
 - 엔진 선별·원문 검증·인용 구절 일치와 출처 ID 검사는 해석의 정확성이나 모델 간 동등한 품질을 보장하지 않습니다. 근거 없는 주장·조건/예외 누락·문서 간 관계 오판은 독립 합성 자료로 확인하고, 실제 품질 효과는 같은 질문·자료·모델·설정의 비교로 별도 검증합니다.

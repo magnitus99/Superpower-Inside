@@ -464,6 +464,31 @@ describe('readSourceText', () => {
     expect(source.segments.map((segment) => segment.label)).toEqual(['Chapter One']);
   });
 
+  it('forceRefresh는 추출 캐시를 우회해 최신 원문을 읽는다', async () => {
+    let bytes = buildStoredZip(EPUB_ENTRIES);
+    const readBinary = vi.fn(() => Promise.resolve(bytes.slice().buffer));
+    const source = {
+      cachedRead: vi.fn(),
+      readBinary,
+    } as unknown as Vault;
+    const file = createFile('books/refresh.epub', 1, bytes.length);
+    const first = await readSourceText(source, file);
+    expect(first.text).toContain('Extracted body text.');
+
+    bytes = buildStoredZip(
+      EPUB_ENTRIES.map(([path, content]) =>
+        path === 'OEBPS/chapter.xhtml'
+          ? [path, content.replace('Extracted body text.', 'Fresh body text.')]
+          : [path, content],
+      ),
+    );
+    const cached = await readSourceText(source, file);
+    expect(cached.text).toBe(first.text);
+    const refreshed = await readSourceText(source, file, { forceRefresh: true });
+    expect(refreshed.text).toContain('Fresh body text.');
+    expect(readBinary).toHaveBeenCalledTimes(2);
+  });
+
   it('추출 본문의 구간 라벨을 청크 heading으로 승격한다', async () => {
     const file = createFile('books/sample.epub');
     const source = await readSourceText(createVault(buildStoredZip(EPUB_ENTRIES)), file);
