@@ -35,6 +35,7 @@
     "preview": "node scripts/obsidian-preview.mjs serve",
     "release:check": "node scripts/run-fish.mjs scripts/check-release.fish",
     "test:e2e:vault": "node scripts/search-eval/run-vault.mjs --vault .test-vault --queries 24 --timeout-min 180",
+    "vault:leak-check": "node scripts/check-vault-leakage.mjs",
     "search:quality-gate": "vitest run src/rag/search-quality-gate.test.ts"
   },
   "dependencies": {
