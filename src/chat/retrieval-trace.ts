@@ -20,11 +20,8 @@ export function observeChatRetrieval(
               diagnostics: diagnostics.map(({ error: _error, ...diagnostic }) => diagnostic),
               results: results.map((result) => ({
                 filePath: result.sourcePath,
-                line: result.chunkRange.startLine + 1,
-                endLine:
-                  result.chunkRange.endLine === undefined
-                    ? undefined
-                    : result.chunkRange.endLine + 1,
+                line: result.chunkRange.startLine,
+                endLine: result.chunkRange.endLine,
                 bm25Score: result.bm25Score,
                 vectorScore: result.vectorScore,
                 selectionReason: result.selectionReason,

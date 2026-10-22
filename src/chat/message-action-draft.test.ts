@@ -694,7 +694,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     expect(options?.corpus).toBe(corpus);
     expect(options?.candidates?.[0]).toMatchObject({
       path: 'Synthetic/Hybrid.md',
-      startLine: 5,
+      startLine: 4,
       rank: 1,
       source: 'bm25',
     });

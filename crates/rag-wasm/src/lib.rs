@@ -8369,8 +8369,33 @@ struct TextSegment {
     end_line: usize,
 }
 
+/// 선두 YAML frontmatter를 같은 줄 수의 빈 줄로 치환합니다.
+///
+/// 메타데이터는 검색 필드(tags·aliases)로 따로 색인하므로 chunk 본문에서 빼고,
+/// 원문 행 번호는 유지합니다.
+fn strip_frontmatter_lines(content: &str) -> Option<String> {
+    const MAX_FRONTMATTER_LINES: usize = 120;
+    let mut lines = content.split('\n').collect::<Vec<_>>();
+    if lines.first().map(|line| line.trim_end()) != Some("---") {
+        return None;
+    }
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(MAX_FRONTMATTER_LINES)
+        .find(|(_, line)| matches!(line.trim_end(), "---" | "..."))
+        .map(|(index, _)| index)?;
+    for line in lines.iter_mut().take(end.saturating_add(1)) {
+        *line = "";
+    }
+    Some(lines.join("\n"))
+}
+
 /// Markdown을 heading/code block/paragraph 경계를 존중해 chunk로 나눈다.
 fn chunk_markdown(content: &str, max_chunk_size: usize, overlap_chars: usize) -> Vec<Chunk> {
+    let body = strip_frontmatter_lines(content);
+    let content = body.as_deref().unwrap_or(content);
     let lines = content.split('\n').map(str::to_owned).collect::<Vec<_>>();
     let mut chunks = Vec::new();
     let mut current_lines = Vec::new();
@@ -8380,6 +8405,18 @@ fn chunk_markdown(content: &str, max_chunk_size: usize, overlap_chars: usize) ->
     let mut in_code_block = false;
 
     for (index, line) in lines.iter().enumerate() {
+        // 선두 빈 줄(frontmatter 자리)은 chunk에 쌓지 않고 시작 줄만 실제 본문으로 옮깁니다.
+        if !in_code_block
+            && line.trim().is_empty()
+            && current_lines
+                .iter()
+                .all(|item: &String| item.trim().is_empty())
+        {
+            current_lines.clear();
+            current_length = 0;
+            start_line = index.saturating_add(1);
+            continue;
+        }
         if line.starts_with("```") {
             in_code_block = !in_code_block;
             push_chunk_line(&mut current_lines, &mut current_length, line);
@@ -14008,6 +14045,47 @@ mod tests {
         assert_eq!(second.metadata.heading.as_deref(), Some("Second"));
         assert_eq!(second.metadata.start_line, 4);
         assert_eq!(second.metadata.end_line, 7);
+    }
+
+    /// frontmatter는 chunk 본문에서 빠지고 원문 행 번호는 유지되어야 한다.
+    #[test]
+    fn chunk_markdown_excludes_frontmatter_and_keeps_line_numbers() {
+        let content = "---\ntags:\n  - 성경/구약/시편\naliases:\n  - 시편 51장\n---\n# 시편 51장\n1 다윗의 노래";
+        let chunks = chunk_markdown(content, 200, 0);
+
+        assert_eq!(chunks.len(), 1, "frontmatter 뒤 본문만 chunk가 되어야 한다");
+        let Some(chunk) = chunks.first() else {
+            return;
+        };
+        assert_eq!(chunk.text, "# 시편 51장\n1 다윗의 노래");
+        assert_eq!(
+            chunk.metadata.start_line, 6,
+            "본문 시작 행은 원문 기준이어야 한다"
+        );
+        assert!(
+            !chunk.text.contains("tags:"),
+            "YAML 키가 근거 본문에 섞이지 않아야 한다"
+        );
+    }
+
+    /// frontmatter가 닫히지 않으면 본문을 그대로 chunking해야 한다.
+    #[test]
+    fn chunk_markdown_keeps_unterminated_frontmatter() {
+        let content = "---\ntags:\n  - 값\n# 제목\n본문";
+        let chunks = chunk_markdown(content, 200, 0);
+
+        assert_eq!(
+            chunks.len(),
+            2,
+            "닫는 구분자 없는 YAML은 heading 앞 본문으로 남는다"
+        );
+        let Some(chunk) = chunks.first() else {
+            return;
+        };
+        assert!(
+            chunk.text.contains("tags:"),
+            "닫는 구분자 없는 YAML은 본문으로 남겨야 한다"
+        );
     }
 
     /// 일반 텍스트 chunking은 빈 줄 split과 line metadata를 보존해야 한다.

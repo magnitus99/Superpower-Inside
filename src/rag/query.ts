@@ -244,8 +244,8 @@ export class RAGQueryEngine {
       const document = documentById.get(hit.docId);
       matches.push({
         path: hit.sourcePath,
-        ...(document?.startLine !== undefined ? { startLine: document.startLine + 1 } : {}),
-        ...(document?.endLine !== undefined ? { endLine: document.endLine + 1 } : {}),
+        ...(document?.startLine !== undefined ? { startLine: document.startLine } : {}),
+        ...(document?.endLine !== undefined ? { endLine: document.endLine } : {}),
         score: hit.score,
         rank: index + 1,
       });

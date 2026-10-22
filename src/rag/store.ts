@@ -39,6 +39,7 @@ export interface VectorEntry {
     title?: string;
     headings?: string[];
     tags?: string[];
+    aliases?: string[];
     startLine: number;
     endLine?: number;
     text: string;

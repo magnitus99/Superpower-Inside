@@ -417,33 +417,38 @@ fn is_within_one_edit(left: &str, right: &str) -> bool {
     if left == right {
         return true;
     }
-    let left_chars = left.chars().collect::<Vec<_>>();
-    let right_chars = right.chars().collect::<Vec<_>>();
-    if left_chars.len().abs_diff(right_chars.len()) > 1 {
+    let left_length = left.chars().count();
+    let right_length = right.chars().count();
+    if left_length.abs_diff(right_length) > 1 {
         return false;
     }
-    let mut left_cursor = 0_usize;
-    let mut right_cursor = 0_usize;
+    // 사전 전체를 검사하므로 후보마다 문자 배열을 만들지 않는다.
+    let mut left_chars = left.chars().peekable();
+    let mut right_chars = right.chars().peekable();
     let mut skipped = false;
     while let (Some(left_character), Some(right_character)) =
-        (left_chars.get(left_cursor), right_chars.get(right_cursor))
+        (left_chars.peek(), right_chars.peek())
     {
         if left_character == right_character {
-            left_cursor = left_cursor.saturating_add(1);
-            right_cursor = right_cursor.saturating_add(1);
+            left_chars.next();
+            right_chars.next();
             continue;
         }
         if skipped {
             return false;
         }
         skipped = true;
-        match left_chars.len().cmp(&right_chars.len()) {
+        match left_length.cmp(&right_length) {
             Ordering::Equal => {
-                left_cursor = left_cursor.saturating_add(1);
-                right_cursor = right_cursor.saturating_add(1);
+                left_chars.next();
+                right_chars.next();
             }
-            Ordering::Greater => left_cursor = left_cursor.saturating_add(1),
-            Ordering::Less => right_cursor = right_cursor.saturating_add(1),
+            Ordering::Greater => {
+                left_chars.next();
+            }
+            Ordering::Less => {
+                right_chars.next();
+            }
         }
     }
     true
@@ -651,4 +656,67 @@ fn doc_length(index: &Bm25IndexData, doc_id: &str) -> f64 {
         .copied()
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(1.0)
+}
+#[cfg(test)]
+mod tests {
+    use super::is_within_one_edit;
+
+    /// 스트리밍 오타 비교는 문자 단위 편집 거리와 일치해야 한다.
+    #[test]
+    fn fuzzy_one_edit_matches_unicode_reference_distance() {
+        let samples = [
+            "",
+            "a",
+            "b",
+            "ab",
+            "ba",
+            "aab",
+            "aba",
+            "baa",
+            "abc",
+            "abcd",
+            "가",
+            "나",
+            "가나",
+            "가나다",
+            "가나마",
+            "가마",
+            "가😀",
+            "😀가",
+            "😀",
+        ];
+        for left in samples {
+            for right in samples {
+                let mut previous = (0..=right.chars().count()).collect::<Vec<_>>();
+                for (left_offset, left_char) in left.chars().enumerate() {
+                    let mut current = vec![left_offset.saturating_add(1)];
+                    for (right_offset, right_char) in right.chars().enumerate() {
+                        let substitution = previous
+                            .get(right_offset)
+                            .copied()
+                            .unwrap_or(usize::MAX)
+                            .saturating_add(usize::from(left_char != right_char));
+                        let insertion = current
+                            .get(right_offset)
+                            .copied()
+                            .unwrap_or(usize::MAX)
+                            .saturating_add(1);
+                        let deletion = previous
+                            .get(right_offset.saturating_add(1))
+                            .copied()
+                            .unwrap_or(usize::MAX)
+                            .saturating_add(1);
+                        current.push(substitution.min(insertion).min(deletion));
+                    }
+                    previous = current;
+                }
+                let distance = previous.last().copied().unwrap_or(0);
+                assert_eq!(
+                    is_within_one_edit(left, right),
+                    distance <= 1,
+                    "문자 단위 편집 거리를 보존해야 한다: {left:?} / {right:?}",
+                );
+            }
+        }
+    }
 }

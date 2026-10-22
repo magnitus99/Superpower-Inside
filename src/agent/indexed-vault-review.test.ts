@@ -818,7 +818,8 @@ describe('엔진 근거 기반 색인 검토', () => {
       }),
     );
 
-    expect(verify).toHaveBeenCalledTimes(2);
+    // 검색·현재 원문 검증 뒤에 stale 복구 계획 검증이 한 번 더 돕니다.
+    expect(verify).toHaveBeenCalledTimes(3);
     expect(verify.mock.calls[1]?.[0].documents).toMatchObject([
       { path: RELEVANT, revision: '1:10', text: currentText },
     ]);
@@ -867,7 +868,8 @@ describe('엔진 근거 기반 색인 검토', () => {
       }),
     );
 
-    expect(verify).toHaveBeenCalledTimes(2);
+    // null 검증 실패 뒤에도 stale 복구 계획 검증이 시도됩니다.
+    expect(verify).toHaveBeenCalledTimes(3);
     expect(calls).toHaveLength(0);
     expect(result.evidence).toEqual([]);
     expect(result.citations).toEqual([]);
@@ -1007,6 +1009,38 @@ describe('엔진 근거 기반 색인 검토', () => {
       }),
     );
     expect(result.rejectedFiles).toBe(0);
+  });
+
+  it('색인 뒤 원문이 바뀌어도 인용이 현재 본문에 남아 있으면 근거를 복구한다', async () => {
+    const plan = vi.mocked(planIndexedEvidenceRust);
+    const verify = vi.mocked(verifyIndexedEvidenceRust);
+    plan.mockReturnValue(twoDocumentPlan());
+    verify.mockImplementation(verifiedStatuses);
+    const { provider, calls } = answerProvider();
+    const currentText = 'Quartz cooling cycles reduce cracks in the mould.';
+
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        provider,
+        sourceReader: () =>
+          Promise.resolve({ revision: '1:11', text: currentText, contentHash: 'hash-11' }),
+      }),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(result.outcome).toBe('answered');
+    expect(result.evidence).toHaveLength(2);
+    expect(result.citations.map((citation) => citation.filePath)).toEqual([RELEVANT]);
+    // 복구 계획은 현재 원문 전체를 1행 기준으로 엔진에 넘깁니다.
+    const recoveryCall = plan.mock.calls.at(-1)?.[0];
+    expect(recoveryCall?.documents).toHaveLength(2);
+    expect(
+      recoveryCall?.documents.every(
+        (document) => document.text === currentText && document.startLine === 1,
+      ),
+    ).toBe(true);
+    expect(result.coverage.unreviewedPaths).not.toContain(RELEVANT);
+    expect(result.content).not.toContain(t('indexedReviewNoEvidence'));
   });
 
   it('stale 제거로 결과가 비면 no-evidence와 미완료 고지를 유지한다', async () => {

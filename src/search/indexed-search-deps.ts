@@ -5,6 +5,7 @@ import type {
   IndexedVaultCorpus,
 } from '../agent/indexed-vault-review';
 import type { QueryResult, RAGQueryEngine } from '../rag/query';
+import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
 import { planIndexedSearchQueriesRust, type IndexedSearchPlan } from '../rag/rust-core';
 import { readSourceText } from '../rag/source-access';
 import { createContentHash } from '../rag/hash';
@@ -38,10 +39,12 @@ export interface IndexedSearchDepsHost {
   isIndexing?: () => boolean;
 }
 
-const MAIN_CANDIDATE_LIMIT = 64;
-const SUBJECT_CANDIDATE_LIMIT = 32;
+const MAIN_CANDIDATE_LIMIT = 256;
+const SUBJECT_CANDIDATE_LIMIT = 96;
 const MAX_HYBRID_FACETS = 3;
-const EXHAUSTIVE_REVIEW_PATH_LIMIT = 32;
+// 소스별 예약 슬롯과 최대 3개 facet의 원문 검증 예산을 함께 확보합니다.
+const EXHAUSTIVE_REVIEW_PATH_LIMIT = 96;
+const REVIEW_PATHS_PER_SOURCE = 8;
 const SEMANTIC_CANDIDATE_TIMEOUT_MS = 2_000;
 
 type IndexedSearchCandidate = IndexedEvidenceCandidate & { queryIndex?: number };
@@ -51,6 +54,7 @@ interface HybridCandidateResolution {
   state: SearchCandidateState;
   failedFacetIds: readonly string[];
   exhaustiveReview: boolean;
+  diagnostics?: readonly RetrievalProviderDiagnostic[];
 }
 
 /** 색인 사본과 현재 원문 리비전(mtime:size)을 대조하는 reader. */
@@ -88,8 +92,8 @@ export function createVaultSourceReader(
           chunks = chunkSourceDocument(file, source.text, chunkConfig, source.segments).map(
             (chunk) => ({
               text: chunk.text,
-              startLine: chunk.metadata.startLine + 1,
-              endLine: chunk.metadata.endLine + 1,
+              startLine: chunk.metadata.startLine,
+              endLine: chunk.metadata.endLine,
             }),
           );
         } catch (error) {
@@ -129,15 +133,13 @@ export async function collectIndexedSearchSource(
   question = query,
   forceRefreshSources = true,
   semanticTimeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
-): Promise<IndexedSearchSource | null> {
+): Promise<
+  (IndexedSearchSource & { diagnostics?: readonly RetrievalProviderDiagnostic[] }) | null
+> {
   const corpus = host.documentCorpus;
   if (!corpus) return null;
   const startedAt = performance.now();
-  const sourceReader = createVaultSourceReader(
-    host.app,
-    forceRefreshSources,
-    host.settings?.rag,
-  );
+  const sourceReader = createVaultSourceReader(host.app, forceRefreshSources, host.settings?.rag);
   const indexedPaths = await corpus.getIndexedFilePaths();
   const indexedPathsMs = performance.now() - startedAt;
   if (signal?.aborted) return null;
@@ -164,7 +166,7 @@ export async function collectIndexedSearchSource(
     };
   }
   const candidateStartedAt = performance.now();
-  const candidateResolution =
+  const candidateResolution: HybridCandidateResolution =
     indexedPaths.length === 0
       ? {
           candidates: undefined,
@@ -207,6 +209,7 @@ export async function collectIndexedSearchSource(
     reviewPaths,
     exhaustiveReview: candidateResolution.exhaustiveReview,
     candidatesState: candidateResolution.state,
+    diagnostics: candidateResolution.diagnostics,
     inventory,
     searchPlan: { ...searchPlan, failedFacetIds: candidateResolution.failedFacetIds },
     revisionReader: createVaultRevisionReader(host.app),
@@ -223,42 +226,47 @@ function selectExhaustiveReviewPaths(
   candidates: readonly IndexedSearchCandidate[] | undefined,
 ): string[] {
   const indexed = new Set(indexedPaths);
-  const grouped = new Map<number, Map<string, IndexedSearchCandidate>>();
-  for (const candidate of candidates ?? []) {
-    if (!indexed.has(candidate.path)) continue;
-    const group = candidate.queryIndex ?? 0;
-    const byPath = grouped.get(group) ?? new Map<string, IndexedSearchCandidate>();
-    const current = byPath.get(candidate.path);
-    if (!current || candidate.rank < current.rank) byPath.set(candidate.path, candidate);
-    grouped.set(group, byPath);
-  }
-  const groups = new Map<number, string[]>();
-  for (const [group, byPath] of grouped) {
-    groups.set(
-      group,
-      [...byPath.values()]
-        .sort((left, right) => left.rank - right.rank || left.path.localeCompare(right.path))
-        .map((candidate) => candidate.path),
-    );
-  }
   const selected: string[] = [];
   const seen = new Set<string>();
-  const cursors = new Map<number, number>();
-  while (selected.length < EXHAUSTIVE_REVIEW_PATH_LIMIT) {
-    let added = false;
-    for (const group of [...groups.keys()].sort((left, right) => left - right)) {
-      const paths = groups.get(group) ?? [];
-      let cursor = cursors.get(group) ?? 0;
-      while (cursor < paths.length && seen.has(paths[cursor] ?? '')) cursor += 1;
-      const path = paths[cursor];
-      cursors.set(group, cursor + 1);
-      if (!path) continue;
-      seen.add(path);
-      selected.push(path);
-      added = true;
-      if (selected.length >= EXHAUSTIVE_REVIEW_PATH_LIMIT) break;
+  for (const source of ['structural', 'ann', 'vector', 'bm25', undefined] as const) {
+    const grouped = new Map<number, Map<string, IndexedSearchCandidate>>();
+    for (const candidate of candidates ?? []) {
+      if (!indexed.has(candidate.path) || (source && candidate.source !== source)) continue;
+      const group = candidate.queryIndex ?? 0;
+      const byPath = grouped.get(group) ?? new Map<string, IndexedSearchCandidate>();
+      const current = byPath.get(candidate.path);
+      if (!current || candidate.rank < current.rank) byPath.set(candidate.path, candidate);
+      grouped.set(group, byPath);
     }
-    if (!added) break;
+    const groups = new Map<number, string[]>();
+    for (const [group, byPath] of grouped) {
+      groups.set(
+        group,
+        [...byPath.values()]
+          .sort((left, right) => left.rank - right.rank || left.path.localeCompare(right.path))
+          .map((candidate) => candidate.path),
+      );
+    }
+    const limit = source
+      ? Math.min(EXHAUSTIVE_REVIEW_PATH_LIMIT, selected.length + REVIEW_PATHS_PER_SOURCE)
+      : EXHAUSTIVE_REVIEW_PATH_LIMIT;
+    const cursors = new Map<number, number>();
+    while (selected.length < limit) {
+      let added = false;
+      for (const group of [...groups.keys()].sort((left, right) => left - right)) {
+        const paths = groups.get(group) ?? [];
+        let cursor = cursors.get(group) ?? 0;
+        while (cursor < paths.length && seen.has(paths[cursor] ?? '')) cursor += 1;
+        const path = paths[cursor];
+        cursors.set(group, cursor + 1);
+        if (!path) continue;
+        seen.add(path);
+        selected.push(path);
+        added = true;
+        if (selected.length >= limit) break;
+      }
+      if (!added) break;
+    }
   }
   return selected;
 }
@@ -340,9 +348,13 @@ async function collectHybridCandidates(
   );
   const outcomes = await Promise.all(
     facets.map(async (facet) => {
+      const semanticStartedAt = performance.now();
+      let semanticDurationMs = 0;
       const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
         Promise.resolve().then(() => engine.queryBm25Exhaustive(facet.query, facetLimit, signal)),
-        querySemanticCandidates(engine, facet, signal, semanticTimeoutMs),
+        querySemanticCandidates(engine, facet, signal, semanticTimeoutMs).finally(() => {
+          semanticDurationMs = performance.now() - semanticStartedAt;
+        }),
       ]);
       if (signal?.aborted) {
         const rejected = [bm25Outcome, semanticOutcome].find(
@@ -356,30 +368,46 @@ async function collectHybridCandidates(
           error: bm25Outcome.reason,
         });
       }
+      const diagnostics: RetrievalProviderDiagnostic[] = [];
       if (semanticOutcome.status === 'rejected') {
+        const error =
+          semanticOutcome.reason instanceof Error
+            ? semanticOutcome.reason
+            : new Error('semantic-candidate-error');
+        diagnostics.push({
+          providerId: `semantic:${facet.id}`,
+          source: 'vector',
+          status: error.name === 'TimeoutError' ? 'timeout' : 'error',
+          durationMs: semanticDurationMs,
+          candidateCount: 0,
+          readiness: 'degraded',
+          estimatedCost: 'low',
+          error: error.message,
+        });
         appLogger.warn('Hybrid facet candidates unavailable; preserving exhaustive BM25.', {
           source: 'search.candidates',
           error: semanticOutcome.reason,
         });
       }
       const bm25 =
-        bm25Outcome.status === 'fulfilled' && bm25Outcome.value !== null
-          ? bm25Outcome.value
-          : null;
+        bm25Outcome.status === 'fulfilled' && bm25Outcome.value !== null ? bm25Outcome.value : null;
       return {
         facet,
         bm25,
         semantic:
-          semanticOutcome.status === 'fulfilled'
-            ? semanticOutcome.value
-            : ([] as QueryResult[]),
+          semanticOutcome.status === 'fulfilled' ? semanticOutcome.value : ([] as QueryResult[]),
         failed: bm25 === null,
+        diagnostics,
       } as const;
     }),
   );
   signal?.throwIfAborted();
+  const diagnostics = outcomes.flatMap((outcome) => outcome.diagnostics);
   const failedFacetIds = outcomes.filter((outcome) => outcome.failed).map(({ facet }) => facet.id);
-  const exhaustiveReview = outcomes.length > 0 && failedFacetIds.length === 0;
+  const exhaustiveReview =
+    outcomes.length > 0 &&
+    failedFacetIds.length === 0 &&
+    outcomes.some((outcome) => (outcome.bm25?.length ?? 0) > 0 || outcome.semantic.length > 0);
   const candidates: IndexedSearchCandidate[] = [];
   for (const outcome of outcomes) {
     outcome.bm25?.forEach((match) => {
@@ -397,11 +425,8 @@ async function collectHybridCandidates(
     outcome.semantic.forEach((result, index) => {
       const candidate: IndexedSearchCandidate = {
         path: result.sourcePath,
-        startLine: result.entry.metadata.startLine + 1,
-        endLine:
-          result.entry.metadata.endLine === undefined
-            ? undefined
-            : result.entry.metadata.endLine + 1,
+        startLine: result.entry.metadata.startLine,
+        endLine: result.entry.metadata.endLine,
         score: result.combinedScore,
         source: candidateSource(result),
         rank: index + 1,
@@ -414,6 +439,7 @@ async function collectHybridCandidates(
     return {
       candidates: undefined,
       state: engine.getCandidateReadiness?.() ?? 'ready',
+      diagnostics,
       failedFacetIds,
       exhaustiveReview,
     };
@@ -421,6 +447,7 @@ async function collectHybridCandidates(
   return {
     candidates,
     state: 'ready',
+    diagnostics,
     failedFacetIds,
     exhaustiveReview,
   };
@@ -438,24 +465,24 @@ async function querySemanticCandidates(
   signal?.addEventListener('abort', forwardAbort, { once: true });
   const timerHost = typeof window === 'undefined' ? globalThis : window;
   let timeout: ReturnType<typeof timerHost.setTimeout> | undefined;
-  const timedOut = new Promise<QueryResult[]>((resolve) => {
+  const timedOut = new Promise<QueryResult[]>((_, reject) => {
     timeout = timerHost.setTimeout(() => {
-      controller.abort(new DOMException('semantic-candidate-timeout', 'TimeoutError'));
-      resolve([]);
+      const error = new DOMException('semantic-candidate-timeout', 'TimeoutError');
+      reject(error);
+      controller.abort(error);
     }, timeoutMs);
   });
-  const query = engine.query(
-    facet.query,
-    facet.kind === 'question' ? MAIN_CANDIDATE_LIMIT : SUBJECT_CANDIDATE_LIMIT,
-    undefined,
-    undefined,
-    { signal: controller.signal, excludedProviderIds: ['bm25'] },
-  ).catch((error: unknown) => {
-    if (signal?.aborted) throw error;
-    return [] as QueryResult[];
-  });
   try {
-    const results = await Promise.race([query, timedOut]);
+    const results = await Promise.race([
+      engine.query(
+        facet.query,
+        facet.kind === 'question' ? MAIN_CANDIDATE_LIMIT : SUBJECT_CANDIDATE_LIMIT,
+        undefined,
+        undefined,
+        { signal: controller.signal, excludedProviderIds: ['bm25'] },
+      ),
+      timedOut,
+    ]);
     signal?.throwIfAborted();
     return results;
   } finally {

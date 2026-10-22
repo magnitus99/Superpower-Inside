@@ -34,8 +34,8 @@ describe('채팅 검색 기록', () => {
         metadata: {
           filePath: 'Synthetic.md',
           text: 'independent synthetic text',
-          startLine: 0,
-          endLine: 2,
+          startLine: 4,
+          endLine: 5,
         },
       },
     ]);
@@ -52,8 +52,8 @@ describe('채팅 검색 기록', () => {
         results: [
           expect.objectContaining({
             filePath: 'Synthetic.md',
-            line: 1,
-            endLine: 3,
+            line: 4,
+            endLine: 5,
             vectorScore: 1,
           }),
         ],

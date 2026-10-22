@@ -48,6 +48,7 @@ function toRetrievalEntry(document: BM25CorpusDocument): VectorEntry {
       title: document.title,
       headings: document.headings,
       tags: document.tags,
+      ...(document.aliases !== undefined ? { aliases: document.aliases } : {}),
       heading: document.heading,
       startLine: document.startLine ?? 0,
       endLine: document.endLine,

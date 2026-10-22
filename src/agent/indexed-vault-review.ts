@@ -110,7 +110,7 @@ function resolveEvidenceBudget(
 
 /**
  * 코퍼스 청크 메타데이터를 엔진 plan 입력 문서로 옮깁니다.
- * 저장소의 0 기반 줄만 1 기반으로 옮기고 본문은 그대로 유지합니다.
+ * 줄 번호는 청킹 경계에서 이미 1 기반으로 변환되어 그대로 씁니다.
  */
 function planDocument(
   metadata: VectorEntry['metadata'],
@@ -124,9 +124,12 @@ function planDocument(
     indexed: true,
     reviewState: 'reviewed',
     text: metadata.text,
-    startLine: metadata.startLine + 1,
+    startLine: metadata.startLine,
     ...(metadata.title !== undefined ? { title: metadata.title } : {}),
     ...(metadata.tags !== undefined ? { tags: metadata.tags } : {}),
+    ...(metadata.aliases !== undefined && metadata.aliases.length > 0
+      ? { aliases: metadata.aliases }
+      : {}),
     ...(metadata.headings !== undefined
       ? { headings: metadata.headings }
       : heading
@@ -1072,6 +1075,72 @@ async function runIndexedVaultReview(
       }
       for (const path of rejectedPaths) stale.add(path);
       evidence = evidence.filter((item) => !rejectedPaths.has(item.path));
+    }
+    if (options.sourceReader && stale.size > 0) {
+      // 색인 뒤에 원문이 바뀐 문서도 인용이 현재 본문에 남아 있으면 근거로 복구합니다.
+      // 색인 지연만으로 검토 대상이 통째로 사라지면 답변이 근거를 잃습니다.
+      const freshDocuments: RustIndexedEvidenceDocument[] = [];
+      for (const path of stale) {
+        const source = currentSources.get(path);
+        if (!source || source.text === null) continue;
+        freshDocuments.push({
+          path,
+          revision: source.revision,
+          indexed: true,
+          reviewState: 'reviewed',
+          text: source.text,
+          startLine: 1,
+        });
+      }
+      if (freshDocuments.length > 0) {
+        const recoveryBudget = DEFAULT_EVIDENCE_BUDGET;
+        const recoveryPlan = planIndexedEvidenceRust({
+          question: options.scoringQuestion ?? options.question,
+          documents: freshDocuments,
+          scopes: options.scopes,
+          ...(options.filters ? { filters: options.filters } : {}),
+          budget: recoveryBudget,
+          inventory: {
+            indexedCount: freshDocuments.length,
+            unreviewedCount: 0,
+            notIndexedCount: 0,
+          },
+        });
+        if (recoveryPlan && recoveryPlan.evidence.length > 0) {
+          const recoveryVerification = verifyIndexedEvidenceRust({
+            evidence: recoveryPlan.evidence.map((item) => ({
+              sourceId: item.sourceId,
+              path: item.path,
+              ...(item.revision !== null ? { revision: item.revision } : {}),
+              startLine: item.startLine,
+              endLine: item.endLine,
+              quote: item.quote,
+            })),
+            documents: freshDocuments,
+            scopes: options.scopes,
+          });
+          const verified = recoveryVerification
+            ? new Set(
+                recoveryVerification.statuses
+                  .filter((status) => status.status === 'verified')
+                  .map((status) => status.sourceId),
+              )
+            : new Set<string>();
+          const recovered = recoveryPlan.evidence.filter(
+            (item) =>
+              verified.has(item.sourceId) &&
+              !evidence.some((existing) => existing.path === item.path),
+          );
+          if (recovered.length > 0) {
+            for (const item of recovered) stale.delete(item.path);
+            evidence = [...recovered, ...evidence].slice(0, recoveryBudget.maxPassages);
+            appLogger.debug('Recovered evidence from documents changed after indexing.', {
+              source: 'chat.indexed-review',
+              data: { recovered: recovered.length },
+            });
+          }
+        }
+      }
     }
     const answerPlan = options.searchPlan
       ? (planIndexedReviewAnswerPlanRust({

@@ -91,9 +91,9 @@ describe('RAGQueryEngine', () => {
     const engine = new RAGQueryEngine(null, null, bm25);
 
     await expect(engine.queryBm25Exhaustive('synthetic')).resolves.toEqual([
-      { path: 'Synthetic/A.md', startLine: 5, endLine: 6, score: 9, rank: 1 },
-      { path: 'Synthetic/B.md', startLine: 9, endLine: 10, score: 8, rank: 2 },
-      { path: 'Synthetic/C.md', startLine: 13, endLine: 14, score: 6, rank: 4 },
+      { path: 'Synthetic/A.md', startLine: 4, endLine: 5, score: 9, rank: 1 },
+      { path: 'Synthetic/B.md', startLine: 8, endLine: 9, score: 8, rank: 2 },
+      { path: 'Synthetic/C.md', startLine: 12, endLine: 13, score: 6, rank: 4 },
     ]);
     expect(search).toHaveBeenCalledWith('synthetic', 4, undefined);
     expect(documents).toHaveBeenCalledWith(['a-1', 'b-1', 'c-1']);

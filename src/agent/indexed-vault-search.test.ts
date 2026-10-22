@@ -184,7 +184,7 @@ function fixtureCorpus(): { corpus: IndexedVaultCorpus; requested: string[] } {
 }
 
 describe('색인 엔진 근거 선별', () => {
-  it('raw corpus 필드와 0 기반 줄을 실제 엔진의 1 기반 구절·태그 필터로 연결한다', async () => {
+  it('raw corpus 필드와 1 기반 줄을 실제 엔진의 구절·태그 필터로 연결한다', async () => {
     const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
     vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
@@ -323,7 +323,7 @@ describe('색인 엔진 근거 선별', () => {
               metadata: {
                 filePath: RELEVANT,
                 text: 'Quartz cooling cycles',
-                startLine: 0,
+                startLine: 1,
                 contentHash: 'hash',
               },
             },
@@ -470,8 +470,8 @@ describe('색인 엔진 근거 선별', () => {
       vector: [],
       metadata: {
         filePath,
-        startLine: 0,
-        endLine: 0,
+        startLine: 1,
+        endLine: 1,
         text: filePath.endsWith('000.md')
           ? 'Quartz restarts after two cooling cycles.'
           : `Synthetic indexed body ${filePath}`,
@@ -636,8 +636,8 @@ describe('색인 엔진 근거 선별', () => {
       metadata: {
         filePath,
         ...(filePath === targetPath ? { heading: 'sharedterm' } : {}),
-        startLine: 0,
-        endLine: 0,
+        startLine: 1,
+        endLine: 1,
         text:
           filePath === targetPath
             ? Array.from({ length: 64 }, () => 'sharedterm').join(' ')
@@ -1051,7 +1051,7 @@ describe('색인 엔진 근거 선별', () => {
       indexed: true,
       reviewState: 'reviewed',
       text: 'Quartz restarts only after two cooling cycles.',
-      startLine: 4,
+      startLine: 3,
       headings: ['Synthetic Section'],
     });
     // ms epoch mtime은 엔진 u64 타임스탬프 계약으로 문서에 전달됩니다.

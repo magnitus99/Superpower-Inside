@@ -51,7 +51,11 @@ describe('인덱싱 제외 정책', () => {
         undefined,
         {
           getFileCache: () => ({
-            frontmatter: { title: 'Quarterly Report', tags: ['finance', 'planning'] },
+            frontmatter: {
+              title: 'Quarterly Report',
+              tags: ['finance', 'planning'],
+              aliases: ['Quarterly Ledger', '분기 보고서'],
+            },
           }),
         },
       );
@@ -62,14 +66,16 @@ describe('인덱싱 제외 정책', () => {
         text: '# Deployment\nalpha beta body',
         title: 'Quarterly Report',
         tags: ['finance', 'planning'],
+        aliases: ['Quarterly Ledger', '분기 보고서'],
         headings: ['Deployment'],
       });
       expect((await vectors.getEntries())[0]?.metadata).toMatchObject({
         text: '# Deployment\nalpha beta body',
         title: 'Quarterly Report',
         tags: ['finance', 'planning'],
+        aliases: ['Quarterly Ledger', '분기 보고서'],
         headings: ['Deployment'],
-        startLine: 0,
+        startLine: 1,
       });
       expect(embedBatch.mock.calls[0]?.[0]?.[0]).toContain('File: reports/ledger.md');
     } finally {

@@ -21,6 +21,7 @@ export interface BM25DocumentInput {
   title?: string;
   headings?: string[];
   tags?: string[];
+  aliases?: string[];
   heading?: string;
   startLine?: number;
   endLine?: number;
@@ -32,6 +33,15 @@ export interface BM25DocumentInput {
 
 export interface BM25CorpusDocument extends BM25DocumentInput {
   sourcePath: string;
+}
+
+/** frontmatter 별칭은 문자열 또는 문자열 배열로 올 수 있습니다. */
+function frontmatterAliases(value: unknown): string[] {
+  const raw = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
+  return raw
+    .filter((item): item is string | number => typeof item === 'string' || typeof item === 'number')
+    .map((item) => String(item).trim())
+    .filter((item) => item.length > 0);
 }
 
 /** 원문을 다시 파싱하지 않고 기존 파일·캐시·청크의 필드를 전달합니다. */
@@ -53,6 +63,7 @@ export function getBM25DocumentFields(
           ? frontmatterTags.filter((tag): tag is string => typeof tag === 'string')
           : []),
     ],
+    aliases: frontmatterAliases(metadata?.frontmatter?.aliases),
   };
 }
 
@@ -85,6 +96,7 @@ interface BM25DocumentRecord {
   title?: string;
   headings?: string[];
   tags?: string[];
+  aliases?: string[];
   updated: number;
   order: number;
   heading?: string;
@@ -1169,6 +1181,7 @@ function toCorpusDocument(record: BM25DocumentRecord): BM25CorpusDocument {
     title: record.title,
     headings: record.headings,
     tags: record.tags,
+    ...(record.aliases !== undefined ? { aliases: record.aliases } : {}),
     id: record.id,
     text: record.text,
     sourcePath: record.sourcePath,

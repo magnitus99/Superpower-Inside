@@ -55,6 +55,8 @@ const PATH_FIELD_WEIGHT: f64 = 0.45;
 const HEADING_FIELD_WEIGHT: f64 = 0.5;
 /// 접두 없는 일반 토큰의 tag 필드 가중치입니다.
 const TAG_FIELD_WEIGHT: f64 = 0.35;
+/// 접두 없는 일반 토큰의 alias 필드 가중치입니다.
+const ALIASES_FIELD_WEIGHT: f64 = 0.5;
 /// 접두 없는 일반 토큰의 code block 필드 가중치입니다.
 const CODE_FIELD_WEIGHT: f64 = 0.4;
 /// 명시 필드 접두(`title:`)가 맞을 때의 추가 가중치입니다.
@@ -69,6 +71,16 @@ const CANDIDATE_DEPTH_RATIO: f64 = 0.5;
 const MERGE_RRF_K: f64 = 60.0;
 /// 검색 계획 facet query index의 wire 상한입니다.
 const MAX_CANDIDATE_QUERY_INDEX: usize = 3;
+/// 본문이 아니라 경로만 같은 문서를 근거로 인정하지 않는 규칙의 설명입니다.
+/// 링크 목록 비중이 이 값보다 낮으면 색인 문서로 보지 않습니다.
+const NAVIGATION_LINK_RATIO_FLOOR: f64 = 0.35;
+/// 링크 목록 비중이 최대일 때 남길 점수 비율입니다.
+const NAVIGATION_PENALTY: f64 = 0.5;
+/// 질의의 텍스트 토큰을 하나도 담지 않고 숫자·식별자만 맞은 문서에 곱하는 감쇠입니다.
+/// `51장`만 맞는 다른 책의 장들은 질의의 의미를 담지 않았습니다.
+const NUMBER_ONLY_DEMOTION: f64 = 0.45;
+/// 텍스트 토큰을 모두 담은 문서에 주는 추가 배율입니다.
+const TEXT_COVERAGE_BONUS: f64 = 0.6;
 
 /// 질의에서 파싱한 토큰 하나입니다.
 struct QueryToken {
@@ -112,6 +124,8 @@ struct FieldFrequencies {
     headings: BTreeMap<String, usize>,
     /// 태그 토큰 빈도입니다.
     tags: BTreeMap<String, usize>,
+    /// 별칭(aliases) 토큰 빈도입니다.
+    aliases: BTreeMap<String, usize>,
     /// 코드 블록 토큰 빈도입니다.
     code: BTreeMap<String, usize>,
 }
@@ -146,6 +160,7 @@ impl FieldFrequencies {
         title: &str,
         headings: &[String],
         tags: &[String],
+        aliases: &[String],
         code_blocks: &[String],
     ) -> Self {
         let mut fields = Self {
@@ -153,12 +168,14 @@ impl FieldFrequencies {
             path: BTreeMap::new(),
             headings: BTreeMap::new(),
             tags: BTreeMap::new(),
+            aliases: BTreeMap::new(),
             code: BTreeMap::new(),
         };
         add_field_text(&mut fields.title, title);
         add_field_text(&mut fields.path, path);
         add_field_values(&mut fields.headings, headings);
         add_field_values(&mut fields.tags, tags);
+        add_field_values(&mut fields.aliases, aliases);
         add_field_values(&mut fields.code, code_blocks);
         fields
     }
@@ -170,6 +187,7 @@ impl FieldFrequencies {
             "path" => &self.path,
             "heading" | "headings" => &self.headings,
             "tag" | "tags" => &self.tags,
+            "alias" | "aliases" => &self.aliases,
             _ => &self.code,
         }
     }
@@ -395,7 +413,7 @@ fn read_field_prefix(characters: &[char], start: usize) -> Option<(String, usize
         .to_lowercase();
     matches!(
         name.as_str(),
-        "body" | "heading" | "title" | "path" | "tag" | "code"
+        "body" | "heading" | "title" | "path" | "tag" | "code" | "alias" | "aliases"
     )
     .then_some((name, cursor + 1))
 }
@@ -569,8 +587,60 @@ fn parse_query(question: &str) -> (Vec<QueryToken>, Vec<QueryPhrase>) {
     (tokens, phrases)
 }
 
-/// 일반 검색어와 함께 쓰였을 때 변별력이 낮은 영어 기능어인지 반환합니다.
-fn is_english_function_word(token: &str) -> bool {
+/// 한국어 의문사·지시사·접속사·계사·경량동사·화행동사입니다.
+const KOREAN_FUNCTION_WORDS: &[&str] = &[
+    "어느",
+    "어떤",
+    "어떻게",
+    "어떻",
+    "어디",
+    "언제",
+    "누구",
+    "무엇",
+    "왜",
+    "서로",
+    "그리고",
+    "그런데",
+    "하지만",
+    "그러나",
+    "그래서",
+    "때문에",
+    "위해",
+    "통해",
+    "대한",
+    "대해",
+    "관해",
+    "관한",
+    "설명",
+    "설명해줘",
+    "알려",
+    "알려줘",
+    "정리",
+    "소개",
+    "비교",
+    "말해",
+    "말하는",
+    "말한다",
+    "있는",
+    "있다",
+    "있어",
+    "없어",
+    "없다",
+    "입니다",
+    "습니다",
+    "해줘",
+    "해주세요",
+    "같은",
+    "같은지",
+    "다르고",
+    "다르게",
+    "개념적으로",
+    "내용",
+    "의미",
+];
+
+/// 일반 검색어와 함께 쓰였을 때 변별력이 낮은 기능어인지 반환합니다.
+fn is_function_word(token: &str) -> bool {
     matches!(
         token,
         "a" | "am"
@@ -648,28 +718,46 @@ fn is_english_function_word(token: &str) -> bool {
             | "would"
             | "you"
             | "your"
-    )
+    ) || KOREAN_FUNCTION_WORDS.contains(&token)
 }
 
-/// 내용어가 있는 질의에서만 변별력 없는 비인용 기능어를 제거합니다.
+/// 기능어·파편 제거 뒤에도 남겨야 하는 토큰인지 반환합니다.
+fn is_preserved_token(token: &QueryToken) -> bool {
+    token.negated
+        || token.phrase_index.is_some()
+        || token.explicit_field
+        || matches!(token.kind, "number" | "identifier")
+}
+
+/// 다른 보존 토큰의 진부분 문자열인 `n-gram` 파편인지 반환합니다.
+fn is_token_fragment(text: &str, tokens: &[QueryToken]) -> bool {
+    tokens
+        .iter()
+        .any(|other| other.text.len() > text.len() && other.text.contains(text))
+}
+
+/// 내용어가 있는 질의에서만 변별력 없는 비인용 기능어와 `n-gram` 파편을 제거합니다.
 ///
 /// `the`처럼 기능어만 검색한 경우에는 사용자가 그 단어 자체를 찾는
 /// Ctrl-F식 검색일 수 있으므로 그대로 보존합니다.
 fn prune_function_words(tokens: &mut Vec<QueryToken>) {
     let has_content = tokens.iter().any(|token| {
-        !token.negated
-            && (token.phrase_index.is_some()
-                || token.explicit_field
-                || !is_english_function_word(&token.text))
+        (is_preserved_token(token) || !is_function_word(&token.text))
+            && !is_token_fragment(&token.text, tokens)
     });
     if !has_content {
         return;
     }
+    tokens.retain(|token| is_preserved_token(token) || !is_function_word(&token.text));
+    let kept = tokens
+        .iter()
+        .map(|token| token.text.clone())
+        .collect::<Vec<_>>();
     tokens.retain(|token| {
-        token.negated
-            || token.phrase_index.is_some()
-            || token.explicit_field
-            || !is_english_function_word(&token.text)
+        is_preserved_token(token)
+            || !kept
+                .iter()
+                .any(|text| text.len() > token.text.len() && text.contains(&token.text))
     });
 }
 
@@ -901,7 +989,7 @@ fn allowed_fields(tokens: &[QueryToken]) -> BTreeMap<String, BTreeSet<String>> {
             entry.insert(token.field.clone());
         } else {
             entry.insert("body".to_owned());
-            for field in ["title", "path", "heading", "tag"] {
+            for field in ["title", "path", "heading", "tag", "alias"] {
                 entry.insert(field.to_owned());
             }
         }
@@ -929,10 +1017,14 @@ struct FieldTexts {
     title: String,
     /// 경로 원문입니다.
     path: String,
+    /// 경로의 마지막 조각(파일명) 원문입니다. 노트 이름은 제목과 같은 정보로 다롑니다.
+    basename: String,
     /// heading 원문입니다.
     headings: String,
     /// 태그 원문입니다.
     tags: String,
+    /// 별칭(aliases) 원문입니다.
+    aliases: String,
     /// 코드 블록 원문입니다.
     code: String,
 }
@@ -944,13 +1036,16 @@ impl FieldTexts {
         title: &str,
         headings: &[String],
         tags: &[String],
+        aliases: &[String],
         code_blocks: &[String],
     ) -> Self {
         Self {
             title: title.to_lowercase(),
             path: path.to_lowercase(),
+            basename: path.rsplit('/').next().unwrap_or(path).to_lowercase(),
             headings: headings.join("\n").to_lowercase(),
             tags: tags.join("\n").to_lowercase(),
+            aliases: aliases.join("\n").to_lowercase(),
             code: code_blocks.join("\n").to_lowercase(),
         }
     }
@@ -962,6 +1057,7 @@ impl FieldTexts {
             "path" => &self.path,
             "heading" | "headings" => &self.headings,
             "tag" | "tags" => &self.tags,
+            "alias" | "aliases" => &self.aliases,
             _ => &self.code,
         }
     }
@@ -1000,9 +1096,25 @@ fn field_weight(field: &str) -> f64 {
         "path" => PATH_FIELD_WEIGHT,
         "heading" | "headings" => HEADING_FIELD_WEIGHT,
         "tag" | "tags" => TAG_FIELD_WEIGHT,
+        "alias" | "aliases" => ALIASES_FIELD_WEIGHT,
         "code" => CODE_FIELD_WEIGHT,
         _ => 0.0,
     }
+}
+
+/// 보조 필드 원문에 이 토큰의 원자 식별자 run이 통째로 들어 있는지 반환합니다.
+fn atomic_identifier_in_field(
+    document: &ScannedDocument,
+    term: &str,
+    field: &str,
+    atomic: &BTreeMap<String, BTreeSet<String>>,
+) -> bool {
+    atomic.get(term).is_some_and(|atoms| {
+        atoms.contains(term)
+            && atoms
+                .iter()
+                .any(|atom| contains_atomic_identifier(document.field_texts.get(field), atom))
+    })
 }
 
 /// 문서 하나의 `BM25`·필드·`exact`·후보 사전 점수를 계산합니다.
@@ -1023,82 +1135,224 @@ fn score_document(
     let mut exact = BTreeSet::new();
     let mut field_score = 0.0;
     let mut field_matches = BTreeSet::new();
+    let mut has_text_evidence = false;
+    let mut text_terms_matched = 0_usize;
+    let mut body_numeric_matched = false;
+    let total_text_terms = allowed
+        .iter()
+        .filter(|(term, _)| idf.contains_key(*term) && !is_atomic_kind(kinds.get(*term).copied()))
+        .count();
     for (term, fields) in allowed {
         let Some(&term_idf) = idf.get(term) else {
             continue;
         };
         let body_frequency = document.frequencies.get(term).copied().unwrap_or(0);
         let body_matched = fields.contains("body") && body_frequency > 0;
-        let mut term_matched = body_matched;
         if body_matched {
+            has_text_evidence = true;
+            body_numeric_matched |= is_atomic_kind(kinds.get(term).copied());
             let frequency = crate::usize_to_f64(body_frequency).unwrap_or(0.0);
             score += crate::bm25_score_value(term_idf, frequency, document_length, *average_length);
         }
-        let explicit = fields.len() == 1 && !fields.contains("body");
-        // 같은 토큰이 제목·헤딩·경로에 함께 나타나는 것은 대개 한 번의 언급이므로,
-        // 대표 필드만 온전히 반영하고 나머지 필드는 감쇠해 중복 합산을 막습니다.
-        let mut best_bonus = 0.0_f64;
-        let mut secondary_bonus = 0.0_f64;
-        for field in fields.iter().filter(|field| field.as_str() != "body") {
-            let mut frequency = document
-                .field_frequencies
-                .get(field)
-                .get(term)
-                .copied()
-                .unwrap_or(0);
-            // 식별자 run 전체가 필드에 통째로 나타나면 원자 문자열도 그 필드에서 한 번
-            // 일치한 것으로 인정합니다. 조각만 겹치는 문서와 구분해 희귀 식별자가 필드에
-            // 실제로 적힌 문서를 위로 올립니다.
-            if atomic.get(term).is_some_and(|atoms| {
-                atoms.contains(term)
-                    && atoms.iter().any(|atom| {
-                        contains_atomic_identifier(document.field_texts.get(field.as_str()), atom)
-                    })
-            }) {
-                frequency = frequency.max(1);
-            }
-            if frequency == 0 {
-                continue;
-            }
-            let weight = if explicit {
-                field_weight(field) * (1.0 + EXPLICIT_FIELD_BONUS)
-            } else {
-                field_weight(field)
-            };
-            let weight = if weight <= 0.0 { 0.2 } else { weight };
-            let extra = crate::usize_to_f64(frequency.saturating_sub(1))
-                .unwrap_or(0.0)
-                .ln_1p();
-            let bonus = term_idf * weight * (1.0 + extra);
-            if bonus > best_bonus {
-                secondary_bonus += best_bonus;
-                best_bonus = bonus;
-            } else {
-                secondary_bonus += bonus;
-            }
-            field_matches.insert(field.clone());
-            term_matched = true;
-        }
+        let bonus = term_field_bonus(document, term, fields, atomic, term_idf);
+        let term_matched = body_matched || bonus.best > 0.0;
         if term_matched {
-            let field_add = SECONDARY_FIELD_DAMPING.mul_add(secondary_bonus, best_bonus);
+            let field_add = SECONDARY_FIELD_DAMPING.mul_add(bonus.secondary, bonus.best);
             score += field_add;
             field_score += field_add;
             matched.insert(term.clone());
-            if let Some(kind) = kinds.get(term).copied()
-                && matches!(kind, "number" | "identifier")
-            {
+            if is_atomic_kind(kinds.get(term).copied()) {
                 score += EXACT_SIGNAL_BONUS;
-                exact.insert(kind.to_owned());
+                exact.insert(kinds.get(term).copied().unwrap_or("number").to_owned());
             }
         }
+        // 경로 일치는 디렉터리 이름만 같아도 생깁니다. 파일명(노트 이름)에 들어 있는
+        // 토큰은 제목과 같은 비중의 본문성 신호로 다룹니다. 본문·제목·헤딩 등이 전혀
+        // 맞지 않고 경로의 숫자·식별자도 없으면, 같은 디렉터리에 있다는 이유만으로
+        // 후보가 된 문서이므로 근거에서 제외합니다.
+        let basename_atomic = is_atomic_kind(kinds.get(term).copied())
+            && document.field_texts.basename.contains(term.as_str());
+        if body_matched || bonus.text_field_matched || basename_atomic {
+            has_text_evidence = true;
+        }
+        field_matches.extend(bonus.fields);
+        if term_matched && !is_atomic_kind(kinds.get(term).copied()) {
+            text_terms_matched = text_terms_matched.saturating_add(1);
+        }
     }
-    DocumentScore {
-        score,
-        matched,
-        exact,
-        field_score,
-        field_matches,
+    finalize_score(
+        DocumentScore {
+            score,
+            matched,
+            exact,
+            field_score,
+            field_matches,
+        },
+        prior,
+        &MatchCoverage {
+            has_text_evidence,
+            text_terms_matched,
+            body_numeric_matched,
+            total_text_terms,
+        },
+        &document.text,
+    )
+}
+
+/// 숫자·식별자 kind인지 반환합니다.
+fn is_atomic_kind(kind: Option<&'static str>) -> bool {
+    matches!(kind, Some("number" | "identifier"))
+}
+
+/// 한 토큰의 보조 필드 가중 보너스입니다.
+struct FieldBonus {
+    /// 대표 필드 보너스입니다.
+    best: f64,
+    /// 보조 필드 보너스 합입니다.
+    secondary: f64,
+    /// 본문성 필드(제목·헤딩·태그·별칭·파일명)에서 맞았는지 여부입니다.
+    text_field_matched: bool,
+    /// 일치한 필드 이름입니다.
+    fields: Vec<String>,
+}
+
+/// 한 토큰의 보조 필드 가중 보너스를 계산합니다.
+fn term_field_bonus(
+    document: &ScannedDocument,
+    term: &str,
+    fields: &BTreeSet<String>,
+    atomic: &BTreeMap<String, BTreeSet<String>>,
+    term_idf: f64,
+) -> FieldBonus {
+    let explicit = fields.len() == 1 && !fields.contains("body");
+    let mut bonus = FieldBonus {
+        best: 0.0,
+        secondary: 0.0,
+        text_field_matched: false,
+        fields: Vec::new(),
+    };
+    for field in fields.iter().filter(|field| field.as_str() != "body") {
+        let mut frequency = document
+            .field_frequencies
+            .get(field)
+            .get(term)
+            .copied()
+            .unwrap_or(0);
+        if atomic_identifier_in_field(document, term, field, atomic) {
+            frequency = frequency.max(1);
+        }
+        if frequency == 0 {
+            continue;
+        }
+        let weight = field_weight(field);
+        let weight = if weight <= 0.0 { 0.2 } else { weight };
+        let weight = if explicit {
+            weight * (1.0 + EXPLICIT_FIELD_BONUS)
+        } else {
+            weight
+        };
+        let extra = crate::usize_to_f64(frequency.saturating_sub(1))
+            .unwrap_or(0.0)
+            .ln_1p();
+        let value = term_idf * weight * (1.0 + extra);
+        if value > bonus.best {
+            bonus.secondary += bonus.best;
+            bonus.best = value;
+        } else {
+            bonus.secondary += value;
+        }
+        bonus.fields.push(field.clone());
+        if field.as_str() != "path" || document.field_texts.basename.contains(term) {
+            bonus.text_field_matched = true;
+        }
     }
+    bonus
+}
+
+/// 본문 근거가 없는 문서를 걸러 내고, 일치 범위·링크 목록 감쇠를 적용합니다.
+///
+/// 경로만 같은 문서는 디렉터리 소속만으로 근거가 될 수 없고, 링크 목록은
+/// 안내 문서이며, 숫자만 맞은 문서는 질의의 의미를 담지 않았습니다.
+fn finalize_score(
+    mut score: DocumentScore,
+    prior: f64,
+    coverage: &MatchCoverage,
+    text: &str,
+) -> DocumentScore {
+    if !coverage.has_text_evidence {
+        score.matched.clear();
+        score.field_matches.clear();
+        score.exact.clear();
+        score.field_score = 0.0;
+        score.score = prior;
+    }
+    // 본문에 숫자만 있고 질의의 텍스트 토큰이 없는 문서는, 다른 책의 같은 번호
+    // 장처럼 이름만 겹친 경우입니다. 다만 본문이 그 숫자를 실제로 다루면(교차 언어
+    // 질의의 `51`처럼) 감쇠하지 않습니다.
+    if coverage.text_terms_matched == 0
+        && coverage.total_text_terms > 0
+        && !coverage.body_numeric_matched
+    {
+        score.score *= NUMBER_ONLY_DEMOTION;
+    }
+    if coverage.total_text_terms > 0 {
+        let covered =
+            crate::usize_to_f64(coverage.text_terms_matched.min(coverage.total_text_terms))
+                .unwrap_or(0.0)
+                / crate::usize_to_f64(coverage.total_text_terms).unwrap_or(1.0);
+        score.score *= TEXT_COVERAGE_BONUS.mul_add(covered, 1.0);
+    }
+    let navigation = navigation_factor(text);
+    score.score *= navigation;
+    score.field_score *= navigation;
+    score
+}
+
+/// 질의 토큰을 얼마나 넓게 담았는지 나타내는 신호입니다.
+struct MatchCoverage {
+    /// 본문·제목 등 텍스트 근거가 있는지 여부입니다.
+    has_text_evidence: bool,
+    /// 일치한 텍스트 토큰 수입니다.
+    text_terms_matched: usize,
+    /// 본문에서 숫자·식별자 토큰이 맞았는지 여부입니다.
+    body_numeric_matched: bool,
+    /// 질의의 텍스트 토큰 수입니다.
+    total_text_terms: usize,
+}
+
+/// 링크 목록(목차·색인) 비중에 따른 감쇠 계수입니다.
+///
+/// 이런 문서는 다른 문서를 안내할 뿐 근거가 아니므로, 링크만 있는 줄의 비율이
+/// 높을수록 점수를 낮춥니다.
+fn navigation_factor(text: &str) -> f64 {
+    let mut total = 0_usize;
+    let mut linked = 0_usize;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        total = total.saturating_add(1);
+        if !trimmed.contains("[[") {
+            continue;
+        }
+        let is_link_line = trimmed.starts_with("[[")
+            || (trimmed.starts_with('-') || trimmed.starts_with('*') || trimmed.starts_with('|'))
+                && trimmed.contains("[[");
+        if is_link_line {
+            linked = linked.saturating_add(1);
+        }
+    }
+    if total == 0 {
+        return 1.0;
+    }
+    let ratio =
+        crate::usize_to_f64(linked).unwrap_or(0.0) / crate::usize_to_f64(total).unwrap_or(1.0);
+    if ratio <= NAVIGATION_LINK_RATIO_FLOOR {
+        return 1.0;
+    }
+    let excess = (ratio - NAVIGATION_LINK_RATIO_FLOOR) / (1.0 - NAVIGATION_LINK_RATIO_FLOOR);
+    NAVIGATION_PENALTY.mul_add(excess, 1.0 - NAVIGATION_PENALTY)
 }
 
 /// 문서에서 긍정 구문이 처음 나타난 `byte` 위치 목록입니다.
@@ -1510,6 +1764,7 @@ fn scan_input_document(value: &Value) -> Option<ScannedDocument> {
         },
     };
     let tags = optional_string_array(value.get("tags"))?;
+    let aliases = optional_string_array(value.get("aliases"))?;
     let modified_at = read_optional_timestamp(value.get("modifiedAt")).ok()?;
     let title = read_optional_string(value.get("title"))
         .ok()?
@@ -1518,8 +1773,9 @@ fn scan_input_document(value: &Value) -> Option<ScannedDocument> {
     let headings = optional_string_array(value.get("headings"))?;
     let code_blocks = optional_string_array(value.get("codeBlocks"))?;
     let (occurrences, frequencies, line_starts) = scan_document(text, start_line);
-    let field_frequencies = FieldFrequencies::new(&path, &title, &headings, &tags, &code_blocks);
-    let field_texts = FieldTexts::new(&path, &title, &headings, &tags, &code_blocks);
+    let field_frequencies =
+        FieldFrequencies::new(&path, &title, &headings, &tags, &aliases, &code_blocks);
+    let field_texts = FieldTexts::new(&path, &title, &headings, &tags, &aliases, &code_blocks);
     Some(ScannedDocument {
         path,
         revision,
@@ -1875,9 +2131,6 @@ fn plan_evidence(value: &Value) -> Option<Value> {
         let anchor =
             select_anchor(document, &score.matched, &phrase_offsets, candidate_start).unwrap_or(0);
         let mut draft = build_passage(document, anchor, &score, prior, &phrases, &negated);
-        if has_positive_phrase && !has_comparison_facets && draft.phrase_matches == 0 {
-            continue;
-        }
         draft.candidate_rank = prior_rank;
         if let Some(candidate) = input.candidates.get(&document.path) {
             draft.query_indexes.extend(
@@ -1891,6 +2144,15 @@ fn plan_evidence(value: &Value) -> Option<Value> {
             );
         }
         drafts.push(draft);
+    }
+    // 구문 일치 초안이 하나라도 있으면 그 초안만 채택합니다. 배치 안에 전부
+    // 미일치면 구문이 코퍼스에 없는 경우이므로 토큰 일치 초안을 유지하고,
+    // 구문 보너스(`PHRASE_SIGNAL_BONUS`)만 받지 못하게 합니다.
+    if has_positive_phrase
+        && !has_comparison_facets
+        && drafts.iter().any(|draft| draft.phrase_matches > 0)
+    {
+        drafts.retain(|draft| draft.phrase_matches > 0);
     }
     let (evidence, depth, used_chars, truncated, below_threshold) = build_evidence_rows(
         &mut drafts,
@@ -2997,6 +3259,119 @@ mod tests {
     }
 
     #[test]
+    fn quoted_phrase_absent_from_batch_keeps_token_evidence() {
+        let plan = plan_of(&json!({
+            "question": "\"amber signal\" copper valve",
+            "documents": [
+                {"path": "a.md", "text": "Copper valve notes without the requested wording."},
+                {"path": "b.md", "text": "Unrelated maintenance log."},
+            ],
+        }));
+        let evidence = rows(&plan, "evidence");
+        assert!(
+            !evidence.is_empty(),
+            "token evidence must survive a missing phrase"
+        );
+        assert_eq!(
+            get(evidence.first().unwrap_or(&NULL), "path"),
+            &json!("a.md")
+        );
+        assert_eq!(
+            get(evidence.first().unwrap_or(&NULL), "phraseMatches"),
+            &json!(0)
+        );
+    }
+
+    #[test]
+    fn plan_prunes_korean_function_words_and_n_gram_fragments() {
+        let plan = plan_of(&json!({
+            "question": "가톨릭 고다드는 51장 51 설명해줘",
+            "documents": [{"path": "a.md", "text": "가톨릭 전승과 고다드는 서로 다른 설명을 담는다."}],
+        }));
+        let tokens = rows(&plan, "queryTokens");
+        assert!(find_row(&tokens, "text", "가톨릭").is_some());
+        assert!(find_row(&tokens, "text", "고다드는").is_some());
+        assert!(find_row(&tokens, "text", "51장").is_some());
+        assert!(find_row(&tokens, "text", "가톨").is_none());
+        assert!(find_row(&tokens, "text", "톨릭").is_none());
+        assert!(find_row(&tokens, "text", "드는").is_none());
+        assert!(find_row(&tokens, "text", "1장").is_none());
+        assert!(find_row(&tokens, "text", "설명해줘").is_none());
+        let number = find_row(&tokens, "text", "51");
+        assert_eq!(
+            number.and_then(|row| get(row, "kind").as_str()),
+            Some("number")
+        );
+    }
+
+    #[test]
+    fn plan_preserves_a_query_that_contains_only_korean_function_words() {
+        let plan = plan_of(&json!({
+            "question": "설명해줘",
+            "documents": [{"path": "a.md", "text": "설명해줘"}],
+        }));
+        assert!(find_row(&rows(&plan, "queryTokens"), "text", "설명해줘").is_some());
+        assert_eq!(rows(&plan, "evidence").len(), 1);
+    }
+
+    #[test]
+    fn plan_skips_documents_that_only_share_a_directory_name() {
+        // 같은 디렉터리에 있다는 이유만으로 본문이 다른 문서를 근거로 올리지 않습니다.
+        let plan = plan_of(&json!({
+            "question": "시편 51장",
+            "documents": [
+                {
+                    "path": "bible/psalms/051.md",
+                    "title": "051장",
+                    "text": "다윗의 고백이 시작된다."
+                },
+                {
+                    "path": "bible/psalms/052.md",
+                    "title": "052장",
+                    "text": "다른 장의 본문만 있다."
+                },
+                {
+                    "path": "bible/psalms/125.md",
+                    "title": "125장",
+                    "text": "또 다른 장의 본문만 있다."
+                }
+            ],
+        }));
+        let evidence = rows(&plan, "evidence");
+        assert_eq!(evidence.len(), 1, "only the matching chapter is evidence");
+        assert_eq!(
+            get(evidence.first().unwrap_or(&NULL), "path"),
+            &json!("bible/psalms/051.md")
+        );
+    }
+
+    #[test]
+    fn plan_demotes_link_index_documents_below_content() {
+        // 목차·색인 문서는 다른 문서를 안내할 뿐이므로 같은 단어를 담은 본문보다 낮습니다.
+        let index_lines = (1..=20)
+            .map(|number| format!("- [[bible/psalms/{number:03}|{number}장]]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let plan = plan_of(&json!({
+            "question": "시편 51장",
+            "documents": [
+                {"path": "bible/psalms/000-목차.md", "title": "000-목차", "text": index_lines},
+                {
+                    "path": "bible/psalms/051.md",
+                    "title": "051장",
+                    "text": "시편 51장 다윗의 고백\n주님, 저를 불쌍히 여기소서."
+                }
+            ],
+        }));
+        let evidence = rows(&plan, "evidence");
+        assert_eq!(
+            get(evidence.first().unwrap_or(&NULL), "path"),
+            &json!("bible/psalms/051.md"),
+            "content outranks a link index"
+        );
+    }
+
+    #[test]
     fn plan_filters_documents_deterministically() {
         let plan = plan_of(&json!({
             "question": "설치",
@@ -3799,6 +4174,35 @@ mod tests {
             &json!("not-indexed")
         );
     }
+    #[test]
+    fn plan_matches_aliases_as_a_document_field() {
+        // 본문에 없는 별칭만으로도 문서가 근거 후보가 되어야 합니다.
+        let plan = plan_of(&json!({
+            "question": "wisdom",
+            "documents": [
+                {
+                    "path": "notes/b-007.md",
+                    "title": "일곱째 묶음",
+                    "aliases": ["Wisdom", "지혜서"],
+                    "text": "본문에는 해당 낱말이 없다",
+                },
+                {
+                    "path": "notes/b-008.md",
+                    "title": "여덟째 묶음",
+                    "text": "본문에도 별칭에도 없는 다른 내용",
+                },
+            ],
+        }));
+        let evidence = rows(&plan, "evidence");
+        let first = evidence.first().unwrap_or(&NULL);
+        assert_eq!(text(get(first, "path")), "notes/b-007.md");
+        let matches = rows(first, "fieldMatches");
+        assert!(
+            matches.contains(&json!("alias")),
+            "alias 필드 일치가 기록되어야 한다"
+        );
+    }
+
     #[test]
     fn plan_matches_unprefixed_tokens_against_title_and_path() {
         let plan = plan_of(&json!({

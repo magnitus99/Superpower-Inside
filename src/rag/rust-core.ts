@@ -5174,6 +5174,7 @@ export interface RustIndexedEvidenceDocument {
   reviewState?: 'reviewed' | 'unreviewed';
   startLine?: number;
   tags?: readonly string[];
+  aliases?: readonly string[];
   modifiedAt?: number;
 }
 

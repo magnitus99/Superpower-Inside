@@ -51,8 +51,8 @@ describe('지원 파일 공통 문서 저장소', () => {
       title: 'Quarterly Report',
       headings: ['Deployment'],
       tags: ['#planning', 'finance'],
-      startLine: 0,
-      endLine: 1,
+      startLine: 1,
+      endLine: 2,
     });
     await store.replaceFileDocuments(file.path, documents);
     expect((await store.getEntriesByFilePaths([file.path]))[0]?.metadata).toMatchObject({
@@ -132,7 +132,7 @@ describe('지원 파일 공통 문서 저장소', () => {
     expect(after.find((document) => document.heading === '유지')).toMatchObject({
       id: before[0]?.id,
       chunkHash: before[0]?.chunkHash,
-      startLine: 3,
+      startLine: 4,
     });
     expect(after[1]?.contentHash).not.toBe(before[0]?.contentHash);
   });
@@ -165,6 +165,19 @@ describe('지원 파일 공통 문서 저장소', () => {
     expect(code[1]?.heading).toContain('second');
   });
 
+  // 회귀: 저장 문서가 0-based로 남으면 원문 재확인 단계가 모든 구절을 position-mismatch로 버립니다.
+  it('저장 문서의 줄 번호는 frontmatter를 건너뛴 원문 1행 기준과 일치한다', () => {
+    const content = '---\ntitle: 합성\n---\n\n# 제목\n본문 첫 줄\n본문 둘째 줄';
+    const documents = buildSourceDocuments(createFile('notes/body.md'), content, {
+      chunkSize: 1000,
+      overlap: 0,
+    });
+    const lines = content.split('\n');
+    expect(documents[0]?.startLine).toBe(5);
+    expect(lines[(documents[0]?.startLine ?? 0) - 1]).toBe(documents[0]?.text.split('\n')[0]);
+    expect(documents.at(-1)?.endLine).toBe(lines.length);
+  });
+
   it('CSV의 헤더와 인용된 여러 줄 레코드를 분리하지 않고 보존한다', () => {
     const documents = buildSourceDocuments(
       createFile('source.csv'),
@@ -173,6 +186,6 @@ describe('지원 파일 공통 문서 저장소', () => {
     );
     expect(documents.every(({ heading }) => heading === 'name,description')).toBe(true);
     expect(documents.some(({ text }) => text.includes('Kim,"first\nsecond"'))).toBe(true);
-    expect(documents.find(({ text }) => text.includes('Kim,"first'))?.endLine).toBe(2);
+    expect(documents.find(({ text }) => text.includes('Kim,"first'))?.endLine).toBe(3);
   });
 });

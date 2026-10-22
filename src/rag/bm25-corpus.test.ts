@@ -21,8 +21,8 @@ describe('BM25 원문 코퍼스', () => {
         sourceSize: 100,
         contentHash: createContentHash(content),
       });
-      expect(document.startLine).toBeGreaterThanOrEqual(0);
-      expect(document.endLine).toBeLessThan(content.split('\n').length);
+      expect(document.startLine).toBeGreaterThanOrEqual(1);
+      expect(document.endLine).toBeLessThanOrEqual(content.split('\n').length);
       expect(document.text).toContain('검색 근거');
     }
   });

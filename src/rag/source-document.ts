@@ -65,10 +65,10 @@ export function chunkSourceDocument(
   const chunks = chunkSourceFile(file, content, config);
   if (segments.length === 0) return chunks;
   return chunks.map((chunk) => {
+    // 청크 줄 번호는 1부터, 추출 구간(segment)은 0부터 시작합니다. 비교 경계에서 한 번만 맞춥니다.
+    const chunkLine = chunk.metadata.startLine - 1;
     const segment = segments.find(
-      (candidate) =>
-        chunk.metadata.startLine >= candidate.startLine &&
-        chunk.metadata.startLine <= candidate.endLine,
+      (candidate) => chunkLine >= candidate.startLine && chunkLine <= candidate.endLine,
     );
     if (!segment) return chunk;
     return { ...chunk, metadata: { ...chunk.metadata, heading: segment.label } };

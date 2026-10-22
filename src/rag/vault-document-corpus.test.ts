@@ -97,7 +97,7 @@ describe('파일 중심 문서 생명주기', () => {
       title: 'Thermal Guide',
       headings: ['Cooling'],
       tags: ['thermal'],
-      startLine: 0,
+      startLine: 1,
     });
   });
   it('파일 읽기가 끝나기 전에는 busy이고 완료되면 해제된다', async () => {

@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { IndexedDbBM25Index, tokenize, type BM25DocumentInput } from './bm25';
+import { IndexedDbBM25Index, getBM25DocumentFields, tokenize, type BM25DocumentInput } from './bm25';
 import type {
   BM25WorkerAdapter,
   BM25WorkerFactory,
@@ -18,6 +18,26 @@ const dbNames = new Set<string>();
 afterEach(async () => {
   await Promise.all([...dbNames].map((name) => Dexie.delete(name)));
   dbNames.clear();
+});
+
+describe('BM25 문서 필드', () => {
+  it('frontmatter 별칭을 문자열과 배열 모두 별칭 필드로 넘긴다', () => {
+    const file = { path: 'notes/b-007.md', basename: 'b-007' } as Parameters<
+      typeof getBM25DocumentFields
+    >[0];
+
+    expect(
+      getBM25DocumentFields(file, { frontmatter: { aliases: '시편 51장' } }, '본문'),
+    ).toMatchObject({ aliases: ['시편 51장'] });
+    expect(
+      getBM25DocumentFields(
+        file,
+        { frontmatter: { aliases: ['시편 51', 51] } },
+        '본문',
+      ),
+    ).toMatchObject({ aliases: ['시편 51', '51'] });
+    expect(getBM25DocumentFields(file, null, '본문')).toMatchObject({ aliases: [] });
+  });
 });
 
 describe('BM25 tokenizer', () => {
