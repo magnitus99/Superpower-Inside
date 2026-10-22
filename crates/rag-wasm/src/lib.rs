@@ -7,8 +7,9 @@
 
 use regex::Regex;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
+use unicode_normalization::UnicodeNormalization;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 mod plugin_aware;
@@ -259,6 +260,38 @@ pub fn create_content_hash(content: &str) -> String {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     format!("{hash:08x}")
+}
+
+/// 텍스트를 `NFC`로 정규화한다.
+///
+/// macOS 한글 입력은 같은 글자를 `NFD`(자모 분해)로 보내므로, 정규화 없이
+/// 토큰화하면 `NFC` 문서와 자모 `n-gram`이 어긋나 교집합이 사라진다.
+/// 이미 `NFC`인 텍스트는 복사하지 않는다.
+#[must_use]
+pub(crate) fn normalize_nfc(text: &str) -> Cow<'_, str> {
+    if unicode_normalization::is_nfc(text) {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(text.nfc().collect::<String>())
+    }
+}
+
+/// 검색 토큰 규칙의 버전입니다.
+///
+/// 토큰 규칙이 바뀌면 올립니다. 저장된 색인은 이 값이 다르면 다시 만들어집니다.
+pub const TOKENIZER_VERSION: u32 = 3;
+
+/// 현재 검색 토큰 규칙 버전을 반환합니다.
+///
+// `TypeScript`가 버전을 복제하지 않고 이 값을 읽어 단일 출처를 유지합니다.
+#[must_use]
+#[expect(
+    clippy::missing_const_for_fn,
+    reason = "wasm_bindgen은 const fn 내보내기를 지원하지 않습니다"
+)]
+#[wasm_bindgen]
+pub fn tokenizer_version() -> u32 {
+    TOKENIZER_VERSION
 }
 
 /// 현재 `TypeScript BM25` 경로와 같은 검색 토큰 규칙으로 텍스트를 토큰화한다.
@@ -10417,7 +10450,76 @@ fn validated_indexed_review_diagnostics(value: &JsonValue) -> Option<JsonValue> 
         }
         counts.insert(key.to_owned(), JsonValue::from(count));
     }
-    Some(serde_json::json!({"phases": phases, "counts": counts}))
+    let mut diagnostics = JsonMap::new();
+    diagnostics.insert("phases".to_owned(), JsonValue::Object(phases));
+    diagnostics.insert("counts".to_owned(), JsonValue::Object(counts));
+    if let Some(outcome) = validated_review_outcome(value.get("outcome")) {
+        diagnostics.insert("outcome".to_owned(), JsonValue::from(outcome));
+    }
+    // 선택 필드가 손상되면 추적 진단만 빠지고 답변 메타데이터는 유지합니다.
+    if let Some(search) = value
+        .get("search")
+        .and_then(validated_indexed_review_search)
+    {
+        diagnostics.insert("search".to_owned(), search);
+    }
+    Some(JsonValue::Object(diagnostics))
+}
+
+/// 안전 정수 범위의 JSON 숫자만 통과시킵니다.
+fn bounded_json_count(value: Option<&JsonValue>) -> Option<u64> {
+    let number = value?.as_u64()?;
+    (number <= 9_007_199_254_740_991).then_some(number)
+}
+
+/// 저장된 검색 단계 진단이 후보 수·탈락 사유 계약을 충족하는지 확인합니다.
+fn validated_indexed_review_search(value: &JsonValue) -> Option<JsonValue> {
+    const MAX_UNMATCHED_TERMS: usize = 64;
+    let dropped = value.get("droppedDocuments")?;
+    let unmatched = value.get("unmatchedTerms")?.as_array()?;
+    if unmatched.len() > MAX_UNMATCHED_TERMS {
+        return None;
+    }
+    let mut terms = Vec::with_capacity(unmatched.len());
+    for term in unmatched {
+        terms.push(JsonValue::String(term.as_str()?.to_owned()));
+    }
+    let zero_hit = match value.get("zeroHitReason") {
+        None | Some(JsonValue::Null) => JsonValue::Null,
+        Some(JsonValue::String(text)) => JsonValue::String(text.clone()),
+        Some(_) => return None,
+    };
+    let truncated = value.get("truncated")?.as_bool()?;
+    Some(serde_json::json!({
+        "candidateDepth": bounded_json_count(value.get("candidateDepth"))?,
+        "candidateDocuments": bounded_json_count(value.get("candidateDocuments"))?,
+        "candidateChunks": bounded_json_count(value.get("candidateChunks"))?,
+        "selectedDocuments": bounded_json_count(value.get("selectedDocuments"))?,
+        "selectedChunks": bounded_json_count(value.get("selectedChunks"))?,
+        "truncated": truncated,
+        "droppedDocuments": {
+            "budget": bounded_json_count(dropped.get("budget"))?,
+            "belowThreshold": bounded_json_count(dropped.get("belowThreshold"))?,
+            "filtered": bounded_json_count(dropped.get("filtered"))?,
+        },
+        "unmatchedTerms": terms,
+        "missingCandidatePaths": bounded_json_count(value.get("missingCandidatePaths"))?,
+        "zeroHitReason": zero_hit,
+    }))
+}
+
+/// 저장된 리뷰 결과 종류가 화면에 표시 가능한 값인지 확인합니다.
+fn validated_review_outcome(value: Option<&JsonValue>) -> Option<&'static str> {
+    let outcome = value?.as_str()?;
+    [
+        "answered",
+        "evidence-only",
+        "no-evidence",
+        "engine-unavailable",
+        "indexing",
+    ]
+    .into_iter()
+    .find(|candidate| *candidate == outcome)
 }
 
 /// 저장된 검색 진단이 화면의 반복문·번역 키·점수 표시 계약을 충족하는지 확인합니다.
@@ -13329,6 +13431,7 @@ fn is_token_part_character(character: char) -> bool {
 
 /// 하나의 연속 부분을 토큰화하고 지역 중복 토큰을 삽입 순서대로 제거한다.
 fn tokenize_part(part: &str) -> Vec<String> {
+    let part = normalize_nfc(part);
     let trimmed = part.trim();
     if !trimmed.chars().any(char::is_alphanumeric) {
         return Vec::new();
@@ -13531,7 +13634,7 @@ fn should_split_ascii_identifier(
 
 /// 영숫자가 아닌 가장자리를 제거하고 소문자화해 토큰을 정규화한다.
 fn normalize_token(token: &str) -> String {
-    token
+    normalize_nfc(token)
         .trim()
         .trim_matches(|character: char| !character.is_alphanumeric())
         .to_lowercase()
@@ -13855,6 +13958,19 @@ mod tests {
                 "missing expected token {expected}; got {tokens:?}",
             );
         }
+    }
+
+    /// 같은 한글은 `NFC`·`NFD` 어느 입력에서도 같은 토큰 집합이어야 한다.
+    #[test]
+    fn tokenizer_converges_decomposed_hangul() {
+        let composed = "네빌 고다드 상상";
+        let decomposed = composed.nfd().collect::<String>();
+        assert_ne!(composed, decomposed, "NFD 입력이 실제로 분해되어야 합니다");
+        assert_eq!(
+            tokenize(composed),
+            tokenize(&decomposed),
+            "정규화가 없으면 자모 n-gram과 음절 n-gram이 어긋납니다"
+        );
     }
 
     /// keyword 매칭은 소문자 비교 기준 substring 카운팅을 유지해야 한다.
@@ -14263,6 +14379,73 @@ mod tests {
             *count = serde_json::json!(2);
         }
         assert!(validated_indexed_review_diagnostics(&value).is_none());
+    }
+
+    /// 리뷰 결과 종류와 검색 진단은 검증된 값만 저장하고 손상된 선택 필드는 버립니다.
+    #[test]
+    fn indexed_review_diagnostics_keep_validated_search_summary() {
+        let phase = serde_json::json!({"durationMs": 1.0, "requests": 1, "reportedRequests": 1});
+        let mut phases = JsonMap::new();
+        for name in [
+            "inventory",
+            "search",
+            "map",
+            "screen",
+            "extract",
+            "reduce",
+            "answer",
+        ] {
+            phases.insert(name.to_owned(), phase.clone());
+        }
+        let counts = serde_json::json!({
+            "candidateSegments": 0, "screenAcceptedSegments": 0, "extractedSegments": 0,
+            "screenRetries": 0, "extractRetries": 0, "splitBatches": 0, "reduceRequests": 0,
+            "cacheHits": 0});
+        let search = serde_json::json!({
+            "candidateDepth": 0, "candidateDocuments": 0, "candidateChunks": 0,
+            "selectedDocuments": 0, "selectedChunks": 0, "truncated": false,
+            "droppedDocuments": {"budget": 0, "belowThreshold": 0, "filtered": 0},
+            "unmatchedTerms": ["질문토큰"], "missingCandidatePaths": 0,
+            "zeroHitReason": "no-lexical-match", "extra": "private synthetic text"});
+        let mut value = serde_json::json!({"phases": phases, "counts": counts, "outcome": "no-evidence",
+                "search": search, "question": "private synthetic question"});
+        let result = validated_indexed_review_diagnostics(&value).unwrap_or(JsonValue::Null);
+        assert_eq!(
+            result.pointer("/outcome").and_then(JsonValue::as_str),
+            Some("no-evidence")
+        );
+        assert_eq!(
+            result
+                .pointer("/search/zeroHitReason")
+                .and_then(JsonValue::as_str),
+            Some("no-lexical-match")
+        );
+        assert_eq!(
+            result
+                .pointer("/search/unmatchedTerms/0")
+                .and_then(JsonValue::as_str),
+            Some("질문토큰")
+        );
+        assert!(!result.to_string().contains("private synthetic text"));
+        assert!(!result.to_string().contains("private synthetic question"));
+        if let Some(outcome) = value.pointer_mut("/outcome") {
+            *outcome = serde_json::json!("answered-by-guess");
+        }
+        let without_outcome =
+            validated_indexed_review_diagnostics(&value).unwrap_or(JsonValue::Null);
+        assert!(without_outcome.pointer("/outcome").is_none());
+        assert!(without_outcome.pointer("/search/candidateDepth").is_some());
+        if let Some(depth) = value.pointer_mut("/search/candidateDepth") {
+            *depth = serde_json::json!(-1);
+        }
+        let without_search =
+            validated_indexed_review_diagnostics(&value).unwrap_or(JsonValue::Null);
+        assert!(without_search.pointer("/search").is_none());
+        assert!(
+            without_search
+                .pointer("/phases/search/durationMs")
+                .is_some()
+        );
     }
 
     /// 잘못된 진단 메타데이터가 답변을 삭제하거나 화면 반복문에 도달하지 않아야 합니다.

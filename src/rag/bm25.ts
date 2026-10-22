@@ -6,6 +6,7 @@ import {
 import type { CachedMetadata, DataAdapter, TFile } from 'obsidian';
 import type { ScopedLogger } from '../utils/logger';
 import { planStaleIndexSourcePathsRust, RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
+import { TOKENIZER_VERSION } from './tokenizer-version';
 import {
   BM25WorkerRuntime,
   canUseBM25Worker,
@@ -60,7 +61,6 @@ export function tokenize(text: string): string[] {
   return rustTokens ?? [];
 }
 
-const TOKENIZER_VERSION = 2;
 const BM25_SNAPSHOT_KEY = 'bm25-runtime-snapshot:v1';
 const BM25_SNAPSHOT_MANIFEST_KEY = 'bm25-snapshot-manifest:v1';
 const BM25_REBUILD_YIELD_INTERVAL = 128;

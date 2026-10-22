@@ -1109,6 +1109,11 @@ export function token_frequencies_json(text: string): string;
 export function tokenize_json(text: string): string;
 
 /**
+ * 현재 검색 토큰 규칙 버전을 반환합니다.
+ */
+export function tokenizer_version(): number;
+
+/**
  * 생성물 소유권을 검증하고 저장·이동·삭제 기록을 갱신합니다.
  */
 export function update_generated_artifact_registry_json(raw: string, change_raw: string, roots_raw: string, remove: boolean): string;
@@ -1376,6 +1381,7 @@ export interface InitOutput {
     readonly xlsxsourcetext_reason: (a: number) => [number, number];
     readonly xlsxsourcetext_segments_json: (a: number) => [number, number];
     readonly xlsxsourcetext_take_text_bytes: (a: number) => [number, number];
+    readonly tokenizer_version: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

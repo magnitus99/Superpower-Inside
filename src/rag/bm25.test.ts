@@ -10,6 +10,7 @@ import type {
   BM25WorkerResponse,
 } from './bm25-worker-runtime';
 import { RustBm25RuntimeIndex } from './rust-core';
+import { TOKENIZER_VERSION } from './tokenizer-version';
 
 const dbNames = new Set<string>();
 
@@ -33,6 +34,24 @@ describe('BM25 tokenizer', () => {
     expect(tokens).toEqual(
       expect.arrayContaining(['요고49', '요고', '49', '포인트', '포인', '인트', '페이백']),
     );
+  });
+
+  it('macOS 한글 입력의 분해형(NFD)도 조합형(NFC)과 같은 토큰을 만든다', () => {
+    const composed = '네빌 고다드의 상상';
+    const decomposed = composed.normalize('NFD');
+
+    expect(decomposed).not.toBe(composed);
+    expect(tokenize(decomposed)).toEqual(tokenize(composed));
+  });
+
+  it('조합형 문서 색인을 분해형 질의로도 찾는다', () => {
+    const index = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+    if (!index) throw new Error("BM25 런타임을 만들지 못했습니다.");
+    index.addDocument("a.md::0", "네빌 고다드의 상상력은 현실을 만든다", "a.md", TOKENIZER_VERSION);
+
+    const hits = index.searchTop("네빌 고다드의 상상".normalize("NFD"), 1);
+
+    expect(hits?.length ?? 0).toBe(1);
   });
 });
 
@@ -649,7 +668,7 @@ describe('IndexedDbBM25Index', () => {
     await first.persist();
 
     const captured = await readSnapshotState(dbName);
-    expect(captured.manifest?.tokenizerVersion).toBe(2);
+    expect(captured.manifest?.tokenizerVersion).toBe(TOKENIZER_VERSION);
     expect(captured.manifest?.docCount).toBe(1);
     expect(captured.manifest?.lastOrder).toBeGreaterThan(0);
     expect(captured.blockCount).toBeGreaterThan(0);

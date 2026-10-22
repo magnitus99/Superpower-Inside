@@ -52,6 +52,7 @@ import {
   extract_structured_reasoning,
   extract_vault_links_json,
   initSync,
+  tokenizer_version,
   IvfRuntimeIndex,
   is_protected_rag_document_extension_json,
   count_files_by_extensions_json,
@@ -1919,6 +1920,16 @@ export function localModelRangeMatchesRust(
   return (
     ensureRustCore() && local_model_range_matches(start, end, total, status, length, contentRange)
   );
+}
+
+/** 현재 WASM 검색 토큰 규칙 버전을 반환합니다. 초기화에 실패하면 null입니다. */
+export function tokenizerVersionRust(): number | null {
+  if (!ensureRustCore()) return null;
+  try {
+    return tokenizer_version();
+  } catch {
+    return null;
+  }
 }
 
 export function tokenizeRust(text: string): string[] | null {
@@ -7892,9 +7903,11 @@ function isPluginOwnedFileMaintenanceInput(value: RustPluginOwnedFileMaintenance
   return (
     Array.isArray(value.records) &&
     value.records.every(isPluginOwnedFileRecord) &&
-    [value.pluginDirectory, value.legacyDataDirectory, value.eventLogPath].every(
+    [value.pluginDirectory, value.legacyDataDirectory].every(
       (path) => isStringValue(path) && path.length > 0,
     ) &&
+    // 지원 종료된 진단 로그처럼 회전 대상이 없는 경우 빈 문자열을 허용합니다.
+    isStringValue(value.eventLogPath) &&
     Number.isFinite(value.now) &&
     value.now >= 0 &&
     Number.isFinite(value.staleTempAgeMs) &&

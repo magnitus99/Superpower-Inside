@@ -367,9 +367,10 @@ fn path_in_scopes(path: &str, scopes: &[String]) -> bool {
         })
 }
 
-/// 소문자·단일 공백으로 구문 비교 문자열을 만듭니다.
+/// 소문자·단일 공백·`NFC`로 구문 비교 문자열을 만듭니다.
 fn normalize_phrase(text: &str) -> String {
-    text.split_whitespace()
+    crate::normalize_nfc(text)
+        .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
@@ -1215,6 +1216,7 @@ fn build_passage(
         .unwrap_or_default()
         .to_owned();
     let lowered = quote.to_lowercase();
+    let normalized_quote = normalize_phrase(&quote);
     let mut needles = score.matched.iter().cloned().collect::<Vec<_>>();
     needles.extend(
         phrases
@@ -1226,12 +1228,12 @@ fn build_passage(
     let phrase_matches = phrases
         .iter()
         .filter(|phrase| {
-            !phrase.negated && !phrase.text.is_empty() && lowered.contains(&phrase.text)
+            !phrase.negated && !phrase.text.is_empty() && normalized_quote.contains(&phrase.text)
         })
         .count();
-    let negated_phrase = phrases
-        .iter()
-        .any(|phrase| phrase.negated && !phrase.text.is_empty() && lowered.contains(&phrase.text));
+    let negated_phrase = phrases.iter().any(|phrase| {
+        phrase.negated && !phrase.text.is_empty() && normalized_quote.contains(&phrase.text)
+    });
     let negated_token = document.occurrences.iter().any(|occurrence| {
         negated.contains(&occurrence.token)
             && occurrence.byte_start >= start
@@ -2768,6 +2770,7 @@ fn merge_plans(value: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+    use unicode_normalization::UnicodeNormalization;
 
     use super::{plan_indexed_evidence_json, verify_indexed_evidence_json};
 
@@ -4031,5 +4034,38 @@ mod tests {
     fn plan_rejects_invalid_input_without_panicking() {
         assert_eq!(plan_indexed_evidence_json("not json"), "");
         assert_eq!(verify_indexed_evidence_json(""), "");
+    }
+
+    #[test]
+    fn plan_matches_composed_document_with_decomposed_question() {
+        let question = "네빌 고다드의 상상".nfd().collect::<String>();
+        let plan = plan_of(&json!({
+            "question": question,
+            "documents": [{"path": "a.md", "text": "네빌 고다드의 상상력에 대한 기록입니다."}],
+        }));
+        assert_eq!(
+            rows(&plan, "evidence").len(),
+            1,
+            "분해된 한글 질의도 조합형 문서 구절을 찾아야 합니다"
+        );
+    }
+
+    #[test]
+    fn plan_phrase_match_survives_decomposed_quotes() {
+        let quoted = "\"상상력\"".nfd().collect::<String>();
+        let plan = plan_of(&json!({
+            "question": quoted,
+            "documents": [{"path": "a.md", "text": "그의 상상력은 기록되었습니다."}],
+        }));
+        let evidence = first_row(&plan, "evidence");
+        assert_eq!(
+            get(&evidence, "path"),
+            &json!("a.md"),
+            "인용 구문도 근거를 찾아야 합니다"
+        );
+        assert!(
+            get(&evidence, "phraseMatches").as_u64().unwrap_or_default() > 0,
+            "NFC 문서에서 NFD 인용 구문이 일치해야 합니다"
+        );
     }
 }

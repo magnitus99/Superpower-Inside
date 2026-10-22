@@ -28,6 +28,9 @@ async function main() {
     : undefined;
   const seed = option('--seed') ? Number(option('--seed')) : undefined;
   const queryCap = option('--queries') ? Number(option('--queries')) : undefined;
+  // macOS 한글 입력은 분해형(NFD)으로 들어옵니다. 같은 코퍼스로 질의 형태만 바꿔 비교합니다.
+  const queryForm = option('--query-form') ?? 'nfc';
+  if (queryForm !== 'nfc' && queryForm !== 'nfd') throw new Error('--query-form은 nfc|nfd 중 하나여야 합니다.');
   if (!Number.isInteger(k) || k < 1 || k > 100) throw new Error('--k는 1..100 정수여야 합니다.');
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 20) throw new Error('--repeat은 1..20 정수여야 합니다.');
 
@@ -49,7 +52,7 @@ async function main() {
   for (let round = 0; round < repeat; round += 1) {
     for (const query of queries) {
       const startedAt = performance.now();
-      const results = await adapter.query(query.text, k);
+      const results = await adapter.query(queryForm === 'nfd' ? query.text.normalize('NFD') : query.text, k);
       warmSamplesMs.push(performance.now() - startedAt);
       if (round === 0) resultsByQueryId.set(query.id, results);
       else if (!sameResults(resultsByQueryId.get(query.id), results)) stabilityIdentical = false;
@@ -80,7 +83,7 @@ async function main() {
       evaluatedQueryCount: queries.length,
       categoryCounts: corpus.stats.categoryCounts,
     },
-    config: { k, repeat, minScore },
+    config: { k, repeat, minScore, queryForm },
     metrics: { overall: metrics.overall, byCategory: metrics.byCategory },
     latency: { coldBuildMs, warm: latencySummary(warmSamplesMs) },
     memory: {

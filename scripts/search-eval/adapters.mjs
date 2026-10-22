@@ -17,7 +17,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 export const SEARCH_EVAL_SCOPE = 'node-adapter-unit: BM25 WASM retrieval(+engine plan feature-detect), not product DB/IO end-to-end';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const TOKENIZER_VERSION = 2;
+let tokenizerVersion = null;
 const DOCUMENT_BATCH_SIZE = 128;
 
 let wasmModulePromise = null;
@@ -43,7 +43,7 @@ export async function createSearchAdapter(name, options = {}) {
 export async function createBaselineAdapter(options = {}) {
   const module = await loadGeneratedWasm();
   initWasm(module);
-  const index = new module.Bm25RuntimeIndex(TOKENIZER_VERSION);
+  const index = new module.Bm25RuntimeIndex(tokenizerVersion);
   const chunksByPath = new Map();
   const chunkByDocId = new Map();
   let bodyBytes = 0;
@@ -81,13 +81,13 @@ export async function createBaselineAdapter(options = {}) {
     },
     async update({ changedDocuments = [], removedPaths = [] } = {}) {
       for (const removed of removedPaths) {
-        index.remove_source(removed, TOKENIZER_VERSION);
+        index.remove_source(removed, tokenizerVersion);
         chunksByPath.delete(removed);
         for (const [docId, entry] of chunkByDocId)
           if (entry.path === removed) chunkByDocId.delete(docId);
       }
       for (const document of changedDocuments) {
-        index.remove_source(document.path, TOKENIZER_VERSION);
+        index.remove_source(document.path, tokenizerVersion);
         for (const [docId, entry] of chunkByDocId)
           if (entry.path === document.path) chunkByDocId.delete(docId);
         chunksByPath.set(document.path, document.chunks);
@@ -216,6 +216,7 @@ export function buildEnginePlanInput(question, candidates, documentsByPath, cand
 function initWasm(module) {
   if (wasmInitialized) return;
   module.initSync({ module: readEmbeddedWasmBytes() });
+  tokenizerVersion = module.tokenizer_version();
   wasmInitialized = true;
 }
 
@@ -240,7 +241,7 @@ function readTopHits(index, chunkByDocId, question, k) {
 function flushBatch(index, batch) {
   if (batch.length === 0) return;
   const expected = batch.length;
-  const added = index.add_documents_json(JSON.stringify(batch), TOKENIZER_VERSION, true);
+  const added = index.add_documents_json(JSON.stringify(batch), tokenizerVersion, true);
   if (added !== expected) throw new Error('BM25 평가 문서 batch 검증에 실패했습니다.');
   batch.length = 0;
 }

@@ -4364,6 +4364,15 @@ export function tokenize_json(text) {
 }
 
 /**
+ * 현재 검색 토큰 규칙 버전을 반환합니다.
+ * @returns {number}
+ */
+export function tokenizer_version() {
+    const ret = wasm.tokenizer_version();
+    return ret >>> 0;
+}
+
+/**
  * 생성물 소유권을 검증하고 저장·이동·삭제 기록을 갱신합니다.
  * @param {string} raw
  * @param {string} change_raw
