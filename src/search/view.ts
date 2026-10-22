@@ -1,6 +1,7 @@
 import { ItemView, Notice, TFile, setIcon, type WorkspaceLeaf } from 'obsidian';
 import { t } from '../i18n';
 import { formatRagEtaDuration } from '../rag/indexing-progress';
+import { describeSearchStatus, type SearchStatusSnapshot } from '../rag/search-status';
 import type { PluginLike } from '../settings';
 import {
   groupEvidenceByPath,
@@ -28,8 +29,7 @@ export interface SearchViewHost {
   app: PluginLike['app'];
   logger: Pick<PluginLike['logger'], 'warn' | 'error'>;
   refreshBus: PluginLike['refreshBus'];
-  getRagRuntimeState(): ReturnType<PluginLike['getRagRuntimeState']>;
-  isRagIndexing(): boolean;
+  getSearchStatusSnapshot(): SearchStatusSnapshot;
   getSearchPort(): SearchPort | null;
 }
 
@@ -147,7 +147,10 @@ export class SearchView extends ItemView {
 
     this.buildSearchBar(root);
     this.buildFilterPanel(root);
-    this.indexEl = root.createDiv({ cls: 'superpower-inside-search-index' });
+    this.indexEl = root.createDiv({
+      cls: 'superpower-inside-search-index',
+      attr: { 'aria-label': t('searchStatusReadinessLabel') },
+    });
     this.statusEl = root.createDiv({
       cls: 'superpower-inside-search-status',
       attr: { role: 'status', 'aria-live': 'polite' },
@@ -312,35 +315,44 @@ export class SearchView extends ItemView {
     if (!el) return;
     el.empty();
     el.removeClass(WARNING_CLASS);
-    const state = this.host.getRagRuntimeState();
-    const indexing =
-      this.host.isRagIndexing() ||
-      state.ragIndexingStatus?.running === true ||
-      (state.ragStatus?.updateRequiredDocuments?.length ?? 0) > 0;
-    if (indexing) {
-      const progress = state.ragIndexingStatus?.progress ?? null;
-      const eta = progress?.eta && progress.eta.remainingMs !== null ? progress.eta : null;
-      const etaReliable = eta !== null && eta.confidence !== 'calculating' && eta.confidence !== 'low';
+    const snapshot = this.host.getSearchStatusSnapshot();
+    const status = snapshot.ragStatus;
+    const hasDocuments = (status?.totalDocuments ?? 0) > 0;
+    const indexing = snapshot.indexing;
+    if (indexing && indexing.totalFiles > 0) {
       el.setText(
-        progress && progress.totalFiles > 0
-          ? etaReliable
-            ? t('searchIndexProgressEta', {
-                completed: Math.min(progress.completedFiles, progress.totalFiles),
-                total: progress.totalFiles,
-                eta: formatRagEtaDuration(eta.remainingMs ?? 0),
-              })
-            : t('searchIndexProgress', {
-                completed: Math.min(progress.completedFiles, progress.totalFiles),
-                total: progress.totalFiles,
-              })
-          : t('ragIndexingInProgress'),
+        indexing.etaRemainingMs !== null
+          ? t('searchIndexProgressEta', {
+              completed: Math.min(indexing.completedFiles, indexing.totalFiles),
+              total: indexing.totalFiles,
+              eta: formatRagEtaDuration(indexing.etaRemainingMs),
+            })
+          : t('searchIndexProgress', {
+              completed: Math.min(indexing.completedFiles, indexing.totalFiles),
+              total: indexing.totalFiles,
+            }),
       );
       this.setRunEnabled(false);
       return;
     }
-    const status = state.ragStatus;
-    if (!status || status.totalDocuments === 0) {
+    if (snapshot.readiness !== 'ready') {
+      // 키워드 색인이 준비되지 않아도 벡터 색인으로 찾을 수 있으면 검색은 허용합니다.
+      const description = describeSearchStatus(snapshot);
+      el.setText(
+        description.detail ? `${description.label} · ${description.detail}` : description.label,
+      );
+      el.addClass(WARNING_CLASS);
+      this.setRunEnabled(hasDocuments);
+      return;
+    }
+    if (!status) {
       el.setText(t('searchIndexMissing'));
+      el.addClass(WARNING_CLASS);
+      this.setRunEnabled(false);
+      return;
+    }
+    if (!hasDocuments) {
+      el.setText(t('searchIndexEmpty'));
       el.addClass(WARNING_CLASS);
       this.setRunEnabled(false);
       return;

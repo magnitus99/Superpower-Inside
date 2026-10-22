@@ -34,9 +34,9 @@ export interface SettingsOverviewRuntimeState {
 
 export function resolveSettingsRetrievalReadiness(
   retrievalReadiness: ChatRetrievalReadiness,
-  ragRuntimeStarted: boolean,
 ): ChatRetrievalReadiness {
-  return retrievalReadiness === 'preparing' && !ragRuntimeStarted ? 'ready' : retrievalReadiness;
+  // 준비 중을 '준비됨'으로 낮추면 채팅 준비 표시와 어긋납니다. 그대로 전달합니다.
+  return retrievalReadiness;
 }
 
 export interface SettingsOverviewMcpServerState {

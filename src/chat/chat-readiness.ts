@@ -81,7 +81,7 @@ function describeIndexingPhase(phase: RagIndexingProgressSummary['phase']): stri
 }
 
 /** 색인 진행 중이면 단계·문서 범위·남은 시간을 한 줄로 요약합니다. */
-function describeIndexingProgress(indexing: RagIndexingProgressSummary | null): string {
+export function describeIndexingProgress(indexing: RagIndexingProgressSummary | null): string {
   if (!indexing) return t('chatReadinessRagIndexingDetail');
   if (indexing.keywordRestore) {
     const { processedDocuments, expectedDocuments } = indexing.keywordRestore;

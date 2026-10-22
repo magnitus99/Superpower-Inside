@@ -97,6 +97,7 @@ import {
   summarizeRagActivity,
   type RagIndexingProgressSummary,
 } from './src/rag/indexing-progress';
+import type { SearchStatusSnapshot } from './src/rag/search-status';
 import { RAGQueryEngine } from './src/rag/query';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import {
@@ -587,6 +588,16 @@ export default class SuperpowerInsidePlugin extends Plugin {
       keywordIndex: this.getKeywordIndexState(),
       indexing: this.isRagSearching(),
     });
+  }
+
+  /** 화면들이 같은 순간의 준비 상태와 색인 숫자를 함께 읽도록 모아 줍니다. */
+  getSearchStatusSnapshot(): SearchStatusSnapshot {
+    return {
+      readiness: this.getRetrievalReadiness(),
+      keywordIndex: this.getKeywordIndexState(),
+      ragStatus: this.getRagRuntimeState().ragStatus,
+      indexing: this.getRagIndexingProgressSummary(),
+    };
   }
 
   private getKeywordIndexState(): ChatKeywordIndexState {

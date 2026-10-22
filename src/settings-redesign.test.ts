@@ -504,12 +504,10 @@ describe('설정 화면 리디자인 구조', () => {
       expect(helperSource).toContain(key);
     }
     expect(resetSource).toContain('this.generalStatusSignature = null');
-    expect(runtimeSource).toContain(
-      'const ragRuntimeStarted = runtime.initRunning || runtime.lastInitStartedAt !== null',
-    );
     expect(runtimeSource).toContain('resolveSettingsRetrievalReadiness(');
     expect(runtimeSource).toContain('this.plugin.getRetrievalReadiness()');
-    expect(runtimeSource).toContain('ragRuntimeStarted');
+    // 준비 중을 '준비됨'으로 낮추면 채팅 준비 표시와 어긋나므로 그대로 전달합니다.
+    expect(runtimeSource).not.toContain('ragRuntimeStarted');
   });
 
   it('Chat 탭은 현재 동작, 응답 기본값, 저장, 도구 사용 순서로 읽힌다', () => {
@@ -645,9 +643,18 @@ describe('설정 화면 리디자인 구조', () => {
     );
     const emptyIndex = settingsSource.indexOf('gridEl.empty();', renderStatsStart);
 
+    const statsSource = settingsSource.slice(
+      renderStatsStart,
+      settingsSource.indexOf('private buildTargetFileTypesSection', renderStatsStart),
+    );
+
     expect(renderStatsStart).toBeGreaterThanOrEqual(0);
     expect(getStatusIndex).toBeGreaterThan(renderStatsStart);
     expect(emptyIndex).toBeGreaterThan(getStatusIndex);
+    // 통계 카드만 보이면 '색인 완료'로 읽히므로 준비 상태와 근거를 함께 렌더합니다.
+    expect(statsSource).toContain('getSearchStatusSnapshot');
+    expect(statsSource).toContain('describeSearchStatus');
+    expect(statsSource).toContain("t('searchStatusReadinessLabel')");
   });
 
   it('RAG 탭은 작업 중심 흐름으로 네 개의 공통 섹션을 배치한다', () => {
@@ -816,10 +823,12 @@ describe('설정 화면 리디자인 구조', () => {
       expect(source).toContain("t('chatReadinessRagNotReady')");
       expect(source).toContain("t('chatReadinessRagNotReadyDetail')");
       expect(source).toContain("t('chatReadinessRagIndexing')");
-      expect(source).toContain("t('chatReadinessRagIndexingDetail')");
       expect(source).toContain("'danger'");
       expect(source).toContain("'neutral'");
     }
+    // 준비 중에도 색인 숫자를 함께 보여 주어 '완료'처럼 읽히지 않게 합니다.
+    expect(summarySource).toContain("t('ragOverviewDetail'");
+    expect(summarySource).not.toContain("t('chatReadinessRagIndexingDetail')");
 
     const statusLabelStart = summarySource.indexOf('const statusLabel =');
     const statusDetailStart = summarySource.indexOf('const detail =', statusLabelStart);

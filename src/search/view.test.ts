@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { t } from '../i18n';
+import type { SearchStatusSnapshot } from '../rag/search-status';
 import type { SearchEvidence, SearchPort, SearchResponse } from './engine-port';
 
 const dom = vi.hoisted(() => {
@@ -208,6 +209,8 @@ interface HarnessOptions {
   port: SearchPort | null;
   totalDocuments?: number;
   staleDocuments?: number;
+  readiness?: SearchStatusSnapshot['readiness'];
+  indexing?: SearchStatusSnapshot['indexing'];
 }
 
 function createHarness(options: HarnessOptions) {
@@ -237,7 +240,9 @@ function createHarness(options: HarnessOptions) {
       },
     },
     refreshBus,
-    getRagRuntimeState: () => ({
+    getSearchStatusSnapshot: () => ({
+      readiness: options.readiness ?? 'ready',
+      keywordIndex: 'ready',
       ragStatus:
         options.totalDocuments === undefined
           ? null
@@ -246,9 +251,8 @@ function createHarness(options: HarnessOptions) {
               staleDocuments: options.staleDocuments ?? 0,
               missingDocuments: 0,
             },
-      ragIndexingStatus: null,
+      indexing: options.indexing ?? null,
     }),
-    isRagIndexing: () => false,
     getSearchPort: () => options.port,
   };
   const view = new SearchView(undefined as never, host as never);
@@ -334,8 +338,66 @@ describe('검색 화면 구조', () => {
     expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(t('searchStatusIdle'));
   });
 
-  it('색인이 비어 있으면 검색 실행을 막고 색인 안내를 보여준다', async () => {
+  it('색인된 문서가 없으면 검색 실행을 막고 빈 색인을 알린다', async () => {
     const harness = createHarness({ port: null, totalDocuments: 0 });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+
+    expect(root.querySelector('.superpower-inside-search-index')?.textContent).toBe(
+      t('searchIndexEmpty'),
+    );
+    expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
+  });
+
+  it('색인 중이면 문서 범위를 보여 주고 검색 실행을 막는다', async () => {
+    const harness = createHarness({
+      port: null,
+      readiness: 'preparing',
+      indexing: {
+        phase: 'file',
+        completedFiles: 2,
+        totalFiles: 5,
+        currentFileEmbeddedChunks: null,
+        currentFileTotalChunks: null,
+        etaRemainingMs: null,
+      },
+    });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const index = root.querySelector('.superpower-inside-search-index');
+
+    expect(index?.textContent).toBe(t('searchIndexProgress', { completed: 2, total: 5 }));
+    expect(index?.textContent).toContain('2/5');
+    expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
+  });
+
+  it('키워드 색인만 준비 중이면 상태와 근거를 보여 주고 검색은 허용한다', async () => {
+    const harness = createHarness({
+      port: null,
+      totalDocuments: 10,
+      readiness: 'preparing',
+      indexing: {
+        phase: 'preparing',
+        completedFiles: 0,
+        totalFiles: 0,
+        currentFileEmbeddedChunks: null,
+        currentFileTotalChunks: null,
+        etaRemainingMs: null,
+        keywordRestore: { processedDocuments: 1_200, expectedDocuments: 0 },
+      },
+    });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const index = root.querySelector('.superpower-inside-search-index');
+
+    expect(index?.textContent).toContain(t('chatReadinessRagIndexing'));
+    expect(index?.textContent).toContain('1200');
+    // 벡터 색인은 준비되어 있으므로 실행을 막지 않습니다.
+    expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
+  });
+
+  it('색인 현황이 아직 없으면 색인 없음으로 안내한다', async () => {
+    const harness = createHarness({ port: null, readiness: 'ready' });
     await harness.view.onOpen();
     const root = contentOf(harness.view);
 

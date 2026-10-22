@@ -653,6 +653,8 @@ export interface I18nKeys {
   chatReadinessKeywordRestore: string;
   chatReadinessKeywordRestoreCount: string;
   searchIndexProgressEta: string;
+  searchIndexEmpty: string;
+  searchStatusReadinessLabel: string;
   chatReadinessRagNotReady: string;
   chatReadinessRagNotReadyDetail: string;
   ragRetrievalDegradedAction: string;
@@ -3723,6 +3725,8 @@ const ko: I18nKeys = {
   searchFilterReset: "필터 초기화",
   searchIndexProgress: '색인 중 · 문서 {completed}/{total}',
   searchIndexProgressEta: '색인 중 · 문서 {completed}/{total} · 남은 시간 {eta}',
+  searchIndexEmpty: '색인된 문서가 아직 없습니다.',
+  searchStatusReadinessLabel: '검색 준비 상태',
   searchIndexMissing: "색인된 문서가 없어 검색할 수 없습니다. 노트 검색 색인을 먼저 실행하세요.",
   searchIndexStale: "색인이 오래되었습니다. 갱신 대기 문서 {count}개.",
   searchStatusIdle: "검색어를 입력하세요. 색인만 사용하며 모델을 호출하지 않습니다.",
@@ -5768,6 +5772,8 @@ const en: I18nKeys = {
   searchFilterReset: "Reset filters",
   searchIndexProgress: 'Indexing · {completed}/{total} documents',
   searchIndexProgressEta: 'Indexing · {completed}/{total} documents · {eta} left',
+  searchIndexEmpty: 'No documents are indexed yet.',
+  searchStatusReadinessLabel: 'Search readiness',
   searchIndexMissing: "No documents are indexed yet, so search is unavailable. Run the note search index first.",
   searchIndexStale: "The index is stale. {count} documents are waiting for an update.",
   searchStatusIdle: "Enter a query. Search uses the index only and makes no model calls.",

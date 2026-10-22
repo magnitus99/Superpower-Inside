@@ -67,13 +67,13 @@ function buildRagStatus(override: Partial<RagStatusSummary> = {}): RagStatusSumm
 }
 
 describe('resolveSettingsRetrievalReadiness', () => {
-  it.each([
-    ['preparing', false, 'ready'],
-    ['preparing', true, 'preparing'],
-    ['degraded', false, 'degraded'],
-  ] as const)('%s + started=%s -> %s', (readiness, started, expected) => {
-    expect(resolveSettingsRetrievalReadiness(readiness, started)).toBe(expected);
-  });
+  it.each(['ready', 'preparing', 'degraded'] as const)(
+    '준비 상태 %s를 그대로 전달한다',
+    (readiness) => {
+      // 준비 중을 '준비됨'으로 낮추면 채팅 준비 표시와 어긋납니다.
+      expect(resolveSettingsRetrievalReadiness(readiness)).toBe(readiness);
+    },
+  );
 });
 
 describe('설정 Overview snapshot', () => {

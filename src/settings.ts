@@ -118,6 +118,7 @@ import {
   type SettingsOverviewRuntimeState,
   type SettingsOverviewSnapshot,
 } from './settings-overview';
+import { describeSearchStatus } from './rag/search-status';
 import { type AppLogger, type LoggerConfig } from './utils/logger';
 interface StandardMcpServerEntry {
   command?: string;
@@ -1110,6 +1111,7 @@ export interface PluginLike {
   isRagIndexing(): boolean;
   getRetrievalReadiness(): ChatRetrievalReadiness;
   getRagIndexingProgressSummary?(): import('./rag/indexing-progress').RagIndexingProgressSummary | null;
+  getSearchStatusSnapshot?(): import('./rag/search-status').SearchStatusSnapshot;
   cancelRagIndexing(): void;
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;
   resumeRagIndexing(): boolean;
@@ -2484,7 +2486,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private buildOverviewRuntimeState(): SettingsOverviewRuntimeState {
     const runtime = this.plugin.getRagRuntimeState();
     const registry = this.plugin.mcpRegistry;
-    const ragRuntimeStarted = runtime.initRunning || runtime.lastInitStartedAt !== null;
     return {
       ragStatus: runtime.ragStatus,
       mcpConnectionState: this.plugin.mcpConnectionState ?? 'idle',
@@ -2494,10 +2495,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         error: registry?.getLastError(server.name),
       })),
       isRagIndexing: this.plugin.isRagIndexing(),
-      retrievalReadiness: resolveSettingsRetrievalReadiness(
-        this.plugin.getRetrievalReadiness(),
-        ragRuntimeStarted,
-      ),
+      retrievalReadiness: resolveSettingsRetrievalReadiness(this.plugin.getRetrievalReadiness()),
     };
   }
   private buildProvidersTab(containerEl: HTMLElement): void {
@@ -3393,6 +3391,22 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       gridEl.setText(t('settingsAuto105'));
       return;
     }
+    // 숫자만 보여 주면 색인이 끝난 것처럼 읽힙니다. 준비 상태와 근거를 같은 블록에 둡니다.
+    const snapshot = this.plugin.getSearchStatusSnapshot?.() ?? null;
+    if (snapshot) {
+      const description = describeSearchStatus(snapshot);
+      const readiness = gridEl.createDiv({
+        cls: 'superpower-inside-rag-metric superpower-inside-stat-readiness',
+      });
+      readiness.createDiv({ cls: 'superpower-inside-stat-value', text: description.label });
+      readiness.createDiv({
+        cls: 'superpower-inside-stat-label',
+        text: t('searchStatusReadinessLabel'),
+      });
+      if (description.detail) {
+        readiness.createDiv({ cls: 'superpower-inside-stat-desc', text: description.detail });
+      }
+    }
     const stats = [
       {
         value: formatNumber(status.totalDocuments),
@@ -3710,18 +3724,21 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               : status.totalDocuments > 0
                 ? t('ragOverviewReady')
                 : t('ragOverviewEmpty');
+    const numbers = t('ragOverviewDetail', {
+      healthy: healthyCount,
+      total: status.totalDocuments,
+      auto: this.getAutoUpdateLabel(),
+    });
     const detail =
       isPaused || retrievalReadiness === 'ready'
         ? isRunning
           ? t('ragIndexingDetailPreparing')
-          : t('ragOverviewDetail', {
-              healthy: healthyCount,
-              total: status.totalDocuments,
-              auto: this.getAutoUpdateLabel(),
-            })
+          : numbers
         : retrievalReadiness === 'degraded'
           ? t('chatReadinessRagNotReadyDetail')
-          : t('chatReadinessRagIndexingDetail');
+          : // 준비 중에도 색인된 숫자를 함께 보여 줍니다. 숫자만 보고 완료로 오해하지 않도록
+            // 상태 문구와 근거 숫자를 같은 블록에 둡니다.
+            numbers;
     this.ragStatusGrid.empty();
     const row = this.ragStatusGrid.createDiv({
       cls: 'superpower-inside-rag-row superpower-inside-rag-overview-row',
