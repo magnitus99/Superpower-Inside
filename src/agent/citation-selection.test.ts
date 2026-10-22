@@ -27,14 +27,14 @@ describe('최종 답변 citation 선택', () => {
 
   it('답변에 언급된 파일 경로만 출처 카드로 남긴다', () => {
     const citations = [
-      citation('vault:Bible/Genesis.md:1-10'),
-      citation('vault:People/Neville.md:2-8'),
+      citation('vault:archive/Ledger.md:1-10'),
+      citation('vault:people/Quillon.md:2-8'),
       citation('vault:Archive/Other.md:1-1'),
     ];
 
     expect(
       selectAnswerCitations(
-        '`Bible/Genesis.md`와 People/Neville.md를 근거로 확인했습니다.',
+        '`archive/Ledger.md`와 people/Quillon.md를 근거로 확인했습니다.',
         citations,
       ),
     ).toEqual([citations[0], citations[1]]);

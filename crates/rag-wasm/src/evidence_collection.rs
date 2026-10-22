@@ -1076,7 +1076,7 @@ mod tests {
     fn interpretation_question_with_connector_keeps_only_named_subject_heads() {
         let plan: Value = serde_json::from_str(&plan_indexed_search_queries_json(
             &json!({
-                "question": "가톨릭 성경과 네빌 고다드는 시편 51장을 어떻게 해석하고 있어?"
+                "question": "보관 기록과 오린 퀼런은 원장 3장을 어떻게 해석하고 있어?"
             })
             .to_string(),
         ))
@@ -1089,7 +1089,7 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(
             facets.get(2).and_then(|facet| facet.get("query")),
-            Some(&json!("네빌 고다드"))
+            Some(&json!("오린 퀼런"))
         );
     }
 

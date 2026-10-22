@@ -394,15 +394,15 @@ describe('적극적 도구 오케스트레이션 경계', () => {
 
   it('자동으로 부분 첨부된 폴더도 명시적인 볼트 조사를 완료한 근거로 취급하지 않는다', () => {
     const attachment: ContextAttachment = {
-      id: 'folder:auto:neville',
+      id: 'folder:auto:quillon',
       type: 'folder',
       name: 'neville',
       label: 'neville',
       status: 'partial',
-      sourceIds: ['vault:neville/A Lesson in Scripture.txt:1-30'],
+      sourceIds: ['vault:quillon/A Short Ledger.txt:1-30'],
     };
     const plan = planAgenticToolTurn({
-      question: '이 볼트에서 Neville과 성경 관련 노트를 각각 조사해줘',
+      question: '이 볼트에서 Quillon과 기록 보관소 관련 노트를 각각 조사해줘',
       contextAttachments: [attachment],
       explicitToolServerCount: 0,
       toolDefinitions: definitions,

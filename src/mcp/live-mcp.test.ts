@@ -21,29 +21,29 @@ liveDescribe('live MCP 결과 채팅 반영', () => {
       {
         serverName: 'serper',
         prompt:
-          'xbox elite series 2 지금 쓰고 있어. 이거보다 더 나은 조이스틱이 있는지 찾아줘. 엑스박스 콘솔에서도 돼야해. 유선은 좀 쓰기 힘들것 같아.',
+          '패드 모델 b를 쓰고 있어. 이거보다 나은 대체 기기가 있는지 찾아줘. 콘솔에서도 되어야 해. 유선 연결은 좀 불편해.',
         toolCandidates: ['search', 'google_search', 'serper_search', 'web_search'],
         preferredArgs: {
-          q: 'xbox elite series 2 wireless xbox controller alternative',
-          query: 'xbox elite series 2 wireless xbox controller alternative',
+          q: 'pad model b wireless console alternative',
+          query: 'pad model b wireless console alternative',
         },
       },
       {
         serverName: 'context7',
-        prompt: 'supabase 문서 찾아줘. rls 업데이트 할 때 뭐를 해야 하는거야?',
+        prompt: '문서 저장소 a의 안내를 찾아줘. 권한 규칙을 바꿀 때 무엇을 해야 하는거야?',
         toolCandidates: ['resolve-library-id', 'resolve_library_id', 'get-library-docs', 'get_library_docs'],
         preferredArgs: {
-          libraryName: 'supabase',
-          libraryNameOrId: 'supabase',
-          topic: 'rls update',
-          query: 'supabase rls update',
+          libraryName: 'docs-lib-a',
+          libraryNameOrId: 'docs-lib-a',
+          topic: 'permission update',
+          query: 'docs-lib-a permission update',
         },
       },
       {
         serverName: 'playwright',
-        prompt: '브라우저로 나무위키 열어줘.',
+        prompt: '브라우저로 사전 사이트를 열어줘.',
         toolCandidates: ['browser_navigate', 'navigate', 'open_browser'],
-        preferredArgs: { url: 'https://namu.wiki/' },
+        preferredArgs: { url: 'https://example.com/dictionary' },
       },
     ];
 

@@ -328,18 +328,18 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
 
   it('provider 전송 상한을 넘는 문서는 부재 단정이 불가능한 coverage로 표시한다', async () => {
     const runtime = createRuntime(
-      new Map([['Notes/Genesis.md', `창세기 ${'긴 본문 '.repeat(3_000)}`]]),
+      new Map([['notes/Ledger.md', `원장 ${'긴 본문 '.repeat(3_000)}`]]),
     );
     const chat = vi.fn((messages: ChatMessage[]) =>
       Promise.resolve(
         lastPrompt(messages).includes('Write the final answer')
-          ? '선택 근거에서 확인한 창세기 내용입니다.'
+          ? '선택 근거에서 확인한 원장 내용입니다.'
           : '근거 요약',
       ),
     );
 
     const result = await new VaultResearchAgent({ chat }, runtime).run({
-      question: '창세기 관련 모든 내용을 조사해줘',
+      question: '원장 관련 모든 내용을 조사해줘',
     });
 
     expect(result.providerTransfer.sentChars).toBeLessThanOrEqual(9_000);
@@ -393,10 +393,10 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
     const runtime = createSegmentedRuntime(
       new Map([
         [
-          'Notes/Genesis.md',
+          'notes/Ledger.md',
           [
             { startLine: 1, endLine: 400, content: `무관한 앞부분 ${'가'.repeat(9_500)}` },
-            { startLine: 401, endLine: 800, content: '창세기 LATE_RELEVANT_SEGMENT' },
+            { startLine: 401, endLine: 800, content: '원장 LATE_RELEVANT_SEGMENT' },
           ],
         ],
       ]),
@@ -407,25 +407,25 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
       prompts.push(prompt);
       return Promise.resolve(
         prompt.includes('Write the final answer')
-          ? '후반 근거 [vault:Notes/Genesis.md:401-800]'
-          : '후반 근거 [vault:Notes/Genesis.md:401-800]',
+          ? '후반 근거 [vault:notes/Ledger.md:401-800]'
+          : '후반 근거 [vault:notes/Ledger.md:401-800]',
       );
     });
 
     const result = await new VaultResearchAgent({ chat }, runtime).run({
-      question: '창세기 관련 모든 내용을 조사해줘',
+      question: '원장 관련 모든 내용을 조사해줘',
     });
     const batchPrompt = prompts.find((prompt) =>
       prompt.includes('Analyze this locally selected vault-evidence batch.'),
     );
 
     expect(batchPrompt).toContain('LATE_RELEVANT_SEGMENT');
-    expect(batchPrompt).toContain('vault:Notes/Genesis.md:401-800');
-    expect(batchPrompt).not.toContain('vault:Notes/Genesis.md:1-400');
+    expect(batchPrompt).toContain('vault:notes/Ledger.md:401-800');
+    expect(batchPrompt).not.toContain('vault:notes/Ledger.md:1-400');
     expect(result.providerTransfer.sentSegments).toBe(1);
     expect(result.providerTransfer.sentChars).toBeLessThan(9_000);
     expect(result.citations.map((citation) => citation.id)).toEqual([
-      'vault:Notes/Genesis.md:401-800',
+      'vault:notes/Ledger.md:401-800',
     ]);
   });
 
@@ -560,9 +560,9 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
         );
       }
       if (prompt.includes('Write the final answer')) {
-        return Promise.resolve('After checking every note, I found evidence about 네빌.');
+        return Promise.resolve('After checking every note, I found evidence about Quillon.');
       }
-      return Promise.resolve('Evidence about Neville.');
+      return Promise.resolve('Evidence about Quillon.');
     });
 
     await new VaultResearchAgent(
@@ -571,7 +571,7 @@ describe('로컬 선별 우선 Vault Research Agent', () => {
         new Map(
           Array.from({ length: 65 }, (_, index) => [
             `Notes/${String(index).padStart(2, '0')}.md`,
-            `네빌 관련 근거 ${index}`,
+            `퀼런 관련 근거 ${index}`,
           ]),
         ),
       ),

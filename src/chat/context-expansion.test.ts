@@ -74,8 +74,8 @@ describe('expandReferencedVaultFiles', () => {
   });
 
   it('metadata/path 후보가 실패하면 Rust basename fallback index로 resolve한다', async () => {
-    const source = createFile('제품문서/데모.md', '[[Romans]]');
-    const reference = createFile('Archive/Romans.md', 'fallback 참조');
+    const source = createFile('제품문서/데모.md', '[[Halvard]]');
+    const reference = createFile('archive/Halvard.md', 'fallback 참조');
     const app = createApp([source, reference]);
 
     const result = await expandReferencedVaultFiles(source, source.content, app);

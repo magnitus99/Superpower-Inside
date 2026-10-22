@@ -1102,8 +1102,8 @@ describe('Rust WASM RAG core bridge', () => {
   });
 
   it('plans vault link basename fallback index through Rust', () => {
-    expect(planVaultLinkFallbackIndexRust('Romans', ['Paul', 'Romans', 'Romans'])).toBe(1);
-    expect(planVaultLinkFallbackIndexRust('Missing', ['Paul', 'Romans'])).toBeNull();
+    expect(planVaultLinkFallbackIndexRust('Halvard', ['Tamsin', 'Halvard', 'Halvard'])).toBe(1);
+    expect(planVaultLinkFallbackIndexRust('Missing', ['Tamsin', 'Halvard'])).toBeNull();
   });
 
   it('plans folder mention file indices and partial state through Rust', () => {
@@ -2025,7 +2025,7 @@ describe('Rust WASM RAG core bridge', () => {
 
   it('불완전한 조사 범위의 scoped negative 위반 코드를 중복 없이 전달한다', () => {
     const plan = planResearchAnswerContractRust({
-      answer: '현재 검색 범위에서 네빌의 창세기 직접 언급을 찾지 못했습니다.',
+      answer: '현재 검색 범위에서 퀼런의 원장 직접 언급을 찾지 못했습니다.',
       language: 'ko',
       receipt: {
         inventoryCount: 2,
@@ -2049,7 +2049,7 @@ describe('Rust WASM RAG core bridge', () => {
 
   it('명시한 영어 locale은 답변의 한국어 고유명사보다 우선한다', () => {
     const plan = planResearchAnswerContractRust({
-      answer: 'After checking every note, I found evidence about 네빌.',
+      answer: 'After checking every note, I found evidence about Quillon.',
       language: 'en',
       receipt: {
         inventoryCount: 2,

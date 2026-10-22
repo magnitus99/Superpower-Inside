@@ -76,16 +76,16 @@ describe('승인 대기 도구 provider 재개 계약', () => {
 
   it('승인 assistant 이전의 현재 질문과 그 직전 질문만 현재 세션에서 선택한다', () => {
     const messages = [
-      createMessage({ id: 'user-1', role: 'user', content: '네빌은 누구야?' }),
+      createMessage({ id: 'user-1', role: 'user', content: '퀼런은 누구야?' }),
       createMessage({ id: 'assistant-1', role: 'assistant', content: '첫 답변' }),
-      createMessage({ id: 'user-2', role: 'user', content: '창세기 근거를 찾아줘' }),
+      createMessage({ id: 'user-2', role: 'user', content: '원장 근거를 찾아줘' }),
       createMessage({ id: 'assistant-2', role: 'assistant', content: '승인 대기' }),
       createMessage({ id: 'user-3', role: 'user', content: '뒤의 다른 질문' }),
     ];
 
     expect(resolveToolApprovalQuestionContext(messages, 'assistant-2', 'fallback')).toEqual({
-      currentQuestion: '창세기 근거를 찾아줘',
-      previousUserQuestions: ['네빌은 누구야?'],
+      currentQuestion: '원장 근거를 찾아줘',
+      previousUserQuestions: ['퀼런은 누구야?'],
     });
     expect(resolveToolApprovalQuestionContext([], 'missing', 'fallback')).toEqual({
       currentQuestion: 'fallback',

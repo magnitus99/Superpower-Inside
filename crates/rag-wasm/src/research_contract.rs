@@ -2062,16 +2062,16 @@ mod tests {
     fn candidate_selection_uses_only_question_terms_without_builtin_aliases() {
         let raw = plan_research_candidate_selection_json(
             &json!({
-                "currentQuestion": "Genesis 관련 자료를 조사해줘",
-                "previousUserQuestions": ["Neville은 어떻게 말했어?"],
+                "currentQuestion": "Ledger 관련 자료를 조사해줘",
+                "previousUserQuestions": ["Quillon은 어떻게 말했어?"],
                 "paths": [
-                    "Bible/Genesis/Introduction.md",
-                    "People/Neville.md",
+                    "archive/Ledger/Introduction.md",
+                    "people/Quillon.md",
                     "Archive/Unrelated.md"
                 ],
                 "samples": [
-                    "Genesis structure",
-                    "Neville lecture notes",
+                    "Ledger structure",
+                    "Quillon archive notes",
                     "회의 기록"
                 ],
             })
@@ -2094,15 +2094,15 @@ mod tests {
                     "maxBatches": 8,
                     "maxTransferItems": 64,
                 },
-                "terms": ["genesis", "neville"],
+                "terms": ["ledger", "quillon"],
                 "facets": [
                     {
                         "kind": "topic",
-                        "terms": ["genesis"],
+                        "terms": ["ledger"],
                     },
                     {
                         "kind": "context",
-                        "terms": ["neville"],
+                        "terms": ["quillon"],
                     }
                 ],
                 "planFingerprint": output.get("planFingerprint"),
@@ -2232,7 +2232,7 @@ mod tests {
             json!({"scopeRestricted":true}),
             json!({"filters":{"tags":["project"]}}),
         ] {
-            let mut search = json!({"action":"search","query":"Neville","path":"","match":"all",
+            let mut search = json!({"action":"search","query":"Quillon","path":"","match":"all",
                 "hits":[],"scannedFiles":10,"unreadableFiles":0,"totalHits":0,"truncated":false});
             if let (Some(search), Some(extra)) = (search.as_object_mut(), extra.as_object()) {
                 search.extend(extra.clone());
@@ -2260,7 +2260,7 @@ mod tests {
         let truncated_receipt = parse_output(&derive_native_tool_coverage_receipt_json(
             &json!([json!({
                 "action": "search",
-                "query": "Neville",
+                "query": "Quillon",
                 "path": "",
                 "match": "all",
                 "hits": [],
@@ -2274,7 +2274,7 @@ mod tests {
         ));
         let truncated_plan = parse_output(&plan_research_answer_contract_json(
             &json!({
-                "answer": "현재 검색 범위에서 Neville 관련 자료를 찾지 못했습니다.",
+                "answer": "현재 검색 범위에서 Quillon 관련 자료를 찾지 못했습니다.",
                 "receipt": truncated_receipt,
             })
             .to_string(),
@@ -2287,7 +2287,7 @@ mod tests {
         let complete_receipt = parse_output(&derive_native_tool_coverage_receipt_json(
             &json!([json!({
                 "action": "search",
-                "query": "Neville",
+                "query": "Quillon",
                 "path": "",
                 "match": "all",
                 "hits": [],
@@ -2301,7 +2301,7 @@ mod tests {
         ));
         let complete_plan = parse_output(&plan_research_answer_contract_json(
             &json!({
-                "answer": "현재 검색 범위에서 Neville 관련 자료를 찾지 못했습니다.",
+                "answer": "현재 검색 범위에서 Quillon 관련 자료를 찾지 못했습니다.",
                 "receipt": complete_receipt,
             })
             .to_string(),
@@ -2575,7 +2575,7 @@ mod tests {
         ));
         let raw = plan_research_answer_contract_json(
             &json!({
-                "answer": "모든 파일을 읽었고 네빌의 창세기 언급을 찾았습니다.",
+                "answer": "모든 파일을 읽었고 퀼런의 원장 언급을 찾았습니다.",
                 "receipt": receipt,
             })
             .to_string(),
@@ -2602,7 +2602,7 @@ mod tests {
         ));
         let raw = plan_research_answer_contract_json(
             &json!({
-                "answer": "이 파일은 구약 성경 전체 소개입니다. 볼트에 저장된 성경 소개 파일에서 해당 책을 확인했습니다.",
+                "answer": "이 파일은 보관 기록 전체 안내입니다. 볼트에 저장된 안내 파일에서 해당 장을 확인했습니다.",
                 "language": "ko",
                 "receipt": receipt,
             })
@@ -2666,7 +2666,7 @@ mod tests {
         ));
         let raw = plan_research_answer_contract_json(
             &json!({
-                "answer": "After checking every note, I found evidence about 네빌.",
+                "answer": "After checking every note, I found evidence about Quillon.",
                 "language": "en",
                 "receipt": receipt,
             })
@@ -2691,7 +2691,7 @@ mod tests {
         ));
         let raw = plan_research_answer_contract_json(
             &json!({
-                "answer": "볼트 전체를 로컬로 선별하고 선택된 근거를 모두 분석했지만, 현재 검색 범위에서 네빌의 창세기 직접 언급을 찾지 못했습니다.",
+                "answer": "볼트 전체를 로컬로 선별하고 선택된 근거를 모두 분석했지만, 현재 검색 범위에서 퀼런의 원장 직접 언급을 찾지 못했습니다.",
                 "receipt": receipt,
             })
             .to_string(),
@@ -2717,7 +2717,7 @@ mod tests {
         ));
         let raw = plan_research_answer_contract_json(
             &json!({
-                "answer": "현재 검색 범위에서 네빌의 창세기 직접 언급을 찾지 못했습니다.",
+                "answer": "현재 검색 범위에서 퀼런의 원장 직접 언급을 찾지 못했습니다.",
                 "receipt": receipt,
             })
             .to_string(),
@@ -2799,7 +2799,7 @@ mod tests {
         ));
         let raw = plan_research_answer_contract_json(
             &json!({
-                "answer": "볼트 전체를 확인했지만 네빌 자료는 없습니다.",
+                "answer": "볼트 전체를 확인했지만 퀼런 자료는 없습니다.",
                 "receipt": receipt,
             })
             .to_string(),

@@ -223,12 +223,12 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
     const { port, search } = createPort();
     const runtime = new NativeVaultToolRuntime(port);
 
-    await runtime.execute(JSON.stringify({ action: 'search', query: '네빌 창세기' }));
+    await runtime.execute(JSON.stringify({ action: 'search', query: '퀼런 원장' }));
 
     expect(search).toHaveBeenCalledWith({
       action: 'search',
-      query: '네빌 창세기',
-      queries: ['네빌 창세기'],
+      query: '퀼런 원장',
+      queries: ['퀼런 원장'],
       path: '',
       limit: 8,
       match: 'all',
@@ -294,15 +294,15 @@ describe('Superpower Inside 네이티브 Vault 도구', () => {
     await runtime.execute(
       JSON.stringify({
         action: 'search',
-        query: 'Neville OR Goddard',
+        query: 'Quillon OR Orin',
         match: 'all',
       }),
     );
 
     expect(search).toHaveBeenCalledWith({
       action: 'search',
-      query: 'Neville OR Goddard',
-      queries: ['Neville OR Goddard'],
+      query: 'Quillon OR Orin',
+      queries: ['Quillon OR Orin'],
       path: '',
       limit: 8,
       match: 'all',

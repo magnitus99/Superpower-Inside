@@ -37,7 +37,7 @@ describe('BM25 tokenizer', () => {
   });
 
   it('macOS 한글 입력의 분해형(NFD)도 조합형(NFC)과 같은 토큰을 만든다', () => {
-    const composed = '네빌 고다드의 상상';
+    const composed = '오린 퀼런의 기록';
     const decomposed = composed.normalize('NFD');
 
     expect(decomposed).not.toBe(composed);
@@ -47,9 +47,9 @@ describe('BM25 tokenizer', () => {
   it('조합형 문서 색인을 분해형 질의로도 찾는다', () => {
     const index = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
     if (!index) throw new Error("BM25 런타임을 만들지 못했습니다.");
-    index.addDocument("a.md::0", "네빌 고다드의 상상력은 현실을 만든다", "a.md", TOKENIZER_VERSION);
+    index.addDocument("a.md::0", "오린 퀼런의 기록은 오래 남는다", "a.md", TOKENIZER_VERSION);
 
-    const hits = index.searchTop("네빌 고다드의 상상".normalize("NFD"), 1);
+    const hits = index.searchTop("오린 퀼런의 기록".normalize("NFD"), 1);
 
     expect(hits?.length ?? 0).toBe(1);
   });

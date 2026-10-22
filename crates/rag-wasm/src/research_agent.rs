@@ -491,9 +491,9 @@ mod tests {
     #[test]
     fn citation_selection_uses_paths_named_in_the_final_answer() {
         let raw = plan_research_citation_indices_json(
-            "Bible/Genesis.md와 People/Neville.md를 확인했다.",
+            "archive/Ledger.md와 people/Quillon.md를 확인했다.",
             r#"["a","b","c"]"#,
-            r#"["Bible/Genesis.md","People/Neville.md","Archive/Other.md"]"#,
+            r#"["archive/Ledger.md","people/Quillon.md","Archive/Other.md"]"#,
             2,
         );
 

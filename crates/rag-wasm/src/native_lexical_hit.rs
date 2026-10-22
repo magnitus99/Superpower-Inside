@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn any_match_does_not_verify_a_unicode_ngram_fragment() {
         assert_eq!(
-            plan_native_vault_lexical_hit_json("창세기", "20세기 역사", "any"),
+            plan_native_vault_lexical_hit_json("원장", "20세기 역사", "any"),
             "",
         );
     }

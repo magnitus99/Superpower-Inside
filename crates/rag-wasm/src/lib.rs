@@ -13963,7 +13963,7 @@ mod tests {
     /// 같은 한글은 `NFC`·`NFD` 어느 입력에서도 같은 토큰 집합이어야 한다.
     #[test]
     fn tokenizer_converges_decomposed_hangul() {
-        let composed = "네빌 고다드 상상";
+        let composed = "오린 퀼런 기록";
         let decomposed = composed.nfd().collect::<String>();
         assert_ne!(composed, decomposed, "NFD 입력이 실제로 분해되어야 합니다");
         assert_eq!(
@@ -14062,11 +14062,11 @@ mod tests {
     #[test]
     fn vault_link_fallback_index_is_planned_in_rust() {
         assert_eq!(
-            plan_vault_link_fallback_index_json("Romans", r#"["Paul","Romans","Romans"]"#),
+            plan_vault_link_fallback_index_json("Halvard", r#"["Tamsin","Halvard","Halvard"]"#),
             "{\"index\":1}",
         );
         assert_eq!(
-            plan_vault_link_fallback_index_json("Missing", r#"["Paul","Romans"]"#),
+            plan_vault_link_fallback_index_json("Missing", r#"["Tamsin","Halvard"]"#),
             "{\"index\":null}",
         );
     }
@@ -14285,10 +14285,10 @@ mod tests {
     fn assistant_response_classification_keeps_declarative_selection_explanation_as_answer() {
         assert_eq!(
             plan_assistant_response_classification_json(
-                "아담과 이브는 하나님의 뜻에 어긋나는 선택을 했기 때문입니다.",
+                "기획자는 규칙에 어긋나는 선택을 했기 때문입니다.",
                 "",
             ),
-            "{\"type\":\"answer\",\"content\":\"아담과 이브는 하나님의 뜻에 어긋나는 선택을 했기 때문입니다.\",\"reasoning\":\"\"}",
+            "{\"type\":\"answer\",\"content\":\"기획자는 규칙에 어긋나는 선택을 했기 때문입니다.\",\"reasoning\":\"\"}",
         );
     }
 
@@ -14777,12 +14777,12 @@ mod tests {
     #[test]
     fn parse_mention_candidates_json_preserves_typescript_order_and_dedupe() {
         let candidates = parse_mention_candidates_json(
-            "@browser @[Project Plan.md] @[Project Plan.md] @[entity: Paul] @Notes/today.md @missing",
+            "@browser @[Project Plan.md] @[Project Plan.md] @[entity: Tamsin] @Notes/today.md @missing",
         );
 
         assert_eq!(
             candidates,
-            "[{\"raw\":\"@[Project Plan.md]\",\"name\":\"Project Plan.md\"},{\"raw\":\"@[entity: Paul]\",\"name\":\"entity: Paul\"},{\"raw\":\"@browser\",\"name\":\"browser\"},{\"raw\":\"@Notes/today.md\",\"name\":\"Notes/today.md\"},{\"raw\":\"@missing\",\"name\":\"missing\"}]",
+            "[{\"raw\":\"@[Project Plan.md]\",\"name\":\"Project Plan.md\"},{\"raw\":\"@[entity: Tamsin]\",\"name\":\"entity: Tamsin\"},{\"raw\":\"@browser\",\"name\":\"browser\"},{\"raw\":\"@Notes/today.md\",\"name\":\"Notes/today.md\"},{\"raw\":\"@missing\",\"name\":\"missing\"}]",
         );
     }
 
@@ -15977,8 +15977,8 @@ mod tests {
         );
         assert_eq!(
             plan_folder_lexical_evidence_indices_json(
-                "고다드",
-                r#"["Genesis\n가로채다","Neville\n네빌 고다드"]"#,
+                "퀼런",
+                r#"["Ledger\n기록","Quillon\n오린 퀼런"]"#,
                 2,
                 "all",
             ),
@@ -15986,8 +15986,8 @@ mod tests {
         );
         assert_eq!(
             plan_folder_lexical_evidence_indices_json(
-                "Neville OR Goddard",
-                r#"["A\nNeville","B\nGoddard","C\nNeville Goddard"]"#,
+                "Quillon OR Orin",
+                r#"["A\nQuillon","B\nOrin","C\nQuillon Orin"]"#,
                 3,
                 "all",
             ),

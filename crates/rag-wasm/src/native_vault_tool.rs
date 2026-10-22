@@ -759,7 +759,7 @@ mod tests {
     #[test]
     fn search_request_defaults_to_all_terms_and_accepts_explicit_match_mode() {
         let default_raw =
-            plan_native_vault_tool_request_json(r#"{"action":"search","query":"Neville Genesis"}"#);
+            plan_native_vault_tool_request_json(r#"{"action":"search","query":"Quillon Ledger"}"#);
         let default_parsed = parse_json(&default_raw);
         assert_eq!(
             default_parsed.pointer("/request/match"),
@@ -767,7 +767,7 @@ mod tests {
         );
 
         let any_raw = plan_native_vault_tool_request_json(
-            r#"{"action":"search","query":"Neville Genesis","match":"any"}"#,
+            r#"{"action":"search","query":"Quillon Ledger","match":"any"}"#,
         );
         let any_parsed = parse_json(&any_raw);
         assert_eq!(
@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn search_request_treats_implicit_or_as_any_term_separator() {
         let raw = plan_native_vault_tool_request_json(
-            r#"{"action":"search","query":"네빌 OR Neville or Goddard"}"#,
+            r#"{"action":"search","query":"퀼런 OR Quillon or Orin"}"#,
         );
         let parsed = parse_json(&raw);
 
@@ -930,8 +930,8 @@ mod tests {
             parsed.get("request"),
             Some(&serde_json::json!({
                 "action": "search",
-                "query": "네빌 Neville Goddard",
-                "queries": ["네빌 Neville Goddard"],
+                "query": "퀼런 Quillon Orin",
+                "queries": ["퀼런 Quillon Orin"],
                 "path": "",
                 "limit": 8,
                 "match": "any"
@@ -942,13 +942,13 @@ mod tests {
     #[test]
     fn search_request_preserves_explicit_match_when_query_contains_or() {
         let raw = plan_native_vault_tool_request_json(
-            r#"{"action":"search","query":"Neville OR Goddard","match":"all"}"#,
+            r#"{"action":"search","query":"Quillon OR Orin","match":"all"}"#,
         );
         let parsed = parse_json(&raw);
 
         assert_eq!(
             parsed.pointer("/request/query"),
-            Some(&JsonValue::from("Neville OR Goddard")),
+            Some(&JsonValue::from("Quillon OR Orin")),
         );
         assert_eq!(
             parsed.pointer("/request/match"),
@@ -959,13 +959,13 @@ mod tests {
     #[test]
     fn search_request_does_not_treat_or_inside_a_word_as_separator() {
         let raw = plan_native_vault_tool_request_json(
-            r#"{"action":"search","query":"Goddard organization"}"#,
+            r#"{"action":"search","query":"Orin organization"}"#,
         );
         let parsed = parse_json(&raw);
 
         assert_eq!(
             parsed.pointer("/request/query"),
-            Some(&JsonValue::from("Goddard organization")),
+            Some(&JsonValue::from("Orin organization")),
         );
         assert_eq!(
             parsed.pointer("/request/match"),

@@ -4038,10 +4038,10 @@ mod tests {
 
     #[test]
     fn plan_matches_composed_document_with_decomposed_question() {
-        let question = "네빌 고다드의 상상".nfd().collect::<String>();
+        let question = "오린 퀼런의 기록".nfd().collect::<String>();
         let plan = plan_of(&json!({
             "question": question,
-            "documents": [{"path": "a.md", "text": "네빌 고다드의 상상력에 대한 기록입니다."}],
+            "documents": [{"path": "a.md", "text": "오린 퀼런의 기록에 대한 설명입니다."}],
         }));
         assert_eq!(
             rows(&plan, "evidence").len(),
@@ -4052,10 +4052,10 @@ mod tests {
 
     #[test]
     fn plan_phrase_match_survives_decomposed_quotes() {
-        let quoted = "\"상상력\"".nfd().collect::<String>();
+        let quoted = "\"원장\"".nfd().collect::<String>();
         let plan = plan_of(&json!({
             "question": quoted,
-            "documents": [{"path": "a.md", "text": "그의 상상력은 기록되었습니다."}],
+            "documents": [{"path": "a.md", "text": "그의 원장은 기록되었습니다."}],
         }));
         let evidence = first_row(&plan, "evidence");
         assert_eq!(

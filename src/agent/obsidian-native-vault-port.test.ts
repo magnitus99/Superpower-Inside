@@ -1243,7 +1243,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
   it('정상 인덱스의 의미 기반 후보는 어휘가 모두 겹치지 않아도 현재 본문으로 검증한다', async () => {
     const indexedResults = [
       {
-        sourcePath: 'Bible/Genesis.md',
+        sourcePath: 'archive/Ledger.md',
         score: 0.9,
         vectorScore: 0.9,
         bm25Score: 0,
@@ -1254,19 +1254,19 @@ describe('Obsidian 네이티브 Vault 포트', () => {
           id: 'genesis',
           vector: [],
           metadata: {
-            filePath: 'Bible/Genesis.md',
-            text: '창세기 본문',
+            filePath: 'archive/Ledger.md',
+            text: '원장 본문',
             startLine: 0,
             endLine: 0,
             sourceMtime: 2,
-            sourceSize: '창세기 본문'.length,
-            contentHash: createContentHash('창세기 본문'),
+            sourceSize: '원장 본문'.length,
+            contentHash: createContentHash('원장 본문'),
           },
         },
       },
     ] satisfies QueryResult[];
     const query = vi.fn(() => Promise.resolve(indexedResults));
-    const file = createFile('Bible/Genesis.md', '창세기 본문');
+    const file = createFile('archive/Ledger.md', '원장 본문');
     const cachedRead = vi.fn((candidate: TFile & { content: string }) =>
       Promise.resolve(candidate.content),
     );
@@ -1275,7 +1275,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
     const result = await port.search({
       action: 'search',
-      query: '네빌 창세기',
+      query: '퀼런 원장',
       path: '',
       limit: 8,
       match: 'all',
@@ -1283,7 +1283,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
     expect(result.hits).toEqual([
       expect.objectContaining({
-        path: 'Bible/Genesis.md',
+        path: 'archive/Ledger.md',
         citationStatus: 'verified',
       }),
     ]);
@@ -1711,9 +1711,9 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
   it('stale 인덱스가 비면 파일 경로까지 포함한 live lexical 후보를 돌려준다', async () => {
     const files = [
-      createFile('neville/A Lesson in Scripture.txt', '본문에는 이름이 없다.'),
-      createFile('neville/A Prophecy.txt', '예언에 관한 본문'),
-      createFile('bible/Genesis.md', '창세기 본문'),
+      createFile('quillon/A Short Ledger.txt', '퀼런 기록의 본문에는 이름이 없다.'),
+      createFile('quillon/A Brief Note.txt', '퀼런 기록에 관한 짧은 본문'),
+      createFile('archive/Ledger.md', '원장 본문'),
     ];
     const query = vi.fn(() => Promise.resolve([]));
     const listCandidateFiles = vi.fn(() => Promise.resolve(files));
@@ -1729,24 +1729,27 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
     const result = await port.search({
       action: 'search',
-      query: 'Neville',
+      query: 'Quillon',
       path: '',
       limit: 8,
       match: 'all',
     });
 
-    expect(result.hits).toEqual([
-      expect.objectContaining({
-        path: 'neville/A Lesson in Scripture.txt',
-        citationStatus: 'candidate',
-        requiresRead: true,
-      }),
-      expect.objectContaining({
-        path: 'neville/A Prophecy.txt',
-        citationStatus: 'candidate',
-        requiresRead: true,
-      }),
-    ]);
+    expect(result.hits).toHaveLength(2);
+    expect(result.hits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'quillon/A Short Ledger.txt',
+          citationStatus: 'candidate',
+          requiresRead: true,
+        }),
+        expect.objectContaining({
+          path: 'quillon/A Brief Note.txt',
+          citationStatus: 'candidate',
+          requiresRead: true,
+        }),
+      ]),
+    );
     expect(result).toMatchObject({
       scannedFiles: 3,
       unreadableFiles: 0,
@@ -2034,31 +2037,31 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
   it('모든 검색어가 일치하지 않으면 일부 단어만 맞는 문서를 반환하지 않는다', async () => {
     const app = createApp([
-      createFile('Bible/Genesis.md', '창세기 본문'),
-      createFile('People/Neville.md', '네빌 고다드 강연'),
-      createFile('Research/Neville-Genesis.md', '네빌 고다드의 창세기 해석'),
+      createFile('archive/Ledger.md', '원장 본문'),
+      createFile('people/Quillon.md', '오린 퀼런 강의'),
+      createFile('research/Quillon-Ledger.md', '오린 퀼런의 원장 해석'),
     ]);
 
     const result = await createNativeVaultPort(app).search({
       action: 'search',
-      query: '네빌 창세기',
+      query: '퀼런 원장',
       path: '',
       limit: 8,
       match: 'all',
     });
 
-    expect(result.hits.map((hit) => hit.path)).toEqual(['Research/Neville-Genesis.md']);
+    expect(result.hits.map((hit) => hit.path)).toEqual(['research/Quillon-Ledger.md']);
   });
 
   it('제외 경로는 모든 Vault 탐색 액션에서 일관되게 숨긴다', async () => {
-    const visible = createFile('Notes/Genesis.md', '창세기');
-    const excluded = createFile('SuperpowerInsideChats/Current.md', '네빌 창세기');
+    const visible = createFile('notes/Ledger.md', '원장');
+    const excluded = createFile('SuperpowerInsideChats/Current.md', '퀼런 원장');
     const app = createApp([visible, excluded]);
     const port = createNativeVaultPort(app, () => Promise.resolve([visible]));
 
     const search = await port.search({
       action: 'search',
-      query: '네빌 창세기',
+      query: '퀼런 원장',
       path: '',
       limit: 8,
       match: 'all',
@@ -2073,7 +2076,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     const stats = await port.stats({ action: 'stats' });
 
     expect(search.hits).toEqual([]);
-    expect(list.files.map((file) => file.path)).toEqual(['Notes/Genesis.md']);
+    expect(list.files.map((file) => file.path)).toEqual(['notes/Ledger.md']);
     expect(excludedList).toMatchObject({ exists: false, files: [], total: 0 });
     expect(stats.fileCount).toBe(1);
     await expect(

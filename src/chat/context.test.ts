@@ -524,7 +524,7 @@ describe('buildChatContext RAG 출처 검증', () => {
   });
 
   it('기본 점수 검색이 비면 확장된 주제어로 로컬 lexical 후보를 다시 선별한다', async () => {
-    const genesis = createFile('Genesis.md', '창세기 본문과 상징 해석', 1000);
+    const genesis = createFile('Ledger.md', '원장 본문과 상징 해석', 1000);
     const unrelated = createFile('Shopping.md', '주말 장보기 목록', 1000);
     const app = createApp(
       new Map([
@@ -548,16 +548,16 @@ describe('buildChatContext RAG 출처 검증', () => {
         ),
     );
 
-    const context = await buildChatContext('네빌은 창세기를 어떻게 해석했어?', {
+    const context = await buildChatContext('퀼런은 원장을 어떻게 해석했어?', {
       app,
       ragEngine: { query },
       ragMinScore: 0.75,
-      queryExpander: () => Promise.resolve('네빌 Neville Goddard 창세기 Genesis'),
+      queryExpander: () => Promise.resolve('퀼런 Orin Quillon 원장 Ledger'),
     });
 
     expect(query).toHaveBeenNthCalledWith(
       1,
-      '네빌 Neville Goddard 창세기 Genesis',
+      '퀼런 Orin Quillon 원장 Ledger',
       5,
       0.75,
       undefined,
@@ -565,13 +565,13 @@ describe('buildChatContext RAG 출처 검증', () => {
     );
     expect(query).toHaveBeenNthCalledWith(
       2,
-      '네빌 Neville Goddard 창세기 Genesis',
+      '퀼런 Orin Quillon 원장 Ledger',
       15,
       0,
       undefined,
       expect.any(Object),
     );
-    expect(context.citations.map((citation) => citation.filePath)).toEqual(['Genesis.md']);
+    expect(context.citations.map((citation) => citation.filePath)).toEqual(['Ledger.md']);
   });
 
   it('RAG provider diagnostic 요약을 attachment detail에 표시한다', async () => {

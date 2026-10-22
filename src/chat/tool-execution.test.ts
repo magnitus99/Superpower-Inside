@@ -393,13 +393,13 @@ describe('LLM 도구 실행 라우터', () => {
 
   it('잘린 네이티브 검색 결과로 볼트 전체 부재를 단정하면 표시를 차단한다', () => {
     setLanguage('ko');
-    const result = enforceNativeToolAnswerContract('볼트 전체를 확인했지만 네빌 자료는 없습니다.', [
+    const result = enforceNativeToolAnswerContract('볼트 전체를 확인했지만 퀼런 자료는 없습니다.', [
       createToolCall({
         executionKind: 'native',
         status: 'success',
         normalizedResult: JSON.stringify({
           action: 'search',
-          query: '네빌',
+          query: '퀼런',
           path: '',
           match: 'all',
           hits: [],
@@ -450,13 +450,13 @@ describe('LLM 도구 실행 라우터', () => {
 
     try {
       enforceNativeToolAnswerContract(
-        'After checking every note, I found evidence about 네빌.',
+        'After checking every note, I found evidence about Quillon.',
         [],
       );
 
       expect(contractSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          answer: 'After checking every note, I found evidence about 네빌.',
+          answer: 'After checking every note, I found evidence about Quillon.',
           language: 'en',
         }),
       );
@@ -467,7 +467,7 @@ describe('LLM 도구 실행 라우터', () => {
   });
 
   it('네이티브 도구가 없는 일반 지식 답변은 변경하지 않는다', () => {
-    const answer = '네빌 고다드는 상상력과 의식의 역할을 강조한 작가입니다.';
+    const answer = '오린 퀼런은 기록 보존을 강조한 연구자입니다.';
 
     expect(enforceNativeToolAnswerContract(answer, [])).toEqual({
       content: answer,
@@ -477,21 +477,21 @@ describe('LLM 도구 실행 라우터', () => {
 
   it('교정이 실패해도 확인된 인용을 보존하고 미확인 전수 주장은 제거한다', () => {
     const answer =
-      '전체 파일을 모두 읽었습니다.\nIt is Within You에서 "there is no accident"를 확인했습니다. [tool-1]';
+      '전체 파일을 모두 읽었습니다.\nQuiet Ledger에서 "the ledger records two visits"를 확인했습니다. [tool-1]';
     const result = enforceNativeToolAnswerContract(answer, [
       createToolCall({
         executionKind: 'native',
         status: 'success',
         normalizedResult: JSON.stringify({
           action: 'read',
-          path: 'It is Within You.txt',
+          path: 'Quiet Ledger.txt',
           startLine: 36,
           endLine: 36,
-          content: 'there is no accident',
+          content: 'the ledger records two visits',
         }),
       }),
     ]);
-    expect(result.content).toContain('It is Within You');
+    expect(result.content).toContain('Quiet Ledger');
     expect(result.content).toContain('[tool-1]');
     expect(result.content).not.toContain('전체 파일');
     expect(result.violationCodes).toContain('whole-read-claim-unverified');
@@ -513,14 +513,14 @@ describe('LLM 도구 실행 라우터', () => {
   });
 
   it('완료되고 잘리지 않은 검색 범위의 scoped negative는 그대로 표시한다', () => {
-    const answer = '현재 검색 범위에서 네빌의 직접 언급을 찾지 못했습니다.';
+    const answer = '현재 검색 범위에서 퀼런의 직접 언급을 찾지 못했습니다.';
     const result = enforceNativeToolAnswerContract(answer, [
       createToolCall({
         executionKind: 'native',
         status: 'success',
         normalizedResult: JSON.stringify({
           action: 'search',
-          query: '네빌',
+          query: '퀼런',
           path: '',
           match: 'all',
           hits: [],
@@ -564,17 +564,17 @@ describe('LLM 도구 실행 라우터', () => {
   });
 
   it('네이티브 검색 근거를 설명하는 긍정 답변은 변경하지 않는다', () => {
-    const answer = '검색 결과에서 네빌을 언급한 문서를 확인했습니다.';
+    const answer = '검색 결과에서 퀼런을 언급한 문서를 확인했습니다.';
     const result = enforceNativeToolAnswerContract(answer, [
       createToolCall({
         executionKind: 'native',
         status: 'success',
         normalizedResult: JSON.stringify({
           action: 'search',
-          query: '네빌',
+          query: '퀼런',
           path: '',
           match: 'all',
-          hits: [{ path: 'Neville.md' }],
+          hits: [{ path: 'Quillon.md' }],
           scannedFiles: 10,
           unreadableFiles: 0,
           totalHits: 1,

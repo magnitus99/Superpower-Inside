@@ -757,10 +757,10 @@ mod tests {
     #[test]
     fn compressed_tool_results_preserve_bounds_and_relevant_quote() {
         let text = format!(
-            "{}there is no accident in this world",
+            "{}the ledger records two visits",
             "irrelevant\n".repeat(500)
         );
-        let raw = plan_tool_result_summary_json(&json!({"action":"read", "path":"lecture.txt", "startLine":1, "endLine":502, "totalLines":502, "truncated":false, "content":text}).to_string(), "no accident", 2_048);
+        let raw = plan_tool_result_summary_json(&json!({"action":"read", "path":"lecture.txt", "startLine":1, "endLine":502, "totalLines":502, "truncated":false, "content":text}).to_string(), "ledger records", 2_048);
         assert!(raw.len() <= 2_048);
         let envelope: JsonValue = serde_json::from_str(&raw).unwrap_or(JsonValue::Null);
         assert_eq!(envelope.get("originalResultAvailable"), Some(&json!(false)));
@@ -774,9 +774,9 @@ mod tests {
         assert_eq!(summary.get("path"), Some(&json!("lecture.txt")));
         assert_eq!(summary.get("totalLines"), Some(&json!(502)));
         assert!(
-            summary
-                .get("excerpts")
-                .is_some_and(|value| value.to_string().contains("no accident"))
+            summary.get("excerpts").is_some_and(|value| {
+                value.to_string().contains("the ledger records two visits")
+            })
         );
         assert_eq!(
             summary.pointer("/excerpts/citations/0/endLine"),
@@ -797,12 +797,12 @@ mod tests {
     #[test]
     fn bounded_evidence_keeps_plain_lecture_metadata_with_its_line_range() {
         let text = format!(
-            "제목: It is Within You\n강연일: 1965-12-03\n강연 ID: 349\n원본 URL: https://example.com/lecture\n\n{}\nthere is no accident in this world",
+            "제목: Quiet Ledger\n날짜: 1999-04-02\n문서 ID: 42\n원본 URL: https://example.com/lecture\n\n{}\nthe ledger records two visits",
             "unrelated\n".repeat(400)
         );
-        let raw = plan_chat_evidence_json(&json!({"question":"no accident", "source":{"filePath":"lecture.txt","text":text}, "sourceId":"folder-1", "label":"Source", "maxChars":2_400}).to_string());
-        assert!(raw.contains("1965-12-03"), "{raw}");
-        assert!(raw.contains("there is no accident"));
+        let raw = plan_chat_evidence_json(&json!({"question":"two visits", "source":{"filePath":"lecture.txt","text":text}, "sourceId":"folder-1", "label":"Source", "maxChars":2_400}).to_string());
+        assert!(raw.contains("1999-04-02"), "{raw}");
+        assert!(raw.contains("the ledger records two visits"));
         let value: JsonValue = serde_json::from_str(&raw).unwrap_or(JsonValue::Null);
         assert_eq!(value.pointer("/citations/0/line"), Some(&json!(1)));
         assert_eq!(value.pointer("/citations/0/endLine"), Some(&json!(4)));
@@ -811,12 +811,12 @@ mod tests {
     #[test]
     fn bounded_evidence_keeps_metadata_and_the_matching_paragraph() {
         let text = format!(
-            "---\ntitle: It is Within You\ndate: 1965-12-03\n---\n{}\nthere is no accident in this world",
+            "---\ntitle: Quiet Ledger\ndate: 1999-04-02\n---\n{}\nthe ledger records two visits",
             "unrelated\n".repeat(400)
         );
-        let raw = plan_chat_evidence_json(&json!({"question":"no accident", "source":{"filePath":"lecture.txt","text":text}, "sourceId":"folder-1", "label":"Source", "maxChars":2_400}).to_string());
-        assert!(raw.contains("1965-12-03"));
-        assert!(raw.contains("there is no accident"));
+        let raw = plan_chat_evidence_json(&json!({"question":"ledger records", "source":{"filePath":"lecture.txt","text":text}, "sourceId":"folder-1", "label":"Source", "maxChars":2_400}).to_string());
+        assert!(raw.contains("1999-04-02"));
+        assert!(raw.contains("the ledger records two visits"));
     }
     use serde_json::{Value as JsonValue, json};
 
