@@ -92,6 +92,11 @@ import {
   type IndexingResult,
 } from './src/rag/indexer';
 import { calculateRagStatus, type RagStatusSummary } from './src/rag/status';
+import {
+  formatRagEtaDuration,
+  summarizeRagActivity,
+  type RagIndexingProgressSummary,
+} from './src/rag/indexing-progress';
 import { RAGQueryEngine } from './src/rag/query';
 import { PerformanceGuard, type PerformanceGuardState } from './src/rag/performance-guard';
 import {
@@ -162,6 +167,8 @@ import { maintainPluginOwnedFiles } from './src/utils/plugin-file-maintenance';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
 const RAG_RUNTIME_INIT_STEP_TIMEOUT_MS = 30_000;
+/** 죽은 BM25 작업자를 다시 띄우는 최대 시도 횟수입니다. */
+const MAX_BM25_RECOVERY_ATTEMPTS = 2;
 const AUTO_UPDATE_TIMER_WINDOW_KEY = '__superpowerInsideAutoUpdateTimerV1' as const;
 
 type AutoUpdateTimerWindow = Window & {
@@ -293,6 +300,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private automaticRagRecovery: AutomaticRagRecoveryCoordinator | null = null;
   private ragPerformanceGuard: PerformanceGuard | null = null;
   ragIndexingStatus: RagIndexingSchedulerStatus | null = null;
+  private bm25RecoveryAttempts = 0;
+  private bm25RecoveryInFlight = false;
+  private bm25RecoveryExhausted = false;
   nextAutoUpdateAt: number | null = null;
   lastAutoUpdateSkippedReason: string | null = null;
   lastAutoUpdateResult: IndexingResult | null = null;
@@ -561,6 +571,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return this.isRagSearching();
   }
 
+  /** 색인 진행을 화면에서 보여 줄 요약입니다. 색인이 돌지 않으면 null입니다. */
+  getRagIndexingProgressSummary(): RagIndexingProgressSummary | null {
+    return summarizeRagActivity({
+      status: this.ragIndexingStatus,
+      keywordRestore: this.bm25Index?.restoreProgress ?? null,
+    });
+  }
+
   /** 채팅 입력부에 보여 줄 검색 준비 상태입니다. 준비되지 않아도 질문은 보낼 수 있습니다. */
   getRetrievalReadiness(): ChatRetrievalReadiness {
     return resolveChatRetrievalReadiness({
@@ -573,7 +591,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private getKeywordIndexState(): ChatKeywordIndexState {
     if (!this.settings.rag.enableBM25) return 'disabled';
-    if (this.bm25Index) return this.bm25Index.isReady ? 'ready' : 'loading';
+    if (this.bm25Index) {
+      if (this.bm25Index.isReady) return 'ready';
+      // 작업자가 죽은 채로 끝난 상태는 계속 '준비 중'으로 두지 않고 복구를 시도합니다.
+      if (!this.bm25Index.hasFailure) return 'loading';
+      this.scheduleBm25WorkerRecovery();
+      return this.bm25RecoveryExhausted ? 'unavailable' : 'loading';
+    }
     if (
       this.lastRagRuntimeInitFinishedAt === null ||
       (this.ragRuntimeInitRunner?.isRunning() ?? false)
@@ -581,6 +605,35 @@ export default class SuperpowerInsidePlugin extends Plugin {
       return 'loading';
     }
     return 'unavailable';
+  }
+
+  /** 죽은 BM25 작업자를 백그라운드에서 다시 띄웁니다. 두 번 실패하면 한계로 보고합니다. */
+  private scheduleBm25WorkerRecovery(): void {
+    if (!this.bm25Index || this.bm25RecoveryInFlight || this.bm25RecoveryExhausted) return;
+    if (this.bm25RecoveryAttempts >= MAX_BM25_RECOVERY_ATTEMPTS) {
+      this.bm25RecoveryExhausted = true;
+      return;
+    }
+    this.bm25RecoveryAttempts += 1;
+    this.bm25RecoveryInFlight = true;
+    void this.bm25Index
+      .recoverClosedWorker()
+      .catch((error: unknown) => {
+        this.getLogger().error('BM25 worker recovery failed.', {
+          source: 'rag.bm25',
+          error,
+        });
+        if (this.bm25RecoveryAttempts >= MAX_BM25_RECOVERY_ATTEMPTS) {
+          this.bm25RecoveryExhausted = true;
+        }
+      })
+      .finally(() => {
+        this.bm25RecoveryInFlight = false;
+        if (this.bm25Index?.isReady) {
+          this.bm25RecoveryAttempts = 0;
+          this.refreshBus?.emit('rag', { status: 'success' });
+        }
+      });
   }
 
   cancelRagIndexing(): void {
@@ -2245,7 +2298,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           phase,
           completed: String(completed),
           total: String(progress.totalFiles),
-          eta: this.formatRagEtaDuration(progress.eta.remainingMs),
+          eta: formatRagEtaDuration(progress.eta.remainingMs),
         });
       }
       return t('ragIndexingRunning', { phase: this.formatRagIndexingPhase(status.phase) });
@@ -2316,19 +2369,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       ),
       total: String(progress.currentFileTotalChunks),
     });
-  }
-
-  private formatRagEtaDuration(durationMs: number): string {
-    const totalSeconds = Math.max(0, Math.ceil(durationMs / 1000));
-    if (totalSeconds < 60) return `${totalSeconds}s`;
-    const totalMinutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    if (totalMinutes < 60) {
-      return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
-    }
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   }
 
   private logAutomaticRagRecoveryEvent(event: AutomaticRagRecoveryEvent, detail?: unknown): void {

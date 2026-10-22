@@ -174,7 +174,7 @@ describe('BM25 worker runtime', () => {
     const initialization = runtime.initialize('test-db', '');
     const rejected = expect(initialization).rejects.toThrow('timed out');
 
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(500);
 
     await rejected;
     expect(fixture.terminate).toHaveBeenCalledOnce();

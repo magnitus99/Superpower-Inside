@@ -612,6 +612,17 @@ export class IndexedDbBM25Index {
     return this.restoreMode;
   }
 
+  /** 색인 복원 중이면 읽은 문서 수와 기대 문서 수를 알려줍니다. */
+  get restoreProgress(): { processedDocuments: number; expectedDocuments: number } | null {
+    if (this.isReady) return null;
+    return this.workerRuntime?.hydrationProgress ?? null;
+  }
+
+  /** 작업자 실패나 종료로 이번 세션 색인을 쓸 수 없는 상태인지 알려줍니다. */
+  get hasFailure(): boolean {
+    return this.workerFailure !== null || (this.workerRuntime?.isClosed ?? false);
+  }
+
   get isReady(): boolean {
     return (
       this.loaded &&

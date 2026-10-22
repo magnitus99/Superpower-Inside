@@ -6,6 +6,7 @@ import { IndexedDbBM25Index, tokenize, type BM25DocumentInput } from './bm25';
 import type {
   BM25WorkerAdapter,
   BM25WorkerFactory,
+  BM25WorkerHandle,
   BM25WorkerRequest,
   BM25WorkerResponse,
 } from './bm25-worker-runtime';
@@ -430,6 +431,50 @@ describe('IndexedDbBM25Index', () => {
       expect(await bm25.getCorpusDocumentsByIds(['synthetic::0'])).toEqual([
         expect.objectContaining({ text: '합성 원문 보존' }),
       ]);
+    } finally {
+      bm25.close();
+    }
+  });
+
+  it('작업자가 종료되면 이번 세션 색인을 쓸 수 없는 상태로 보고한다', async () => {
+    let respond: ((event: MessageEvent<BM25WorkerResponse>) => void) | undefined;
+    let fail: ((event: ErrorEvent) => void) | undefined;
+    const workerFactory = (): BM25WorkerHandle => ({
+      worker: {
+        postMessage: (message: BM25WorkerRequest) => {
+          window.setTimeout(
+            () =>
+              respond?.(
+                {
+                  data: {
+                    id: message.id,
+                    ready: true,
+                    tokenizerCurrent: true,
+                    totalDocs: 1,
+                  },
+                } as MessageEvent<BM25WorkerResponse>,
+              ),
+            0,
+          );
+        },
+        terminate: vi.fn(),
+        setOnMessage: (handler: (event: MessageEvent<BM25WorkerResponse>) => void) => {
+          respond = handler;
+        },
+        setOnError: (handler: (event: ErrorEvent) => void) => {
+          fail = handler;
+        },
+      },
+      dispose: vi.fn(),
+    });
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter(), undefined, {
+      workerFactory,
+    });
+    try {
+      await bm25.load();
+      expect(bm25.hasFailure).toBe(false);
+      fail?.({ message: '합성 작업자 종료' } as ErrorEvent);
+      expect(bm25.hasFailure).toBe(true);
     } finally {
       bm25.close();
     }

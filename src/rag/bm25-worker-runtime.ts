@@ -58,6 +58,8 @@ interface PendingRequest {
   resolve(response: BM25WorkerResponse): void;
   reject(error: Error): void;
   timeoutId: number;
+  timeoutMs: number;
+  expectedDocuments?: number;
   lastProcessedDocuments: number;
   removeAbortListener(): void;
 }
@@ -77,6 +79,8 @@ export interface BM25WorkerHandle {
 export type BM25WorkerFactory = () => BM25WorkerHandle;
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
+/** 전체 색인 복원·직렬화는 수십 초가 걸릴 수 있어 기본 한도의 배수로 늘립니다. */
+const RESTORE_TIMEOUT_MULTIPLIER = 5;
 
 export class BM25WorkerRuntime {
   private readonly worker: BM25WorkerAdapter;
@@ -84,6 +88,7 @@ export class BM25WorkerRuntime {
   private readonly pending = new Map<number, PendingRequest>();
   private nextRequestId = 1;
   private closed = false;
+  private hydration: { processedDocuments: number; expectedDocuments: number } | null = null;
 
   constructor(
     createWorker: BM25WorkerFactory = createBrowserWorker,
@@ -104,18 +109,27 @@ export class BM25WorkerRuntime {
     sinceOrder?: number,
     expectedDocs?: number,
   ): Promise<BM25WorkerResponse> {
-    return this.request({
-      operation: 'initialize',
-      wasmBase64: RAG_WASM_BASE64,
-      dbName,
-      snapshot,
-      sinceOrder,
+    return this.request(
+      {
+        operation: 'initialize',
+        wasmBase64: RAG_WASM_BASE64,
+        dbName,
+        snapshot,
+        sinceOrder,
+        expectedDocs,
+      },
+      undefined,
+      this.requestTimeoutMs * RESTORE_TIMEOUT_MULTIPLIER,
       expectedDocs,
-    });
+    );
   }
 
   async serialize(): Promise<string> {
-    const response = await this.request({ operation: 'serialize' });
+    const response = await this.request(
+      { operation: 'serialize' },
+      undefined,
+      this.requestTimeoutMs * RESTORE_TIMEOUT_MULTIPLIER,
+    );
     return response.snapshot ?? '';
   }
 
@@ -161,9 +175,16 @@ export class BM25WorkerRuntime {
     return this.closed;
   }
 
+  /** 색인 복원 중이면 지금까지 읽은 문서 수와 기대 문서 수를 알려줍니다. */
+  get hydrationProgress(): { processedDocuments: number; expectedDocuments: number } | null {
+    return this.hydration;
+  }
+
   private request(
     request: Omit<BM25WorkerRequest, 'id'>,
     signal?: AbortSignal,
+    timeoutMs = this.requestTimeoutMs,
+    expectedDocuments?: number,
   ): Promise<BM25WorkerResponse> {
     if (this.closed) return Promise.reject(new Error('BM25 worker is closed.'));
     if (signal?.aborted) {
@@ -183,11 +204,13 @@ export class BM25WorkerRuntime {
       const timeoutId = window.setTimeout(() => {
         const error = new Error('BM25 worker request timed out.');
         this.close(error);
-      }, this.requestTimeoutMs);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve,
         reject,
         timeoutId,
+        timeoutMs,
+        expectedDocuments,
         lastProcessedDocuments: 0,
         removeAbortListener: () => signal?.removeEventListener('abort', abort),
       });
@@ -205,11 +228,15 @@ export class BM25WorkerRuntime {
         processedDocuments > request.lastProcessedDocuments
       ) {
         request.lastProcessedDocuments = processedDocuments;
+        this.hydration = {
+          processedDocuments,
+          expectedDocuments: request.expectedDocuments ?? processedDocuments,
+        };
         window.clearTimeout(request.timeoutId);
         request.timeoutId = window.setTimeout(() => {
           const error = new Error('BM25 worker request timed out.');
           this.close(error);
-        }, this.requestTimeoutMs);
+        }, request.timeoutMs);
       }
       return;
     }

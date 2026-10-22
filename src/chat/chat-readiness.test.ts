@@ -130,6 +130,66 @@ describe('검색 준비 상태 요약', () => {
       }),
     ).toBe('preparing');
   });
+  it('색인이 진행 중이면 단계·문서 범위·남은 시간을 함께 보여 준다', () => {
+    const snapshot = createChatReadinessSnapshot({
+      enabledProviderCount: 1,
+      availableModelCount: 1,
+      selectedModel: 'model-a',
+      retrieval: 'preparing',
+      indexing: {
+        phase: 'file',
+        completedFiles: 12,
+        totalFiles: 40,
+        currentFileEmbeddedChunks: 30,
+        currentFileTotalChunks: 120,
+        etaRemainingMs: 95_000,
+      },
+    });
+    expect(snapshot.items[0]).toEqual(
+      expect.objectContaining({
+        kind: 'rag',
+        detail: '파일 색인 · 문서 12/40개 · 현재 문서 30/120 청크 · 남은 시간 1m 35s',
+      }),
+    );
+  });
+
+  it('남은 시간을 아직 모르면 계산 중으로 표시하고 문서 범위는 유지한다', () => {
+    const snapshot = createChatReadinessSnapshot({
+      enabledProviderCount: 1,
+      availableModelCount: 1,
+      selectedModel: 'model-a',
+      retrieval: 'preparing',
+      indexing: {
+        phase: 'preparing',
+        completedFiles: 0,
+        totalFiles: 0,
+        currentFileEmbeddedChunks: null,
+        currentFileTotalChunks: null,
+        etaRemainingMs: null,
+      },
+    });
+    expect(snapshot.items[0]?.detail).toBe('준비 · 남은 시간 계산 중');
+  });
+
+  it('키워드 색인 복원 중에는 읽은 문서 수를 보여 준다', () => {
+    const snapshot = createChatReadinessSnapshot({
+      enabledProviderCount: 1,
+      availableModelCount: 1,
+      selectedModel: 'model-a',
+      retrieval: 'preparing',
+      indexing: {
+        phase: 'preparing',
+        completedFiles: 0,
+        totalFiles: 0,
+        currentFileEmbeddedChunks: null,
+        currentFileTotalChunks: null,
+        etaRemainingMs: null,
+        keywordRestore: { processedDocuments: 1_200, expectedDocuments: 5_400 },
+      },
+    });
+    expect(snapshot.items[0]?.detail).toBe('키워드 색인을 다시 읽는 중 · 문서 1200/5400');
+  });
+
   it('초기화 실패·건너뜀과 색인 사용 불가는 제한 상태로 남긴다', () => {
     expect(
       resolveChatRetrievalReadiness({

@@ -640,6 +640,19 @@ export interface I18nKeys {
   chatReadinessModelMissingDetail: string;
   chatReadinessRagIndexing: string;
   chatReadinessRagIndexingDetail: string;
+  chatReadinessIndexingPhasePreparing: string;
+  chatReadinessIndexingPhaseFile: string;
+  chatReadinessIndexingPhasePending: string;
+  chatReadinessIndexingPhaseAll: string;
+  chatReadinessIndexingPhasePaused: string;
+  chatReadinessIndexingPhaseIdle: string;
+  chatReadinessIndexingDocumentRange: string;
+  chatReadinessIndexingChunkRange: string;
+  chatReadinessIndexingEta: string;
+  chatReadinessIndexingEtaCalculating: string;
+  chatReadinessKeywordRestore: string;
+  chatReadinessKeywordRestoreCount: string;
+  searchIndexProgressEta: string;
   chatReadinessRagNotReady: string;
   chatReadinessRagNotReadyDetail: string;
   ragRetrievalDegradedAction: string;
@@ -2457,6 +2470,18 @@ const ko: I18nKeys = {
   chatReadinessRagIndexing: '검색 준비 중',
   chatReadinessRagIndexingDetail:
     '검색 엔진과 색인을 준비하고 있습니다. 준비가 끝날 때까지 최신 문서가 답변 근거에서 빠질 수 있습니다.',
+  chatReadinessIndexingPhasePreparing: '준비',
+  chatReadinessIndexingPhaseFile: '파일 색인',
+  chatReadinessIndexingPhasePending: '문서 갱신',
+  chatReadinessIndexingPhaseAll: '전체 재색인',
+  chatReadinessIndexingPhasePaused: '일시 중지',
+  chatReadinessIndexingPhaseIdle: '대기',
+  chatReadinessIndexingDocumentRange: '문서 {completed}/{total}개',
+  chatReadinessIndexingChunkRange: '현재 문서 {completed}/{total} 청크',
+  chatReadinessIndexingEta: '남은 시간 {eta}',
+  chatReadinessIndexingEtaCalculating: '남은 시간 계산 중',
+  chatReadinessKeywordRestore: '키워드 색인을 다시 읽는 중 · 문서 {completed}/{total}',
+  chatReadinessKeywordRestoreCount: '키워드 색인을 다시 읽는 중 · 문서 {completed}개',
   chatReadinessRagNotReady: '검색 준비 안 됨',
   chatReadinessRagNotReadyDetail:
     '검색 엔진 또는 키워드 색인이 준비되지 않아 일부 문서가 검색되지 않거나 답변이 느려질 수 있습니다.',
@@ -3697,6 +3722,7 @@ const ko: I18nKeys = {
   searchFilterModifiedYear: "최근 1년",
   searchFilterReset: "필터 초기화",
   searchIndexProgress: '색인 중 · 문서 {completed}/{total}',
+  searchIndexProgressEta: '색인 중 · 문서 {completed}/{total} · 남은 시간 {eta}',
   searchIndexMissing: "색인된 문서가 없어 검색할 수 없습니다. 노트 검색 색인을 먼저 실행하세요.",
   searchIndexStale: "색인이 오래되었습니다. 갱신 대기 문서 {count}개.",
   searchStatusIdle: "검색어를 입력하세요. 색인만 사용하며 모델을 호출하지 않습니다.",
@@ -4450,7 +4476,19 @@ const en: I18nKeys = {
     'Choose a model from your connection. If none is available, add one in AI connection settings.',
   chatReadinessRagIndexing: 'Preparing search',
   chatReadinessRagIndexingDetail:
-    'Search engine and index are being prepared. Until they are ready, the newest documents may be missing from answer evidence.',
+    'Preparing the search engine and index. Recent documents can be missing from answers until it finishes.',
+  chatReadinessIndexingPhasePreparing: 'Preparing',
+  chatReadinessIndexingPhaseFile: 'Indexing files',
+  chatReadinessIndexingPhasePending: 'Updating documents',
+  chatReadinessIndexingPhaseAll: 'Full reindex',
+  chatReadinessIndexingPhasePaused: 'Paused',
+  chatReadinessIndexingPhaseIdle: 'Idle',
+  chatReadinessIndexingDocumentRange: '{completed}/{total} documents',
+  chatReadinessIndexingChunkRange: '{completed}/{total} chunks in this document',
+  chatReadinessIndexingEta: '{eta} left',
+  chatReadinessIndexingEtaCalculating: 'Estimating time left',
+  chatReadinessKeywordRestore: 'Reloading the keyword index · {completed}/{total} documents',
+  chatReadinessKeywordRestoreCount: 'Reloading the keyword index · {completed} documents',
   chatReadinessRagNotReady: 'Search not ready',
   chatReadinessRagNotReadyDetail:
     'The search engine or keyword index is not ready, so some documents may not be searched and answers may take longer.',
@@ -5729,6 +5767,7 @@ const en: I18nKeys = {
   searchFilterModifiedYear: "Past year",
   searchFilterReset: "Reset filters",
   searchIndexProgress: 'Indexing · {completed}/{total} documents',
+  searchIndexProgressEta: 'Indexing · {completed}/{total} documents · {eta} left',
   searchIndexMissing: "No documents are indexed yet, so search is unavailable. Run the note search index first.",
   searchIndexStale: "The index is stale. {count} documents are waiting for an update.",
   searchStatusIdle: "Enter a query. Search uses the index only and makes no model calls.",

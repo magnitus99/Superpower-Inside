@@ -1,5 +1,6 @@
 import { ItemView, Notice, TFile, setIcon, type WorkspaceLeaf } from 'obsidian';
 import { t } from '../i18n';
+import { formatRagEtaDuration } from '../rag/indexing-progress';
 import type { PluginLike } from '../settings';
 import {
   groupEvidenceByPath,
@@ -318,12 +319,20 @@ export class SearchView extends ItemView {
       (state.ragStatus?.updateRequiredDocuments?.length ?? 0) > 0;
     if (indexing) {
       const progress = state.ragIndexingStatus?.progress ?? null;
+      const eta = progress?.eta && progress.eta.remainingMs !== null ? progress.eta : null;
+      const etaReliable = eta !== null && eta.confidence !== 'calculating' && eta.confidence !== 'low';
       el.setText(
-        progress
-          ? t('searchIndexProgress', {
-              completed: progress.completedFiles,
-              total: progress.totalFiles,
-            })
+        progress && progress.totalFiles > 0
+          ? etaReliable
+            ? t('searchIndexProgressEta', {
+                completed: Math.min(progress.completedFiles, progress.totalFiles),
+                total: progress.totalFiles,
+                eta: formatRagEtaDuration(eta.remainingMs ?? 0),
+              })
+            : t('searchIndexProgress', {
+                completed: Math.min(progress.completedFiles, progress.totalFiles),
+                total: progress.totalFiles,
+              })
           : t('ragIndexingInProgress'),
       );
       this.setRunEnabled(false);

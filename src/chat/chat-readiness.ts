@@ -1,4 +1,6 @@
 import { t } from '../i18n';
+import type { RagIndexingProgressSummary } from '../rag/indexing-progress';
+import { formatRagEtaDuration } from '../rag/indexing-progress';
 
 export type ChatReadinessStatus = 'ready' | 'degraded' | 'blocked';
 export type ChatReadinessSeverity = 'notice' | 'blocking';
@@ -14,6 +16,8 @@ export interface ChatReadinessInput {
   availableModelCount: number;
   selectedModel: string;
   retrieval: ChatRetrievalReadiness;
+  /** 진행 중인 색인 요약입니다. 있으면 단계·문서 범위·남은 시간을 함께 보여 줍니다. */
+  indexing?: RagIndexingProgressSummary | null;
 }
 
 export type ChatReadinessTone = 'neutral' | 'warning' | 'danger';
@@ -58,6 +62,66 @@ export function resolveChatRetrievalReadiness(
   return 'ready';
 }
 
+/** 색인 단계 이름을 사용자 문구로 바꿉니다. */
+function describeIndexingPhase(phase: RagIndexingProgressSummary['phase']): string {
+  switch (phase) {
+    case 'preparing':
+      return t('chatReadinessIndexingPhasePreparing');
+    case 'file':
+      return t('chatReadinessIndexingPhaseFile');
+    case 'pending':
+      return t('chatReadinessIndexingPhasePending');
+    case 'all':
+      return t('chatReadinessIndexingPhaseAll');
+    case 'paused':
+      return t('chatReadinessIndexingPhasePaused');
+    default:
+      return t('chatReadinessIndexingPhaseIdle');
+  }
+}
+
+/** 색인 진행 중이면 단계·문서 범위·남은 시간을 한 줄로 요약합니다. */
+function describeIndexingProgress(indexing: RagIndexingProgressSummary | null): string {
+  if (!indexing) return t('chatReadinessRagIndexingDetail');
+  if (indexing.keywordRestore) {
+    const { processedDocuments, expectedDocuments } = indexing.keywordRestore;
+    // 기대 문서 수를 모르거나 이미 넘었다면 읽은 수만 보여 줍니다.
+    return expectedDocuments > processedDocuments
+      ? t('chatReadinessKeywordRestore', {
+          completed: String(processedDocuments),
+          total: String(expectedDocuments),
+        })
+      : t('chatReadinessKeywordRestoreCount', { completed: String(processedDocuments) });
+  }
+  const parts = [describeIndexingPhase(indexing.phase)];
+  if (indexing.totalFiles > 0) {
+    parts.push(
+      t('chatReadinessIndexingDocumentRange', {
+        completed: String(indexing.completedFiles),
+        total: String(indexing.totalFiles),
+      }),
+    );
+  }
+  if (indexing.currentFileTotalChunks !== null && indexing.currentFileEmbeddedChunks !== null) {
+    parts.push(
+      t('chatReadinessIndexingChunkRange', {
+        completed: String(
+          Math.min(indexing.currentFileEmbeddedChunks, indexing.currentFileTotalChunks),
+        ),
+        total: String(indexing.currentFileTotalChunks),
+      }),
+    );
+  }
+  parts.push(
+    indexing.etaRemainingMs === null
+      ? t('chatReadinessIndexingEtaCalculating')
+      : t('chatReadinessIndexingEta', {
+          eta: formatRagEtaDuration(indexing.etaRemainingMs),
+        }),
+  );
+  return parts.join(' · ');
+}
+
 /** 현재 입력으로 준비 상태 스냅샷을 만든다. */
 export function createChatReadinessSnapshot(input: ChatReadinessInput): ChatReadinessSnapshot {
   const items: ChatReadinessItem[] = [];
@@ -90,7 +154,9 @@ export function createChatReadinessSnapshot(input: ChatReadinessInput): ChatRead
       severity: 'notice',
       tone: preparing ? 'neutral' : 'warning',
       label: t(preparing ? 'chatReadinessRagIndexing' : 'chatReadinessRagNotReady'),
-      detail: t(preparing ? 'chatReadinessRagIndexingDetail' : 'chatReadinessRagNotReadyDetail'),
+      detail: preparing
+        ? describeIndexingProgress(input.indexing ?? null)
+        : t('chatReadinessRagNotReadyDetail'),
     });
   }
 

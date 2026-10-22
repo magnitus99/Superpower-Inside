@@ -193,6 +193,8 @@ import {
 } from './run-ownership';
 
 export const CHAT_VIEW_TYPE = 'superpower-inside-chat';
+/** 준비 상태 표시를 다시 그리는 간격입니다(색인 진행률 갱신). */
+const READINESS_REFRESH_INTERVAL_MS = 1000;
 const HIDDEN_CLASS = 'superpower-inside-hidden';
 const MAX_TOOL_CALLS_PER_ROUND = 8;
 const MAX_TOOL_CALLS_PER_TURN = 64;
@@ -271,6 +273,7 @@ export class ChatView extends ItemView {
   private emptyStateEl: HTMLElement | null;
   private scrollBtn: HTMLElement | null;
   private readinessEl: HTMLElement | null;
+  private readinessTicker: number | null = null;
   private preparationErrorEl: HTMLElement | null = null;
   private runControlEl: HTMLElement | null;
   private modelSelectEl: HTMLSelectElement | null;
@@ -461,6 +464,10 @@ export class ChatView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    if (this.readinessTicker !== null) {
+      window.clearTimeout(this.readinessTicker);
+      this.readinessTicker = null;
+    }
     this.clearAutoSaveTimer();
     this.invalidateActiveChatRun(false);
     this.cancelStreamingMarkdownRender();
@@ -803,12 +810,24 @@ export class ChatView extends ItemView {
 
   private renderChatReadiness(): void {
     if (!this.readinessEl) return;
+    // 준비가 끝날 때까지 진행률을 갱신합니다. 색인 이벤트가 없어도 화면이 멈춰 보이지 않게 합니다.
+    if (this.readinessTicker !== null) {
+      window.clearTimeout(this.readinessTicker);
+      this.readinessTicker = null;
+    }
     const snapshot = createChatReadinessSnapshot({
       enabledProviderCount: this.getEnabledProviderCount(),
       availableModelCount: this.getAvailableModelCount(),
       selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
       retrieval: this.plugin.getRetrievalReadiness(),
+      indexing: this.plugin.getRagIndexingProgressSummary?.() ?? null,
     });
+    if (snapshot.status !== 'ready') {
+      this.readinessTicker = window.setTimeout(() => {
+        this.readinessTicker = null;
+        this.renderChatReadiness();
+      }, READINESS_REFRESH_INTERVAL_MS);
+    }
     this.readinessEl.empty();
     this.readinessEl.className = `superpower-inside-chat-readiness ${snapshot.status}`;
     setHidden(this.readinessEl, snapshot.status === 'ready');
