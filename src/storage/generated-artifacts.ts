@@ -22,7 +22,7 @@ export const GENERATED_ARTIFACT_FEATURES: readonly GeneratedArtifactFeature[] = 
   { id: 'rag-corpus', state: 'supported' },
   { id: 'pdf-sources', state: 'supported' },
   { id: 'embedding-cache', state: 'supported' },
-  { id: 'agent-diagnostics', state: 'supported' },
+  { id: 'agent-diagnostics', state: 'retired' },
   { id: 'local-model:ternlight-base', state: 'supported' },
   { id: 'local-model:embeddinggemma-300m', state: 'supported' },
 ];

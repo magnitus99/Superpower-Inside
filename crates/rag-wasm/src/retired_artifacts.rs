@@ -23,6 +23,10 @@ struct Context {
     tracked: Vec<TrackedArtifact>,
     /// 현재 열려 있거나 쓰는 생성물입니다.
     active_artifacts: Vec<(String, String)>,
+    /// 플러그인 설치 디렉터리처럼 파일 소유권을 판단할 루트입니다.
+    plugin_file_roots: Vec<String>,
+    /// 지원이 끝난 기능이 남긴 파일 이름입니다. 루트 바로 아래 파일만 지웁니다.
+    retired_file_names: Vec<String>,
 }
 
 /// 생성물의 내용을 포함하지 않는 측정 메타데이터입니다.
@@ -286,6 +290,7 @@ fn parse_input(raw: &str) -> Option<Input> {
                 .collect::<Option<Vec<_>>>()
         },
     )?;
+    let retired_file_names = parse_retired_file_names(context.get("retiredFileNames"))?;
     let context = Context {
         plugin_id: context.get("pluginId")?.as_str()?.to_owned(),
         legacy_names: strings(context.get("legacyNames")?)?,
@@ -296,6 +301,8 @@ fn parse_input(raw: &str) -> Option<Input> {
         features,
         tracked,
         active_artifacts,
+        plugin_file_roots: roots,
+        retired_file_names,
     };
     if context.plugin_id.is_empty() || context.vault_prefixes.is_empty() {
         return None;
@@ -314,6 +321,21 @@ fn parse_input(raw: &str) -> Option<Input> {
         records,
         approval,
     })
+}
+
+/// 지원 종료 파일 이름 목록을 검증해 읽습니다.
+fn parse_retired_file_names(value: Option<&Value>) -> Option<Vec<String>> {
+    let Some(value) = value else {
+        return Some(Vec::new());
+    };
+    let names = strings(value)?;
+    if names
+        .iter()
+        .any(|name| name.is_empty() || name.contains('/'))
+    {
+        return None;
+    }
+    Some(names)
 }
 
 /// 파일의 소수 밀리초 시각을 보존하고 유효하지 않은 측정값을 거부합니다.
@@ -407,6 +429,21 @@ fn plan(input: &Input) -> Plan {
     }
 }
 
+/// 지원이 끝난 기능이 남긴 플러그인 디렉터리 파일인지 확인합니다.
+fn is_retired_plugin_file(id: &str, context: &Context) -> bool {
+    let Some((directory, file_name)) = id.rsplit_once('/') else {
+        return false;
+    };
+    context
+        .retired_file_names
+        .iter()
+        .any(|name| name == file_name)
+        && context
+            .plugin_file_roots
+            .iter()
+            .any(|root| root.trim_end_matches('/') == directory)
+}
+
 /// 소유권이 확인된 지원 종료 생성물만 선택하며 활성 저장소 보호를 우선합니다.
 fn is_retired(record: &Record, context: &Context) -> bool {
     if context
@@ -442,7 +479,9 @@ fn is_retired(record: &Record, context: &Context) -> bool {
         }
     }
     if record.kind == "file" {
-        return (context.legacy_files_safe && RETIRED_FILES.contains(&record.id.as_str()))
+        return (context.legacy_files_safe
+            && (RETIRED_FILES.contains(&record.id.as_str())
+                || is_retired_plugin_file(&record.id, context)))
             || RETIRED_FILES.iter().any(|base| {
                 record.id.strip_prefix(base).is_some_and(|suffix| {
                     !suffix.contains('/')
@@ -523,6 +562,8 @@ mod tests {
             features: BTreeMap::new(),
             tracked: Vec::new(),
             active_artifacts: Vec::new(),
+            plugin_file_roots: vec![".obsidian/plugins/plugin".into()],
+            retired_file_names: vec!["agent-diagnostics.json".into()],
         }
     }
 
@@ -589,6 +630,35 @@ mod tests {
         assert_eq!(plan.records.len(), 4);
         assert_eq!(plan.bytes, 300);
         assert_eq!(plan.capacity, "0.01");
+    }
+
+    #[test]
+    fn retired_feature_files_are_deleted_only_inside_plugin_roots() {
+        let mut input = Input {
+            context: context(),
+            approval: None,
+            records: vec![
+                record(
+                    "file",
+                    ".obsidian/plugins/plugin/agent-diagnostics.json",
+                    40,
+                ),
+                record(
+                    "file",
+                    ".obsidian/plugins/plugin/notes/agent-diagnostics.json",
+                    40,
+                ),
+                record("file", "Vault/agent-diagnostics.json", 40),
+            ],
+        };
+        assert!(plan(&input).records.is_empty());
+        input.context.legacy_files_safe = true;
+        let plan = plan(&input);
+        assert_eq!(plan.records.len(), 1);
+        assert_eq!(
+            plan.records.first().map(|record| record.id.as_str()),
+            Some(".obsidian/plugins/plugin/agent-diagnostics.json")
+        );
     }
 
     #[test]

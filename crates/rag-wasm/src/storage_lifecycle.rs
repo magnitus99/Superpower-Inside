@@ -348,7 +348,10 @@ fn parse_plugin_file_maintenance_input(
         .get("legacyDataDirectory")
         .and_then(JsonValue::as_str)
         .and_then(normalize_directory)?;
-    let event_log_path = input.get("eventLogPath").and_then(JsonValue::as_str)?;
+    let event_log_path = input
+        .get("eventLogPath")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
     let now = input.get("now").and_then(JsonValue::as_f64)?;
     let stale_temp_age_ms = input.get("staleTempAgeMs").and_then(JsonValue::as_f64)?;
     let max_event_log_bytes = input.get("maxEventLogBytes").and_then(JsonValue::as_u64)?;
@@ -359,12 +362,7 @@ fn parse_plugin_file_maintenance_input(
         .get("maxDeletions")
         .and_then(JsonValue::as_u64)
         .and_then(|value| usize::try_from(value).ok())?;
-    if !now.is_finite()
-        || !stale_temp_age_ms.is_finite()
-        || now < 0.0
-        || stale_temp_age_ms < 0.0
-        || event_log_path.trim().is_empty()
-    {
+    if !now.is_finite() || !stale_temp_age_ms.is_finite() || now < 0.0 || stale_temp_age_ms < 0.0 {
         return None;
     }
     Some(PluginFileMaintenanceInput {
@@ -400,7 +398,10 @@ fn build_plugin_file_maintenance_plan(input: &PluginFileMaintenanceInput<'_>) ->
         if path.trim().is_empty() || !mtime.is_finite() || mtime < 0.0 {
             return String::new();
         }
-        if path == input.event_log_path && size > input.max_event_log_bytes {
+        if !input.event_log_path.is_empty()
+            && path == input.event_log_path
+            && size > input.max_event_log_bytes
+        {
             rotate_event_log_path = Some(path.to_owned());
         }
         let stale = input.now - mtime >= input.stale_temp_age_ms;

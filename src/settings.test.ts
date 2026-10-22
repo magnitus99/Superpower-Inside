@@ -1,5 +1,6 @@
 import { connectTestChatGPT } from './test/chatgpt';
 import { chatGPTOAuth } from './llm/chatgpt-oauth';
+import { DEBUG_TRACE_BUILD_ENABLED } from './debug/build-flags';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const modalPromptMocks = vi.hoisted(() => ({
@@ -47,7 +48,7 @@ import {
   getCustomOpenAIProviderDisplayName,
   getProviderProfileDisplayName,
   migrateLegacyProviderProfiles,
-  normalizeAgentDiagnosticsSettings,
+  normalizeChatDebugTraceSettings,
   normalizeChatSaveFolder,
   parseProviderModelRef,
   resetProviderProfileVerification,
@@ -1292,11 +1293,16 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(saveSettings.mock.calls[1][0]).toEqual({ reinitRag: true, reinitMcp: false });
   });
 
-  it('agent diagnostics settings default to disabled and normalize legacy data', () => {
-    expect(DEFAULT_SETTINGS.agentDiagnostics.enabled).toBe(false);
-    expect(normalizeAgentDiagnosticsSettings(undefined)).toEqual({ enabled: false });
-    expect(normalizeAgentDiagnosticsSettings({ enabled: true })).toEqual({ enabled: true });
-    expect(normalizeAgentDiagnosticsSettings({ enabled: 'true' })).toEqual({ enabled: false });
+
+  it('채팅 추적 설정은 없으면 빌드 종류를 따르고 값이 있으면 그대로 따른다', () => {
+    expect(normalizeChatDebugTraceSettings(undefined)).toEqual({
+      enabled: DEBUG_TRACE_BUILD_ENABLED,
+    });
+    expect(DEFAULT_SETTINGS.chatDebugTrace.enabled).toBe(DEBUG_TRACE_BUILD_ENABLED);
+    expect(normalizeChatDebugTraceSettings({ enabled: false })).toEqual({ enabled: false });
+    expect(normalizeChatDebugTraceSettings({ enabled: 'true' })).toEqual({
+      enabled: DEBUG_TRACE_BUILD_ENABLED,
+    });
   });
 
   it('기본 MCP 설정은 Context7 서버를 포함한다', () => {

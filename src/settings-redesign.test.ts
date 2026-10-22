@@ -7,7 +7,6 @@ const root = resolve(__dirname, '..');
 const styles = readFileSync(resolve(root, 'styles.css'), 'utf8');
 const settingsSource = readFileSync(resolve(root, 'src/settings.ts'), 'utf8');
 const mainSource = readFileSync(resolve(root, 'main.ts'), 'utf8');
-const diagnosticsViewSource = readFileSync(resolve(root, 'src/diagnostics/view.ts'), 'utf8');
 const logViewPath = resolve(root, 'src/logs/view.ts');
 
 describe('설정 화면 리디자인 구조', () => {
@@ -298,7 +297,7 @@ describe('설정 화면 리디자인 구조', () => {
     const expectedOrder = [
       'buildGeneralStatusSection',
       'buildGeneralBasicsSection',
-      'buildAgentDiagnosticsSection',
+      'buildChatTraceSection',
       'buildGeneralAdvancedSection',
     ];
 
@@ -1153,24 +1152,8 @@ describe('설정 화면 리디자인 구조', () => {
     expect(mainSource).not.toContain("id: 'open-log-view'");
     expect(mainSource).not.toContain('openLogView');
 
-    expect(diagnosticsViewSource).toContain('saveSettingsLight');
-    expect(diagnosticsViewSource).toContain('loggingMinLevel');
-    expect(diagnosticsViewSource).toContain('loggingCopyVisible');
-    expect(diagnosticsViewSource).toContain('loggingFilterSource');
   });
 
-  it('Agent Diagnostics still opens as a readable root workspace tab', () => {
-    const methodStart = mainSource.indexOf('openAgentDiagnosticsView(): void');
-    const methodEnd = mainSource.indexOf('\n  private clearMcpRetryTimers', methodStart);
-    const methodSource = mainSource.slice(methodStart, methodEnd);
-
-    expect(methodStart).toBeGreaterThanOrEqual(0);
-    expect(methodSource).not.toContain('getRightLeaf');
-    expect(methodSource).not.toContain('getLeftLeaf');
-    expect(methodSource).toContain('createRootWorkspaceTabLeaf');
-    expect(methodSource).toContain('AGENT_DIAGNOSTICS_VIEW_TYPE');
-    expect(methodSource).toContain('revealLeaf');
-  });
 
   it('로그 레벨별 색상 클래스가 CSS에 정의되어 있다', () => {
     for (const level of ['trace', 'debug', 'info', 'notice', 'warn', 'error', 'fatal']) {

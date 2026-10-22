@@ -4,6 +4,13 @@ import { planRetiredArtifactsRust } from '../rag/rust-core';
 import type { AppLogger } from '../utils/logger';
 import type { GeneratedArtifactFeature, GeneratedArtifactRecord } from './generated-artifacts';
 
+/** 지원이 끝난 기능이 플러그인 디렉터리에 남긴 파일 이름입니다. */
+export const RETIRED_PLUGIN_FILE_NAMES: readonly string[] = [
+  'agent-diagnostics.json',
+  'agent-diagnostics.ndjson',
+  'agent-diagnostics-safe-mode.json',
+];
+
 export interface RetiredArtifactContext {
   pluginId: string;
   vaultPrefixes: readonly string[];
@@ -15,6 +22,7 @@ export interface RetiredArtifactContext {
   tracked?: readonly GeneratedArtifactRecord[];
   activeArtifacts?: readonly GeneratedArtifactRecord[];
   artifactFileRoots?: readonly string[];
+  retiredFileNames?: readonly string[];
 }
 
 export interface ArtifactRecord {

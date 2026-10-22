@@ -43,6 +43,8 @@ const buildOptions = {
   logLevel: 'info',
   treeShaking: true,
   outfile: 'main.js',
+  // 개발 빌드에서만 채팅 추적 기록을 허용합니다. 배포 번들은 항상 false로 접힙니다.
+  define: { __SUPERPOWER_DEBUG_TRACE__: prod ? 'false' : 'true' },
 };
 
 if (prod) {
@@ -88,6 +90,18 @@ if (prod) {
   console.log(
     `Build complete. main.js: ${output.bytes.toLocaleString('en-US')} / ${MAIN_JS_SIZE_LIMIT_BYTES.toLocaleString('en-US')} bytes.`,
   );
+  process.exit(0);
+}
+
+// 일회성 개발 빌드: 추적 기록이 켜진 번들을 만듭니다(릴리스 번들과 분리).
+if (process.argv[2] === 'dev') {
+  await esbuild.build({
+    ...buildOptions,
+    sourcemap: false,
+    minify: false,
+    drop: [],
+  });
+  console.log('Dev build complete. Debug trace is enabled in this bundle.');
   process.exit(0);
 }
 

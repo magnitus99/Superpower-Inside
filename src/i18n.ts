@@ -238,30 +238,8 @@ export interface I18nKeys {
   loggingEmpty: string;
   loggingCopied: string;
   loggingCopyFailed: string;
-  agentDiagnosticsPanelTitle: string;
-  agentDiagnosticsPanelDesc: string;
-  agentDiagnosticsToggle: string;
-  agentDiagnosticsToggleDesc: string;
-  agentDiagnosticsOpenView: string;
-  agentDiagnosticsOpenViewDesc: string;
-  agentDiagnosticsOpenViewButton: string;
-  agentDiagnosticsFilePath: string;
-  agentDiagnosticsWriteSnapshot: string;
-  agentDiagnosticsWriteSnapshotDesc: string;
-  agentDiagnosticsWriteButton: string;
-  agentDiagnosticsClearDetailedLogging: string;
-  agentDiagnosticsClearDetailedLoggingDesc: string;
-  agentDiagnosticsClearButton: string;
-  agentDiagnosticsViewTitle: string;
-  agentDiagnosticsViewDesc: string;
-  agentDiagnosticsRefreshButton: string;
-  agentDiagnosticsCopyButton: string;
-  agentDiagnosticsEnabledStatus: string;
-  agentDiagnosticsDisabledStatus: string;
-  agentDiagnosticsWriteDone: string;
-  agentDiagnosticsClearDone: string;
-  agentDiagnosticsCopied: string;
-  agentDiagnosticsCopyFailed: string;
+  chatDebugTraceToggle: string;
+  chatDebugTraceToggleDesc: string;
 
   // 프로바이더 탭
   apiKey: string;
@@ -1689,7 +1667,6 @@ export interface I18nKeys {
   promptSourceUser: string;
   cmdOpenAiChat: string;
   cmdReindexVault: string;
-  cmdOpenAgentDiagnosticsView: string;
   promptPresetSourceGroundedLabel: string;
   promptPresetSourceGroundedDescription: string;
   promptPresetSourceGroundedInstruction: string;
@@ -1914,34 +1891,9 @@ const ko: I18nKeys = {
   settingsChatFolderError:
     '저장할 볼트 폴더 경로를 입력하세요. 노트 파일 경로는 사용할 수 없습니다.',
   settingsPresetPreview: '프롬프트 미리보기',
-  agentDiagnosticsPanelTitle: '진단',
-  agentDiagnosticsPanelDesc:
-    'Codex와 opencode가 문제 원인을 확인할 수 있도록 런타임 상태를 기록합니다. 일반 사용에서는 기본적으로 꺼져 있습니다.',
-  agentDiagnosticsToggle: '에이전트 진단 사용',
-  agentDiagnosticsToggleDesc:
-    '이번 플러그인 세션의 heartbeat, 새로고침 이벤트, 최근 로그와 런타임 상태를 수집합니다.',
-  agentDiagnosticsOpenView: '진단 상태 창',
-  agentDiagnosticsOpenViewDesc: '기계 판독 가능한 진단 화면을 엽니다.',
-  agentDiagnosticsOpenViewButton: '진단 열기',
-  agentDiagnosticsFilePath: '진단 파일: {path}',
-  agentDiagnosticsWriteSnapshot: '현재 상태 기록',
-  agentDiagnosticsWriteSnapshotDesc: '현재 진단 상태를 JSON 파일에 즉시 기록합니다.',
-  agentDiagnosticsWriteButton: '상태 기록',
-  agentDiagnosticsClearDetailedLogging: '상세 진단 기록 정리',
-  agentDiagnosticsClearDetailedLoggingDesc:
-    '에이전트 진단 버퍼와 최근 로그를 비우고 진단 JSON 파일을 제거합니다.',
-  agentDiagnosticsClearButton: '진단 기록 정리',
-  agentDiagnosticsViewTitle: 'Agent Diagnostics',
-  agentDiagnosticsViewDesc: 'Machine-readable Superpower Inside runtime status for coding agents.',
-  agentDiagnosticsRefreshButton: 'Refresh',
-  agentDiagnosticsCopyButton: 'Copy JSON',
-  agentDiagnosticsEnabledStatus: '사용 중이며 {path}에 기록합니다.',
-  agentDiagnosticsDisabledStatus: '꺼져 있습니다. 문제가 있을 때만 펼쳐서 켜세요.',
-  agentDiagnosticsWriteDone: 'Agent diagnostics snapshot written.',
-  agentDiagnosticsClearDone: 'Agent diagnostics detailed logging cleaned.',
-  agentDiagnosticsCopied: 'Agent diagnostics JSON copied.',
-  agentDiagnosticsCopyFailed: 'Failed to copy agent diagnostics JSON: {message}',
-  cmdOpenAgentDiagnosticsView: 'Open Agent Diagnostics',
+  chatDebugTraceToggle: '채팅 파일에 추적 기록 저장',
+  chatDebugTraceToggleDesc:
+    '각 답변을 저장할 때 입력, 검색 후보와 순위, 회수 진단, 도구 호출, 임베딩 설정, 사용량과 인용 근거를 JSON 트레이스로 함께 기록합니다. 배포 빌드에서는 이 항목이 나타나지 않습니다.',
   // General
   autoSaveSettings: '설정 자동 저장',
   autoSaveSettingsDesc: '변경 사항 후 자동으로 설정 저장 (디스크 I/O 감소)',
@@ -4050,33 +4002,9 @@ const en: I18nKeys = {
   loggingEmpty: 'No logs to show.',
   loggingCopied: 'Logs copied.',
   loggingCopyFailed: 'Failed to copy logs: {message}',
-  agentDiagnosticsPanelTitle: 'Debugging',
-  agentDiagnosticsPanelDesc:
-    'Agent-facing diagnostics for Codex/opencode. Off by default for normal releases.',
-  agentDiagnosticsToggle: 'Enable agent diagnostics',
-  agentDiagnosticsToggleDesc:
-    'Collect heartbeat, refresh events, recent logs, and runtime state during this plugin session.',
-  agentDiagnosticsOpenView: 'Agent diagnostics status window',
-  agentDiagnosticsOpenViewDesc: 'Open the machine-readable diagnostics view.',
-  agentDiagnosticsOpenViewButton: 'Open diagnostics',
-  agentDiagnosticsFilePath: 'Diagnostics file: {path}',
-  agentDiagnosticsWriteSnapshot: 'Write snapshot now',
-  agentDiagnosticsWriteSnapshotDesc: 'Immediately writes the current diagnostics JSON file.',
-  agentDiagnosticsWriteButton: 'Write snapshot',
-  agentDiagnosticsClearDetailedLogging: 'Clean detailed logging',
-  agentDiagnosticsClearDetailedLoggingDesc:
-    'Clears agent diagnostics buffers, recent logs, and removes the diagnostics JSON file.',
-  agentDiagnosticsClearButton: 'Clean detailed logging',
-  agentDiagnosticsViewTitle: 'Agent Diagnostics',
-  agentDiagnosticsViewDesc: 'Machine-readable Superpower Inside runtime status for coding agents.',
-  agentDiagnosticsRefreshButton: 'Refresh',
-  agentDiagnosticsCopyButton: 'Copy JSON',
-  agentDiagnosticsEnabledStatus: 'Enabled. Writing to {path}',
-  agentDiagnosticsDisabledStatus: 'Disabled. Enable Agent diagnostics in Settings > Overview.',
-  agentDiagnosticsWriteDone: 'Agent diagnostics snapshot written.',
-  agentDiagnosticsClearDone: 'Agent diagnostics detailed logging cleaned.',
-  agentDiagnosticsCopied: 'Agent diagnostics JSON copied.',
-  agentDiagnosticsCopyFailed: 'Failed to copy agent diagnostics JSON: {message}',
+  chatDebugTraceToggle: 'Write debug trace into chat files',
+  chatDebugTraceToggleDesc:
+    'Saves a JSON trace of the input, retrieval candidates and ranks, provider diagnostics, tool calls, embedding config, usage, and citations with each answer. Release builds hide this option.',
 
   // Providers
   apiKey: 'API Key',
@@ -5735,7 +5663,6 @@ const en: I18nKeys = {
   promptSourceUser: 'User',
   cmdOpenAiChat: 'Open AI Chat',
   cmdReindexVault: 'Reindex Vault for RAG',
-  cmdOpenAgentDiagnosticsView: 'Open Agent Diagnostics',
 
   promptPresetSourceGroundedLabel: 'Vault answers',
   promptPresetSourceGroundedDescription:

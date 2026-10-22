@@ -21,6 +21,13 @@ import {
 } from '../rag/rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { getToolReinjectionPayload } from './tool-execution';
+import {
+  buildChatDebugTrace,
+  formatChatDebugTraceSection,
+  shouldRecordChatTrace,
+  type ChatTraceConfigSnapshot,
+} from '../debug/chat-trace';
+import type { ChatTraceRuntimeSnapshot } from '../debug/chat-trace-runtime';
 
 export type { ChatMessage } from '../llm/providers';
 
@@ -76,6 +83,12 @@ interface ParsedFrontmatter {
 export interface SaveChatOptions {
   filePath?: string;
   title?: string;
+  /** 켜져 있고 배포 빌드가 아니면 각 답변에 검색·도구·근거 추적을 함께 기록합니다. */
+  debugTrace?: {
+    enabled: boolean;
+    config: ChatTraceConfigSnapshot;
+    runtime?: ChatTraceRuntimeSnapshot;
+  };
 }
 
 /** 답변과 출처를 함께 내보내며 기존 노트는 덮어쓰지 않습니다. */
@@ -186,7 +199,11 @@ export async function saveChat(
     '',
     '## Messages',
     '',
-    messages.map((message, index) => formatMessage(message, index + 1)).join('\n\n---\n\n'),
+    messages
+      .map((message, index) =>
+        formatMessage(message, index + 1, buildFormatContext(message, messages, index, options)),
+      )
+      .join('\n\n---\n\n'),
   ].join('\n');
 
   // 빈 content를 가진 메시지가 있으면 경고
@@ -372,7 +389,43 @@ function redactSensitiveText(value: string): string {
     );
 }
 
-function formatMessage(message: ChatMessageWithMeta, index: number): string {
+/** 메시지별 추적 컨텍스트를 만듭니다. 추적이 꺼져 있으면 undefined입니다. */
+function buildFormatContext(
+  message: ChatMessageWithMeta,
+  messages: readonly ChatMessageWithMeta[],
+  index: number,
+  options?: SaveChatOptions,
+): FormatMessageContext | undefined {
+  const debugTrace = options?.debugTrace;
+  if (!debugTrace || !shouldRecordChatTrace(debugTrace.enabled)) return undefined;
+  if (message.role !== 'assistant') return undefined;
+  let previousUserMessage: ChatMessageWithMeta | undefined;
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const candidate = messages[cursor];
+    if (candidate?.role === 'user') {
+      previousUserMessage = candidate;
+      break;
+    }
+  }
+  return {
+    previousUserMessage,
+    session: { filePath: options?.filePath, title: options?.title },
+    trace: { config: debugTrace.config, runtime: debugTrace.runtime },
+  };
+}
+
+interface FormatMessageContext {
+  /** 같은 세션에서 직전 사용자 질의입니다. */
+  previousUserMessage?: ChatMessageWithMeta;
+  session?: { filePath?: string; title?: string };
+  trace?: { config: ChatTraceConfigSnapshot; runtime?: ChatTraceRuntimeSnapshot };
+}
+
+function formatMessage(
+  message: ChatMessageWithMeta,
+  index: number,
+  context?: FormatMessageContext,
+): string {
   const toolCalls = message.toolCalls?.map(compactToolCallRecord);
   const meta: MessagePersistMeta = {
     id: message.id,
@@ -459,6 +512,20 @@ function formatMessage(message: ChatMessageWithMeta, index: number): string {
 
   if (message.errorMessage) {
     lines.push('', '#### Error', '', ...formatNamedBlock('error', message.errorMessage));
+  }
+
+  if (message.role === 'assistant' && context?.trace) {
+    lines.push(
+      ...formatChatDebugTraceSection(
+        buildChatDebugTrace({
+          message,
+          previousUserMessage: context.previousUserMessage,
+          config: context.trace.config,
+          session: context.session,
+          runtime: context.trace.runtime,
+        }),
+      ),
+    );
   }
 
   lines.push(MESSAGE_COMMENT_CLOSE);

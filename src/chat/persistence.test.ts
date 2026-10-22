@@ -6,6 +6,11 @@ import { executeMcpToolCalls, type MCPRegistryLike } from './mcp-tool-execution'
 import { listChatMetasAsync, listChats, loadChat, saveChat, saveAnswerNote } from './persistence';
 import { appendAssistantToolRound } from './tool-execution';
 import { planModelContextRust } from '../rag/rust-core';
+import {
+  CHAT_DEBUG_TRACE_HEADING,
+  extractChatDebugTrace,
+  type ChatTraceConfigSnapshot,
+} from '../debug/chat-trace';
 
 vi.mock('obsidian', () => {
   class MockTFile {
@@ -60,6 +65,40 @@ describe('chat persistence', () => {
     const loaded = await loadChat(vault, file.path);
     expect(loaded.messages[0].indexedReviewDiagnostics).toEqual(indexedReviewDiagnostics);
     expect(loaded.messages[0].indexedReviewNotice).toBe(message.indexedReviewNotice);
+  });
+
+  it('디버그 추적을 켜면 답변에 추적 문서를 남기고 불러온 본문은 그대로다', async () => {
+    const vault = createVault();
+    const messages = [
+      createMessage({ id: 'msg-user', role: 'user', content: '합성 질의 본문' }),
+      createMessage({ id: 'msg-answer', role: 'assistant', content: '합성 답변 본문' }),
+    ];
+    const file = await saveChat(vault, messages, 'Chats', undefined, {
+      debugTrace: { enabled: true, config: traceConfig },
+    });
+    const raw = await vault.cachedRead(file);
+    expect(raw).toContain(CHAT_DEBUG_TRACE_HEADING);
+
+    const loaded = await loadChat(vault, file.path);
+    expect(loaded.messages[1].content).toBe('합성 답변 본문');
+    expect(loaded.messages[1].content).not.toContain('Debug Trace');
+
+    const trace = extractChatDebugTrace(raw);
+    expect(trace?.input.question).toBe('합성 질의 본문');
+    expect(trace?.turn.messageId).toBe('msg-answer');
+  });
+
+  it('디버그 추적이 꺼져 있으면 추적 문서를 남기지 않는다', async () => {
+    const vault = createVault();
+    const file = await saveChat(
+      vault,
+      [createMessage({ role: 'assistant', content: '합성 답변 본문' })],
+      'Chats',
+      undefined,
+      { debugTrace: { enabled: false, config: traceConfig } },
+    );
+    const raw = await vault.cachedRead(file);
+    expect(raw).not.toContain(CHAT_DEBUG_TRACE_HEADING);
   });
 
   it('답변 저장은 본문·출처·근거 제한을 보존하고 기존 노트를 덮어쓰지 않는다', async () => {
@@ -785,6 +824,26 @@ describe('chat persistence', () => {
     expect(loaded.messages[0].toolCalls).toEqual([legacyToolCall]);
   });
 });
+
+const traceConfig: ChatTraceConfigSnapshot = {
+  rag: {
+    chunkSize: 1000,
+    overlap: 100,
+    embeddingProvider: 'ternlight',
+    embeddingModel: 'ternlight-base',
+    minScore: 0.3,
+    enableBM25: true,
+    bm25Weight: 0.3,
+    annEnabled: true,
+    structuralGraphEnabled: true,
+  },
+  chat: {
+    mcpToolExecutionPolicy: 'always-auto',
+    mcpServerCount: 0,
+    pluginAwareEnabled: false,
+    autoSaveEnabled: true,
+  },
+};
 
 interface TestVault extends Vault {
   writeFile(path: string, content: string): void;

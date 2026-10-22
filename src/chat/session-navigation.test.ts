@@ -27,7 +27,23 @@ describe('보관함 탐색 저장 계약', () => {
       Object.assign(view, {
         app: { vault: {} },
         plugin: {
-          settings: { chat: { saveFolder: 'Chats' } },
+          settings: {
+            chat: { saveFolder: 'Chats' },
+            chatDebugTrace: { enabled: true },
+            rag: {
+              chunkSize: 1000,
+              overlap: 100,
+              embeddingProvider: 'ternlight',
+              embeddingModel: 'ternlight-base',
+              minScore: 0.3,
+              enableBM25: true,
+              bm25Weight: 0.3,
+              annEnabled: true,
+              structuralGraphEnabled: true,
+            },
+            mcpServers: [],
+            pluginAwareEnabled: false,
+          },
           refreshBus: { emit: vi.fn() },
           logger: { error: vi.fn() },
         },

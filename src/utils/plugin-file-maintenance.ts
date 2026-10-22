@@ -17,7 +17,8 @@ const DEFAULT_MAX_DELETIONS = 16;
 export interface PluginOwnedFileMaintenanceOptions {
   adapter: DataAdapter;
   pluginDirectory: string;
-  eventLogPath: string;
+  /** 지원 종료 전 기록 로그 경로입니다. 지정하지 않으면 로그 회전을 하지 않습니다. */
+  eventLogPath?: string;
   legacyDataDirectory?: string;
   allowLegacyCleanup?: boolean;
   includePluginDirectory?: boolean;
@@ -50,7 +51,7 @@ export async function maintainPluginOwnedFiles(
     records,
     pluginDirectory: options.pluginDirectory,
     legacyDataDirectory,
-    eventLogPath: options.eventLogPath,
+    eventLogPath: options.eventLogPath ?? '',
     now: options.now ?? Date.now(),
     staleTempAgeMs: normalizeNonNegativeInteger(options.staleTempAgeMs, DEFAULT_STALE_TEMP_AGE_MS),
     maxEventLogBytes: normalizeNonNegativeInteger(

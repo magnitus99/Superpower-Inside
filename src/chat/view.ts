@@ -28,6 +28,8 @@ import type {
 } from './types';
 import type { ContextAttachment, SourceCitation } from './types';
 import { formatAnswerNoteContent, loadChat, saveChat } from './persistence';
+import { buildChatTraceConfigSnapshot } from '../debug/chat-trace-config';
+import { buildChatTraceRuntimeSnapshot } from '../debug/chat-trace-runtime';
 import { SaveAnswerModal } from './save-answer-modal';
 import { summarizeSessionTitle } from './session-title';
 import { captureWorkspaceMentionFiles, type WorkspaceMentionFiles } from './workspace-mentions';
@@ -2601,7 +2603,17 @@ export class ChatView extends ItemView {
         this.messages,
         folder,
         this.sessionSystemPrompt ?? undefined,
-        { filePath: this.session.filePath ?? undefined, title: this.session.title || undefined },
+        {
+          filePath: this.session.filePath ?? undefined,
+          title: this.session.title || undefined,
+          debugTrace: this.plugin.settings.chatDebugTrace.enabled
+            ? {
+                enabled: true,
+                config: buildChatTraceConfigSnapshot(this.plugin.settings),
+                runtime: buildChatTraceRuntimeSnapshot(this.plugin),
+              }
+            : undefined,
+        },
       );
       this.session.filePath = file.path;
       this.session.isDirty = false;

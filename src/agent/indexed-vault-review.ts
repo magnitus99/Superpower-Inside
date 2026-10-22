@@ -560,6 +560,10 @@ export interface IndexedReviewDiagnostics {
     cacheHits: number;
     answerCorrectionRequests?: number;
   };
+  /** 최종 리뷰 결과 종류입니다. 디버그 추적에서 답변이 왜 근거만 나왔는지 판단할 때 씁니다. */
+  outcome?: IndexedReviewOutcome;
+  /** 엔진 선별 단계의 진단입니다. 후보가 0건인 이유를 그대로 보존합니다. */
+  search?: IndexedEvidencePlan['diagnostics'] | null;
 }
 
 export interface IndexedVaultReviewOptions {
@@ -726,7 +730,11 @@ export async function reviewIndexedVault(
   options.signal?.addEventListener('abort', cancel, { once: true });
   if (options.signal?.aborted) cancel();
   try {
-    return await runIndexedVaultReview({ ...options, signal: controller.signal });
+    const result = await runIndexedVaultReview({ ...options, signal: controller.signal });
+    // 엔진 진단과 결과 종류를 남겨야 후속 디버그 추적이 0건 원인을 설명할 수 있습니다.
+    result.diagnostics.outcome = result.outcome;
+    result.diagnostics.search = result.dossier.diagnostics ?? null;
+    return result;
   } finally {
     controller.abort();
     options.signal?.removeEventListener('abort', cancel);

@@ -11,6 +11,7 @@
     "copy:fix": "node scripts/check-copy.mjs --fix",
     "dev": "npm run wasm:build && npm run ternlight:assets && node esbuild.config.mjs",
     "build": "npm run wasm:build && npm run search:quality-gate && npm run ternlight:assets && node esbuild.config.mjs production",
+    "build:dev": "npm run wasm:build && npm run ternlight:assets && node esbuild.config.mjs dev",
     "lint": "eslint src/ main.ts",
     "review": "node scripts/validate-obsidian-review.mjs",
     "typecheck": "tsc --noEmit",

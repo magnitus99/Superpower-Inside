@@ -5,6 +5,7 @@ import { buildRetiredArtifactSettings } from './storage/retired-artifacts-settin
 import type { RetiredArtifactService } from './storage/retired-artifacts';
 import { buildChatGPTLoginSettings } from './llm/chatgpt-login-ui';
 import { DEFAULT_CHUNK_CONTRACT, DEFAULT_SEARCH_QUALITY } from './rag/search-defaults';
+import { DEBUG_TRACE_BUILD_ENABLED } from './debug/build-flags';
 import { providerKeyState, type ProviderSecretConfig } from './secrets/provider-secrets';
 import {
   App,
@@ -581,16 +582,22 @@ export function normalizeChatSaveFolder(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   return value;
 }
-export interface AgentDiagnosticsSettings {
+export interface ChatDebugTraceSettings {
   enabled: boolean;
 }
-export function normalizeAgentDiagnosticsSettings(value: unknown): AgentDiagnosticsSettings {
+
+/**
+ * 채팅 파일 추적 기록 설정을 정상화합니다.
+ *
+ * 값이 없으면 빌드 종류를 따릅니다. 개발 빌드는 켜짐, 배포 번들은 꺼짐이 기본입니다.
+ */
+export function normalizeChatDebugTraceSettings(value: unknown): ChatDebugTraceSettings {
   const raw =
     typeof value === 'object' && value !== null
-      ? (value as Partial<AgentDiagnosticsSettings>)
+      ? (value as Partial<ChatDebugTraceSettings>)
       : undefined;
   return {
-    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : false,
+    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : DEBUG_TRACE_BUILD_ENABLED,
   };
 }
 export interface SuperpowerInsideSettings {
@@ -612,7 +619,7 @@ export interface SuperpowerInsideSettings {
   autoSaveDebounceMs: number;
   language: Language;
   logging: LoggerConfig;
-  agentDiagnostics: AgentDiagnosticsSettings;
+  chatDebugTrace: ChatDebugTraceSettings;
 }
 export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   openai: {
@@ -694,8 +701,8 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
     maxEntries: 1000,
     mirrorToConsole: true,
   },
-  agentDiagnostics: {
-    enabled: false,
+  chatDebugTrace: {
+    enabled: DEBUG_TRACE_BUILD_ENABLED,
   },
 };
 
@@ -1094,13 +1101,6 @@ export interface PluginLike {
   setupAutoUpdate(): void;
   resetPluginData(): Promise<void>;
   deleteLocalEmbeddingModel(modelId: LocalEmbeddingModelId): Promise<void>;
-  openAgentDiagnosticsView(): void;
-  getAgentDiagnosticsFilePath(): string;
-  getAgentDiagnosticsEventLogPath(): string;
-  getAgentDiagnosticsSafeModeFilePath(): string;
-  writeAgentDiagnosticsSnapshot(reason: string): Promise<void>;
-  clearAgentDiagnosticsDetailedLogging(): Promise<void>;
-  enableAgentDiagnosticsSafeMode(): Promise<void>;
   eventDrivenRagStats: import('./rag/status').RagStatusSummary | null;
   initRAG(): Promise<void>;
   ensureRagRuntimeInitialized(): Promise<boolean>;
@@ -2196,7 +2196,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
       buildRetiredArtifactSettings(storage.body, this.app, this.plugin.retiredArtifacts);
     }
-    this.buildAgentDiagnosticsSection(workspace);
+    this.buildChatTraceSection(workspace);
     this.buildGeneralAdvancedSection(workspace);
   }
   private buildGeneralStatusSection(containerEl: HTMLElement): void {
@@ -2359,32 +2359,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       });
   }
 
-  private buildAgentDiagnosticsSection(containerEl: HTMLElement): void {
+  private buildChatTraceSection(containerEl: HTMLElement): void {
+    // 배포 빌드에서는 추적 기록 자체가 불가능하므로 설정 항목을 노출하지 않습니다.
+    if (!DEBUG_TRACE_BUILD_ENABLED) return;
     const section = this.createSettingsSection(containerEl, t('generalDiagnosticsTitle'), {
       description: t('generalDiagnosticsDesc'),
       className: 'superpower-inside-general-diagnostics-section',
-    });
-    const statusContainer = section.body.createDiv({
-      cls: 'superpower-inside-general-diagnostics-status',
-    });
-    const renderStatus = (): void => {
-      statusContainer.empty();
-      const enabled = this.plugin.settings.agentDiagnostics.enabled;
-      this.createSettingsStatusRow(statusContainer, {
-        label: t('agentDiagnosticsToggle'),
-        value: enabled ? t('overviewReady') : t('overviewDisabled'),
-        statusLabel: enabled ? t('overviewReady') : t('overviewDisabled'),
-        detail: enabled
-          ? t('agentDiagnosticsEnabledStatus', {
-              path: this.plugin.getAgentDiagnosticsFilePath(),
-            })
-          : t('agentDiagnosticsDisabledStatus'),
-        tone: enabled ? 'success' : 'neutral',
-      });
-    };
-    renderStatus();
-    const resultStatus = section.body.createDiv({
-      attr: { role: 'status', 'aria-live': 'polite' },
     });
     const disclosure = this.createSettingsDisclosure(
       section.body,
@@ -2393,69 +2373,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       t('generalDiagnosticsDisclosureDesc'),
     );
     new Setting(disclosure.content)
-      .setName(t('agentDiagnosticsToggle'))
-      .setDesc(t('agentDiagnosticsToggleDesc'))
+      .setName(t('chatDebugTraceToggle'))
+      .setDesc(t('chatDebugTraceToggleDesc'))
       .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.agentDiagnostics.enabled).onChange(async (value) => {
-          this.plugin.settings.agentDiagnostics.enabled = value;
+        toggle.setValue(this.plugin.settings.chatDebugTrace.enabled).onChange(async (value) => {
+          this.plugin.settings.chatDebugTrace.enabled = value;
           await this.plugin.saveSettingsLight();
-          if (value) {
-            await this.plugin.writeAgentDiagnosticsSnapshot('settings-toggle');
-          }
-          renderStatus();
-        }),
-      );
-    new Setting(disclosure.content)
-      .setName(t('agentDiagnosticsOpenView'))
-      .setDesc(t('agentDiagnosticsOpenViewDesc'))
-      .addButton((button) =>
-        button
-          .setButtonText(t('agentDiagnosticsOpenViewButton'))
-          .onClick(() => this.plugin.openAgentDiagnosticsView()),
-      );
-    disclosure.content.createDiv({
-      cls: 'superpower-inside-agent-diagnostics-path',
-      text: t('agentDiagnosticsFilePath', { path: this.plugin.getAgentDiagnosticsFilePath() }),
-    });
-    new Setting(disclosure.content)
-      .setName(t('agentDiagnosticsWriteSnapshot'))
-      .setDesc(t('agentDiagnosticsWriteSnapshotDesc'))
-      .addButton((button) =>
-        button.setButtonText(t('agentDiagnosticsWriteButton')).onClick(() => {
-          void runActionWithFeedback({
-            button,
-            action: async () => {
-              try {
-                await this.plugin.writeAgentDiagnosticsSnapshot('settings-write');
-                const detail = t('settingsLastChecked', { time: new Date().toLocaleTimeString() });
-                resultStatus.setText(detail);
-                return { status: 'success', detail };
-              } catch {
-                resultStatus.setText(t('settingsApplyFailed'));
-                return { status: 'error', detail: t('settingsApplyFailed') };
-              }
-            },
-          });
-        }),
-      );
-    new Setting(disclosure.content)
-      .setName(t('agentDiagnosticsClearDetailedLogging'))
-      .setDesc(t('agentDiagnosticsClearDetailedLoggingDesc'))
-      .addButton((button) =>
-        button.setButtonText(t('agentDiagnosticsClearButton')).onClick(() => {
-          void runActionWithFeedback({
-            button,
-            action: async () => {
-              try {
-                await this.plugin.clearAgentDiagnosticsDetailedLogging();
-                resultStatus.setText(t('actionCompletedNotice'));
-                return { status: 'success' };
-              } catch {
-                resultStatus.setText(t('settingsApplyFailed'));
-                return { status: 'error', detail: t('settingsApplyFailed') };
-              }
-            },
-          });
         }),
       );
   }

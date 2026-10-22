@@ -5,13 +5,10 @@ import {
   Notice,
   Platform,
   TFile,
-  type WorkspaceLeaf,
 } from 'obsidian';
 import {
   getEffectiveExcludePaths,
   getRagCandidateFiles,
-  readJsonFromVault,
-  writeJsonToVault,
 } from './src/utils/vault';
 import {
   configureSourceAssets,
@@ -27,7 +24,7 @@ import {
   DEFAULT_SETTINGS,
   isCustomOpenAIEmbeddingProviderKey,
   migrateLegacyProviderProfiles,
-  normalizeAgentDiagnosticsSettings,
+  normalizeChatDebugTraceSettings,
   normalizeChatSaveFolder,
   resolveChatModelPlan,
   resolveProviderModelRef,
@@ -111,19 +108,6 @@ import {
   recoverPendingFileWrites,
 } from './src/rag/pending-write-recovery';
 import type { SearchPort } from './src/search/engine-port';
-import { AGENT_DIAGNOSTICS_VIEW_TYPE, AgentDiagnosticsView } from './src/diagnostics/view';
-import {
-  AgentDiagnosticsService,
-  type AgentDiagnosticsBreadcrumbInput,
-  type AgentDiagnosticsServiceSnapshotState,
-} from './src/diagnostics/service';
-import {
-  buildAgentDiagnosticsSnapshot,
-  getAgentDiagnosticsEventLogPath,
-  getAgentDiagnosticsFilePath,
-  getAgentDiagnosticsSafeModeFilePath,
-  type AgentDiagnosticsRuntimeState,
-} from './src/diagnostics/snapshot';
 import { normalizePromptLibrary } from './src/chat/prompt-library';
 import {
   resolveChatRetrievalReadiness,
@@ -164,17 +148,19 @@ import {
   RAG_STORAGE_MAINTENANCE_COMPLETION_KEY,
   runRagStorageMaintenance,
 } from './src/rag/storage-maintenance';
-import { RetiredArtifactService, createRetiredArtifactHost } from './src/storage/retired-artifacts';
+import {
+  RETIRED_PLUGIN_FILE_NAMES,
+  RetiredArtifactService,
+  createRetiredArtifactHost,
+} from './src/storage/retired-artifacts';
 import {
   GENERATED_ARTIFACT_FEATURES,
   GeneratedArtifactRegistry,
-  createGeneratedFileAdapter,
 } from './src/storage/generated-artifacts';
 import { buildPluginIndexedDbNames, resetPluginOwnedData } from './src/utils/plugin-data-reset';
 import { maintainPluginOwnedFiles } from './src/utils/plugin-file-maintenance';
 
 const MCP_AUTO_RETRY_DELAYS_MS = [2000, 5000] as const;
-const AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH = 320;
 const RAG_RUNTIME_INIT_STEP_TIMEOUT_MS = 30_000;
 const AUTO_UPDATE_TIMER_WINDOW_KEY = '__superpowerInsideAutoUpdateTimerV1' as const;
 
@@ -213,11 +199,6 @@ function hasDeletableIndexedDbStore(store: unknown): store is DeletableIndexedDb
   );
 }
 
-function isSafeModeFlagEnabled(value: unknown): boolean {
-  return (
-    typeof value === 'object' && value !== null && (value as { enabled?: unknown }).enabled === true
-  );
-}
 
 interface RagRuntimeSnapshot {
   documentCorpus: IndexedDbDocumentCorpusStore | null;
@@ -341,10 +322,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private statsDebounceTimer: number | null = null;
   refreshBus: RefreshBus = new RefreshBus();
   updateChecker: PluginUpdateChecker | null = null;
-  private agentDiagnosticsService: AgentDiagnosticsService | null = null;
 
   async onload(): Promise<void> {
-    const startedAt = Date.now();
     this.unloaded = false;
     configureSourceAssets(
       this.manifest?.id ?? 'superpower-inside',
@@ -356,20 +335,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.register(() => chatGPTAuth.dispose());
     await this.loadSettings();
     await this.runStartupPluginFileMaintenance();
-    await this.configureAgentDiagnosticsService();
-    await this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'plugin.lifecycle',
-      action: 'enter',
-      detail: 'onload',
-      data: { manifestVersion: this.manifest?.version ?? 'unknown' },
-    });
-    await this.applyAgentDiagnosticsSafeModeFlag();
     this.initProvider();
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
     this.registerView(SEARCH_VIEW_TYPE, (leaf) => new SearchView(leaf, this));
-    this.registerView(AGENT_DIAGNOSTICS_VIEW_TYPE, (leaf) => new AgentDiagnosticsView(leaf, this));
     this.addRibbonIcon('message-circle', t('cmdOpenAiChat'), () => {
       void this.openChatView();
     });
@@ -478,26 +448,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
       },
     });
 
-    this.addCommand({
-      id: 'open-agent-diagnostics-view',
-      name: t('cmdOpenAgentDiagnosticsView'),
-      callback: () => this.openAgentDiagnosticsView(),
-    });
     // 설정 탭
     const settingsTab = new SuperpowerInsideSettingTab(this.app, this);
     this.addSettingTab(settingsTab);
     this.startPluginUpdateCheck(settingsTab);
     this.startDeferredStartupTasks();
-    if (this.settings.agentDiagnostics.enabled) {
-      void this.agentDiagnosticsService?.writeNow('startup');
-    }
     this.getLogger().info('Plugin loaded.', { source: 'lifecycle' });
-    await this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'plugin.lifecycle',
-      action: 'leave',
-      detail: 'onload',
-      data: { durationMs: Date.now() - startedAt },
-    });
   }
 
   onunload(): void {
@@ -505,7 +461,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.ragRuntimeInitRunId =
       (Number.isSafeInteger(this.ragRuntimeInitRunId) ? this.ragRuntimeInitRunId : 0) + 1;
     this.getLogger().info('Plugin unloading.', { source: 'lifecycle' });
-    void this.agentDiagnosticsService?.stop('plugin-unload');
     this.cancelRagIndexing();
     disposeSourceAssets();
     this.unregisterRAGEvents();
@@ -672,26 +627,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return this.ragPerformanceGuard?.getState() ?? null;
   }
 
-  getAgentDiagnosticsFilePath(): string {
-    return getAgentDiagnosticsFilePath(
-      this.app.vault.configDir,
-      this.manifest?.id ?? 'superpower-inside',
-    );
-  }
 
-  getAgentDiagnosticsEventLogPath(): string {
-    return getAgentDiagnosticsEventLogPath(
-      this.app.vault.configDir,
-      this.manifest?.id ?? 'superpower-inside',
-    );
-  }
 
-  getAgentDiagnosticsSafeModeFilePath(): string {
-    return getAgentDiagnosticsSafeModeFilePath(
-      this.app.vault.configDir,
-      this.manifest?.id ?? 'superpower-inside',
-    );
-  }
 
   private getPluginDirectoryPath(): string {
     return `${this.app.vault.configDir}/plugins/${this.manifest?.id ?? 'superpower-inside'}`;
@@ -741,6 +678,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           activeArtifacts: this.generatedArtifacts.active,
           features: GENERATED_ARTIFACT_FEATURES,
           artifactFileRoots: ['.superpower-inside', this.getPluginDirectoryPath()],
+          retiredFileNames: RETIRED_PLUGIN_FILE_NAMES,
         };
       }),
       this.getLogger(),
@@ -752,9 +690,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       const result = await maintainPluginOwnedFiles({
         adapter: this.app.vault.adapter,
         includeLegacyDirectory: false,
-        eventLogOwnership: this.generatedArtifacts.forFeature('agent-diagnostics'),
         pluginDirectory: this.getPluginDirectoryPath(),
-        eventLogPath: this.getAgentDiagnosticsEventLogPath(),
       });
       if (result.deletedPaths.length > 0 || result.rotatedEventLogPath) {
         this.getLogger().info('Plugin-owned file maintenance completed.', {
@@ -782,203 +718,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  getAgentDiagnosticsSnapshotText(): string {
-    const state =
-      this.agentDiagnosticsService?.getSnapshotState() ??
-      this.createDisabledAgentDiagnosticsState();
-    return JSON.stringify(this.buildAgentDiagnosticsSnapshot(state), null, 2);
-  }
-
-  async writeAgentDiagnosticsSnapshot(reason: string): Promise<void> {
-    const service = this.getOrCreateAgentDiagnosticsService();
-    const wasRunning = service.isRunning();
-    if (!wasRunning) {
-      await service.setEnabled(true);
-    }
-    try {
-      await service.writeNow(reason);
-    } finally {
-      if (!wasRunning) {
-        await service.setEnabled(false);
-      }
-    }
-  }
-
-  async clearAgentDiagnosticsDetailedLogging(): Promise<void> {
-    const service = this.getOrCreateAgentDiagnosticsService();
-    await service.clearDetailedLogging();
-  }
-
-  async enableAgentDiagnosticsSafeMode(): Promise<void> {
-    await writeJsonToVault(this.app.vault.adapter, this.getAgentDiagnosticsSafeModeFilePath(), {
-      enabled: true,
-    });
-    await this.applyAgentDiagnosticsSafeModeFlag();
-    await this.writeAgentDiagnosticsSnapshot('safe-mode-enabled');
-  }
-
-  private async recordAgentDiagnosticsBreadcrumb(
-    input: AgentDiagnosticsBreadcrumbInput,
-  ): Promise<void> {
-    await this.agentDiagnosticsService?.recordBreadcrumb(input);
-  }
-
-  private async configureAgentDiagnosticsService(): Promise<void> {
-    const service = this.getOrCreateAgentDiagnosticsService();
-    await service.setEnabled(this.settings.agentDiagnostics.enabled);
-  }
-
-  private getOrCreateAgentDiagnosticsService(): AgentDiagnosticsService {
-    if (!this.refreshBus) {
-      this.refreshBus = new RefreshBus();
-    }
-    if (!this.agentDiagnosticsService) {
-      this.agentDiagnosticsService = new AgentDiagnosticsService({
-        adapter: createGeneratedFileAdapter(
-          this.app.vault.adapter,
-          this.generatedArtifacts.forFeature('agent-diagnostics'),
-        ),
-        filePath: this.getAgentDiagnosticsFilePath(),
-        eventLogPath: this.getAgentDiagnosticsEventLogPath(),
-        refreshBus: this.refreshBus,
-        logger: this.getLogger(),
-        buildSnapshot: (state) => this.buildAgentDiagnosticsSnapshot(state),
-      });
-    }
-    return this.agentDiagnosticsService;
-  }
-
-  private async applyAgentDiagnosticsSafeModeFlag(): Promise<void> {
-    const raw = await readJsonFromVault(
-      this.app.vault.adapter,
-      this.getAgentDiagnosticsSafeModeFilePath(),
-    );
-    if (!isSafeModeFlagEnabled(raw)) return;
-    this.settings = {
-      ...this.settings,
-      rag: {
-        ...this.settings.rag,
-        autoUpdateEnabled: false,
-        enableBM25: false,
-        structuralGraphEnabled: false,
-        annEnabled: false,
-      },
-    };
-    await this.persistSettings();
-    this.getLogger().warn('Agent diagnostics safe mode flag applied.', {
-      source: 'diagnostics',
-      data: {
-        flagPath: this.getAgentDiagnosticsSafeModeFilePath(),
-      },
-    });
-    await this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'plugin.safe-mode',
-      action: 'mark',
-      detail: 'applied',
-      data: {
-        flagPath: this.getAgentDiagnosticsSafeModeFilePath(),
-      },
-    });
-  }
-
-  private buildAgentDiagnosticsSnapshot(state: AgentDiagnosticsServiceSnapshotState): unknown {
-    return buildAgentDiagnosticsSnapshot({
-      manifest: {
-        id: this.manifest?.id ?? 'superpower-inside',
-        name: this.manifest?.name ?? 'Superpower Inside',
-        version: this.manifest?.version ?? 'unknown',
-      },
-      vault: {
-        name: this.getVaultName(),
-        configDir: this.app.vault.configDir,
-        adapterBasePath: this.getVaultAdapterBasePath(),
-      },
-      settings: this.settings,
-      runtime: this.collectAgentDiagnosticsRuntimeState(),
-      session: state.session,
-      previousSession: state.previousSession,
-      heartbeat: state.heartbeat,
-      refreshEvents: state.refreshEvents,
-      breadcrumbs: state.breadcrumbs,
-      activeOperations: state.activeOperations,
-      logs: state.logs,
-      fileWrite: state.fileWrite,
-      eventLog: state.eventLog,
-      now: Date.now(),
-    });
-  }
-
-  private createDisabledAgentDiagnosticsState(): AgentDiagnosticsServiceSnapshotState {
-    const now = Date.now();
-    return {
-      session: {
-        id: 'agent-diagnostics-disabled',
-        status: 'stopped',
-        startedAt: now,
-        endedAt: now,
-        endReason: 'disabled',
-      },
-      previousSession: null,
-      heartbeat: {
-        lastStartedAt: null,
-        lastFinishedAt: null,
-        lastLagMs: null,
-        maxLagMs: 0,
-        tickCount: 0,
-      },
-      refreshEvents: [],
-      breadcrumbs: [],
-      activeOperations: [],
-      logs: this.getLogger().getEntries().slice(-200),
-      fileWrite: {
-        path: this.getAgentDiagnosticsFilePath(),
-        lastAttemptAt: null,
-        lastSuccessAt: null,
-        lastError: null,
-      },
-      eventLog: {
-        path: this.getAgentDiagnosticsEventLogPath(),
-        lastAppendAt: null,
-        lastError: null,
-      },
-    };
-  }
-
-  private collectAgentDiagnosticsRuntimeState(): AgentDiagnosticsRuntimeState {
-    const registry = this.mcpRegistry;
-    return {
-      ragStatus: this.eventDrivenRagStats,
-      mcpConnectionState: this.mcpConnectionState,
-      mcpServers: this.settings.mcpServers.map((server) => ({
-        name: server.name,
-        command: server.command,
-        args: server.args ?? [],
-        env: server.env ?? {},
-        status: registry?.getConnectionStatus(server.name) ?? 'disconnected',
-        error: registry?.getLastError(server.name),
-      })),
-      isRagIndexing: this.isRagIndexing(),
-      ragIndexingStatus: this.ragIndexingStatus,
-      performanceGuardState: this.getRagPerformanceGuardState(),
-      nextAutoUpdateAt: this.nextAutoUpdateAt,
-      lastAutoUpdateSkippedReason: this.lastAutoUpdateSkippedReason,
-      lastAutoUpdateResult: this.lastAutoUpdateResult,
-      ragRuntimeInit: {
-        running: this.ragRuntimeInitRunner?.isRunning() ?? false,
-        currentStage: this.lastRagRuntimeInitStage,
-        lastError: this.lastRagRuntimeInitError,
-        lastSkippedReason: this.lastRagRuntimeInitSkippedReason,
-        lastStartedAt: this.lastRagRuntimeInitStartedAt,
-        lastFinishedAt: this.lastRagRuntimeInitFinishedAt,
-      },
-      runtimeFlags: {
-        vectorStoreReady: this.vectorStore !== null,
-        ragEngineReady: this.ragEngine !== null,
-        providerReady: this.provider !== null,
-      },
-    };
-  }
-
   private getVaultName(): string {
     const vault = this.app.vault as { getName?: () => string };
     return vault.getName?.() ?? 'unknown-vault';
@@ -1003,21 +742,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const controller = new AbortController();
     this.ragIndexAbortController = controller;
     this.notifyRagStatsRefresh();
-    const startedAt = Date.now();
-    await this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'rag.indexing',
-      action: 'enter',
-      detail: 'operation',
-    });
     try {
       this.getLogger().info('RAG operation started.', { source: 'rag.indexing' });
       const result = await operation(controller.signal);
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'rag.indexing',
-        action: 'leave',
-        detail: 'operation',
-        data: { durationMs: Date.now() - startedAt },
-      });
       return result;
     } catch (err) {
       if (isIndexingCancelledError(err)) {
@@ -1025,15 +752,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       } else {
         this.getLogger().error('RAG operation failed.', { source: 'rag.indexing', error: err });
       }
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'rag.indexing',
-        action: 'error',
-        detail: 'operation',
-        data: {
-          durationMs: Date.now() - startedAt,
-          message: err instanceof Error ? err.message : String(err),
-        },
-      });
       throw err;
     } finally {
       if (this.ragIndexAbortController === controller) {
@@ -1096,8 +814,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.settings.logging = normalizeLoggerConfig(this.settings.logging);
     this.getLogger().configure(this.settings.logging);
     await this.persistSettings();
-    await this.agentDiagnosticsService?.stop('plugin-reset');
-    await this.agentDiagnosticsService?.clearDetailedLogging();
     this.initProvider();
     const mcpErrors = await this.initMCP();
 
@@ -1367,7 +1083,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.settings.logging = normalizeLoggerConfig(
       data.logging as Partial<SuperpowerInsideSettings['logging']> | undefined,
     );
-    this.settings.agentDiagnostics = normalizeAgentDiagnosticsSettings(data.agentDiagnostics);
+    this.settings.chatDebugTrace = normalizeChatDebugTraceSettings(data.chatDebugTrace);
     this.getLogger().configure(this.settings.logging);
     setLanguage(this.settings.language);
     this.getLogger().info('Settings loaded.', {
@@ -1414,12 +1130,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const reinitRag = options?.reinitRag ?? true;
     const reinitMcp = options?.reinitMcp ?? true;
     this.settings.logging = normalizeLoggerConfig(this.settings.logging);
-    this.settings.agentDiagnostics = normalizeAgentDiagnosticsSettings(
-      this.settings.agentDiagnostics,
-    );
+    this.settings.chatDebugTrace = normalizeChatDebugTraceSettings(this.settings.chatDebugTrace);
     this.getLogger().configure(this.settings.logging);
     await this.persistSettings();
-    await this.configureAgentDiagnosticsService();
     this.getLogger().debug('Settings saved.', {
       source: 'settings',
       data: { reinitRag, reinitMcp },
@@ -1438,12 +1151,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   async saveSettingsLight(): Promise<void> {
     this.settings.logging = normalizeLoggerConfig(this.settings.logging);
-    this.settings.agentDiagnostics = normalizeAgentDiagnosticsSettings(
-      this.settings.agentDiagnostics,
-    );
+    this.settings.chatDebugTrace = normalizeChatDebugTraceSettings(this.settings.chatDebugTrace);
     this.getLogger().configure(this.settings.logging);
     await this.persistSettings();
-    await this.configureAgentDiagnosticsService();
     this.getLogger().debug('Settings saved without runtime reinitialization.', {
       source: 'settings',
     });
@@ -1565,11 +1275,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.getLogger().info('BM25 index background initialization started.', {
       source: 'rag.bm25',
     });
-    void this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'rag.bm25',
-      action: 'enter',
-      detail: 'background-load',
-    });
     return bm25Index.load().then(
       () => ({ error: null, startedAt, loadDurationMs: Date.now() - startedAt }),
       (error: unknown) => ({
@@ -1646,16 +1351,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
           totalDocs: bm25Index.totalDocs,
         },
       });
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'rag.bm25',
-        action: 'leave',
-        detail: 'background-load',
-        data: {
-          durationMs: Date.now() - outcome.startedAt,
-          loadDurationMs: outcome.loadDurationMs,
-          totalDocs: bm25Index.totalDocs,
-        },
-      });
       this.notifyRagStatsRefresh();
       return true;
     } catch (error) {
@@ -1686,16 +1381,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
           loadDurationMs: outcome.loadDurationMs,
         },
         error,
-      });
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'rag.bm25',
-        action: 'error',
-        detail: 'background-load',
-        data: {
-          durationMs: Date.now() - outcome.startedAt,
-          loadDurationMs: outcome.loadDurationMs,
-          message: error instanceof Error ? error.message : String(error),
-        },
       });
       // 채팅 준비 상태가 키워드 색인 실패를 바로 반영하게 합니다.
       this.notifyRagStatsRefresh();
@@ -1862,11 +1547,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
   ): Promise<T> {
     const startedAt = Date.now();
     this.lastRagRuntimeInitStage = stage;
-    await this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'rag.runtime',
-      action: 'enter',
-      detail: stage,
-    });
     this.getLogger().info('RAG runtime initialization step started.', {
       source: 'rag',
       data: { stage },
@@ -1880,12 +1560,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.getLogger().info('RAG runtime initialization step completed.', {
         source: 'rag',
         data: { stage, durationMs: Date.now() - startedAt },
-      });
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'rag.runtime',
-        action: 'leave',
-        detail: stage,
-        data: { durationMs: Date.now() - startedAt },
       });
       return result;
     } catch (err) {
@@ -1904,15 +1578,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
         source: 'rag',
         data: { stage, durationMs: Date.now() - startedAt },
         error: err,
-      });
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'rag.runtime',
-        action: 'error',
-        detail: stage,
-        data: {
-          durationMs: Date.now() - startedAt,
-          message: this.lastRagRuntimeInitError,
-        },
       });
       throw err;
     }
@@ -2284,11 +1949,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
                   data: { message },
                 },
               );
-              void this.recordAgentDiagnosticsBreadcrumb({
-                phase: 'rag.performance-guard',
-                action: 'error',
-                detail: message,
-              });
             },
           })
         : null;
@@ -2396,21 +2056,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
                 eventLoopLagMs,
                 nextBatchSize: guardState?.currentBatchSize ?? adaptiveBatchSize,
                 yieldMs: guardState?.currentYieldMs ?? 0,
-              },
-            });
-          },
-          onProgress: (progress) => {
-            void this.recordAgentDiagnosticsBreadcrumb({
-              phase: 'rag.indexing',
-              action: 'mark',
-              detail: 'operation',
-              data: {
-                event: progress.event,
-                processed: progress.completedFiles,
-                total: progress.totalFiles,
-                currentFile: progress.currentFilePath ?? null,
-                currentFileEmbeddedChunks: progress.currentFileEmbeddedChunks,
-                currentFileTotalChunks: progress.currentFileTotalChunks,
               },
             });
           },
@@ -2621,20 +2266,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const wasRunning = this.ragIndexingStatus?.running === true;
     const previousResult = this.ragIndexingStatus?.lastResult;
     this.ragIndexingStatus = status;
-    if (status.running) {
-      void this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'rag.indexing',
-        action: 'mark',
-        detail: 'operation',
-        data: {
-          phase: status.phase,
-          queuedFiles: status.queuedFiles,
-          currentFile: status.progress?.currentFilePath ?? null,
-          completedFiles: status.progress?.completedFiles ?? null,
-          totalFiles: status.progress?.totalFiles ?? null,
-        },
-      });
-    }
     this.getLogger().debug('RAG indexing scheduler status changed.', {
       source: 'rag.indexing',
       data: {
@@ -3022,18 +2653,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   private async runMcpConnections(options: { retryFailed: boolean }): Promise<string[]> {
     const runId = ++this.mcpConnectionRunId;
-    const startedAt = Date.now();
     this.clearMcpRetryTimers();
-    await this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'mcp.connections',
-      action: 'enter',
-      detail: 'run-start',
-      data: {
-        runId,
-        retryFailed: options.retryFailed,
-        serverCount: this.settings.mcpServers.length,
-      },
-    });
     this.getLogger().info('MCP connection run started.', {
       source: 'mcp',
       data: {
@@ -3067,17 +2687,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.getLogger().error('MCP stdio is not available on this platform.', {
         source: 'mcp',
         data: { serverCount: enabledServers.length },
-      });
-      await this.recordAgentDiagnosticsBreadcrumb({
-        phase: 'mcp.connections',
-        action: 'error',
-        detail: 'run-start',
-        data: {
-          runId,
-          durationMs: Date.now() - startedAt,
-          errorCount: errors.length,
-          reason: desktopOnlyMessage,
-        },
       });
       return errors;
     }
@@ -3117,16 +2726,6 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.getLogger().notice('MCP connection run completed.', {
       source: 'mcp',
       data: { runId, errorCount: errors.length },
-    });
-    await this.recordAgentDiagnosticsBreadcrumb({
-      phase: 'mcp.connections',
-      action: errors.length > 0 ? 'error' : 'leave',
-      detail: 'run-start',
-      data: {
-        runId,
-        durationMs: Date.now() - startedAt,
-        errorCount: errors.length,
-      },
     });
     return errors;
   }
@@ -3307,47 +2906,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     void workspace.revealLeaf(leaf);
   }
 
-  private isRootWorkspaceLeaf(leaf: WorkspaceLeaf): boolean {
-    return leaf.getRoot() === this.app.workspace.rootSplit;
-  }
 
-  private isReadableAgentDiagnosticsLeaf(leaf: WorkspaceLeaf): boolean {
-    const width = leaf.view.containerEl.getBoundingClientRect().width;
-    return width === 0 || width >= AGENT_DIAGNOSTICS_MIN_READABLE_WIDTH;
-  }
 
-  private createRootWorkspaceTabLeaf(): WorkspaceLeaf {
-    const rootLeaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit);
-    if (rootLeaf) {
-      this.app.workspace.setActiveLeaf(rootLeaf, { focus: false });
-    }
-    const leaf = this.app.workspace.getLeaf('tab');
-    if (this.isRootWorkspaceLeaf(leaf)) {
-      return leaf;
-    }
-    leaf.detach();
-    if (rootLeaf) {
-      return this.app.workspace.createLeafBySplit(rootLeaf, 'vertical');
-    }
-    return this.app.workspace.getLeaf(true);
-  }
 
-  openAgentDiagnosticsView(): void {
-    const existingLeaves = this.app.workspace.getLeavesOfType(AGENT_DIAGNOSTICS_VIEW_TYPE);
-    const readableRootLeaf = existingLeaves.find(
-      (leaf) => this.isRootWorkspaceLeaf(leaf) && this.isReadableAgentDiagnosticsLeaf(leaf),
-    );
-    if (readableRootLeaf) {
-      void this.app.workspace.revealLeaf(readableRootLeaf);
-      return;
-    }
-
-    for (const leaf of existingLeaves) {
-      leaf.detach();
-    }
-
-    const leaf = this.createRootWorkspaceTabLeaf();
-    void leaf.setViewState({ type: AGENT_DIAGNOSTICS_VIEW_TYPE, active: true });
-    void this.app.workspace.revealLeaf(leaf);
-  }
 }
