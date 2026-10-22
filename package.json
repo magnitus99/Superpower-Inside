@@ -15,7 +15,7 @@
     "lint": "eslint src/ main.ts",
     "review": "node scripts/validate-obsidian-review.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run && npm run check:i18n && npm run chat:ux-gate && npm run chat:quality-eval",
+    "test": "vitest run && npm run check:i18n && npm run chat:ux-gate && npm run chat:quality-eval && npm run vault:leak-check",
     "chat:quality-eval": "node scripts/evaluate-chat-quality.mjs",
     "test:e2e": "vitest run src/e2e/product-journeys.test.ts",
     "chat:ux-gate": "node scripts/check-chat-ux-fixtures.mjs",

@@ -146,7 +146,10 @@ function collectTextDocuments(directory) {
  * @returns {Record<string, string>} 경로별 본문
  */
 function readTrackedFiles() {
-  const tracked = execFileSync('git', ['ls-files'], { cwd: projectRoot, encoding: 'utf8' })
+  const tracked = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  })
     .split('\n')
     .filter(Boolean);
   const files = {};
