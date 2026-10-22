@@ -1548,6 +1548,7 @@ export interface I18nKeys {
   indexedReviewSearchUnavailable: string;
   indexedReviewAnswerUnavailable: string;
   indexedReviewNoEvidence: string;
+  queryVariantPrompt: string;
   indexedReviewComparisonMissing: string;
   indexedReviewComparisonSearchFailed: string;
   llmIndexedReviewAnswer: string;
@@ -3477,6 +3478,8 @@ const ko: I18nKeys = {
     '검토한 근거로 최종 답변을 생성하지 못했습니다. 잠시 뒤 다시 시도하거나 모델 출력 설정을 확인하세요.',
   indexedReviewNoEvidence:
     '이번 검색에서는 질문과 직접 일치하는 원문 근거를 찾지 못했습니다. 볼트 전체에 관련 내용이 없다는 뜻은 아니며, 색인 범위 밖 문서나 이번 검색이 닿지 못한 문서가 있을 수 있습니다. 검색 범위·색인 상태를 확인하거나 질문을 더 구체화해 주세요.',
+  queryVariantPrompt:
+    '볼트 검색어를 다른 언어로도 넓힙니다. 사용자 질문의 핵심 개념을 영어·한국어·라틴어 등 다른 언어의 검색 구문으로 옮겨 JSON 문자열 배열로만 답하세요. 최대 3개, 짧은 명사구나 고유명사 위주로 쓰고 설명·인용·줄바꿈은 넣지 마세요.',
   indexedReviewComparisonMissing:
     '이번 검토 범위에서는 비교 항목 {facets}의 검증된 근거를 찾지 못했습니다. 볼트 전체에 해당 내용이 없다는 뜻은 아니며, 다른 검색·색인 범위에서는 확인될 수 있습니다.',
   indexedReviewComparisonSearchFailed:
@@ -5507,6 +5510,8 @@ const en: I18nKeys = {
     'The reviewed evidence could not be turned into a final answer. Retry later or check the model output settings.',
   indexedReviewNoEvidence:
     'This search did not find an original passage that directly supports the question. This does not mean the vault contains nothing relevant: documents outside the indexed scope or documents this search did not reach may still be relevant. Check the search scope and indexing status, or make the question more specific.',
+  queryVariantPrompt:
+    'Widen the vault search across languages. Translate the core concepts of the user question into search phrases in other languages such as English, Korean, or Latin and answer only with a JSON array of strings. Use at most 3 short noun phrases or proper names, with no explanation, quotation, or line breaks.',
   indexedReviewComparisonMissing:
     'No verified evidence for the comparison facets {facets} was found in the reviewed scope. This does not mean those facets are absent from the entire vault; another search or indexed scope may still contain them.',
   indexedReviewComparisonSearchFailed:

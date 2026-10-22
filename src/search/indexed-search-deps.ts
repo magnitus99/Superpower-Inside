@@ -44,6 +44,7 @@ const SUBJECT_CANDIDATE_LIMIT = 96;
 const MAX_HYBRID_FACETS = 3;
 // 소스별 예약 슬롯과 최대 3개 facet의 원문 검증 예산을 함께 확보합니다.
 const EXHAUSTIVE_REVIEW_PATH_LIMIT = 96;
+const MAX_QUERY_VARIANTS = 3;
 const REVIEW_PATHS_PER_SOURCE = 8;
 const SEMANTIC_CANDIDATE_TIMEOUT_MS = 2_000;
 
@@ -133,6 +134,7 @@ export async function collectIndexedSearchSource(
   question = query,
   forceRefreshSources = true,
   semanticTimeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
+  loadQueryVariants?: () => Promise<readonly string[]>,
 ): Promise<
   (IndexedSearchSource & { diagnostics?: readonly RetrievalProviderDiagnostic[] }) | null
 > {
@@ -166,7 +168,7 @@ export async function collectIndexedSearchSource(
     };
   }
   const candidateStartedAt = performance.now();
-  const candidateResolution: HybridCandidateResolution =
+  let candidateResolution: HybridCandidateResolution =
     indexedPaths.length === 0
       ? {
           candidates: undefined,
@@ -182,6 +184,24 @@ export async function collectIndexedSearchSource(
             exhaustiveReview: false,
           }
         : await collectHybridCandidates(host.ragEngine, searchPlan, signal, semanticTimeoutMs);
+  // 교차 언어 검색 구문으로도 같은 hybrid 수집을 돌려 후보를 합칩니다.
+  const queryVariants = candidateResolution.candidates?.length
+    ? await loadQueryVariants?.()
+    : undefined;
+  if (queryVariants && queryVariants.length > 0 && candidateResolution.candidates) {
+    const extra = await collectVariantCandidates(
+      host.ragEngine,
+      queryVariants,
+      signal,
+      semanticTimeoutMs,
+    );
+    if (extra.length > 0) {
+      candidateResolution = {
+        ...candidateResolution,
+        candidates: mergeCandidateLists(candidateResolution.candidates, extra),
+      };
+    }
+  }
   const candidatesMs = performance.now() - candidateStartedAt;
   const reviewPaths = candidateResolution.exhaustiveReview
     ? selectExhaustiveReviewPaths(indexedPaths, candidateResolution.candidates)
@@ -326,6 +346,47 @@ export function createPluginSearchPort(host: IndexedSearchDepsHost): SearchPort 
  * 기존 하이브리드 query engine 결과를 엔진 후보 신호로 옮긴다.
  * 후보 신호를 못 만들면 색인 본문만으로 검색하고 그 사실을 로그에 남긴다.
  */
+/** 교차 언어 질의별 hybrid 후보를 수집하며 queryIndex를 분리해 예산을 나눠 씁니다. */
+async function collectVariantCandidates(
+  engine: RAGQueryEngine | null,
+  variants: readonly string[],
+  signal?: AbortSignal,
+  semanticTimeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
+): Promise<IndexedSearchCandidate[]> {
+  if (!engine) return [];
+  const collected: IndexedSearchCandidate[] = [];
+  const limited = variants.slice(0, MAX_QUERY_VARIANTS);
+  for (const [index, variant] of limited.entries()) {
+    signal?.throwIfAborted();
+    const plan = planIndexedSearchQueriesRust({
+      question: variant,
+      scoringQuestion: variant,
+      scopes: [],
+    });
+    if (!plan) continue;
+    const resolution = await collectHybridCandidates(engine, plan, signal, semanticTimeoutMs);
+    const offset = (index + 1) * MAX_HYBRID_FACETS;
+    for (const candidate of resolution.candidates ?? []) {
+      collected.push({ ...candidate, queryIndex: (candidate.queryIndex ?? 0) + offset });
+    }
+  }
+  return collected;
+}
+
+/** 같은 (queryIndex, source, path) 후보는 좋은 순위만 남깁니다. */
+function mergeCandidateLists(
+  base: readonly IndexedSearchCandidate[],
+  extra: readonly IndexedSearchCandidate[],
+): IndexedSearchCandidate[] {
+  const merged = new Map<string, IndexedSearchCandidate>();
+  for (const candidate of [...base, ...extra]) {
+    const key = `${candidate.queryIndex ?? 0}\u0000${candidate.source}\u0000${candidate.path}`;
+    const current = merged.get(key);
+    if (!current || candidate.rank < current.rank) merged.set(key, candidate);
+  }
+  return [...merged.values()];
+}
+
 async function collectHybridCandidates(
   engine: RAGQueryEngine | null,
   plan: IndexedSearchPlan,
