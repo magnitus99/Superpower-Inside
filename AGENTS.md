@@ -20,7 +20,7 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 - 모델·추론 강도는 사용자가 선택합니다. 전역 도구·설정·승인 정책을 임의로 바꾸지 않습니다. 스킬은 필요한 작업에만 사용하며 범용 교재나 작업 기록을 저장소에 쌓지 않습니다.
 - `rg`로 관련 구현·호출부·테스트를 함께 읽고 테스트 계약부터 고정합니다. 라이브러리 API는 Context7, 없으면 공식 문서나 설치된 타입·소스로 확인합니다.
 - 진입점은 `main.ts`, 설정은 `src/settings.ts`, 계산은 `crates/rag-wasm/`, WASM 연결은 `src/rag/rust-core.ts`입니다. 채팅 변경 전 [src/chat/AGENTS.md](src/chat/AGENTS.md)를 읽습니다.
-- 설치·디버깅 명령은 `package.json`과 `scripts/`, 배포 자산은 `.github/workflows/release.yml`에서 확인합니다. 에이전트 지침 문서는 AGENTS.md(경로별 포함)에만, 서브에이전트 실행 정의는 `.codex/agents/`에만 두며, 사용자 요청 없이 `docs/`나 README에 계획·설계 일지·검수 기록·에이전트용 가이드를 작성하지 않습니다.
+- 설치·디버깅 명령은 `package.json`과 `scripts/`, 배포 자산은 `.github/workflows/release.yml`에서 확인합니다. 에이전트 지침 문서는 AGENTS.md(경로별 포함)에만, pi 서브에이전트 실행 정의는 `.pi/agents/`에 두고 `.codex/agents/`는 이전 환경의 보존본으로 유지하며, 사용자 요청 없이 `docs/`나 README에 계획·설계 일지·검수 기록·에이전트용 가이드를 작성하지 않습니다.
 - 버전은 SemVer `MAJOR.MINOR.PATCH` 형식을 사용합니다. 기능 추가는 minor, 호환성 수정·버그 수정은 patch, 호환성을 깨는 변경은 major로 올립니다. 이미 게시한 버전과 태그는 보존합니다.
 - 릴리스는 `main`에서 준비하고 `manifest.json`·`package.json`·`package-lock.json` 버전과 `versions.json`의 새 버전 키를 맞춥니다. 태그는 SemVer 버전과 정확히 같아야 하며 `v`를 붙이지 않습니다. 버전 증가 스크립트·릴리스 검증·훅은 SemVer 형식을 처리해야 합니다. workflow 실행 중 수동 Release 생성과 경합하지 말고 완료 후 자산을 확인합니다. 같은 버전 재출시의 태그 이동도 사용자 요청 범위에서만 수행합니다.
 - GitHub Release 노트는 직전 릴리스 태그와 현재 릴리스 태그 사이(`git log <prev>..<curr>`)의 작업을 근거로 하되, 커밋 제목·본문을 그대로 옮기지 않고 사용자가 체감하는 변경으로 풀이해 요약합니다. 버전 범프·번들 재빌드 같은 내부 커밋은 적지 않습니다. 첫 릴리스는 전체 이력을 범위로 삼습니다.
@@ -29,41 +29,23 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 
 ## 서브에이전트
 
-- 작업은 기본값이 아니라 원칙으로 서브에이전트가 수행합니다. 가능한 작업은 반드시 서브에이전트에 위임하고, 본 모델은 조율·검증·통합을 맡습니다.
-- 프로젝트 서브에이전트(정의 원본: `.codex/agents/`): `repo_researcher`(읽기 전용 코드베이스 조사), `architecture_analyst`(읽기 전용 경계·불변식·실패 모드 분석), `web_researcher`(읽기 전용 외부 자료·공식 문서 조사), `verification_runner`(구현 동결 후 독립 검증), `code_reviewer`(고위험 변경의 독립 리뷰), `ponytail_implementer`(지정 경로 구현), `design_specialist`(디자인), `philosophy_reviewer`(제품 철학 검토·제안 데모, 수동·범위 지정 전용). 내장 에이전트(`default`·`worker`·`explorer`)는 위 역할에 맞지 않는 작은 작업에만 사용합니다.
+- 독립 검토·전문성·컨텍스트 분리의 이득이 있는 작업은 프로젝트 서브에이전트에 위임하고, 본 모델은 조율·검증·통합을 맡습니다. 단순 조회·작은 수정은 직접 처리하며 모든 작업을 조사→구현→검증 에이전트로 의무 분할하지 않습니다.
+- 프로젝트 서브에이전트(활성 정의: `.pi/agents/*.md`, 이전 Codex 정의는 보존본): `repo_researcher`(읽기 전용 코드베이스·아키텍처 조사), `web_researcher`(읽기 전용 외부 자료·공식 문서 조사), `code_reviewer`(독립 코드 리뷰·검증 실행), `ponytail_implementer`(지정 경로 구현), `design_specialist`(디자인), `philosophy_reviewer`(제품 철학 검토·제안 데모, 수동·범위 지정 전용). 중복된 내장 역할은 로컬 설정에서 비활성화하고 pi 네이티브 실행을 사용합니다. 외부 CLI 에이전트는 사용하지 않습니다.
 - 위임 패킷에는 목표, 비목표, 관련 경로·의심 호출 경로, 쓰기 권한, 필수 계약, 수용 기준, 검증 명령, 출력 형식, 중단 조건을 적습니다. 읽기 전용 역할에는 파일 수정·포맷터·패치·커밋 권한을 주지 않습니다.
-- 먼저 읽기 조사로 근거를 모으고, 메인이 변경 파일·계약·테스트를 동결한 뒤 쓰기 작업을 시작합니다. 구현 동결 후 검증과 리뷰를 병렬화합니다. 동시에 실행하는 서브에이전트는 프로젝트 설정의 상한(현재 4개)을 넘지 않으며, 쓰기 작업은 파일 소유권이 겹치지 않을 때만 최대 2개를 병렬 실행합니다.
+- 변경 전 관련 구현·호출부·테스트를 확인하고 쓰기 범위와 수용 기준을 정합니다. 별도 조사 에이전트는 필요할 때만 사용합니다. 독립 검증·리뷰는 구현 동결 후 수행하며 병렬화는 선택입니다. 동시 실행과 누적 생성은 로컬 실행 설정의 상한을 따르며, 쓰기 작업은 파일 소유권이 겹치지 않을 때만 최대 2개를 병렬 실행합니다.
 - `main.ts`, `src/settings.ts`, `src/i18n.ts`, `src/rag/rust-core.ts`, `generated/`, `package.json`, `package-lock.json`처럼 충돌 반경이 큰 파일은 한 번에 한 작성자만 소유합니다. 검증자와 리뷰어는 구현을 수정하지 않습니다.
-- 서브에이전트는 추가 서브에이전트를 만들지 않습니다. 조율은 메인이 맡으며, `philosophy_reviewer`가 `design_specialist`를 사용하는 제품 철학 데모 예외만 둡니다.
+- 서브에이전트는 추가 서브에이전트를 만들지 않습니다(`maxSubagentDepth: 1`). 철학 검토에 디자인 데모가 필요해도 부모에게 요청하고 부모가 별도 실행합니다. 비동기 완료 알림은 결과 이벤트이며 새 사용자 요청이 아닙니다. 알림의 결과 파일을 읽고 기존 작업을 이어가며, 반복 상태 조회·sleep 대기를 하지 않습니다.
 - 서브에이전트 결과는 그대로 신뢰하지 않고 본 모델이 근거와 실제 상태를 검증한 뒤 통합합니다. 결과가 잘렸거나 조사 범위를 벗어났으면 빈칸을 추측으로 채우지 않고 다시 범위를 나눕니다.
 - 서브에이전트가 실패·중단·부분 완료로 끝나면 완료로 합치지 않습니다. 지시를 좁혀 1회 재시도하고, 다시 실패하면 본 모델로 진행하며 이유를 남깁니다.
-- 다음 경우에만 본 채팅 모델로 진행합니다: 서브에이전트가 해당 작업을 수행할 수 없을 때(도구·권한·모델 제약) 또는 적합한 서브에이전트가 없을 때(사용자가 지정한 모델·추론과 맞는 에이전트가 없는 경우 포함). 이때는 폴백 이유를 보고에 남깁니다. 사용자가 지정한 모델·추론은 에이전트 파일의 기본값보다 우선합니다.
+- 도구·권한·모델 제약, 적합한 역할 부재 또는 사용량 예비분에 진입하면 본 모델이 직접 처리하고 이유를 보고합니다. 사용자가 지정한 모델·추론은 에이전트 파일의 기본값보다 우선합니다. `bash`가 있는 읽기 역할은 정책상 읽기 전용이지 OS 샌드박스가 아니므로 수정·포맷터·커밋을 허용하지 않습니다.
 - 제품 철학 검토의 예외 조건은 아래 `제품 철학 검증` 절을 따릅니다.
 
-현재 모델 구성(원본: 각 TOML의 `model`·`model_reasoning_effort`, 모델 변경 시 이 표도 같은 변경에서 갱신):
-
-| 구분 | 실질 역할 | 모델 | 추론 | 도구 경계 |
-| --- | --- | --- | --- | --- |
-| 메인 채팅 | 조율·검증·통합 | 사용자 선택(권장 `gpt-6.1-sol`) | 사용자 선택(권장 `high`) | 선택 모델의 웹 검색·병렬 도구 지원 여부를 따름 |
-| `repo_researcher` | 구현·호출부·테스트·git history 조사 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 읽기 전용, 웹 검색·병렬 도구 호출 미지원 |
-| `architecture_analyst` | 경계·데이터 흐름·불변식·실패 모드·옵션 비교 | `ccs-commandcode/meta/muse-spark-1.3-contributor` | `xhigh` | 읽기 전용, 웹 검색·병렬 도구 호출 미지원 |
-| `web_researcher` | 공식·1차 자료 인터넷 조사와 출처 검증 | `gpt-6.1-sol` | `high` | 읽기 전용, 웹 검색 지원 |
-| `verification_runner` | 독립 테스트·lint·typecheck·계약 검증 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 읽기 전용, 웹 검색·병렬 도구 호출 미지원 |
-| `code_reviewer` | 고위험 diff의 정확성·보안·회귀 리뷰 | `ccs-commandcode/claude-sonnet-5-5` | `high` | 읽기 전용, 웹 검색·병렬 도구 호출 미지원 |
-| `ponytail_implementer` | 구현 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 웹 검색·병렬 도구 호출 미지원 |
-| `philosophy_reviewer` | 제품 철학 1차 검토·지적·권고·데모 | `ccs-commandcode/deepseek/deepseek-v4.1-flash` | `max` | 웹 검색·병렬 도구 호출 미지원 |
-| `design_specialist` | 디자인 조사·설계·데모 | `gpt-6.1-sol` | `high` | 웹 검색·병렬 도구 호출 지원 |
-
-- 인터넷·API·표준·보안 권고처럼 최신 외부 사실이 필요한 조사는 `web_researcher`가 맡고, 공식 또는 1차 자료의 실제 페이지·URL·날짜를 남깁니다. 웹을 지원하지 않는 에이전트에는 외부 조사를 요구하지 않고, 메인이 확인한 자료를 출처와 함께 전달합니다. 이 경우 독립적인 웹 조사로 표현하지 않습니다.
-- 고비용 모델은 판단 가치가 큰 작업에만 씁니다. `gpt-6.1-sol`은 고난도 아키텍처 충돌 해소·디자인·최종 판단에, `claude-sonnet-5-5`는 보안·데이터 손실·동시성 같은 고위험 리뷰와 `gpt-6.1-sol`을 쓸 수 없을 때의 디자인 폴백에 제한합니다. 반복 조사·구현·검증은 `deepseek-v4.1-flash`, `muse-spark-1.3-contributor`, `glm-5.3-flash`에 우선 배분합니다.
-- `architecture_analyst`의 기본값은 저비용 1차 분석이다. 여러 모듈·wire format·마이그레이션·동시성처럼 판단 비용이 큰 경우에만 명시적으로 `gpt-6.1-sol`/`high`로 재스폰해 교차 검증합니다. `web_researcher`는 출처 식별·비교가 필요한 기본 조사에 `gpt-6.1-sol`/`high`를 쓰고, 단일 사실의 좁은 확인은 `gpt-6-luna`/`high`로 명시적 override합니다.
-- 모델 폴백 순서는 `repo_researcher`·`verification_runner`·`ponytail_implementer` = `deepseek-v4.1-flash` → `glm-5.3-flash` → `muse-spark-1.3-contributor` → `gpt-6-luna`, `architecture_analyst` = `muse-spark-1.3-contributor` → `claude-sonnet-5-5` → `gpt-6.1-sol`, `web_researcher` = `gpt-6.1-sol` → `gpt-6-luna`, `code_reviewer` = `claude-sonnet-5-5` → `gpt-6.1-sol` → `muse-spark-1.3-contributor`, `design_specialist` = `gpt-6.1-sol` → `claude-sonnet-5-5` → `deepseek-v4.1-flash`입니다.
-- 모델 폴백은 provider 안의 일시적 모델 장애를 다루는 규칙이며, provider 전체 한도 소진을 우회하지 않습니다. `ccs-commandcode/*` 모델은 같은 한도 풀을 공유합니다. 한 provider가 모두 소진되면 다른 provider로 역할을 옮기거나 reset을 기다려야 합니다.
-- 위임 전에 현재 사용 가능한 모델과 5시간·주간·월간 잔여 한도를 확인합니다. 확인할 수 없으면 마지막 확인값과 시각을 밝히고, 현재값처럼 단정하지 않습니다. 비기본 aggregation 멤버의 자동 갱신은 지연될 수 있으므로 카드의 수동 새로고침 또는 provider의 usage 명령으로 확인합니다. 주간·월간 잔여가 20% 미만이거나 5시간 잔여가 10% 미만이면 비용이 큰 모델·대규모 조사 파동을 중단하고 저비용 단일 작업으로 전환하며, 10% 미만은 마감·검증·복구용으로 예약하고 새 서브에이전트 생성을 멈춥니다.
-- CC Switch aggregation mode는 provider 자동 failover를 제공하지 않습니다. 모델 호출이 실패하면 같은 역할을 폴백 모델로 1회 재스폰하고, 둘 다 실패하면 메인이 처리 이유를 남깁니다. OpenAI 공식 한도로 클라이언트가 잠기면 사용자 확인 없이 provider를 바꾼 것으로 표현하지 말고, CC Switch 기본 provider 전환과 Codex 재시작이 필요한 상태를 보고합니다.
-- 여러 provider를 섞는 aggregation에서는 classic subagent tools를 유지하고 프로젝트의 `features.multi_agent_v2 = false`를 보존합니다. 메인과 서브에이전트가 다른 provider에 있을 때 v2 암호화 작업 전달을 사용하면 작업을 읽지 못할 수 있습니다.
-- custom agent에 적은 모델·추론 조합은 활성 model catalog와 일치해야 합니다. catalog에서 빠진 모델은 spawn 실패로 이어지므로, 모델을 바꾸면 `.codex/agents/*.toml`과 이 표를 같은 변경에서 검증합니다.
-- ds 기반 에이전트의 도구 출력은 10,000바이트에서 잘립니다. 큰 파일은 한 번에 넘기지 말고 범위를 나눠 읽도록 위임 지시에도 적습니다.
+- 개인별 모델·추론 강도·계정·사용량 예산은 Git에서 제외한 로컬 pi 설정에서 관리합니다. `.pi/AGENTS.md`가 있으면 위임 전에 해당 운영 규칙을 함께 확인합니다. `.pi/agents/`와 `.pi/settings.json`도 로컬 전용이며 다른 개발 환경에 존재한다고 가정하지 않습니다.
+- 인터넷·API·표준·보안 권고처럼 최신 외부 사실은 웹 조사 역할이 공식 또는 1차 자료의 실제 페이지·URL·날짜로 확인합니다. 웹을 지원하지 않는 역할에는 독립적인 외부 조사를 요구하지 않습니다.
+- 사용자가 선택한 모델·추론·과금 경로를 유지합니다. 새 위임 전 사용 가능한 모델·도구·잔여 한도를 확인하고, 확인 불가를 무제한으로 취급하거나 한도를 우회하지 않습니다. 비용이 큰 모델은 판단 가치가 큰 작업에만 사용합니다.
+- 폴백은 부모가 명시적으로 판단한 1회 재시도로 제한합니다. 실패하면 본 모델이 처리하거나 사용자에게 알리고 중단하며, provider 변경·추가 과금·자동 충전을 임의로 허용하지 않습니다.
+- 필요한 조사·검증을 임의의 도구 호출 횟수에 맞춰 생략하지 않습니다. 범위가 커지면 근거와 남은 일을 정리해 나누고, 작업이 불완전하면 미검토 범위를 밝힙니다.
+- pi에서는 `subagent`와 활성 catalog에 있는 명시적 `provider/model`을 사용합니다. 이전 Codex 설정은 보존하며 새 실행 설정으로 간주하지 않습니다. 큰 파일은 `read`의 offset/limit으로 나누고 고정된 출력 절단 수치를 가정하지 않습니다.
 
 ## 제품·화면
 
@@ -121,7 +103,7 @@ and npm run review -- --tag (node -p "require('./manifest.json').version") --bui
 - 기존 게이트의 구현·측정 데이터·통과 기준은 유지합니다. `security:full`은 lint → typecheck → Vitest·i18n·채팅 UX·오프라인 채팅 계약 → RAG 성능 → Rust fmt·clippy·tests·WASM·deny/audit/vet/geiger·npm audit·generated 정합성을 검사합니다. 임계값이나 제외 항목을 완화하지 않습니다.
 - UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 구조 테스트와 community review에 더해 실제 Obsidian 또는 충실한 시뮬레이션 스크린샷을 직접 찍고 봅니다. 정상·접힘/펼침·빈 상태·오류·disabled·진행 중·좁은 폭과 테마·focus·대비를 확인합니다.
 - 브라우저 시뮬레이션은 `npm run preview:prepare`로 설치된 Obsidian의 기본 CSS·자산·합성 Markdown 기준을 준비하고 `npm run preview`로 실행합니다. 제품 코드를 바꾼 뒤에는 `npm run preview:build`로 갱신합니다. `?check` 또는 화면의 제품 계약 검사로 기본 스타일·호스트·저장 계약을 확인하며, 기본 테마를 수제 CSS로 대체하지 않습니다. 앱 자산은 Git에서 제외한 `simulations/obsidian-preview/`에만 보관합니다.
-- Obsidian 네이티브 앱의 마우스·타이핑 자동화는 금지합니다. CLI·코드·로그를 사용합니다. 브라우저는 Codex 내부 → Chrome → 최후 수단 Playwright 순서입니다. 화면 검수는 커밋 전에 수행하며 촬영 불가 시 미완료 항목을 명시합니다.
+- Obsidian 네이티브 앱의 마우스·타이핑 자동화는 금지합니다. CLI·코드·로그를 사용합니다. 브라우저는 pi에 실제로 연결된 브라우저 도구 → Chrome → 최후 수단 Playwright 순서입니다. 화면 검수는 커밋 전에 수행하며 촬영 불가 시 미완료 항목을 명시합니다.
 - 완료 보고는 실제 실행한 명령·종료 상태·남은 문제를 포함하며 테스트 통과를 실제 LLM 품질 개선의 증거로 대신하지 않습니다.
 - README는 사용자가 명시적으로 전체 재작성을 지시할 때만 변경합니다. 기능 구현·버그 수정·철학 정리·릴리스 등의 후속 단계로 README 수정이나 재작성을 자동으로 시작하지 않습니다. 구현과의 차이를 발견하면 보고하고 기존 파일은 보존합니다. 명시적으로 요청받은 전체 재작성에서는 현재 기능·사용 흐름과 사용자 가치를 통합하며 커밋 로그·changelog·릴리스별 변경 파일을 만들지 않습니다. GitHub Release 요약은 사용자 관점으로 본문에만 작성합니다.
 - Patina는 릴리스 직전에 최종 제품 소개·사용 안내·홍보 문구의 영어·한국어를 검사합니다. 일반 수정·커밋·브랜치 푸시에 온라인 검사를 강제하지 않습니다. `pre-commit`은 스테이징의 diff 형식과 대상 JSON description만 로컬 검증하고 파일·인덱스를 재작성하지 않습니다. `pre-push`는 SemVer 릴리스 태그를 검사하며 삭제·개발 태그·브랜치는 레지스트리 조회와 모델 호출을 생략합니다.
@@ -134,5 +116,5 @@ and npm run review -- --tag (node -p "require('./manifest.json').version") --bui
 
 - 제품 철학 조사·승인 자료는 로컬 `product-philosophy/00-index.md`에서 찾는다. 사용자가 지정한 범위에서 참조하며 해당 폴더의 `AGENTS.md`를 따른다. 승인 전 후보를 제품 기준으로 적용하지 않고 고객 가치 항목마다 사용자 승인을 받는다.
 - 제품 철학 기준은 Git에서 제외한 로컬 `product-philosophy.md`다. 사용자 요청에 따라 이 문서를 검토 기준으로 읽는다. 화면 디자인은 기존 `design.md`를 따른다.
-- 제품 철학 검토는 자동화하지 않는다. 사용자가 범위를 지정해 명시적으로 요청할 때만 프로젝트 서브에이전트 `philosophy_reviewer`(`.codex/agents/philosophy-reviewer.toml`)를 지목해 실행한다. 서브에이전트의 제1역할은 검토 후 지적·권고이며, 제안 판단을 돕기 위해 `design_specialist`를 활용해 Git 제외 임시 경로에 데모를 만들 수 있다. 제품 파일은 수정하지 않고, 무엇을 어떻게 얼마나 고칠지는 사용자 승인을 받은 뒤에만 진행한다. 거절된 데모는 삭제하거나 새로 만들고, 승인된 제품 구현이 검증되면 데모를 삭제한다. Patina·TypeScript 구현·품질 검사·Git 훅·CI·릴리스에 자동 연결하지 않는다.
+- 제품 철학 검토는 자동화하지 않는다. 사용자가 범위를 지정해 명시적으로 요청할 때만 프로젝트 서브에이전트 `philosophy_reviewer`(`.pi/agents/philosophy-reviewer.md`)를 지목해 실행한다. 서브에이전트의 제1역할은 검토 후 지적·권고이며, 제안 판단을 돕기 위해 `design_specialist`를 활용해 Git 제외 임시 경로에 데모를 만들 수 있다. 제품 파일은 수정하지 않고, 무엇을 어떻게 얼마나 고칠지는 사용자 승인을 받은 뒤에만 진행한다. 거절된 데모는 삭제하거나 새로 만들고, 승인된 제품 구현이 검증되면 데모를 삭제한다. Patina·TypeScript 구현·품질 검사·Git 훅·CI·릴리스에 자동 연결하지 않는다.
 - 제품 철학 작업 완료 보고는 두괄식 불렛포인트로 무엇을 했고 무엇을 고쳤는지만 요약한다. 디자인·커밋·릴리스 등 다른 영역은 기존 워크플로우를 따른다.
