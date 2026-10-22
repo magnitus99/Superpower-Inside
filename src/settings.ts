@@ -596,8 +596,10 @@ export function normalizeChatDebugTraceSettings(value: unknown): ChatDebugTraceS
     typeof value === 'object' && value !== null
       ? (value as Partial<ChatDebugTraceSettings>)
       : undefined;
+  // 배포 빌드에는 추적 코드가 없으므로 저장된 값과 무관하게 항상 꺼 둡니다.
+  if (!DEBUG_TRACE_BUILD_ENABLED) return { enabled: false };
   return {
-    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : DEBUG_TRACE_BUILD_ENABLED,
+    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : true,
   };
 }
 export interface SuperpowerInsideSettings {
@@ -1107,6 +1109,7 @@ export interface PluginLike {
   prepareRagForChat(): Promise<boolean>;
   isRagIndexing(): boolean;
   getRetrievalReadiness(): ChatRetrievalReadiness;
+  getRagIndexingProgressSummary?(): import('./rag/indexing-progress').RagIndexingProgressSummary | null;
   cancelRagIndexing(): void;
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;
   resumeRagIndexing(): boolean;

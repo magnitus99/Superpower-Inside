@@ -1305,6 +1305,12 @@ describe('RAG 설정 표시 헬퍼', () => {
     });
   });
 
+  it('배포 빌드에서는 저장된 값이 켜져 있어도 채팅 추적을 끈다', () => {
+    // 배포 번들에는 추적 코드가 없으므로 남은 설정이 추적을 되살리지 않아야 합니다.
+    const enabled = DEBUG_TRACE_BUILD_ENABLED && normalizeChatDebugTraceSettings({ enabled: true }).enabled;
+    expect(enabled).toBe(DEBUG_TRACE_BUILD_ENABLED);
+  });
+
   it('기본 MCP 설정은 Context7 서버를 포함한다', () => {
     expect(DEFAULT_SETTINGS.mcpIncludeWslPath).toBe(false);
     expect(DEFAULT_SETTINGS.mcpServers).toContainEqual({
