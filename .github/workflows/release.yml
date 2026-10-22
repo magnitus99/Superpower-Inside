@@ -15,20 +15,8 @@ jobs:
     uses: ./.github/workflows/quality.yml
     permissions:
       contents: read
-  copy:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: node scripts/check-copy.mjs --release-ref "$GITHUB_SHA" --offline
   publish:
-    needs: [quality, copy]
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

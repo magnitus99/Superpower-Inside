@@ -10,14 +10,20 @@ const threshold = 15;
 const languages = ['en', 'ko'];
 // 사용자에게 제품을 소개하거나 사용을 안내하는 문서만 명시적으로 등록합니다.
 const copyDocuments = new Set(['README.md']);
+// Patina는 pi CLI로 실행합니다. 모델은 환경변수로 바꿀 수 있습니다.
+const defaultPiModel = 'openai/gpt-6.1-sol';
+const defaultPiThinking = 'high';
 
 export function isCopyPath(file) {
-  if (/(^|\/)AGENTS\.md$/i.test(file)) return false;
-  return (
-    copyDocuments.has(file) ||
-    /^(marketing|copy)\/.*\.(md|mdx|txt|rst|adoc)$/i.test(file) ||
-    ['package.json', 'manifest.json'].includes(file)
-  );
+  return copyDocuments.has(file);
+}
+
+export function piModel() {
+  return process.env.PATINA_PI_MODEL || defaultPiModel;
+}
+
+export function piThinking() {
+  return process.env.PATINA_PI_THINKING || defaultPiThinking;
 }
 
 export function languageText(text, language) {
@@ -95,17 +101,13 @@ function latestPatina() {
   }
   console.log(`Patina 최신 버전 ${version}으로 갱신 후 실행합니다.`);
   const execute = (args, input) => {
-    let env = process.env;
-    if (args.includes('codex-cli')) {
-      const located = command(process.platform === 'win32' ? 'where' : 'which', ['codex']);
-      if (located.status !== 0)
-        throw new Error('Codex CLI가 필요합니다. codex login 후 다시 실행하세요.');
-      env = {
-        ...process.env,
-        PATINA_CODEX_EXECUTABLE: located.stdout.trim().split(/\r?\n/)[0],
-        PATH: `${resolve('scripts/patina-bin')}${delimiter}${process.env.PATH}`,
-      };
-    }
+    // patina-bin의 `claude` shim이 claude-cli 백엔드 호출을 pi 실행으로 넘깁니다.
+    const env = {
+      ...process.env,
+      PATH: `${resolve('scripts/patina-bin')}${delimiter}${process.env.PATH}`,
+      PATINA_PI_MODEL: piModel(),
+      PATINA_PI_THINKING: piThinking(),
+    };
     const execution = command(
       'npm',
       [
@@ -133,7 +135,7 @@ export function scoreArgs(language, online = true) {
     '--lang',
     language,
     '--score',
-    ...(online ? ['--backend', 'codex-cli', '--model', 'gpt-6.1-sol'] : ['--offline']),
+    ...(online ? ['--backend', 'claude-cli'] : ['--offline']),
     '--exit-on',
     String(threshold),
     '--format',
@@ -174,15 +176,14 @@ function checkText(patina, file, text, online = true, scores = []) {
   return failed;
 }
 
-function rewriteText(patina, original, language, backend = 'codex-cli', model = 'gpt-6.1-sol') {
+function rewriteText(patina, original, language, backend = 'claude-cli', model) {
   const result = patina(
     [
       '--lang',
       language,
       '--backend',
       backend,
-      '--model',
-      model,
+      ...(model ? ['--model', model] : []),
       '--verify',
       '--config',
       resolve('.patina.yaml'),
@@ -208,16 +209,6 @@ function saveRewrite(patina, file, original, candidate) {
   console.log(`${file}: 의미 보존·한영 검사 통과 후 저장했습니다. 검토하고 다시 스테이징하세요.`);
 }
 
-function copyText(file, content) {
-  if (file.endsWith('.json')) {
-    const description = JSON.parse(content).description;
-    if (typeof description !== 'string' || !description.trim())
-      throw new Error(`${file}: description이 없습니다.`);
-    return description;
-  }
-  return content;
-}
-
 function commitRevision(ref) {
   return git(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]).trim();
 }
@@ -229,7 +220,7 @@ function committedSnapshots(ref) {
     .filter(isCopyPath)
     .map((file) => {
       const content = git(['show', `${commit}:${file}`]);
-      return { file, content, text: copyText(file, content) };
+      return { file, content, text: content };
     });
 }
 
@@ -258,24 +249,20 @@ function snapshots(mode, args) {
     .filter(isCopyPath)
     .map((file) => {
       const content = readFileSync(file, 'utf8');
-      return { file, content, text: copyText(file, content) };
+      return { file, content, text: content };
     });
 }
 
 function commitLocal() {
   const diff = command('git', ['diff', '--cached', '--check']);
   if (diff.status !== 0) throw new Error(diff.stdout + diff.stderr);
-  const files = git(['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMRT'])
-    .split('\0')
-    .filter((file) => isCopyPath(file) && file.endsWith('.json'));
-  for (const file of files) copyText(file, git(['show', `:${file}`]));
-  console.log('커밋 형식 검사 통과: Patina는 릴리스 전에 실행합니다.');
+  console.log('커밋 형식 검사 통과: Patina는 필요할 때 수동으로 실행합니다.');
 }
 
 function receiptKey(selected, version) {
   const policy = [
     fileURLToPath(import.meta.url),
-    resolve('scripts/patina-bin/codex'),
+    resolve('scripts/patina-bin/claude'),
     resolve('.patina.yaml'),
   ].map((file) => (existsSync(file) ? readFileSync(file, 'utf8') : ''));
   const content = [
@@ -285,7 +272,15 @@ function receiptKey(selected, version) {
   ].sort((a, b) => a.file.localeCompare(b.file) || a.text.localeCompare(b.text));
   return createHash('sha256')
     .update(
-      JSON.stringify({ content, policy, version, threshold, model: 'gpt-6.1-sol', effort: 'high' }),
+      JSON.stringify({
+        content,
+        policy,
+        version,
+        threshold,
+        backend: 'claude-cli',
+        model: piModel(),
+        effort: piThinking(),
+      }),
     )
     .digest('hex');
 }
@@ -332,8 +327,8 @@ function run() {
     return;
   }
   if (mode === '--fix') {
-    const [file, language, backend = 'codex-cli', model = 'gpt-6.1-sol'] = args;
-    if (!file || !isCopyPath(file) || file.endsWith('.json') || !languages.includes(language))
+    const [file, language, backend = 'claude-cli', model] = args;
+    if (!file || !isCopyPath(file) || !languages.includes(language))
       throw new Error('사용법: npm run copy:fix -- <파일> <en|ko> [백엔드] [모델]');
     const original = readFileSync(file, 'utf8');
     const patina = latestPatina();

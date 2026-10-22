@@ -1,0 +1,41 @@
+#!/usr/bin/env node
+// Patina의 claude-cli 백엔드는 `claude -p --model <id>` 규약으로 호출하고
+// 프롬프트는 stdin, 응답은 stdout으로 주고받습니다. 이 shim은 같은 호출을
+// pi CLI 비대화형 실행으로 넘겨 Codex CLI 없이 Patina를 돌립니다.
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+
+const prompt = readFileSync(0, 'utf8');
+const executable = process.env.PATINA_PI_EXECUTABLE || 'pi';
+const model = process.env.PATINA_PI_MODEL || 'openai/gpt-6.1-sol';
+const thinking = process.env.PATINA_PI_THINKING || 'high';
+
+const result = spawnSync(
+  executable,
+  [
+    '--print',
+    '--mode',
+    'text',
+    '--model',
+    model,
+    '--thinking',
+    thinking,
+    '--no-session',
+    '--no-tools',
+    '--no-mcp',
+    '--no-context-files',
+    '--no-skills',
+    '--no-prompt-templates',
+    '--system-prompt',
+    'You are a text transform engine. Follow the instructions in the input and print only the requested output.',
+  ],
+  { input: prompt, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+);
+
+if (result.error) {
+  process.stderr.write(`pi 실행 실패: ${result.error.message}\n`);
+  process.exit(1);
+}
+if (result.stderr?.trim()) process.stderr.write(result.stderr);
+process.stdout.write(result.stdout ?? '');
+process.exit(result.status ?? 1);

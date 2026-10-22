@@ -21,22 +21,22 @@ import { tmpdir } from 'node:os';
 import { join, resolve, delimiter } from 'node:path';
 
 describe('홍보 문구 검사 계약', () => {
-  it('온라인 검사에는 Codex 모델을 명시하고 오프라인 옵션을 제거한다', () => {
-    expect(scoreArgs('en', true)).toContain('codex-cli');
-    expect(scoreArgs('en', true)).toContain('gpt-6.1-sol');
+  it('온라인 검사는 pi의 claude-cli 백엔드를 쓰고 모델은 환경변수로 정한다', () => {
+    expect(scoreArgs('en', true)).toContain('claude-cli');
+    expect(scoreArgs('en', true)).not.toContain('codex-cli');
     expect(scoreArgs('en', true)).not.toContain('--offline');
     expect(scoreArgs('ko', false)).toContain('--offline');
     expect(scoreArgs('ko')).toContain('15');
   });
-  it('한영 README와 홍보 문서를 포함하고 에이전트 규칙은 제외한다', () => {
+  it('README만 검사하고 다른 문서는 제외한다', () => {
+    expect(isCopyPath('README.md')).toBe(true);
     for (const file of [
-      'README.md',
       'marketing/launch.md',
       'copy/homepage.md',
       'manifest.json',
       'package.json',
     ])
-      expect(isCopyPath(file)).toBe(true);
+      expect(isCopyPath(file)).toBe(false);
     for (const file of [
       'releases/2.3.0.md',
       'releases/3.3.0.mdx',
@@ -182,8 +182,9 @@ if (args[0] === 'view') {
       git('add', 'README.md');
       expect(run(['--commit-local']).status).toBe(1);
       writeFileSync(join(cwd, 'package.json'), JSON.stringify({ description: '' }));
-      git('add', 'package.json');
-      expect(run(['--commit-local']).status).toBe(1);
+      writeFileSync(join(cwd, 'README.md'), 'BAD copy');
+      git('add', '.');
+      expect(run(['--commit-local']).status).toBe(0);
     }));
 
   it('일반 브랜치·비릴리스 태그·삭제는 과거 문구와 무관하게 모델을 호출하지 않는다', () =>
@@ -229,12 +230,7 @@ if (args[0] === 'view') {
         calls()
           .filter((call) => call.args.includes('--score'))
           .map((call) => call.text),
-      ).toEqual([
-        'Final release copy',
-        'Final release copy',
-        'Safe description',
-        'Safe description',
-      ]);
+      ).toEqual(['Final release copy', 'Final release copy']);
       expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('BAD unstaged');
     }));
 
@@ -278,10 +274,10 @@ if (args[0] === 'view') {
       expect(
         run(['--push'], {}, `refs/tags/3.2.5 ${sha} refs/tags/3.2.5 ${'0'.repeat(40)}\n`).status,
       ).toBe(0);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
+      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(2);
       expect(calls().filter((call) => call.args[0] === 'view')).toHaveLength(2);
       expect(run(['--refresh']).status).toBe(0);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
+      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
     }));
 
   it('문구·최신 버전·정책 변경은 통과 기록을 무효화한다', () =>
@@ -354,27 +350,34 @@ if (args[0] === 'view') {
       expect(scores.every((call) => call.args.includes('--offline'))).toBe(true);
     }));
 
-  it('Codex wrapper가 사용자가 지정한 모델과 high 설정을 보존한다', () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'copy-codex-'));
+  it('pi shim이 Patina 호출을 pi 실행으로 넘기고 모델·프롬프트를 보존한다', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'copy-pi-'));
     try {
       const executable = join(cwd, 'capture');
       writeFileSync(
         executable,
-        '#!/usr/bin/env node\nconsole.log(JSON.stringify(process.argv.slice(2)));\n',
+        '#!/usr/bin/env node\nconst fs = require("node:fs");\nconsole.log(JSON.stringify({args: process.argv.slice(2), prompt: fs.readFileSync(0, "utf8")}));\n',
       );
       chmodSync(executable, 0o755);
       const result = spawnSync(
         process.execPath,
-        [resolve('scripts/patina-bin/codex'), 'exec', '--model', 'gpt-6.1-sol'],
-        { encoding: 'utf8', env: { ...process.env, PATINA_CODEX_EXECUTABLE: executable } },
+        [resolve('scripts/patina-bin/claude'), '-p', '--model', 'claude-sonnet-4-6'],
+        {
+          encoding: 'utf8',
+          input: 'score this copy',
+          env: {
+            ...process.env,
+            PATINA_PI_EXECUTABLE: executable,
+            PATINA_PI_MODEL: 'commandcode/claude-sonnet-5-5',
+          },
+        },
       );
-      expect(JSON.parse(result.stdout)).toEqual([
-        'exec',
-        '-c',
-        'model_reasoning_effort="high"',
-        '--model',
-        'gpt-6.1-sol',
-      ]);
+      const captured = JSON.parse(result.stdout);
+      expect(captured.prompt).toBe('score this copy');
+      expect(captured.args).toContain('--print');
+      expect(captured.args).toContain('commandcode/claude-sonnet-5-5');
+      expect(captured.args).toContain('--no-tools');
+      expect(captured.args).not.toContain('claude-sonnet-4-6');
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

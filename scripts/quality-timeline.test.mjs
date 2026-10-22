@@ -35,7 +35,7 @@ describe('검사 시점과 중복 제거', () => {
   });
   it('릴리스 각 단계가 실패하면 다음 명령을 실행하지 않고 실패를 반환한다', () => {
     const root = mkdtempSync(join(tmpdir(), 'release-gate-'));
-    const order = ['security:full', 'build', 'review', 'copy:check'];
+    const order = ['security:full', 'build', 'review'];
     try {
       writeFileSync(join(root, 'manifest.json'), JSON.stringify({ version: '1.0.0' }));
       const npm = join(root, 'npm');
@@ -75,25 +75,24 @@ process.exitCode = stage === process.env.RELEASE_FAIL ? 7 : 0;
       rmSync(root, { recursive: true, force: true });
     }
   });
-  it('커밋과 일반 CI에 Patina를 넣지 않고 릴리스 태그만 검사한다', () => {
+  it('커밋과 일반 CI·릴리스 자동화에 Patina를 넣지 않고 수동 실행만 남긴다', () => {
     expect(read('.githooks/pre-commit')).toContain('--commit-local');
     const release = read('.github/workflows/release.yml');
-    const copy = release.split('\n  copy:\n')[1].split('\n  publish:\n')[0];
     expect(release).not.toContain('pull_request:');
     expect(release).toContain("- '[0-9]*.[0-9]*.[0-9]*'");
     expect(release).toContain('draft: true');
-    expect(release).toContain('needs: [quality, copy]');
-    expect(copy).toContain('runs-on: ubuntu-latest');
-    expect(copy).toContain('permissions:\n      contents: read');
-    expect(copy).not.toContain('write');
-    expect(copy).toContain('--release-ref "$GITHUB_SHA" --offline');
+    expect(release).toContain('needs: quality');
+    expect(release).not.toContain('check-copy.mjs');
     expect(existsSync(new URL('../.github/workflows/copy.yml', import.meta.url))).toBe(false);
+    expect(existsSync(new URL('../.githooks/pre-push', import.meta.url))).toBe(false);
     const scripts = JSON.parse(read('package.json')).scripts;
     expect(scripts['quality:local']).toContain('scripts/check-quality.mjs');
     expect(scripts['quality:local']).not.toMatch(/copy:|perf-gate|rust:security/);
     expect(scripts['release:check']).toContain('scripts/check-release.fish');
     expect(read('scripts/check-release.fish')).toContain('security:full');
-    expect(read('scripts/check-release.fish')).toContain('copy:check');
+    expect(read('scripts/check-release.fish')).not.toContain('copy:check');
+    expect(scripts['copy:check']).toBe('node scripts/check-copy.mjs');
+    expect(scripts['copy:check:online']).toBe('node scripts/check-copy.mjs --online');
   });
   it('릴리스 스크립트는 전체 게이트를 재사용해 성능 검사를 빠뜨리지 않는다', () => {
     const script = read('scripts/bump-version.fish');

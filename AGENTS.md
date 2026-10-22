@@ -91,8 +91,8 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 - 작업 중·코드 변경 완료 시 `npm run quality:local`을 실행합니다. HEAD 대비 스테이징·작업 파일·새 파일을 기준으로 필요한 검사만 선택합니다. CI에서는 `--base <비교 커밋>`으로 실제 변경 범위를 전달합니다. 이미 통과한 동일 변경을 커밋·브랜치 푸시 때문에 다시 검사하지 않습니다.
 - 문서·설명·버전만 변경하면 community review와 diff 형식만 확인하고 링크·명령은 검토합니다. TS 변경은 lint → typecheck → 전체 Vitest·i18n·채팅 UX·오프라인 채팅 계약 평가를 실행합니다. 검사 스크립트·CSS·CI 변경은 관련 계약을 포함한 테스트를 실행하고, Rust 또는 WASM 빌드 경계 변경은 TS 계약과 Rust fmt·clippy·tests도 실행합니다. 변경 없는 Rust·성능·온라인 보안·Patina 검사를 일반 작업에 강제하지 않습니다.
 - 로컬 검사는 설치된 의존성·생성물을 사용하며 모델과 네트워크를 호출하지 않습니다. Rust는 `--frozen`으로 검사하며 의존성이 없으면 준비가 필요하다고 실패합니다. Rust 변경의 새 WASM 연동은 CI 준비 단계 또는 릴리스 빌드에서 확인합니다.
-- 의존성·보안 정책 변경의 CI와 수동·릴리스 CI는 `security:full`을 실행합니다. 일반 PR·main CI는 변경 범위의 검사만 실행하며 문서만 바뀌면 npm/Rust 도구 설치와 코드 테스트도 생략합니다. 이전 PR·main 실행은 새 커밋에서 취소합니다. 릴리스 게시 작업은 전체 검사와 오프라인 Patina 성공을 기다립니다.
-- 릴리스 준비는 아래 전체 검증을 한 번 실행합니다. 실패하면 다음 단계로 넘어가지 않습니다. `npm run release:check`와 버전 스크립트는 이 경로 뒤에 온라인 Patina를 실행합니다.
+- 의존성·보안 정책 변경의 CI와 수동·릴리스 CI는 `security:full`을 실행합니다. 일반 PR·main CI는 변경 범위의 검사만 실행하며 문서만 바뀌면 npm/Rust 도구 설치와 코드 테스트도 생략합니다. 이전 PR·main 실행은 새 커밋에서 취소합니다. 릴리스 게시 작업은 전체 검사 성공을 기다립니다.
+- 릴리스 준비는 아래 전체 검증을 한 번 실행합니다. 실패하면 다음 단계로 넘어가지 않습니다. Patina 문구 검사는 이 경로에 넣지 않고 필요할 때 수동으로 실행합니다.
 
 ```fish
 npm run security:full
@@ -106,10 +106,10 @@ and npm run review -- --tag (node -p "require('./manifest.json').version") --bui
 - Obsidian 네이티브 앱의 마우스·타이핑 자동화는 금지합니다. CLI·코드·로그를 사용합니다. 브라우저는 pi에 실제로 연결된 브라우저 도구 → Chrome → 최후 수단 Playwright 순서입니다. 화면 검수는 커밋 전에 수행하며 촬영 불가 시 미완료 항목을 명시합니다.
 - 완료 보고는 실제 실행한 명령·종료 상태·남은 문제를 포함하며 테스트 통과를 실제 LLM 품질 개선의 증거로 대신하지 않습니다.
 - README는 사용자가 명시적으로 전체 재작성을 지시할 때만 변경합니다. 기능 구현·버그 수정·철학 정리·릴리스 등의 후속 단계로 README 수정이나 재작성을 자동으로 시작하지 않습니다. 구현과의 차이를 발견하면 보고하고 기존 파일은 보존합니다. 명시적으로 요청받은 전체 재작성에서는 현재 기능·사용 흐름과 사용자 가치를 통합하며 커밋 로그·changelog·릴리스별 변경 파일을 만들지 않습니다. GitHub Release 요약은 사용자 관점으로 본문에만 작성합니다.
-- Patina는 릴리스 직전에 최종 제품 소개·사용 안내·홍보 문구의 영어·한국어를 검사합니다. 일반 수정·커밋·브랜치 푸시에 온라인 검사를 강제하지 않습니다. `pre-commit`은 스테이징의 diff 형식과 대상 JSON description만 로컬 검증하고 파일·인덱스를 재작성하지 않습니다. `pre-push`는 SemVer 릴리스 태그를 검사하며 삭제·개발 태그·브랜치는 레지스트리 조회와 모델 호출을 생략합니다.
-- Patina 대상은 루트 `README.md`, `package.json`·`manifest.json`의 `description`, `marketing/`·`copy/`의 홍보 문서입니다. 다른 사용자용 문서는 `scripts/check-copy.mjs`의 `copyDocuments`에 등록합니다. 개발 규칙·기술 명세·라이선스·테스트 자료는 제외하며 `docs/`·`public/` 또는 README라는 이름만으로 포함하지 않습니다. GitHub 릴리스 본문과 `releases/`의 릴리스 문서는 Patina 검사에서 제외합니다.
-- 릴리스 태그는 package·manifest 버전과 일치해야 합니다. Patina는 태그가 가리키는 최종 커밋의 등록 문구 전체를 검사하며 과거 중간 커밋·미커밋 작업 파일을 검사하지 않습니다. 실행 시 최신 Patina 버전을 레지스트리에서 확인하고 실패하면 차단합니다. Codex CLI `gpt-6.1-sol/high`를 유지하며 언어별 실제 모델 점수와 최종 점수가 모두 15점 이하일 때만 통과합니다. 온라인 실패를 오프라인으로 대체하지 않습니다.
-- `npm run copy:check`와 `copy:check:online`은 등록 문구 전체를 수동 검사합니다. 동일 문구·최신 버전·스크립트·wrapper·정책에서 통과한 전체 온라인 결과만 Git 내부에 7일간 저장해 릴리스 준비와 태그 푸시 사이의 중복 모델 호출을 줄입니다. 기록 손상·만료·문구 또는 정책 변경은 재검사하며 `npm run copy:check -- --refresh`는 강제 재검사합니다. 기록에는 원문을 저장하지 않습니다. 오프라인 검사 결과는 온라인 통과 기록으로 사용하지 않습니다. Codex 인증이 없는 릴리스 CI는 `--release-ref <커밋> --offline`을 명시하고 이 결과를 실제 모델 점수로 표현하지 않습니다.
+- Patina는 최종 제품 소개·사용 안내 문구의 영어·한국어 점수를 pi 실행으로 검사합니다. 커밋·푸시·CI·릴리스 자동화에 넣지 않고 사용자가 필요할 때만 수동으로 실행합니다. `pre-commit`은 스테이징의 diff 형식만 로컬 검증하고 파일·인덱스를 재작성하지 않습니다.
+- Patina 대상은 루트 `README.md` 하나입니다. 다른 사용자용 문서를 추가하려면 `scripts/check-copy.mjs`의 `copyDocuments`에 등록합니다. 개발 규칙·기술 명세·라이선스·테스트 자료, `marketing/`·`copy/`·`releases/` 문서, `package.json`·`manifest.json`의 `description`은 검사하지 않습니다.
+- Patina는 `scripts/patina-bin/claude` shim으로 pi CLI 비대화형 실행을 쓰며 Codex CLI에 의존하지 않습니다. 기본 모델은 `openai/gpt-6.1-sol`, 추론은 `high`이고 `PATINA_PI_MODEL`·`PATINA_PI_THINKING`로 바꿉니다. 언어별 실제 모델 점수와 최종 점수가 모두 15점 이하일 때만 통과하며 온라인 실패를 오프라인으로 대체하지 않습니다. 실행 시 최신 Patina 버전을 확인하고 실패하면 차단합니다. pi 인증이 없으면 실패를 그대로 보고하고 다른 provider로 임의 전환하지 않습니다.
+- `npm run copy:check`와 `copy:check:online`은 등록 문구 전체를 수동 검사합니다. 동일 문구·최신 버전·스크립트·shim·정책에서 통과한 전체 온라인 결과만 Git 내부에 7일간 저장해 릴리스 준비와 태그 푸시 사이의 중복 모델 호출을 줄입니다. 기록 손상·만료·문구 또는 정책 변경은 재검사하며 `npm run copy:check -- --refresh`는 강제 재검사합니다. 기록에는 원문을 저장하지 않습니다. 오프라인 검사 결과는 온라인 통과 기록으로 사용하지 않습니다. `--release-ref <커밋> --offline` 모드는 모델·네트워크 없이 결정적 검사만 할 때 쓰고 실제 모델 점수로 표현하지 않습니다.
 - 훅은 `npm run hooks:install` 또는 `npm install`로 설치합니다. `copy:fix`는 명시적으로 요청한 재작성에만 사용하며 검사 실패를 이유로 자동 실행하지 않습니다. README에는 위 전체 재작성 지시가 필요하며, `npm run copy:fix -- README.md en` 또는 `ko`의 언어별 보정도 그 요청 범위 안에서만 수행합니다. 의미 보존·충실도 95점 이상과 한영 온라인 재검사를 통과한 결과만 작업 파일에 반영하고 인덱스·커밋은 수정하지 않습니다. 결과를 검토하고 다시 스테이징합니다. CI·훅의 읽기 전용 검사는 README 수정 권한을 부여하지 않습니다.
 
 ## 제품 철학 검증
