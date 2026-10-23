@@ -833,6 +833,10 @@ class SearchOnlyStore extends MemoryVectorStore {
     throw new Error('getEntries must not be used for vector candidate search');
   }
 
+  override getEntryCount(): Promise<number> {
+    return Promise.resolve(this.searchEntries.length);
+  }
+
   override getStats(): Promise<{
     totalEntries: number;
     totalFiles: number;

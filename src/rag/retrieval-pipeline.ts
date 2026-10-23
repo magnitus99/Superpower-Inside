@@ -181,19 +181,28 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
     private readonly vectorStore: VectorStore,
     private readonly options: IvfVectorCandidateProviderOptions,
     readonly deadlineMs = 5_000,
+    /** 색인을 아직 만들지 않은 첫 질의에만 쓰는 여유 있는 상한입니다. */
+    readonly coldDeadlineMs = 20_000,
   ) {}
+
+  /** 첫 질의는 볼트 전체 벡터 색인 구축 비용을 포함하므로 상한을 늘립니다. */
+  getDeadlineMs(): number {
+    return this.state.mode === 'empty' && this.state.lastQueriedAt === null
+      ? Math.max(this.deadlineMs, this.coldDeadlineMs)
+      : this.deadlineMs;
+  }
 
   async getCandidates(
     request: RagRetrievalRequest,
     signal?: AbortSignal,
   ): Promise<RetrievalCandidate[]> {
     throwIfAborted(signal);
-    const stats = await this.vectorStore.getStats();
-    const shouldUseExact = stats.totalEntries < this.options.minEntryCount;
+    const entryCount = await this.readEntryCount();
+    const shouldUseExact = entryCount < this.options.minEntryCount;
     if (shouldUseExact) {
       this.state = {
-        mode: stats.totalEntries === 0 ? 'empty' : 'exact',
-        entryCount: stats.totalEntries,
+        mode: entryCount === 0 ? 'empty' : 'exact',
+        entryCount,
         clusterCount: 0,
         probeCount: 0,
         lastBuiltAt: this.state.lastBuiltAt,
@@ -233,7 +242,7 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
     this.state = {
       ...this.state,
       mode: usedAnn ? 'ann' : results.length === 0 ? 'empty' : 'exact',
-      entryCount: stats.totalEntries,
+      entryCount,
       clusterCount,
       probeCount: usedAnn
         ? Math.max(1, Math.min(this.options.probeCount, Math.max(1, clusterCount)))
@@ -252,6 +261,15 @@ export class IvfVectorCandidateProvider implements CandidateProvider {
 
   getState(): IvfVectorCandidateProviderState {
     return { ...this.state };
+  }
+
+  /**
+   * 질의마다 파일 인덱스 전체를 읽는 getStats()는 대형 볼트에서 초 단위 비용이 듭니다.
+   * 후보 검색의 exact/ann 판단에는 벡터 수만 있으면 됩니다.
+   */
+  private async readEntryCount(): Promise<number> {
+    if (this.vectorStore.getEntryCount) return this.vectorStore.getEntryCount();
+    return (await this.vectorStore.getStats()).totalEntries;
   }
 }
 
