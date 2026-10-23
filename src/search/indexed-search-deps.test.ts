@@ -390,7 +390,7 @@ describe('검색 의존성 factory', () => {
           },
           '합성 질의',
         );
-        await vi.advanceTimersByTimeAsync(2_000);
+        await vi.advanceTimersByTimeAsync(8_000);
         const source = await pending;
 
         expect(source?.exhaustiveReview).toBe(false);
@@ -459,7 +459,7 @@ describe('검색 의존성 factory', () => {
         '합성 질의',
       );
 
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(8_000);
       const source = await pending;
 
       expect(source?.exhaustiveReview).toBe(true);

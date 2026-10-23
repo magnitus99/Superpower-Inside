@@ -46,7 +46,11 @@ const MAX_HYBRID_FACETS = 3;
 const EXHAUSTIVE_REVIEW_PATH_LIMIT = 96;
 const MAX_QUERY_VARIANTS = 3;
 const REVIEW_PATHS_PER_SOURCE = 8;
-const SEMANTIC_CANDIDATE_TIMEOUT_MS = 2_000;
+/**
+ * 의미 후보 질의 하나가 기다릴 수 있는 시간입니다. 볼트 전체 벡터 색인은 첫 질의에서 만들어지고
+ * 이후 질의는 수백 ms면 끝나므로, 검색 화면도 채팅과 같은 후보를 받도록 여유를 둡니다.
+ */
+const SEMANTIC_CANDIDATE_TIMEOUT_MS = 8_000;
 
 type IndexedSearchCandidate = IndexedEvidenceCandidate & { queryIndex?: number };
 
