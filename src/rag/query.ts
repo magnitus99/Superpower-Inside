@@ -1,6 +1,7 @@
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { VectorStore, VectorEntry } from './store';
 import type { IndexedDbBM25Index } from './bm25';
+import type { BM25WorkerHit } from './bm25-worker-runtime';
 import { DEFAULT_SEARCH_QUALITY } from './search-defaults';
 import { BM25DocumentCorpusStore, FallbackRetrievalCorpusStore } from './corpus-store';
 import {
@@ -31,6 +32,13 @@ import { selectByRustIndices } from '../utils/rust-index-plan';
 import { appLogger } from '../utils/logger';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
+/**
+ * 후보를 넉넉히 모아 순위·다양성 필터를 견디게 하되, 후보 수에 비례해 늘어나는
+ * 원문 대조·점수 계산이 대형 볼트에서 초 단위가 되지 않도록 상한을 둡니다.
+ */
+const MAX_RETRIEVAL_CANDIDATES = 256;
+/** 같은 검색 안의 facet 질의가 볼트 파일 목록을 다시 훑지 않도록 재사용하는 시간입니다. */
+const CANDIDATE_PATHS_TTL_MS = 1_000;
 const DEFAULT_QUERY_EMBEDDING_TIMEOUT_MS = 10_000;
 const DEFAULT_QUERY_EMBEDDING_COOLDOWN_MS = 30_000;
 const QUERY_EMBEDDING_TIMEOUT_THRESHOLD = 2;
@@ -119,6 +127,7 @@ interface QueryEmbeddingResolution {
 export class RAGQueryEngine {
   private readonly corpusStore: import('./corpus-store').RetrievalCorpusStore | undefined;
   private readonly getCandidatePaths: RAGQueryEngineOptions['getCandidatePaths'];
+  private candidatePathsCache: { at: number; paths: ReadonlySet<string> } | null = null;
   private vectorStore: VectorStore | null;
   private embeddingProvider: EmbeddingProvider | null;
   private bm25Index: IndexedDbBM25Index | undefined;
@@ -217,27 +226,36 @@ export class RAGQueryEngine {
         : Math.max(0, Math.min(totalDocs, Math.floor(Number.isFinite(limit) ? limit : 0)));
     if (normalizedLimit === 0) return [];
     // 한 파일이 많은 청크를 차지해도 다른 파일의 후보를 잘라내지 않도록
-    // 전체 BM25 런타임을 조회하고, 반환 대표 경로만 limit로 제한합니다.
-    const lookupLimit = totalDocs;
-    const hits = await this.bm25Index.searchTopWithSources(
-      question,
-      lookupLimit,
-      signal,
-    );
+    // 필요한 대표 경로를 모두 모을 때까지 조회 범위를 넓힙니다.
+    // limit이 없으면 요청은 색인 전체 순위를 뜻하므로 예전처럼 전체를 조회하고,
+    // limit이 있으면 그 몇 배(최소 512건)까지만 히트를 받아 전송량을 줄입니다.
+    // BM25는 어차피 전체 문서를 점수화하므로 이 상한은 순위가 아니라 반환량만 제한합니다.
+    const lookupCeiling = Math.min(totalDocs, Math.max(normalizedLimit * 8, 512));
+    let lookupLimit = Math.min(totalDocs, Math.max(normalizedLimit * 4, 256));
+    let representatives = await this.collectBm25Representatives(question, lookupLimit, normalizedLimit, signal);
+    while (representatives.hits.length > 0) {
+      if (representatives.complete || lookupLimit >= lookupCeiling) break;
+      lookupLimit = Math.min(lookupCeiling, lookupLimit * 4);
+      representatives = await this.collectBm25Representatives(
+        question,
+        lookupLimit,
+        normalizedLimit,
+        signal,
+      );
+    }
     if (!this.bm25Index.isReady) return null;
+    const hits = representatives.hits;
     const seenPaths = new Set<string>();
-    const representatives = hits.filter((hit) => {
+    const selected = hits.filter((hit) => {
       if (seenPaths.has(hit.sourcePath)) return false;
       seenPaths.add(hit.sourcePath);
       return seenPaths.size <= normalizedLimit;
     });
     const documents = await this.bm25Index.getCorpusDocumentsByIds(
-      representatives.map((hit) => hit.docId),
+      selected.map((hit) => hit.docId),
     );
     const documentById = new Map(documents.map((document) => [document.id, document]));
-    const representativeByPath = new Map(
-      representatives.map((hit) => [hit.sourcePath, hit] as const),
-    );
+    const representativeByPath = new Map(selected.map((hit) => [hit.sourcePath, hit] as const));
     const matches: RAGExhaustiveBm25Match[] = [];
     hits.forEach((hit, index) => {
       if (representativeByPath.get(hit.sourcePath) !== hit) return;
@@ -251,6 +269,41 @@ export class RAGQueryEngine {
       });
     });
     return matches;
+  }
+
+  /**
+   * 검색 범위 경로는 볼트 파일 목록을 훑어야 해서 큰 볼트에서 수백 ms가 걸립니다.
+   * 한 번의 검색이 교차 언어·주제 facet 질의를 여러 번 던지므로 짧은 시간 동안 결과를 재사용합니다.
+   */
+  private async resolveCandidatePaths(): Promise<ReadonlySet<string> | undefined> {
+    if (!this.getCandidatePaths) return undefined;
+    const now = Date.now();
+    if (this.candidatePathsCache && now - this.candidatePathsCache.at < CANDIDATE_PATHS_TTL_MS) {
+      return this.candidatePathsCache.paths;
+    }
+    const paths = await this.getCandidatePaths();
+    this.candidatePathsCache = { at: Date.now(), paths };
+    return paths;
+  }
+
+  /**
+   * 조회 범위 안에서 대표 경로를 모으고, 더 넓혀야 하는지 함께 돌려줍니다.
+   * 히트 수가 조회 범위보다 적으면 색인을 끝까지 본 것으로 판단합니다.
+   */
+  private async collectBm25Representatives(
+    question: string,
+    lookupLimit: number,
+    normalizedLimit: number,
+    signal?: AbortSignal,
+  ): Promise<{ hits: readonly BM25WorkerHit[]; complete: boolean }> {
+    const hits = await this.bm25Index?.searchTopWithSources(question, lookupLimit, signal);
+    if (!hits) return { hits: [], complete: true };
+    const paths = new Set<string>();
+    for (const hit of hits) {
+      paths.add(hit.sourcePath);
+      if (paths.size >= normalizedLimit) break;
+    }
+    return { hits, complete: paths.size >= normalizedLimit || hits.length < lookupLimit };
   }
 
   async query(
@@ -268,7 +321,7 @@ export class RAGQueryEngine {
       return [];
     }
     const threshold = minScore ?? this.minScore;
-    const candidatePaths = await this.getCandidatePaths?.();
+    const candidatePaths = await this.resolveCandidatePaths();
     const isInScope = (entry: VectorEntry): boolean =>
       (!candidatePaths || candidatePaths.has(entry.metadata.filePath)) &&
       this.isEntryInQueryScope(entry, filePathPrefixes);
@@ -291,7 +344,7 @@ export class RAGQueryEngine {
       {
         question,
         queryVector: qVector,
-        candidateLimit: topK * 8,
+        candidateLimit: Math.min(topK * 8, MAX_RETRIEVAL_CANDIDATES),
         excludedProviderIds,
         requireSourceRevision: this.corpusStore !== undefined,
         vectorFilter:
@@ -394,7 +447,7 @@ export class RAGQueryEngine {
       threshold,
       this.bm25Index?.isReady ?? false,
     );
-    // 네트워크·작업자 대기 중 바뀐 제외 정책도 응답 직전에 적용합니다.
+    // 네트워크·작업자 대기 중 바뀐 제외 정책도 응답 직전에 적용합니다. 재사용 캐시를 쓰지 않습니다.
     const currentPaths = await this.getCandidatePaths?.();
     throwIfQueryAborted(options.signal);
     const allowedResults = currentPaths
