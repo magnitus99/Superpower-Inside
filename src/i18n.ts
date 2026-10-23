@@ -1740,6 +1740,7 @@ export interface I18nKeys {
   searchStatusStaleNoResults: string;
   searchStatusEmpty: string;
   searchStatusEmptyReason: string;
+  searchStatusOtherInterpretations: string;
   searchStatusUnmatched: string;
   searchStatusTruncated: string;
   searchStatusFailed: string;
@@ -3741,6 +3742,7 @@ const ko: I18nKeys = {
     '색인 이후 원문이 바뀐 문서 {count}개를 제외해 남은 원문 근거가 없습니다. 색인을 갱신한 뒤 다시 검색하세요.',
   searchStatusEmpty: "조건에 맞는 원문 구절을 찾지 못했습니다.",
   searchStatusEmptyReason: "검색 기록: {reason}",
+  searchStatusOtherInterpretations: "다른 해석일 수도 있습니다: {paths}",
   searchStatusUnmatched: "원문에서 찾지 못한 검색어: {terms}",
   searchStatusTruncated: "색인 문서 {total}개를 검색한 뒤 원문 확인을 통과한 결과만 표시합니다. 이번에 확인한 후보 {candidate}개 중 문서 {selected}개를 표시합니다.",
   searchStatusFailed: "검색에 실패했습니다: {message}",
@@ -5790,6 +5792,7 @@ const en: I18nKeys = {
     'Excluded {count} documents whose source changed after indexing, so no current passage remains. Refresh the index and search again.',
   searchStatusEmpty: "No original passage matched the query.",
   searchStatusEmptyReason: "Search record: {reason}",
+  searchStatusOtherInterpretations: "This may also mean: {paths}",
   searchStatusUnmatched: "Terms not found in the text: {terms}",
   searchStatusTruncated: "After searching {total} indexed documents, only results that pass source checks are shown. Showing {selected} documents from {candidate} checked candidates.",
   searchStatusFailed: "Search failed: {message}",

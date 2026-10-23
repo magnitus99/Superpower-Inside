@@ -19,6 +19,11 @@ use crate::{
     normalize_token, tokenize, usize_to_f64,
 };
 
+/// 제목에 나타난 용어의 기본 가중(Solr `qf=title^3`).
+const BM25_TITLE_WEIGHT: f64 = 3.0;
+/// 헤딩에 나타난 용어의 기본 가중(Solr `heading^2`).
+const BM25_HEADING_WEIGHT: f64 = 2.0;
+
 /// term 절 종류 code.
 const CLAUSE_KIND_TERM: u8 = 0;
 /// 구문 절 종류 code.
@@ -82,6 +87,22 @@ struct Bm25ScoreAccumulator {
     scores: Vec<Bm25SearchScore>,
     /// doc id -> `scores` index.
     index_by_doc_id: BTreeMap<String, usize>,
+    /// doc id -> 일치한 절 bitmask. `clause`가 설정된 경우에만 누적한다.
+    coverage: BTreeMap<String, u64>,
+    /// 지금 누적 중인 절 index. `None`이면 coverage를 계산하지 않는다.
+    clause: Option<usize>,
+}
+
+/// 확장 사다리를 적용한 `BM25` 질의 결과.
+pub struct Bm25RelaxedSearch {
+    /// 결과가 나온 사다리 단계. 0이면 원래 요구 조건을 그대로 만족했다.
+    pub step: u8,
+    /// 마지막으로 요구한 일치 절 수.
+    pub required: usize,
+    /// 질의의 절 수.
+    pub clause_count: usize,
+    /// 단계별로 필터링한 점수 목록(내림차순).
+    pub scores: Vec<Bm25SearchScore>,
 }
 
 impl Bm25ScoreAccumulator {
@@ -89,6 +110,13 @@ impl Bm25ScoreAccumulator {
     fn add(&mut self, doc_id: &str, score: f64) {
         if !score.is_finite() || score <= 0.0 {
             return;
+        }
+        if let Some(clause) = self.clause {
+            // 64개를 넘는 절은 coverage 단계 판정에서 제외합니다(전체 허용 단계로 수렴).
+            if u32::try_from(clause).is_ok_and(|index| index < u64::BITS) {
+                let mask = self.coverage.entry(doc_id.to_owned()).or_insert(0);
+                *mask |= 1_u64 << clause;
+            }
         }
         match self.index_by_doc_id.entry(doc_id.to_owned()) {
             Entry::Occupied(entry) => {
@@ -133,8 +161,22 @@ pub fn search_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore> 
         return Vec::new();
     }
 
+    accumulate(index, &clauses, total_docs_f64, avg_doc_length, false).into_scores()
+}
+
+/// 절을 순서대로 점수화한다. `track_coverage`가 참이면 문서별 일치 절 bitmask도 남긴다.
+fn accumulate(
+    index: &Bm25IndexData,
+    clauses: &[Bm25QueryClause],
+    total_docs_f64: f64,
+    avg_doc_length: f64,
+    track_coverage: bool,
+) -> Bm25ScoreAccumulator {
     let mut accumulator = Bm25ScoreAccumulator::default();
-    for clause in &clauses {
+    for (clause_index, clause) in clauses.iter().enumerate() {
+        if track_coverage {
+            accumulator.clause = Some(clause_index);
+        }
         match clause {
             Bm25QueryClause::Term(term) => {
                 for expanded in expand_terms(index, term) {
@@ -159,7 +201,94 @@ pub fn search_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore> 
             }
         }
     }
-    accumulator.into_scores()
+    accumulator
+}
+
+/// 확장 사다리로 질의한다.
+///
+/// 상용 엔진처럼 결과가 부족할 때 요구 일치 절 수를 단계적으로 낮추되,
+/// 어느 단계에서 결과가 나왔는지 함께 돌려준다.
+/// 점수 계산은 그대로 두고 단계별로 필터링만 하므로 순위 계약이 바뀌지 않는다.
+#[must_use]
+pub fn search_index_relaxed(
+    index: &Bm25IndexData,
+    query: &str,
+    limit: usize,
+) -> Option<Bm25RelaxedSearch> {
+    let clauses = parse_query(query);
+    if clauses.is_empty() {
+        return None;
+    }
+    let clause_count = clauses.len();
+    let total_docs = index.doc_lengths.len();
+    if total_docs == 0 {
+        return None;
+    }
+    let total_docs_f64 = usize_to_f64(total_docs)?;
+    let avg_doc_length = bm25_average_doc_length(index);
+    if !avg_doc_length.is_finite() || avg_doc_length <= 0.0 {
+        return None;
+    }
+    let mut accumulator = accumulate(index, &clauses, total_docs_f64, avg_doc_length, true);
+    let coverage = std::mem::take(&mut accumulator.coverage);
+    let mut scores = accumulator.into_scores();
+    scores.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.doc_id.cmp(&right.doc_id))
+    });
+    let ladder = coverage_ladder(clause_count);
+    let target = limit.max(1);
+    for (step, required) in ladder.iter().enumerate() {
+        let last = step + 1 == ladder.len();
+        let matched = scores
+            .iter()
+            .filter(|score| coverage_of(&coverage, &score.doc_id) >= *required)
+            .count();
+        if matched >= target || last {
+            let scores = scores
+                .into_iter()
+                .filter(|score| coverage_of(&coverage, &score.doc_id) >= *required)
+                .take(target)
+                .collect::<Vec<_>>();
+            return Some(Bm25RelaxedSearch {
+                step: u8::try_from(step).unwrap_or(u8::MAX),
+                required: *required,
+                clause_count,
+                scores,
+            });
+        }
+    }
+    None
+}
+
+/// 문서가 일치한 절 수.
+#[must_use]
+fn coverage_of(coverage: &BTreeMap<String, u64>, doc_id: &str) -> usize {
+    coverage.get(doc_id).map_or(0, |mask| {
+        usize::try_from(mask.count_ones()).unwrap_or(usize::MAX)
+    })
+}
+
+/// 요구 일치 절 수 사다리. 마지막 단계는 항상 1(모든 절 선택)이다.
+#[must_use]
+fn coverage_ladder(clause_count: usize) -> Vec<usize> {
+    if clause_count <= 1 {
+        return vec![1];
+    }
+    let mut ladder = Vec::<usize>::with_capacity(3);
+    for required in [
+        clause_count.saturating_mul(3).div_ceil(4),
+        clause_count.div_ceil(2),
+        1,
+    ] {
+        let required = required.clamp(1, clause_count);
+        if ladder.last() != Some(&required) {
+            ladder.push(required);
+        }
+    }
+    ladder
 }
 
 /// query 문자열을 절 목록으로 파싱한다.
@@ -488,8 +617,45 @@ fn score_term(
             doc_length(index, &doc_id),
             avg_doc_length,
         );
-        accumulator.add(&doc_id, score);
+        accumulator.add(&doc_id, score * field_weight(index, term, &doc_id, field));
     }
+}
+
+/// 기본 필드 질의에서 제목·헤딩에 나타난 용어를 가중한다.
+///
+/// Solr `qf=title^3 heading^2 body^1`처럼 필드별 가중을 주면
+/// 본문에만 스쳐 지나간 문서보다 제목이 맞는 문서가 앞에 온다.
+#[must_use]
+fn field_weight(index: &Bm25IndexData, term: &str, doc_id: &str, field: Option<u8>) -> f64 {
+    // 필드를 명시한 질의는 이미 사용자의 의도를 반영하므로 추가 가중하지 않는다.
+    if field.is_some() {
+        return 1.0;
+    }
+    let Some(positions) = index
+        .positions
+        .get(term)
+        .and_then(|by_doc| by_doc.get(doc_id))
+    else {
+        return 1.0;
+    };
+    let Some(runs) = index.doc_field_runs.get(doc_id) else {
+        return 1.0;
+    };
+    let mut best = 1.0;
+    for position in positions {
+        let Some(run) = run_for_position(runs, *position) else {
+            continue;
+        };
+        let weight = match run.field {
+            value if value == BM25_FIELD_TITLE => BM25_TITLE_WEIGHT,
+            value if value == BM25_FIELD_HEADING => BM25_HEADING_WEIGHT,
+            _ => 1.0,
+        };
+        if weight > best {
+            best = weight;
+        }
+    }
+    best
 }
 
 /// 필드 제한을 반영한 문서별 term frequency를 만든다.

@@ -408,6 +408,8 @@ export class SearchView extends ItemView {
     this.resultItems = createSearchResultList(this.resultsEl, response, {
       openEvidence: (evidence) => this.openEvidence(evidence),
     });
+    // 신뢰도 높은 결과를 먼저 보여 주고, 다른 해석 후보는 목록 뒤에 붙입니다.
+    this.appendInterpretationNotice(response, this.resultsEl);
     this.resultItems.forEach((item, index) => {
       item.addEventListener('focus', () => {
         this.activeResultIndex = index;
@@ -435,6 +437,22 @@ export class SearchView extends ItemView {
       });
     }
     this.appendCoverageNotice(response, el);
+    this.appendInterpretationNotice(response, el);
+  }
+
+  /**
+   * 확신도가 높지 않을 때 다른 해석 후보를 덧붙입니다.
+   * 답변을 막고 되묻지 않고, 이미 보여 준 결과 뒤에 한 줄로 안내합니다.
+   */
+  private appendInterpretationNotice(response: SearchResponse, el: HTMLElement): void {
+    const alternatives = response.alternativeInterpretations ?? [];
+    if (response.confidence === 'high' || alternatives.length === 0) return;
+    el.createDiv({
+      cls: 'superpower-inside-search-diagnostic',
+      text: t('searchStatusOtherInterpretations', {
+        paths: alternatives.join(', '),
+      }),
+    });
   }
 
   private renderDiagnostics(response: SearchResponse): void {

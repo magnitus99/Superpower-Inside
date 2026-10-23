@@ -68,6 +68,7 @@ import {
 } from './tool-execution';
 import { NATIVE_VAULT_TOOL_NAME, NATIVE_VAULT_NAMED_TOOL_NAMES } from '../agent/native-vault-tool';
 import { finalizeEvidenceAnswer } from './evidence-collection';
+import { summarizeIndexedConfidence } from '../search/confidence';
 import {
   selectDisplayedAnswerCitations,
   selectGroundedRepairCitations,
@@ -3297,11 +3298,12 @@ export class ChatView extends ItemView {
           contextMeta.citations = promptContext.citations;
         } else {
           const researchCitations = researchResult.citations;
-          const sourceWarnings = this.validateAssistantSources(
+          const answerContent = appendOtherInterpretations(
             researchResult.content,
-            researchCitations,
+            researchResult.evidence,
           );
-          this.updateMessage(assistantId, researchResult.content, true, undefined, undefined, {
+          const sourceWarnings = this.validateAssistantSources(answerContent, researchCitations);
+          this.updateMessage(assistantId, answerContent, true, undefined, undefined, {
             providerKey: key,
             providerLabel,
             model: modelName,
@@ -5488,4 +5490,19 @@ export class ChatView extends ItemView {
       resultArea.classList.add('collapsed');
     }
   }
+}
+
+/**
+ * 확신도가 높지 않을 때 답변 뒤에 다른 해석 후보를 덧붙입니다.
+ *
+ * Google이 결과가 갈릴 때 "Showing results for …"를 붙이듯, 답변을 막고 되묻지 않고
+ * 이미 준 답변을 유지한 채 한 줄만 덧붙입니다.
+ */
+function appendOtherInterpretations(
+  content: string,
+  evidence: readonly { path: string; score: number }[],
+): string {
+  const { confidence, alternatives } = summarizeIndexedConfidence(evidence);
+  if (confidence === 'high' || alternatives.length === 0) return content;
+  return `${content}\n\n${t('searchStatusOtherInterpretations', { paths: alternatives.join(', ') })}`;
 }

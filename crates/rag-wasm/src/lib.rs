@@ -4555,6 +4555,23 @@ impl Bm25RuntimeIndex {
         ))
     }
 
+    /// 확장 사다리 결과를 JSON으로 직렬화한다.
+    ///
+    /// `{"step":0,"required":3,"clauseCount":3,"hits":[{"docId":"…","score":1.0}]}` 형태다.
+    #[must_use]
+    pub fn search_top_relaxed_json(&self, query: &str, limit: usize) -> String {
+        let Some(result) = bm25_query::search_index_relaxed(&self.index, query, limit) else {
+            return "{\"step\":0,\"required\":0,\"clauseCount\":0,\"hits\":[]}".to_owned();
+        };
+        format!(
+            "{{\"step\":{},\"required\":{},\"clauseCount\":{},\"hits\":{}}}",
+            result.step,
+            result.required,
+            result.clause_count,
+            serialize_bm25_search_scores_json(&result.scores),
+        )
+    }
+
     /// compact v3 JSON payload로 직렬화한다.
     #[must_use]
     pub fn to_json(&self) -> String {
@@ -15234,6 +15251,100 @@ mod tests {
             ollama.contains("\"docId\":\"local.md::0\""),
             "append 경로는 두 번째 문서를 검색 가능하게 만들어야 한다: {ollama}",
         );
+    }
+
+    /// 기본 필드 질의는 제목에 나타난 용어를 본문만 맞힌 문서보다 높게 점수화한다.
+    #[test]
+    fn bm25_default_query_weights_title_and_heading_terms() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        index.add_document_fields_json(
+            "title.md::0",
+            "alpha guide nothing else",
+            "title.md",
+            r#"{"title":"alpha guide","body":"nothing else"}"#,
+            2,
+        );
+        index.add_document_fields_json(
+            "body.md::0",
+            "plain text alpha",
+            "body.md",
+            r#"{"title":"plain text","body":"alpha appears here"}"#,
+            2,
+        );
+
+        let hits = serde_json::from_str::<serde_json::Value>(&index.search_json("alpha"))
+            .unwrap_or(serde_json::Value::Null)
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let score_of = |doc_id: &str| {
+            hits.iter()
+                .find(|hit| hit.get("docId").and_then(serde_json::Value::as_str) == Some(doc_id))
+                .and_then(|hit| hit.get("score"))
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0)
+        };
+        assert!(
+            score_of("title.md::0") > score_of("body.md::0"),
+            "title 일치 문서가 body 일치 문서보다 높아야 한다: {hits:?}",
+        );
+        assert!(
+            score_of("body.md::0") > 0.0,
+            "본문 일치도 여전히 후보가 된다: {hits:?}"
+        );
+    }
+
+    /// 확장 사다리는 요구 일치 절 수를 낮춰 결과를 확보하고 어느 단계였는지 돌려준다.
+    #[test]
+    fn bm25_relaxed_search_lowers_required_clause_coverage() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        // 두 절을 모두 포함한 문서 하나, "open"만 포함한 문서 여럿.
+        index.add_new_document("both.md::0", "open router api", "both.md", 2);
+        index.add_new_document("open1.md::0", "open source", "open1.md", 2);
+        index.add_new_document("open2.md::0", "open model", "open2.md", 2);
+        index.add_new_document("open3.md::0", "open key", "open3.md", 2);
+
+        let strict = index.search_top_json("open router", 4);
+        assert_eq!(strict.matches("\"docId\"").count(), 4);
+
+        let relaxed = index.search_top_relaxed_json("open router", 4);
+        assert!(
+            relaxed.contains("\"required\":1"),
+            "두 용어 중 하나만 맞는 문서가 널리 있으므로 마지막 단계까지 내려간다: {relaxed}",
+        );
+        assert!(
+            relaxed.contains("\"step\":1"),
+            "단계 번호를 기록한다: {relaxed}"
+        );
+        assert!(
+            relaxed.contains("\"clauseCount\":2"),
+            "질의 절 수를 남긴다: {relaxed}"
+        );
+        assert!(
+            relaxed.starts_with("{\"step\":1,\"required\":1"),
+            "가장 높은 점수의 문서가 먼저 온다: {relaxed}",
+        );
+        assert!(
+            relaxed.find("both.md::0").unwrap_or(usize::MAX)
+                < relaxed.find("open1.md::0").unwrap_or(usize::MAX),
+            "전 절을 맞힌 문서가 상위에 온다: {relaxed}",
+        );
+    }
+
+    /// 확장 사다리는 첫 단계에서 충분한 결과가 나오면 단계를 내리지 않는다.
+    #[test]
+    fn bm25_relaxed_search_stays_strict_when_coverage_is_enough() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        index.add_new_document("both.md::0", "open router api", "both.md", 2);
+        index.add_new_document("partial.md::0", "open source", "partial.md", 2);
+
+        let relaxed = index.search_top_relaxed_json("open router", 1);
+        assert!(
+            relaxed.starts_with("{\"step\":0,\"required\":2"),
+            "상위 1개로 충분하면 원래 요구 조건을 유지한다: {relaxed}",
+        );
+        assert!(relaxed.contains("both.md::0"));
+        assert!(!relaxed.contains("partial.md::0"));
     }
 
     /// BM25 bulk append는 bounded JSON batch를 원자적으로 검증하고 한 번의 bridge 호출로 추가해야 한다.

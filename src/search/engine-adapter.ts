@@ -13,6 +13,7 @@ import type {
   SearchRequest,
   SearchResponse,
 } from './engine-port';
+import { summarizeIndexedConfidence } from './confidence';
 import {
   verifyIndexedEvidenceRust,
   type IndexedSearchPlan,
@@ -240,6 +241,8 @@ function createPendingSearchResponse(
       notIndexedDocuments: inventory?.notIndexedCount ?? 0,
     },
     staleDocuments: 0,
+    confidence: 'low',
+    alternativeInterpretations: [],
   };
 }
 
@@ -301,6 +304,7 @@ function readOrderedHighlights(item: IndexedEvidenceItem): readonly SearchHighli
 /** 엔진 결과를 화면 계약으로 옮긴다. 필드 이름만 맞추고 값은 그대로 보존한다. */
 export function toSearchResponse(result: IndexedVaultSearchResult): SearchResponse {
   const { plan } = result;
+  const confidence = summarizeIndexedConfidence(result.evidence);
   return {
     evidence: result.evidence.map((item) => ({
       sourceId: item.sourceId,
@@ -356,5 +360,7 @@ export function toSearchResponse(result: IndexedVaultSearchResult): SearchRespon
       notIndexedDocuments: result.coverage.notIndexedDocuments,
     },
     staleDocuments: 0,
+    confidence: confidence.confidence,
+    alternativeInterpretations: confidence.alternatives,
   };
 }

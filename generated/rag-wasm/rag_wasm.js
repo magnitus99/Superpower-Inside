@@ -210,6 +210,28 @@ export class Bm25RuntimeIndex {
         }
     }
     /**
+     * 확장 사다리 결과를 JSON으로 직렬화한다.
+     *
+     * `{"step":0,"required":3,"clauseCount":3,"hits":[{"docId":"…","score":1.0}]}` 형태다.
+     * @param {string} query
+     * @param {number} limit
+     * @returns {string}
+     */
+    search_top_relaxed_json(query, limit) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.bm25runtimeindex_search_top_relaxed_json(this.__wbg_ptr, ptr0, len0, limit);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * doc id에 대응되는 source path를 반환한다. 없으면 빈 문자열이다.
      * @param {string} doc_id
      * @returns {string}

@@ -309,6 +309,8 @@ function response(
       notIndexedDocuments: 0,
     },
     staleDocuments,
+    confidence: 'high',
+    alternativeInterpretations: [],
   };
 }
 
@@ -467,6 +469,28 @@ describe('검색 화면 구조', () => {
     expect(passages[1]?.textOf()).toContain(t('searchResultDuplicate'));
     expect(root.querySelectorAll('.superpower-inside-search-path')).toHaveLength(2);
     expect(root.textOf()).toContain(t('searchScoreNotice'));
+  });
+
+  it('확신도가 높지 않으면 결과 뒤에 다른 해석 후보를 안내한다', async () => {
+    const port: SearchPort = () =>
+      Promise.resolve({
+        ...response([evidence({ rank: 1 })]),
+        confidence: 'medium',
+        alternativeInterpretations: ['Synthetic/Beta.md', 'Synthetic/Gamma.md'],
+      });
+    const harness = createHarness({ port, totalDocuments: 4 });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const input = root.querySelector('input');
+    if (input) input.value = 'quartz';
+    root.querySelector('form')?.dispatchEvent('submit');
+    await flush();
+
+    expect(root.textOf()).toContain(
+      t('searchStatusOtherInterpretations', {
+        paths: 'Synthetic/Beta.md, Synthetic/Gamma.md',
+      }),
+    );
   });
 
   it('빈 결과는 이유와 함께 표시한다', async () => {

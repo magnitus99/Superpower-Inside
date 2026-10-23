@@ -97,6 +97,30 @@ describe('색인 검색 포트 어댑터', () => {
     expect(response.coverage.unreviewedDocuments).toBe(1);
   });
 
+  it('근거가 한 문서뿐이면 확신도를 높이지 않고 다른 해석 후보를 남긴다', () => {
+    const response = toSearchResponse(fixtureResult());
+
+    expect(response.confidence).toBe('medium');
+    expect(response.alternativeInterpretations.length).toBeGreaterThan(0);
+    expect(response.alternativeInterpretations[0]).toBe('Synthetic/Relevant.md');
+  });
+
+  it('여러 문서에 근거가 퍼지고 1위가 앞서면 확신도를 높게 본다', () => {
+    const base = fixtureResult();
+    const first = base.evidence[0];
+    const response = toSearchResponse({
+      ...base,
+      evidence: [
+        ...base.evidence,
+        { ...first, sourceId: 'source-2', path: 'Synthetic/Other.md', rank: 2, score: 1.2 },
+        { ...first, sourceId: 'source-3', path: 'Synthetic/Third.md', rank: 3, score: 0.8 },
+      ],
+    });
+
+    expect(response.confidence).toBe('high');
+    expect(response.alternativeInterpretations).toEqual([]);
+  });
+
   it('질의·필터·색인 경로를 엔진에 그대로 전달한다', async () => {
     const calls: IndexedVaultSearchOptions[] = [];
     const port = createIndexedSearchPort(

@@ -142,6 +142,8 @@ async function start() {
     truncated: params.has('truncated'),
     unmatched: params.has('unmatched'),
     stale: params.has('stale'),
+    // ?other=1은 확신도가 높지 않을 때의 "다른 해석" 안내를 검수합니다.
+    ambiguous: params.has('other'),
   };
   if (state === 'search') {
     for (const path of [
@@ -168,6 +170,25 @@ async function start() {
         : null,
     }),
     isRagIndexing: () => params.has('indexing'),
+    // 검색 화면은 색인 상태 스냅샷을 직접 받습니다.
+    getSearchStatusSnapshot: () => ({
+      readiness: params.has('noindex') ? 'empty' : 'ready',
+      keywordIndex: params.has('noindex') ? 'empty' : 'ready',
+      ragStatus: params.has('noindex')
+        ? null
+        : {
+            totalDocuments: Number(params.get('docs') ?? 12),
+            staleDocuments: Number(params.get('stale') ?? 0),
+            missingDocuments: 0,
+          },
+      indexing: params.has('indexing')
+        ? {
+            completedFiles: 3,
+            totalFiles: 12,
+            etaRemainingMs: null,
+          }
+        : null,
+    }),
     getSearchPort: () => {
       if (searchScenario.unavailable) return null;
       return async (request) => {
@@ -253,6 +274,14 @@ async function start() {
             notIndexedDocuments: 0,
           },
           staleDocuments: searchScenario.stale ? 1 : 0,
+          confidence: searchScenario.empty
+            ? 'low'
+            : searchScenario.ambiguous
+              ? 'medium'
+              : 'high',
+          alternativeInterpretations: searchScenario.ambiguous
+            ? ['Examples/Search-Daily.md']
+            : [],
         };
       };
     },

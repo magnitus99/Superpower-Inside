@@ -1,3 +1,5 @@
+import type { IndexedSearchConfidence } from './confidence';
+
 // 검색 화면과 검색 엔진의 계약.
 // 엔진(src/rag/rust-core.ts planIndexedEvidenceRust/verifyIndexedEvidenceRust)이 구절 선택·검증·순위를
 // 담당하고, UI는 받은 순서 그대로 그룹핑·강조·표시만 한다.
@@ -96,11 +98,17 @@ export interface SearchResponse {
   coverage: SearchCoverage;
   /** 색인 사본과 현재 원문 리비전이 어긋나 제외한 문서 수. */
   staleDocuments: number;
+  /**
+   * 근거 확신도. 낮다고 결과를 감추지 않고, 답변 뒤에 다른 해석을 덧붙이는 데만 쓴다.
+   * (Google이 결과가 갈릴 때 "Showing results for …"를 붙이는 방식)
+   */
+  confidence: IndexedSearchConfidence;
+  /** 확신도가 높지 않을 때 덧붙일 다른 해석 후보 경로(점수 순). */
+  alternativeInterpretations: readonly string[];
 }
 
 /** null은 엔진 미가동·스키마 불일치를 뜻한다. UI는 실패 상태로 표시하고 자체 계산으로 대체하지 않는다. */
 export type SearchPort = (request: SearchRequest) => Promise<SearchResponse | null>;
-
 export interface SearchEvidenceGroup {
   path: string;
   evidence: readonly SearchEvidence[];
