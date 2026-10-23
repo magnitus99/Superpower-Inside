@@ -46,7 +46,7 @@ describe('대형 볼트 vector search worker', () => {
     }
   });
 
-  it('폴더·파일 범위와 형제 경로를 구별하고 범위별 캐시를 분리한다', async () => {
+  it('폴더·파일 범위와 형제 경로를 구별하며 범위마다 색인을 다시 만들지 않는다', async () => {
     const worker = createNodeWorker();
     const records = [
       { id: 'inside', filePath: 'notes/a.md', dimension: 2, vector: [1, 0] },
@@ -70,7 +70,7 @@ describe('대형 볼트 vector search worker', () => {
           records,
         });
         await expect(response).resolves.toMatchObject({
-          indexedCount: 1,
+          indexedCount: 3,
           hits: [{ id: expected, score: 1 }],
         });
       }

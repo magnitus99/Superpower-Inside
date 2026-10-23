@@ -1,3 +1,29 @@
+/** 저장소의 전체 레코드 수를 읽습니다. 색인 예산을 읽기 전에 확인할 때 씁니다. */
+export function countWorkerStoreRows(dbName: string, storeName: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const opened = indexedDB.open(dbName);
+    opened.onerror = () => reject(opened.error ?? new Error('Worker database open failed.'));
+    opened.onsuccess = () => {
+      const database = opened.result;
+      if (!database.objectStoreNames.contains(storeName)) {
+        database.close();
+        resolve(0);
+        return;
+      }
+      const transaction = database.transaction(storeName, 'readonly');
+      const request = transaction.objectStore(storeName).count();
+      request.onsuccess = () => {
+        database.close();
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        database.close();
+        reject(request.error ?? new Error('Worker database count failed.'));
+      };
+    };
+  });
+}
+
 /** 커서마다 왕복하지 않고 제한된 페이지로 작업자 저장소를 읽습니다. */
 export function readWorkerStorePages(
   dbName: string,
