@@ -90,6 +90,29 @@ export class Bm25RuntimeIndex {
         wasm.bm25runtimeindex_add_new_document(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, tokenizer_version);
     }
     /**
+     * 질의와 일치한 문서별 발생 횟수를 JSON 문자열로 반환한다.
+     *
+     * 점수·순위가 아니라 집계 인벤토리용 수치다. 상위 `limit`개 source path만
+     * 직렬화하고 총계는 전체 일치 기준을 유지한다.
+     * @param {string} query
+     * @param {number} limit
+     * @returns {string}
+     */
+    aggregate_json(query, limit) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.bm25runtimeindex_aggregate_json(this.__wbg_ptr, ptr0, len0, limit);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
      * @param {string} payload
      * @param {number} fallback_tokenizer_version

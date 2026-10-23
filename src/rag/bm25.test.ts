@@ -167,6 +167,37 @@ describe('IndexedDbBM25Index', () => {
       bm25.close();
     }
   });
+  it('일치 집계는 정확 term·구문만 세고 오타·prefix 확장으로 수치를 부풀리지 않는다', async () => {
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
+    await bm25.load();
+    try {
+      bm25.addDocument('alpha.md::0', 'alpha beta alpha synthetic', 'alpha.md');
+      bm25.addDocument('beta.md::0', 'alpha alpha alpha', 'beta.md');
+
+      expect(await bm25.aggregateMatches('alpha', 10)).toEqual({
+        totalDocuments: 2,
+        totalChunks: 2,
+        totalOccurrences: 5,
+        documents: [
+          {
+            sourcePath: 'beta.md',
+            occurrences: 3,
+            chunks: [{ docId: 'beta.md::0', occurrences: 3 }],
+          },
+          {
+            sourcePath: 'alpha.md',
+            occurrences: 2,
+            chunks: [{ docId: 'alpha.md::0', occurrences: 2 }],
+          },
+        ],
+      });
+      expect((await bm25.aggregateMatches('"alpha beta"', 10))?.totalOccurrences).toBe(1);
+      expect((await bm25.aggregateMatches('alphx', 10))?.totalOccurrences).toBe(0);
+      expect((await bm25.aggregateMatches('alph*', 10))?.totalOccurrences).toBe(0);
+    } finally {
+      bm25.close();
+    }
+  });
   it('현행 WASM 런타임에서 문서 교체와 원문별 삭제 후 검색·저장을 보존한다', () => {
     const runtime = RustBm25RuntimeIndex.empty(2);
     if (!runtime) throw new Error('WASM 초기화 실패');

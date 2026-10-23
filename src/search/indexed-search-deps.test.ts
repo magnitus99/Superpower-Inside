@@ -124,6 +124,80 @@ function engine(results: QueryResult[]): RAGQueryEngine {
 }
 
 describe('검색 의존성 factory', () => {
+  it('facet 핵심어별 색인 전체 일치 집계를 중복·상한 없이 모은다', async () => {
+    planIndexedSearchQueries.mockReturnValue({
+      mode: 'single',
+      facets: [
+        {
+          id: 'question',
+          kind: 'question',
+          query: '합성 질의',
+          queryIndex: 0,
+          terms: ['alpha', 'beta', 'alpha'],
+        },
+        {
+          id: 'subject-1',
+          kind: 'subject',
+          query: '합성 주제',
+          queryIndex: 1,
+          terms: ['gamma', 'delta'],
+        },
+      ],
+    } satisfies IndexedSearchPlan);
+    const queryMatchInventory = vi.fn((term: string) =>
+      Promise.resolve({
+        totalDocuments: 2,
+        totalChunks: 3,
+        totalOccurrences: term === 'alpha' ? 7 : 1,
+        documents: [
+          { sourcePath: `Synthetic/${term}.md`, occurrences: 5, chunks: [{ docId: 'chunk', occurrences: 5 }] },
+        ],
+      }),
+    );
+
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: {
+          query: () => Promise.resolve([]),
+          queryBm25Exhaustive: () => Promise.resolve([]),
+          queryMatchInventory,
+        } as unknown as RAGQueryEngine,
+        documentCorpus: corpus(),
+      },
+      '합성 질의',
+    );
+
+    expect(queryMatchInventory.mock.calls.map(([term]) => term)).toEqual([
+      'alpha',
+      'beta',
+      'gamma',
+    ]);
+    expect(source?.matchInventory).toEqual([
+      {
+        query: 'alpha',
+        totalDocuments: 2,
+        totalChunks: 3,
+        totalOccurrences: 7,
+        documents: [{ sourcePath: 'Synthetic/alpha.md', occurrences: 5 }],
+      },
+      {
+        query: 'beta',
+        totalDocuments: 2,
+        totalChunks: 3,
+        totalOccurrences: 1,
+        documents: [{ sourcePath: 'Synthetic/beta.md', occurrences: 5 }],
+      },
+      {
+        query: 'gamma',
+        totalDocuments: 2,
+        totalChunks: 3,
+        totalOccurrences: 1,
+        documents: [{ sourcePath: 'Synthetic/gamma.md', occurrences: 5 }],
+      },
+    ]);
+  });
+
   it('색인 경로·후보 신호·리비전 reader를 한 번에 모은다', async () => {
     const plan = singlePlan('합성 질의');
     planIndexedSearchQueries.mockReturnValue(plan);

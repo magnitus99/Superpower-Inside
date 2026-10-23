@@ -26,6 +26,13 @@ export class Bm25RuntimeIndex {
      */
     add_new_document(doc_id: string, text: string, source_path: string, tokenizer_version: number): void;
     /**
+     * 질의와 일치한 문서별 발생 횟수를 JSON 문자열로 반환한다.
+     *
+     * 점수·순위가 아니라 집계 인벤토리용 수치다. 상위 `limit`개 source path만
+     * 직렬화하고 총계는 전체 일치 기준을 유지한다.
+     */
+    aggregate_json(query: string, limit: number): string;
+    /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
      */
     static from_json(payload: string, fallback_tokenizer_version: number): Bm25RuntimeIndex;
@@ -1175,6 +1182,7 @@ export interface InitOutput {
     readonly bm25runtimeindex_add_document_fields_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => number;
     readonly bm25runtimeindex_add_documents_json: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly bm25runtimeindex_add_new_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly bm25runtimeindex_aggregate_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly bm25runtimeindex_from_json: (a: number, b: number, c: number) => number;
     readonly bm25runtimeindex_is_ready: (a: number) => number;
     readonly bm25runtimeindex_is_tokenizer_current: (a: number, b: number) => number;

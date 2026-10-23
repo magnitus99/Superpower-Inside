@@ -55,6 +55,21 @@ export interface IndexedEvidenceInventory {
   notIndexedCount: number;
 }
 
+/**
+ * 엔진이 색인 전체에서 센 질의 핵심어 하나의 일치 집계입니다.
+ * 점수·순위가 아니라 답변이 수치로 인용할 인벤토리이며, `documents`는 상위 경로만 담고
+ * 총계는 색인 전체 기준입니다.
+ */
+export interface IndexedMatchCount {
+  /** 집계한 정확 term 또는 구문입니다. */
+  query: string;
+  totalDocuments: number;
+  totalChunks: number;
+  totalOccurrences: number;
+  /** 발생 횟수가 많은 상위 경로입니다. */
+  documents: readonly { sourcePath: string; occurrences: number }[];
+}
+
 /** 색인 저장소의 본문·리비전 조회 계약입니다. */
 export interface IndexedVaultCorpus {
   getEntriesByFilePaths(paths: readonly string[]): Promise<readonly VectorEntry[]>;
@@ -578,6 +593,8 @@ export interface IndexedVaultReviewOptions {
   candidates?: readonly IndexedEvidenceCandidate[];
   candidatesState?: SearchCandidateState;
   inventory?: IndexedEvidenceInventory;
+  /** 색인 전체 일치 집계입니다. 없으면 집계 수치 없이 근거만으로 답합니다. */
+  matchInventory?: readonly IndexedMatchCount[];
   exhaustiveReview?: boolean;
   filters?: RustIndexedEvidenceFilters;
   searchPlan?: IndexedSearchPlan;
@@ -604,6 +621,11 @@ export interface IndexedEvidenceDossier {
   scoringQuestion: string;
   previousUserQuestions: readonly string[];
   queryPlan: Pick<IndexedEvidencePlan, 'queryTokens' | 'phrases'>;
+  /**
+   * 색인 전체에서 센 정확 term·구문 일치 집계입니다.
+   * 질문 핵심어별 일치 문서 수·근거 구간 수·발생 횟수를 그대로 인용하고 점수·순위로 쓰지 않습니다.
+   */
+  matchInventory?: readonly IndexedMatchCount[];
   documentScope: IndexedVaultDocumentScope;
   evidence: readonly IndexedEvidenceItem[];
   coverage: IndexedVaultSearchCoverage;
@@ -1209,6 +1231,7 @@ async function runIndexedVaultReview(
       scoringQuestion: options.scoringQuestion ?? options.question,
       previousUserQuestions: options.previousUserQuestions ?? [],
       queryPlan: { queryTokens: search.plan.queryTokens, phrases: search.plan.phrases },
+      matchInventory: options.matchInventory,
       documentScope,
       evidence,
       coverage: effectiveCoverage,

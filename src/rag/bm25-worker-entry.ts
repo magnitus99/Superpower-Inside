@@ -13,7 +13,8 @@ export interface BM25WorkerRequest {
     | 'remove-source'
     | 'clear'
     | 'serialize'
-    | 'search-top';
+    | 'search-top'
+    | 'aggregate';
   wasmBase64?: string;
   dbName?: string;
   snapshot?: string;
@@ -40,6 +41,8 @@ export interface BM25WorkerResponse {
   snapshot?: string;
   snapshotRejected?: boolean;
   hits?: BM25WorkerHit[];
+  /** 점수 없이 센 질의 일치 인벤토리입니다. TS가 형식을 검증합니다. */
+  aggregateJson?: string;
   progress?: {
     processedDocuments: number;
   };
@@ -157,6 +160,14 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
         sourcePath: active.source_path_for_doc(docId) || docId,
         score,
       })),
+    };
+  } else if (request.operation === 'aggregate') {
+    return {
+      ...runtimeState(),
+      aggregateJson: active.aggregate_json(
+        request.query ?? '',
+        Math.max(0, Math.floor(request.limit ?? 0)),
+      ),
     };
   }
   return runtimeState();

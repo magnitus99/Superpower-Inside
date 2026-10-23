@@ -27,6 +27,7 @@ import {
   tokenizeRust,
   type RustSourceSelectionReason,
   type RustRagStatusPlan,
+  type RustBm25MatchAggregate,
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { appLogger } from '../utils/logger';
@@ -39,6 +40,8 @@ const QUERY_SCORE_YIELD_INTERVAL = 512;
 const MAX_RETRIEVAL_CANDIDATES = 256;
 /** 같은 검색 안의 facet 질의가 볼트 파일 목록을 다시 훑지 않도록 재사용하는 시간입니다. */
 const CANDIDATE_PATHS_TTL_MS = 1_000;
+/** 집계 인벤토리에 담는 source path 상한입니다. 총계는 전체 기준을 유지합니다. */
+const MATCH_INVENTORY_PATH_LIMIT = 40;
 const DEFAULT_QUERY_EMBEDDING_TIMEOUT_MS = 10_000;
 const DEFAULT_QUERY_EMBEDDING_COOLDOWN_MS = 30_000;
 const QUERY_EMBEDDING_TIMEOUT_THRESHOLD = 2;
@@ -269,6 +272,19 @@ export class RAGQueryEngine {
       });
     });
     return matches;
+  }
+
+  /**
+   * 색인 전체에서 질의와 정확히 일치한 문서·구간·발생 횟수를 셉니다.
+   * 점수·순위가 아니라 답변이 집계로 인용할 인벤토리이며, 색인이 준비되지 않았으면 null입니다.
+   */
+  async queryMatchInventory(
+    question: string,
+    limit = MATCH_INVENTORY_PATH_LIMIT,
+    signal?: AbortSignal,
+  ): Promise<RustBm25MatchAggregate | null> {
+    if (!this.bm25Index?.isReady) return null;
+    return this.bm25Index.aggregateMatches(question, limit, signal);
   }
 
   /**

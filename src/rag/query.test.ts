@@ -44,6 +44,35 @@ describe('RAGQueryEngine', () => {
     await expect(engine.queryBm25Exhaustive('synthetic')).resolves.toBeNull();
   });
 
+  it('일치 집계는 색인 준비 전에는 null이고 준비 뒤에는 엔진 값을 그대로 돌려준다', async () => {
+    const bm25 = await createBm25([]);
+    const ready = vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(false);
+    const engine = new RAGQueryEngine(null, null, bm25);
+
+    await expect(engine.queryMatchInventory('synthetic')).resolves.toBeNull();
+
+    ready.mockReturnValue(true);
+    const aggregate = {
+      totalDocuments: 1,
+      totalChunks: 1,
+      totalOccurrences: 2,
+      documents: [
+        {
+          sourcePath: 'Synthetic/Alpha.md',
+          occurrences: 2,
+          chunks: [{ docId: 'alpha::0', occurrences: 2 }],
+        },
+      ],
+    };
+    const aggregateMatches = vi.spyOn(bm25, 'aggregateMatches').mockResolvedValue(aggregate);
+    const controller = new AbortController();
+
+    await expect(
+      engine.queryMatchInventory('synthetic', 4, controller.signal),
+    ).resolves.toBe(aggregate);
+    expect(aggregateMatches).toHaveBeenCalledWith('synthetic', 4, controller.signal);
+  });
+
   it('준비된 exhaustive BM25의 0개 hit는 null이 아닌 빈 배열이다', async () => {
     const bm25 = await createBm25([]);
     vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(true);

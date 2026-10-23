@@ -5,7 +5,8 @@ import {
 } from '../storage/generated-artifacts';
 import type { CachedMetadata, DataAdapter, TFile } from 'obsidian';
 import type { ScopedLogger } from '../utils/logger';
-import { planStaleIndexSourcePathsRust, RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
+import { planStaleIndexSourcePathsRust, parseBm25MatchAggregateJson, RustBm25RuntimeIndex, tokenizeRust } from './rust-core';
+import type { RustBm25MatchAggregate } from './rust-core';
 import { TOKENIZER_VERSION } from './tokenizer-version';
 import {
   BM25WorkerRuntime,
@@ -617,6 +618,30 @@ export class IndexedDbBM25Index {
       sourcePath: this.getDocumentSource(docId) ?? docId,
       score,
     }));
+  }
+
+  /**
+   * 색인 전체에서 질의와 정확히 일치한 문서·구간·발생 횟수를 셉니다.
+   * 점수·순위가 아니라 답변이 집계로 인용할 인벤토리이며, 색인이 준비되지 않았으면 null입니다.
+   */
+  async aggregateMatches(
+    query: string,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<RustBm25MatchAggregate | null> {
+    signal?.throwIfAborted();
+    const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+    if (normalizedLimit === 0) return null;
+    const worker = this.workerRuntime;
+    if (worker) {
+      if (!this.loaded) return null;
+      const generation = this.workerGeneration;
+      await awaitBm25SearchQueue(this.workerQueue, signal);
+      signal?.throwIfAborted();
+      if (this.workerFailure || worker.isClosed || generation !== this.workerGeneration) return null;
+      return parseBm25MatchAggregateJson(await worker.aggregate(query, normalizedLimit, signal));
+    }
+    return this.ensureRuntime().aggregate(query, normalizedLimit);
   }
 
   /** 이번 세션 런타임이 스냅샷+델타로 복구됐는지, 원문 전량 재구성인지 알려줍니다. */

@@ -4572,6 +4572,19 @@ impl Bm25RuntimeIndex {
         )
     }
 
+    /// 질의와 일치한 문서별 발생 횟수를 JSON 문자열로 반환한다.
+    ///
+    /// 점수·순위가 아니라 집계 인벤토리용 수치다. 상위 `limit`개 source path만
+    /// 직렬화하고 총계는 전체 일치 기준을 유지한다.
+    #[must_use]
+    pub fn aggregate_json(&self, query: &str, limit: usize) -> String {
+        serialize_bm25_match_aggregate_json(
+            &self.index,
+            &bm25_query::aggregate_matches(&self.index, query),
+            limit,
+        )
+    }
+
     /// compact v3 JSON payload로 직렬화한다.
     #[must_use]
     pub fn to_json(&self) -> String {
@@ -12346,6 +12359,91 @@ fn serialize_bm25_search_scores_json(scores: &[Bm25SearchScore]) -> String {
     format!("[{body}]")
 }
 
+/// 집계 JSON에 담는 source path별 chunk 상한.
+const MATCH_AGGREGATE_CHUNK_LIMIT: usize = 24;
+
+/// source path로 묶은 질의 일치 집계 bucket.
+struct Bm25AggregateBucket {
+    /// 원본 vault 파일 경로.
+    path: String,
+    /// 이 경로에서 일치한 총 발생 횟수.
+    occurrences: usize,
+    /// chunk id와 그 chunk의 발생 횟수.
+    chunks: Vec<(String, usize)>,
+}
+
+/// 질의 일치 집계를 JSON 문자열로 serialize한다.
+///
+/// `{"totalDocuments":n,"totalChunks":m,"totalOccurrences":k,"documents":[…]}` 형태다.
+/// 점수는 담지 않고, 상위 `limit`개 경로의 chunk를 최대 `MATCH_AGGREGATE_CHUNK_LIMIT`개 넣는다.
+fn serialize_bm25_match_aggregate_json(
+    index: &Bm25IndexData,
+    matches: &[bm25_query::Bm25MatchAggregate],
+    limit: usize,
+) -> String {
+    let mut buckets = BTreeMap::<String, Bm25AggregateBucket>::new();
+    let mut total_occurrences = 0_usize;
+    for entry in matches {
+        let path = index
+            .doc_sources
+            .get(&entry.doc_id)
+            .cloned()
+            .unwrap_or_else(|| entry.doc_id.clone());
+        total_occurrences = total_occurrences.saturating_add(entry.occurrences);
+        let bucket = buckets
+            .entry(path.clone())
+            .or_insert_with(|| Bm25AggregateBucket {
+                path,
+                occurrences: 0,
+                chunks: Vec::new(),
+            });
+        bucket.occurrences = bucket.occurrences.saturating_add(entry.occurrences);
+        bucket
+            .chunks
+            .push((entry.doc_id.clone(), entry.occurrences));
+    }
+    let mut ordered = buckets.into_values().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        right
+            .occurrences
+            .cmp(&left.occurrences)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let documents = ordered
+        .iter_mut()
+        .take(limit)
+        .map(|bucket| {
+            bucket
+                .chunks
+                .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+            let chunks = bucket
+                .chunks
+                .iter()
+                .take(MATCH_AGGREGATE_CHUNK_LIMIT)
+                .map(|(doc_id, occurrences)| {
+                    format!(
+                        "{{\"docId\":\"{}\",\"occurrences\":{occurrences}}}",
+                        escape_json_string(doc_id),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"sourcePath\":\"{}\",\"occurrences\":{},\"chunks\":[{chunks}]}}",
+                escape_json_string(&bucket.path),
+                bucket.occurrences,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"totalDocuments\":{},\"totalChunks\":{},\"totalOccurrences\":{},\"documents\":[{documents}]}}",
+        ordered.len(),
+        matches.len(),
+        total_occurrences,
+    )
+}
+
 /// BM25 candidate resolution plan을 JSON 문자열로 serialize한다.
 fn serialize_bm25_candidate_resolution_json(candidates: &[Bm25CandidateResolution]) -> String {
     let body = candidates
@@ -15414,6 +15512,137 @@ mod tests {
         assert_eq!(
             limited_doc_ids, expected_doc_ids,
             "제한 검색은 전체 결과를 JS로 넘기지 않고 상위 BM25 hit만 반환해야 한다",
+        );
+    }
+
+    /// 집계 인벤토리는 점수 없이 정확 term·구문의 발생 횟수만 세야 한다.
+    #[test]
+    fn bm25_aggregate_json_counts_exact_term_and_phrase_occurrences() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        index.add_new_document("a.md::0", "alpha beta alpha", "a.md", 2);
+        index.add_new_document("b.md::0", "alpha alpha alpha", "b.md", 2);
+        index.add_new_document("c.md::0", "gamma", "c.md", 2);
+
+        let term = serde_json::from_str::<JsonValue>(&index.aggregate_json("alpha", 10))
+            .unwrap_or(JsonValue::Null);
+        assert_eq!(
+            term.get("totalDocuments").and_then(JsonValue::as_u64),
+            Some(2),
+            "일치 문서 수는 상위 컷과 무관한 전체 값이어야 한다",
+        );
+        assert_eq!(
+            term.get("totalOccurrences").and_then(JsonValue::as_u64),
+            Some(5),
+            "정확 term의 발생 횟수를 모두 세야 한다",
+        );
+        let first_path = term
+            .get("documents")
+            .and_then(JsonValue::as_array)
+            .and_then(|documents| documents.first())
+            .and_then(|document| document.get("sourcePath"))
+            .and_then(JsonValue::as_str);
+        assert_eq!(
+            first_path,
+            Some("b.md"),
+            "발생 횟수가 많은 경로가 먼저 와야 한다",
+        );
+
+        let phrase = serde_json::from_str::<JsonValue>(&index.aggregate_json("\"alpha beta\"", 10))
+            .unwrap_or(JsonValue::Null);
+        assert_eq!(
+            phrase.get("totalDocuments").and_then(JsonValue::as_u64),
+            Some(1),
+            "구문 일치는 실제로 인접한 문서만 세야 한다",
+        );
+        assert_eq!(
+            phrase.get("totalOccurrences").and_then(JsonValue::as_u64),
+            Some(1),
+            "구문 발생 횟수도 위치 정보로 세야 한다",
+        );
+
+        let limited = serde_json::from_str::<JsonValue>(&index.aggregate_json("alpha", 1))
+            .unwrap_or(JsonValue::Null);
+        let limited_len = limited
+            .get("documents")
+            .and_then(JsonValue::as_array)
+            .map_or(0, Vec::len);
+        assert_eq!(limited_len, 1, "limit은 직렬화하는 경로 수만 줄여야 한다");
+        assert_eq!(
+            limited.get("totalDocuments").and_then(JsonValue::as_u64),
+            Some(2),
+            "경로를 제한해도 총계는 전체 기준을 유지해야 한다",
+        );
+    }
+
+    /// 필드 제한 집계는 해당 필드 구간의 발생만 세야 한다.
+    #[test]
+    fn bm25_aggregate_respects_field_restriction() {
+        let mut index = Bm25IndexData::empty(2);
+        let fields = Bm25DocumentFields {
+            title: "alpha".to_owned(),
+            ..Bm25DocumentFields::default()
+        };
+        insert_bm25_document_fields(&mut index, "a.md::0", "alpha alpha", "a.md", &fields);
+
+        let all = bm25_query::aggregate_matches(&index, "alpha");
+        assert_eq!(
+            all.iter().map(|entry| entry.occurrences).sum::<usize>(),
+            3,
+            "필드 제한이 없으면 title과 body를 모두 세야 한다",
+        );
+        let title_only = bm25_query::aggregate_matches(&index, "title:alpha");
+        assert_eq!(
+            title_only
+                .iter()
+                .map(|entry| entry.occurrences)
+                .sum::<usize>(),
+            1,
+            "title: 제한은 title 구간만 세야 한다",
+        );
+        let body_only = bm25_query::aggregate_matches(&index, "body:alpha");
+        assert_eq!(
+            body_only
+                .iter()
+                .map(|entry| entry.occurrences)
+                .sum::<usize>(),
+            2,
+            "body: 제한은 body 구간만 세야 한다",
+        );
+        assert!(
+            bm25_query::aggregate_matches(&index, "gamma").is_empty(),
+            "없는 term은 집계에 남지 않는다",
+        );
+    }
+
+    /// 파일 경로에서 파생된 term은 본문 등장 횟수에 더하지 않는다.
+    #[test]
+    fn bm25_aggregate_ignores_path_metadata_tokens() {
+        let mut index = Bm25IndexData::empty(2);
+        insert_bm25_document_fields(
+            &mut index,
+            "alpha.md::0",
+            "alpha beta",
+            "alpha.md",
+            &Bm25DocumentFields {
+                include_source_path: true,
+                ..Bm25DocumentFields::default()
+            },
+        );
+
+        let matches = bm25_query::aggregate_matches(&index, "alpha");
+        assert_eq!(
+            matches.first().map(|entry| entry.occurrences),
+            Some(1),
+            "경로 토큰 alpha를 더하면 본문 1회가 2회로 부푼다",
+        );
+        let path_only = bm25_query::aggregate_matches(&index, "path:alpha");
+        assert_eq!(
+            path_only
+                .iter()
+                .map(|entry| entry.occurrences)
+                .sum::<usize>(),
+            1,
+            "path: 를 명시하면 경로 구간을 센다",
         );
     }
 

@@ -27,7 +27,8 @@ export interface BM25WorkerRequest {
     | 'remove-source'
     | 'clear'
     | 'serialize'
-    | 'search-top';
+    | 'search-top'
+    | 'aggregate';
   wasmBase64?: string;
   dbName?: string;
   snapshot?: string;
@@ -48,6 +49,8 @@ export interface BM25WorkerResponse {
   snapshot?: string;
   snapshotRejected?: boolean;
   hits?: BM25WorkerHit[];
+  /** 점수 없이 센 질의 일치 인벤토리입니다. TS가 형식을 검증합니다. */
+  aggregateJson?: string;
   progress?: {
     processedDocuments: number;
   };
@@ -156,6 +159,12 @@ export class BM25WorkerRuntime {
   async searchTop(query: string, limit: number, signal?: AbortSignal): Promise<BM25WorkerHit[]> {
     const response = await this.request({ operation: 'search-top', query, limit }, signal);
     return response.hits ?? [];
+  }
+
+  /** 점수 없이 센 질의 일치 인벤토리 JSON을 받아옵니다. 해석은 호출자가 검증해 합니다. */
+  async aggregate(query: string, limit: number, signal?: AbortSignal): Promise<string> {
+    const response = await this.request({ operation: 'aggregate', query, limit }, signal);
+    return response.aggregateJson ?? '';
   }
 
   close(reason = new Error('BM25 worker was closed.')): void {

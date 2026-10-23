@@ -482,6 +482,40 @@ export interface RustBm25SearchScore {
   score: number;
 }
 
+/** 질의 일치 집계에서 chunk 하나의 발생 횟수입니다. */
+export interface RustBm25MatchChunk {
+  docId: string;
+  occurrences: number;
+}
+
+/** 질의 일치 집계에서 source path 하나의 발생 횟수입니다. */
+export interface RustBm25MatchDocument {
+  sourcePath: string;
+  occurrences: number;
+  chunks: RustBm25MatchChunk[];
+}
+
+/**
+ * 점수 없이 센 질의 일치 인벤토리입니다.
+ * 상위 경로만 담고 `total*`은 색인 전체 일치 기준입니다.
+ */
+export interface RustBm25MatchAggregate {
+  totalDocuments: number;
+  totalChunks: number;
+  totalOccurrences: number;
+  documents: RustBm25MatchDocument[];
+}
+
+/** worker가 돌려준 집계 JSON을 검증해 읽습니다. 형식이 다르면 null입니다. */
+export function parseBm25MatchAggregateJson(raw: string): RustBm25MatchAggregate | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isBm25MatchAggregate(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export class RustBm25RuntimeIndex {
   private constructor(private readonly inner: Bm25RuntimeIndex) {}
 
@@ -542,6 +576,14 @@ export class RustBm25RuntimeIndex {
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed) || !parsed.every(isBm25SearchScore)) return null;
       return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  aggregate(query: string, limit: number): RustBm25MatchAggregate | null {
+    try {
+      return parseBm25MatchAggregateJson(this.inner.aggregate_json(query, limit));
     } catch {
       return null;
     }
@@ -7744,6 +7786,43 @@ function isBm25SearchScore(value: unknown): value is RustBm25SearchScore {
   if (!value || typeof value !== 'object') return false;
   const score = value as Partial<RustBm25SearchScore>;
   return isStringValue(score.docId) && Number.isFinite(score.score);
+}
+
+function isBm25MatchChunk(value: unknown): value is RustBm25MatchChunk {
+  if (!value || typeof value !== 'object') return false;
+  const chunk = value as Partial<RustBm25MatchChunk>;
+  return (
+    isStringValue(chunk.docId) &&
+    typeof chunk.occurrences === 'number' &&
+    Number.isFinite(chunk.occurrences)
+  );
+}
+
+function isBm25MatchDocument(value: unknown): value is RustBm25MatchDocument {
+  if (!value || typeof value !== 'object') return false;
+  const document = value as Partial<RustBm25MatchDocument>;
+  return (
+    isStringValue(document.sourcePath) &&
+    typeof document.occurrences === 'number' &&
+    Number.isFinite(document.occurrences) &&
+    Array.isArray(document.chunks) &&
+    document.chunks.every(isBm25MatchChunk)
+  );
+}
+
+function isBm25MatchAggregate(value: unknown): value is RustBm25MatchAggregate {
+  if (!value || typeof value !== 'object') return false;
+  const aggregate = value as Partial<RustBm25MatchAggregate>;
+  return (
+    typeof aggregate.totalDocuments === 'number' &&
+    Number.isFinite(aggregate.totalDocuments) &&
+    typeof aggregate.totalChunks === 'number' &&
+    Number.isFinite(aggregate.totalChunks) &&
+    typeof aggregate.totalOccurrences === 'number' &&
+    Number.isFinite(aggregate.totalOccurrences) &&
+    Array.isArray(aggregate.documents) &&
+    aggregate.documents.every(isBm25MatchDocument)
+  );
 }
 
 function isEvidenceScore(value: unknown): value is RustEvidenceScore {

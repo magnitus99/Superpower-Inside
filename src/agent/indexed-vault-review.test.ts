@@ -449,7 +449,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.coverage.requestedPaths).toEqual([]);
   });
 
-  it('질문·검색 질문·이전 사용자 질문은 dossier에 보존한다', async () => {
+  it('질문·검색 질문·이전 사용자 질문·집계 인벤토리를 dossier에 보존한다', async () => {
     const { provider, calls } = answerProvider();
     const result = await reviewIndexedVault(
       reviewOptions({
@@ -457,12 +457,29 @@ describe('엔진 근거 기반 색인 검토', () => {
         question: 'Follow-up?',
         scoringQuestion: 'Quartz cooling cycles',
         previousUserQuestions: ['Original question?'],
+        matchInventory: [
+          {
+            query: 'quartz',
+            totalDocuments: 12,
+            totalChunks: 20,
+            totalOccurrences: 34,
+            documents: [{ sourcePath: RELEVANT, occurrences: 5 }],
+          },
+        ],
       }),
     );
     expect(result.dossier).toMatchObject({
       question: 'Follow-up?',
       scoringQuestion: 'Quartz cooling cycles',
       previousUserQuestions: ['Original question?'],
+      matchInventory: [
+        {
+          query: 'quartz',
+          totalDocuments: 12,
+          totalOccurrences: 34,
+          documents: [{ sourcePath: RELEVANT, occurrences: 5 }],
+        },
+      ],
     });
     const payload: unknown = JSON.parse(String(calls[0]?.[1]?.content));
     expect(payload).toEqual(result.dossier);

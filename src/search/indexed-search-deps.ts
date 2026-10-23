@@ -2,6 +2,7 @@ import { TFile, type App } from 'obsidian';
 import type {
   IndexedEvidenceCandidate,
   IndexedEvidenceInventory,
+  IndexedMatchCount,
   IndexedVaultCorpus,
 } from '../agent/indexed-vault-review';
 import type { QueryResult, RAGQueryEngine } from '../rag/query';
@@ -46,6 +47,8 @@ const MAX_HYBRID_FACETS = 3;
 const EXHAUSTIVE_REVIEW_PATH_LIMIT = 96;
 const MAX_QUERY_VARIANTS = 3;
 const REVIEW_PATHS_PER_SOURCE = 8;
+/** 집계 인벤토리에 담는 핵심어 수 상한입니다. */
+const MATCH_INVENTORY_TERM_LIMIT = 3;
 /**
  * 의미 후보 질의 하나가 기다릴 수 있는 시간입니다. 볼트 전체 벡터 색인은 첫 질의에서 만들어지고
  * 이후 질의는 수백 ms면 끝나므로, 검색 화면도 채팅과 같은 후보를 받도록 여유를 둡니다.
@@ -211,6 +214,9 @@ export async function collectIndexedSearchSource(
     ? selectExhaustiveReviewPaths(indexedPaths, candidateResolution.candidates)
     : undefined;
   const reviewPathSet = new Set(reviewPaths ?? []);
+  const matchStartedAt = performance.now();
+  const matchInventory = await collectMatchInventory(host.ragEngine, searchPlan, signal);
+  const matchMs = performance.now() - matchStartedAt;
   appLogger.debug('Indexed search source collected.', {
     source: 'search.source',
     data: {
@@ -221,6 +227,7 @@ export async function collectIndexedSearchSource(
       indexedPathsMs,
       inventoryMs,
       candidatesMs,
+      matchMs,
       totalMs: performance.now() - startedAt,
     },
   });
@@ -235,10 +242,61 @@ export async function collectIndexedSearchSource(
     candidatesState: candidateResolution.state,
     diagnostics: candidateResolution.diagnostics,
     inventory,
+    ...(matchInventory ? { matchInventory } : {}),
     searchPlan: { ...searchPlan, failedFacetIds: candidateResolution.failedFacetIds },
     revisionReader: createVaultRevisionReader(host.app),
     sourceReader,
   };
+}
+
+/**
+ * 질의 facet의 핵심 term마다 색인 전체 일치 집계를 모읍니다.
+ * 질문 문장 전체를 세면 조사·상투어가 수치를 부풀리므로 facet이 고른 term만 셉니다.
+ * 집계는 점수·순위가 아니므로 후보를 자르거나 정렬하는 데 쓰지 않습니다.
+ */
+async function collectMatchInventory(
+  engine: RAGQueryEngine | null,
+  plan: IndexedSearchPlan,
+  signal?: AbortSignal,
+): Promise<readonly IndexedMatchCount[] | undefined> {
+  if (!engine) return undefined;
+  const terms: string[] = [];
+  for (const facet of plan.facets) {
+    for (const term of facet.terms) {
+      const normalized = term.trim();
+      if (normalized.length === 0 || terms.includes(normalized)) continue;
+      terms.push(normalized);
+      if (terms.length >= MATCH_INVENTORY_TERM_LIMIT) break;
+    }
+    if (terms.length >= MATCH_INVENTORY_TERM_LIMIT) break;
+  }
+  const counts: IndexedMatchCount[] = [];
+  for (const term of terms) {
+    signal?.throwIfAborted();
+    try {
+      const aggregate = await engine.queryMatchInventory(term, undefined, signal);
+      if (!aggregate) continue;
+      counts.push({
+        query: term,
+        totalDocuments: aggregate.totalDocuments,
+        totalChunks: aggregate.totalChunks,
+        totalOccurrences: aggregate.totalOccurrences,
+        documents: aggregate.documents.map(({ sourcePath, occurrences }) => ({
+          sourcePath,
+          occurrences,
+        })),
+      });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      // 집계가 없어도 근거 기반 답변은 계속한다. 수치 없이 답한 사실은 dossier가 알린다.
+      appLogger.warn('Match inventory unavailable; continuing without aggregate counts.', {
+        source: 'search.source',
+        error,
+      });
+      break;
+    }
+  }
+  return counts.length > 0 ? counts : undefined;
 }
 
 /**

@@ -738,6 +738,38 @@ fn count_phrase_occurrences(
     doc_id: &str,
     first_positions: &[u32],
 ) -> Option<usize> {
+    count_phrase_matches(index, phrase, doc_id, first_positions, false)
+}
+
+/// 집계용으로 텍스트 필드에서 시작하는 구문만 세는 변형이다.
+#[must_use]
+fn count_text_phrase_occurrences(
+    index: &Bm25IndexData,
+    phrase: &Bm25PhraseClause,
+    doc_id: &str,
+    first_positions: &[u32],
+) -> Option<usize> {
+    count_phrase_matches(index, phrase, doc_id, first_positions, true)
+}
+
+/// 집계에서 본문으로 인정하는 필드인지 확인한다. 경로·태그는 메타데이터라 제외한다.
+#[must_use]
+const fn is_text_field(field: u8) -> bool {
+    matches!(
+        field,
+        BM25_FIELD_TITLE | BM25_FIELD_HEADING | BM25_FIELD_BODY
+    )
+}
+
+/// 구문 일치 횟수를 세는 공통 구현이다. `text_only`면 텍스트 필드에서 시작하는 일치만 센다.
+#[must_use]
+fn count_phrase_matches(
+    index: &Bm25IndexData,
+    phrase: &Bm25PhraseClause,
+    doc_id: &str,
+    first_positions: &[u32],
+    text_only: bool,
+) -> Option<usize> {
     let runs = index.doc_field_runs.get(doc_id)?;
     let mut cursors = Vec::<Peekable<Iter<'_, u32>>>::with_capacity(phrase.terms.len());
     for term in &phrase.terms {
@@ -749,7 +781,11 @@ fn count_phrase_occurrences(
         let Some(start_run) = run_for_position(runs, *start) else {
             continue;
         };
-        if phrase.field.is_some_and(|field| field != start_run.field) {
+        let accepted = phrase.field.map_or_else(
+            || !text_only || is_text_field(start_run.field),
+            |field| field == start_run.field,
+        );
+        if !accepted {
             continue;
         }
         let mut current = *start;
@@ -805,6 +841,105 @@ const fn is_in_run(run: &Bm25FieldRun, position: u32) -> bool {
 #[must_use]
 fn run_for_position(runs: &[Bm25FieldRun], position: u32) -> Option<&Bm25FieldRun> {
     runs.iter().find(|run| is_in_run(run, position))
+}
+
+/// 질의와 일치한 문서 하나의 발생 횟수다.
+///
+/// 점수나 순위가 아니라 "몇 번 나왔는지"만 담는다. 집계 인벤토리는 이 값만 쓴다.
+pub struct Bm25MatchAggregate {
+    /// 일치한 chunk 문서 id.
+    pub doc_id: String,
+    /// 정확 term과 정확 구문이 나타난 총 횟수.
+    pub occurrences: usize,
+}
+
+/// 질의와 일치한 문서별 발생 횟수를 센다.
+///
+/// 점수·순위를 만들지 않는다. 정확 term과 정확 구문만 세고, prefix·오타 확장은 실제로
+/// 없는 표기까지 포함해 수치를 부풀리므로 쓰지 않는다. 필드를 지정하지 않은 질의는
+/// 제목·헤딩·본문만 세고 경로·태그는 파일 이름에서 term이 중복되므로 제외한다.
+/// 위치 정보가 없는 색인은 정확히 셀 수 없으므로 빈 결과를 돌려준다(0으로 위장하지 않는다).
+#[must_use]
+pub fn aggregate_matches(index: &Bm25IndexData, query: &str) -> Vec<Bm25MatchAggregate> {
+    if index.positions.is_empty() {
+        return Vec::new();
+    }
+    let clauses = parse_query(query);
+    let mut counts = BTreeMap::<String, usize>::new();
+    for clause in &clauses {
+        match clause {
+            Bm25QueryClause::Term(term) => {
+                if term.prefix {
+                    continue;
+                }
+                let Some(postings) = index.positions.get(&term.term) else {
+                    continue;
+                };
+                for (doc_id, positions) in postings {
+                    let occurrences = term_occurrences_in_field(index, term, doc_id, positions);
+                    if occurrences == 0 {
+                        continue;
+                    }
+                    let entry = counts.entry(doc_id.clone()).or_default();
+                    *entry = entry.saturating_add(occurrences);
+                }
+            }
+            Bm25QueryClause::Phrase(phrase) => {
+                let Some(first_term) = phrase.terms.first() else {
+                    continue;
+                };
+                let Some(postings) = index.positions.get(first_term) else {
+                    continue;
+                };
+                for (doc_id, positions) in postings {
+                    let occurrences =
+                        count_text_phrase_occurrences(index, phrase, doc_id, positions)
+                            .unwrap_or_default();
+                    if occurrences == 0 {
+                        continue;
+                    }
+                    let entry = counts.entry(doc_id.clone()).or_default();
+                    *entry = entry.saturating_add(occurrences);
+                }
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(doc_id, occurrences)| Bm25MatchAggregate {
+            doc_id,
+            occurrences,
+        })
+        .collect()
+}
+
+/// 문서 안에서 term이 나타난 횟수를 센다. 필드 제한이 있으면 해당 필드 구간만 센다.
+#[must_use]
+fn term_occurrences_in_field(
+    index: &Bm25IndexData,
+    term: &Bm25TermClause,
+    doc_id: &str,
+    positions: &[u32],
+) -> usize {
+    let Some(runs) = index.doc_field_runs.get(doc_id) else {
+        // 필드 구간이 없는 legacy 색인은 필드 제한이 없을 때만 전체 위치를 센다.
+        return if term.field.is_none() {
+            positions.len()
+        } else {
+            0
+        };
+    };
+    positions
+        .iter()
+        .filter(|position| {
+            let Some(run) = run_for_position(runs, **position) else {
+                return false;
+            };
+            // 경로가 본문 term을 다시 만들어 총계를 부풀리지 않도록 텍스트 필드만 센다.
+            term.field
+                .map_or_else(|| is_text_field(run.field), |field| run.field == field)
+        })
+        .count()
 }
 
 /// 문서 빈도 기반 `IDF`를 만든다.

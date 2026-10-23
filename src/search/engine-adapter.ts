@@ -3,6 +3,7 @@ import {
   type IndexedEvidenceCandidate,
   type IndexedEvidenceInventory,
   type IndexedEvidenceItem,
+  type IndexedMatchCount,
   type IndexedVaultCorpus,
   type IndexedVaultSearchResult,
 } from '../agent/indexed-vault-review';
@@ -34,6 +35,8 @@ export interface IndexedSearchSource {
   /** 하이브리드 검색이 지목한 순위 prior입니다. 검토 범위는 전체 색인입니다. */
   candidates?: readonly (IndexedEvidenceCandidate & { queryIndex?: number })[];
   inventory?: IndexedEvidenceInventory;
+  /** 엔진이 센 색인 전체 일치 집계입니다. 순위·후보 선발에는 쓰지 않습니다. */
+  matchInventory?: readonly IndexedMatchCount[];
   candidatesState?: SearchCandidateState;
   scopes?: readonly string[];
   searchPlan?: IndexedSearchPlan;
