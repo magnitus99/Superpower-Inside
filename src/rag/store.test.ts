@@ -45,6 +45,17 @@ describe('IndexedDbVectorStore', () => {
     expect((await store.getEntries()).map((entry) => entry.id)).toEqual(['other.md::0']);
   });
 
+  it('이미 없는 경로를 지우는 유지보수 호출은 색인 세대를 바꾸지 않는다', async () => {
+    const store = createStore();
+    await store.add([createEntry('note.md', 0, [1, 0], 'a')]);
+    const revisionBefore = store.getRuntimeCacheStats().searchRevision;
+
+    const removed = await store.removeByFilePath('missing.md');
+
+    expect(removed).toBe(0);
+    expect(store.getRuntimeCacheStats().searchRevision).toBe(revisionBefore);
+  });
+
   it('통계와 인덱싱된 파일 경로를 반환한다', async () => {
     const store = createStore();
     await store.add([
@@ -366,14 +377,50 @@ describe('IndexedDbVectorStore', () => {
       createEntry('b.md', 0, [0.8, 0.2], 'b'),
       createEntry('c.md', 0, [0, 1], 'c'),
     ]);
-    store.afterRead = () => store.removeByFilePath('b.md').then(() => undefined);
+    let written = 0;
+    // 읽기 사이마다 실제 쓰기가 끼어들어 색인 세대가 계속 바뀌는 상황을 만듭니다.
+    store.afterRead = () =>
+      store.add([createEntry(`late-${(written += 1)}.md`, 0, [0, 1], 'late')]).then(() => undefined);
 
     const results = await store.search({ queryVector: [1, 0], topK: 3 });
 
     expect(store.afterReadCount).toBe(2);
-    expect(results.map((result) => result.entry.id)).not.toContain('b.md::0');
+    expect(results.length).toBeGreaterThan(0);
     expect(store.getRuntimeCacheStats()).toEqual(expect.objectContaining({ searchStale: true }));
     await expectIdsExist(store, results);
+  });
+
+  it('작업자 색인 예산 실패는 keyset 페이징으로 전체를 훑고 저하 사유를 남긴다', async () => {
+    const search = vi.fn<VectorSearchWorkerLike['search']>(() =>
+      Promise.reject(new Error('Vector search index requires 400 bytes above the 32 byte budget.')),
+    );
+    const close = vi.fn();
+    const store = createStore(createDbName(), {
+      hydrateAllEntryLimit: 1,
+      pageSize: 2,
+      vectorSearchWorkerFactory: () => ({ search, close }),
+    });
+    await store.add([
+      createEntry('a.md', 0, [0, 1], 'a'),
+      createEntry('b.md', 0, [0, 0.9], 'b'),
+      createEntry('c.md', 0, [0.2, 0.9], 'c'),
+      createEntry('d.md', 0, [0.8, 0.6], 'd'),
+      createEntry('e.md', 0, [1, 0], 'e'),
+    ]);
+
+    const results = await store.search({ queryVector: [1, 0], topK: 2 });
+
+    expect(search).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    // 마지막 페이지에만 있는 최근점 벡터까지 도달해야 페이징이 전 구간을 덮은 것이다.
+    expect(results.map((result) => result.entry.id)).toEqual(['e.md::0', 'd.md::0']);
+    expect(store.getRuntimeCacheStats()).toEqual(
+      expect.objectContaining({
+        workerSearchActive: false,
+        searchDegraded: true,
+      }),
+    );
+    expect(store.getRuntimeCacheStats().searchFallbackReason).toContain('byte budget');
   });
 
   it('대형 볼트 검색은 사용 가능한 worker에서 id와 점수만 받아 결과를 복원한다', async () => {

@@ -90,6 +90,11 @@ export interface VectorSearchWorkerSearchStats {
   cacheHit: boolean;
   indexBytes: number;
   indexedCount: number;
+  /** 작업자가 실제로 수행한 검색 방식입니다. */
+  mode?: 'exact' | 'ann';
+  /** 색인 생성과 질의 계산에 쓴 시간입니다. */
+  buildMs?: number;
+  queryMs?: number;
 }
 
 export interface VectorSearchWorkerLike {
@@ -101,6 +106,10 @@ export interface VectorSearchWorkerLike {
     signal?: AbortSignal;
     /** 스토어 변경 세대. 작업자 색인 캐시 키에 포함된다. */
     revision?: number;
+    mode?: 'exact' | 'ann';
+    annMinEntryCount?: number;
+    annClusterCount?: number;
+    annProbeCount?: number;
   }): Promise<Array<{ id: string; score: number }>>;
   readonly lastSearchStats?: VectorSearchWorkerSearchStats | null;
   close(reason?: Error): void;
@@ -162,6 +171,8 @@ export interface VectorStore {
   persist(): Promise<void>;
   withBatch<T>(operation: () => Promise<T>): Promise<T>;
   getStats(): Promise<VectorStoreStats>;
+  /** 후보 검색의 exact/ann 판단에 쓰는 저렴한 벡터 수입니다. */
+  getEntryCount?(): Promise<number>;
   getIndexedFilePaths(): Promise<string[]>;
   getFileIndexRecord(filePath: string): Promise<FileIndexRecord | null>;
   getFileIndexRecords(): Promise<FileIndexRecord[]>;
@@ -746,13 +757,17 @@ export class IndexedDbVectorStore implements VectorStore {
   async removeByFilePath(filePath: string): Promise<number> {
     await this.beginFileWrites([filePath], Date.now());
     const removed = await this.db.vectors.where('filePath').equals(filePath).delete();
+    const removedFileIndex = (await this.db.fileIndex.get(filePath)) !== undefined;
     await this.db.fileIndex.delete(filePath);
     await this.finishFileWrites([filePath]);
     if (this.entriesCache) {
       this.entriesCache = this.entriesCache.filter((entry) => entry.metadata.filePath !== filePath);
     }
-    this.noteVectorMutation();
-    this.invalidateRuntimeIndex();
+    // 이미 없는 경로를 지우는 유지보수 호출까지 색인 세대를 바꾸면 검색 색인이 계속 무효화됩니다.
+    if (removed > 0 || removedFileIndex) {
+      this.noteVectorMutation();
+      this.invalidateRuntimeIndex();
+    }
     return removed;
   }
 
@@ -1046,6 +1061,11 @@ export class IndexedDbVectorStore implements VectorStore {
     return operation();
   }
 
+  /** 후보 검색의 exact/ann 판단에 쓰는 저렴한 벡터 수입니다. */
+  async getEntryCount(): Promise<number> {
+    return this.db.vectors.count();
+  }
+
   async getStats(): Promise<VectorStoreStats> {
     const records = await this.getFileIndexRecords();
     const totalVectors = records.reduce((total, record) => total + record.vectorCount, 0);
@@ -1144,56 +1164,60 @@ export class IndexedDbVectorStore implements VectorStore {
     if (topK <= 0) return [];
 
     const selected: VectorSearchResult[] = [];
-    const scorePages = async (
-      loadPage: (offset: number) => Promise<IndexedDbVectorRecord[]>,
-    ): Promise<void> => {
-      let offset = 0;
-      while (true) {
-        throwIfAborted(request.signal);
-        const records = await loadPage(offset);
-        if (records.length === 0) break;
-        const entries = records
-          .filter((record) => matchesVectorRecordSearchFilter(record, request.filter))
-          .map(vectorEntryFromRecord);
-        this.enforceRuntimeBoundary(entries);
-        const pageResults = await scoredSearch(
-          entries,
-          { ...request, mode: 'exact', filter: undefined, topK },
-          null,
-          null,
-        );
-        selected.push(...pageResults);
-        selected.sort((left, right) => right.score - left.score);
-        selected.splice(topK);
-        offset += records.length;
-        if (records.length < this.pageSize) break;
+    const scorePage = async (records: IndexedDbVectorRecord[]): Promise<void> => {
+      if (records.length === 0) return;
+      const entries = records
+        .filter((record) => matchesVectorRecordSearchFilter(record, request.filter))
+        .map(vectorEntryFromRecord);
+      this.enforceRuntimeBoundary(entries);
+      const pageResults = await scoredSearch(
+        entries,
+        { ...request, mode: 'exact', filter: undefined, topK },
+        null,
+        null,
+      );
+      selected.push(...pageResults);
+      selected.sort((left, right) => right.score - left.score);
+      selected.splice(topK);
+    };
+
+    // 기본 키 커서로 페이징합니다. offset()은 페이지마다 앞쪽 레코드를 다시 건너뛰어
+    // 큰 저장소에서 전체 스캔 비용이 제곱으로 늘고 메인 스레드를 붙잡습니다.
+    const scoreKeysetPages = async (after?: string): Promise<void> => {
+      throwIfAborted(request.signal);
+      const records = await (after === undefined
+        ? this.db.vectors.orderBy('id').limit(this.pageSize).toArray()
+        : this.db.vectors.where('id').above(after).limit(this.pageSize).toArray());
+      await scorePage(records);
+      const lastKey = records.at(-1)?.id;
+      if (records.length >= this.pageSize && lastKey !== undefined) {
+        await scoreKeysetPages(lastKey);
       }
     };
 
     const prefixes = normalizeFilePathPrefixes(request.filter?.filePathPrefixes);
     if (prefixes.length > 0) {
+      // 경로 범위는 중복 키를 가질 수 있어 기본 키 목록을 먼저 모은 뒤 묶어서 읽습니다.
+      const keys: string[] = [];
       for (const prefix of prefixes) {
-        await scorePages((offset) =>
-          this.db.vectors
-            .where('filePath')
-            .equals(prefix)
-            .offset(offset)
-            .limit(this.pageSize)
-            .toArray(),
-        );
-        await scorePages((offset) =>
-          this.db.vectors
+        keys.push(...(await this.db.vectors.where('filePath').equals(prefix).primaryKeys()));
+        keys.push(
+          ...(await this.db.vectors
             .where('filePath')
             .startsWith(`${prefix}/`)
-            .offset(offset)
-            .limit(this.pageSize)
-            .toArray(),
+            .primaryKeys()),
         );
       }
+      for (let index = 0; index < keys.length; index += this.pageSize) {
+        throwIfAborted(request.signal);
+        const chunk = keys.slice(index, index + this.pageSize);
+        const records = (await this.db.vectors.bulkGet(chunk)).filter(
+          (record): record is IndexedDbVectorRecord => record !== undefined,
+        );
+        await scorePage(records);
+      }
     } else {
-      await scorePages((offset) =>
-        this.db.vectors.orderBy('id').offset(offset).limit(this.pageSize).toArray(),
-      );
+      await scoreKeysetPages();
     }
     return selected;
   }
@@ -1226,6 +1250,10 @@ export class IndexedDbVectorStore implements VectorStore {
         filter: request.filter,
         signal: request.signal,
         revision,
+        mode: request.mode,
+        annMinEntryCount: request.annMinEntryCount,
+        annClusterCount: request.annClusterCount,
+        annProbeCount: request.annProbeCount,
       });
       const stats = worker.lastSearchStats ?? null;
       this.lastWorkerSearchStats = stats;
@@ -1235,11 +1263,12 @@ export class IndexedDbVectorStore implements VectorStore {
     this.lastSearchStale = stale;
     throwIfAborted(request.signal);
     const records = await this.db.vectors.bulkGet(hits.map((hit) => hit.id));
+    // 작업자가 실제로 수행한 방식을 그대로 보고해 정확 검색을 ANN으로 오표기하지 않습니다.
+    const mode: VectorSearchResult['mode'] = worker.lastSearchStats?.mode ?? 'exact';
     return hits.flatMap((hit, index) => {
       const record = records[index];
       if (!record || !matchesVectorRecordSearchFilter(record, request.filter)) return [];
-      // 대형 볼트 작업자는 정확 검색 인덱스를 사용하므로 실제 실행한 알고리즘을 표시한다.
-      return [{ entry: vectorEntryFromRecord(record), score: hit.score, mode: 'exact' }];
+      return [{ entry: vectorEntryFromRecord(record), score: hit.score, mode }];
     });
   }
 
@@ -1668,6 +1697,10 @@ export class MemoryVectorStore implements VectorStore {
 
   async withBatch<T>(operation: () => Promise<T>): Promise<T> {
     return operation();
+  }
+
+  getEntryCount(): Promise<number> {
+    return Promise.resolve(this.entries.length);
   }
 
   getStats(): Promise<VectorStoreStats> {
