@@ -387,10 +387,40 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     plugin.vectorStore = null;
     plugin.vaultIndexer = null;
     plugin.ragIndexingScheduler = null;
+    plugin.ragEngine = null;
     plugin.initRAG = vi.fn(() => {
       plugin.vectorStore = {};
       plugin.vaultIndexer = {};
       plugin.ragIndexingScheduler = {};
+      plugin.ragEngine = {};
+      return Promise.resolve();
+    });
+
+    const initialized = await (
+      plugin as unknown as {
+        ensureRagRuntimeInitialized(): Promise<boolean>;
+      }
+    ).ensureRagRuntimeInitialized();
+
+    expect(initialized).toBe(true);
+    expect(plugin.initRAG).toHaveBeenCalledOnce();
+  });
+
+  it('저장소만 만들어진 부분 초기화에서도 질의 엔진 초기화를 건너뛰지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
+      vectorStore: unknown;
+      vaultIndexer: unknown;
+      ragIndexingScheduler: unknown;
+      ragEngine: unknown;
+      initRAG: ReturnType<typeof vi.fn>;
+    };
+    plugin.vectorStore = {};
+    plugin.vaultIndexer = {};
+    plugin.ragIndexingScheduler = {};
+    plugin.ragEngine = null;
+    plugin.initRAG = vi.fn(() => {
+      plugin.ragEngine = {};
       return Promise.resolve();
     });
 

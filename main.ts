@@ -1549,17 +1549,22 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   async ensureRagRuntimeInitialized(): Promise<boolean> {
-    if (this.vectorStore && this.vaultIndexer && this.ragIndexingScheduler) {
-      return true;
-    }
+    // 저장소만 만들어진 부분 초기화 상태에서 건너뛰면 질의 엔진 없이 준비 완료로 보입니다.
+    if (this.ragReady) return true;
     await this.initRAG();
-    return Boolean(this.vectorStore && this.vaultIndexer && this.ragIndexingScheduler);
+    return this.ragReady;
   }
 
   async prepareRagForChat(): Promise<boolean> {
     const initialized = this.ragEngine ? true : await this.ensureRagRuntimeInitialized();
     if (this.bm25Index) await this.bm25Index.recoverClosedWorker();
     return initialized;
+  }
+
+  private get ragReady(): boolean {
+    return Boolean(
+      this.ragEngine && this.vectorStore && this.vaultIndexer && this.ragIndexingScheduler,
+    );
   }
 
   private getRagIndexerNotInitializedReason(): string {
