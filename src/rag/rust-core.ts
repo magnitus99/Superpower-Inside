@@ -5198,12 +5198,21 @@ export type RustIndexedReviewAnswerFailureReason =
   | 'missing-facet'
   | 'missing-synthesis';
 
+export type RustIndexedReviewAnswerFormatIssue =
+  | 'invalid-json'
+  | 'invalid-paragraphs'
+  | 'invalid-text'
+  | 'invalid-sources'
+  | 'unknown-source'
+  | 'invalid-covers';
+
 export type RustIndexedReviewAnswerValidation =
   | { valid: true; content: string }
   | {
       valid: false;
       reason: RustIndexedReviewAnswerFailureReason;
       missingFacetIds: readonly string[];
+      formatIssue?: RustIndexedReviewAnswerFormatIssue;
     };
 
 export interface RustIndexedEvidenceDocument {
@@ -5512,10 +5521,26 @@ function readIndexedReviewAnswerValidation(
   if (!reasons.includes(value.reason as RustIndexedReviewAnswerFailureReason) || !missingFacetIds) {
     return null;
   }
+  const formatIssues: readonly RustIndexedReviewAnswerFormatIssue[] = [
+    'invalid-json',
+    'invalid-paragraphs',
+    'invalid-text',
+    'invalid-sources',
+    'unknown-source',
+    'invalid-covers',
+  ];
+  const formatIssue = value.formatIssue as RustIndexedReviewAnswerFormatIssue | undefined;
+  if (
+    formatIssue !== undefined &&
+    (value.reason !== 'invalid-format' || !formatIssues.includes(formatIssue))
+  ) {
+    return null;
+  }
   return {
     valid: false,
     reason: value.reason as RustIndexedReviewAnswerFailureReason,
     missingFacetIds,
+    ...(formatIssue === undefined ? {} : { formatIssue }),
   };
 }
 

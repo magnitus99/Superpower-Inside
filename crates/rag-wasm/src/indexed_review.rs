@@ -645,14 +645,14 @@ fn parse_answer_paragraphs(
     plan: &ReviewAnswerPlan,
     allowed_sources: &BTreeSet<String>,
 ) -> Result<Vec<ReviewAnswerParagraph>, &'static str> {
-    let raw = super::extract_json_object(response).ok_or("invalid-format")?;
-    let value: Value = serde_json::from_str(raw).map_err(|_| "invalid-format")?;
+    let raw = super::extract_json_object(response).ok_or("invalid-json")?;
+    let value: Value = serde_json::from_str(raw).map_err(|_| "invalid-json")?;
     let items = value
         .get("paragraphs")
         .and_then(Value::as_array)
-        .ok_or("invalid-format")?;
+        .ok_or("invalid-paragraphs")?;
     if items.is_empty() || items.len() > MAX_ANSWER_PARAGRAPHS {
-        return Err("invalid-format");
+        return Err("invalid-paragraphs");
     }
     let question_id = plan
         .facets
@@ -670,20 +670,20 @@ fn parse_answer_paragraphs(
                     && text.chars().count() <= MAX_PARAGRAPH_CHARS
                     && !text.contains("[vault:")
             })
-            .ok_or("invalid-format")?;
+            .ok_or("invalid-text")?;
         let references = item
             .get("sources")
             .and_then(Value::as_array)
-            .ok_or("invalid-format")?;
+            .ok_or("invalid-sources")?;
         if references.is_empty() || references.len() > MAX_PARAGRAPH_SOURCES {
-            return Err("invalid-format");
+            return Err("invalid-sources");
         }
         let sources = references
             .iter()
             .map(|reference| {
-                let reference = reference.as_str().ok_or("invalid-format")?;
+                let reference = reference.as_str().ok_or("invalid-sources")?;
                 if reference.contains("[vault:") {
-                    return Err("invalid-format");
+                    return Err("invalid-sources");
                 }
                 if allowed_sources.contains(reference) {
                     return Ok(reference.to_owned());
@@ -691,24 +691,24 @@ fn parse_answer_paragraphs(
                 let normalized = reference
                     .strip_prefix("vault:")
                     .filter(|source| allowed_sources.contains(*source))
-                    .ok_or("invalid-format")?;
+                    .ok_or("unknown-source")?;
                 Ok(normalized.to_owned())
             })
             .collect::<Result<Vec<_>, &'static str>>()?;
         let cover_values = match item.get("covers") {
             None | Some(Value::Null) if plan.mode == "single" => None,
-            Some(Value::Null) | None => return Err("invalid-format"),
-            Some(value) => Some(value.as_array().ok_or("invalid-format")?),
+            Some(Value::Null) | None => return Err("invalid-covers"),
+            Some(value) => Some(value.as_array().ok_or("invalid-covers")?),
         };
         let mut covers = BTreeSet::new();
         if let Some(values) = cover_values {
             if values.is_empty() || values.len() > MAX_ANSWER_FACETS {
-                return Err("invalid-format");
+                return Err("invalid-covers");
             }
             for value in values {
-                let id = value.as_str().ok_or("invalid-format")?;
+                let id = value.as_str().ok_or("invalid-covers")?;
                 if !covers.insert(id.to_owned()) {
-                    return Err("invalid-format");
+                    return Err("invalid-covers");
                 }
                 let facet = plan
                     .facets
@@ -720,7 +720,7 @@ fn parse_answer_paragraphs(
                 }
             }
         } else {
-            covers.insert(question_id.ok_or("invalid-format")?.to_owned());
+            covers.insert(question_id.ok_or("invalid-covers")?.to_owned());
         }
         let cover_facets = covers
             .iter()
@@ -837,11 +837,30 @@ fn indexed_review_answer_validation(value: &Value) -> Option<Value> {
 
 /// 검증 실패 wire를 만듭니다.
 fn invalid_answer(reason: &str, missing_facet_ids: &[String]) -> Value {
-    json!({
-        "valid": false,
-        "reason": reason,
-        "missingFacetIds": missing_facet_ids,
-    })
+    // 원문·응답 조각 대신 고정된 코드만 전달하고 기존 상위 실패 계약은 보존합니다.
+    let format_issue = matches!(
+        reason,
+        "invalid-json"
+            | "invalid-paragraphs"
+            | "invalid-text"
+            | "invalid-sources"
+            | "unknown-source"
+            | "invalid-covers"
+    );
+    if format_issue {
+        json!({
+            "valid": false,
+            "reason": "invalid-format",
+            "missingFacetIds": missing_facet_ids,
+            "formatIssue": reason,
+        })
+    } else {
+        json!({
+            "valid": false,
+            "reason": reason,
+            "missingFacetIds": missing_facet_ids,
+        })
+    }
 }
 
 /// 구간별 판정 누락·중복·허위 인용을 거부합니다.
@@ -1182,6 +1201,88 @@ mod tests {
     fn validate_answer_of(input: &Value) -> Value {
         serde_json::from_str(&validate_indexed_review_answer_json(&input.to_string()))
             .unwrap_or(Value::Null)
+    }
+
+    #[test]
+    fn answer_format_failures_report_only_bounded_issue_codes() {
+        let answer_plan = answer_plan_of(&json!({
+            "searchPlan": {
+                "mode": "single",
+                "facets": [{"id": "question", "kind": "question", "query": "copper", "queryIndex": 0, "terms": ["copper"]}]
+            },
+            "evidence": [{"sourceId": "synthetic/a.md#L1-L1", "path": "synthetic/a.md", "quote": "copper"}]
+        }));
+        let valid_paragraph =
+            json!({"text": "Copper needs a latch.", "sources": ["synthetic/a.md#L1-L1"]});
+        let mut cases = vec![
+            ("not json".to_owned(), "invalid-json"),
+            ("{\"paragraphs\":".to_owned(), "invalid-json"),
+            (json!({}).to_string(), "invalid-paragraphs"),
+            (json!({"paragraphs": []}).to_string(), "invalid-paragraphs"),
+            (
+                json!({"paragraphs": vec![valid_paragraph.clone(); MAX_ANSWER_PARAGRAPHS + 1]})
+                    .to_string(),
+                "invalid-paragraphs",
+            ),
+        ];
+        for (field, value, issue) in [
+            ("text", json!(""), "invalid-text"),
+            (
+                "text",
+                json!("[vault:synthetic/a.md#L1-L1]"),
+                "invalid-text",
+            ),
+            (
+                "text",
+                json!("x".repeat(MAX_PARAGRAPH_CHARS + 1)),
+                "invalid-text",
+            ),
+            ("sources", json!([]), "invalid-sources"),
+            ("sources", json!([17]), "invalid-sources"),
+            (
+                "sources",
+                json!(vec!["synthetic/a.md#L1-L1"; MAX_PARAGRAPH_SOURCES + 1]),
+                "invalid-sources",
+            ),
+            (
+                "sources",
+                json!(["[vault:synthetic/a.md#L1-L1]"]),
+                "invalid-sources",
+            ),
+            (
+                "sources",
+                json!(["synthetic/unknown.md#L1-L1"]),
+                "unknown-source",
+            ),
+            (
+                "sources",
+                json!(["vault:vault:synthetic/a.md#L1-L1"]),
+                "unknown-source",
+            ),
+            ("covers", json!([]), "invalid-covers"),
+            ("covers", json!(["question", "question"]), "invalid-covers"),
+            ("covers", json!(17), "invalid-covers"),
+        ] {
+            let mut paragraph = valid_paragraph.as_object().cloned().unwrap_or_default();
+            paragraph.insert(field.to_owned(), value);
+            cases.push((json!({"paragraphs": [paragraph]}).to_string(), issue));
+        }
+        for (response, issue) in cases {
+            let validation = validate_answer_of(&json!({
+                "sourceIds": ["synthetic/a.md#L1-L1"],
+                "answerPlan": answer_plan,
+                "response": response,
+            }));
+            assert_eq!(
+                validation,
+                json!({
+                    "valid": false,
+                    "reason": "invalid-format",
+                    "missingFacetIds": [],
+                    "formatIssue": issue,
+                })
+            );
+        }
     }
 
     #[test]

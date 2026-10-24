@@ -1477,12 +1477,14 @@ async function runIndexedVaultReview(
               : 'validator-unavailable';
           const missingFacetIds =
             firstValidation && !firstValidation.valid ? firstValidation.missingFacetIds : [];
+          const formatIssue =
+            firstValidation && !firstValidation.valid ? firstValidation.formatIssue : undefined;
           appLogger.warn('Indexed answer failed facet validation; attempting one correction.', {
             source: 'chat.indexed-review',
-            data: { reason, missingFacetIds },
+            data: { reason, missingFacetIds, formatIssue },
           });
           const corrected = await requestAnswer(first.raw, {
-            reason,
+            reason: formatIssue ? `${reason}:${formatIssue}` : reason,
             facets: missingFacetIds.join(', ') || '-',
           });
           const correctedValidation = validateIndexedReviewAnswerRust({
@@ -1506,6 +1508,7 @@ async function runIndexedVaultReview(
               data: {
                 reason: correctedReason,
                 missingFacetIds: correctedMissingFacetIds,
+                formatIssue: correctedValidation?.formatIssue,
               },
             });
           }

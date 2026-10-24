@@ -64,6 +64,33 @@ describe('indexed search and answer WASM integration', () => {
     });
   });
 
+  it.each([
+    ['not json', 'invalid-json'],
+    ['{"paragraphs":[]}', 'invalid-paragraphs'],
+    ['{"paragraphs":[{"text":"","sources":["synthetic/a.md#L1-L1"]}]}', 'invalid-text'],
+    ['{"paragraphs":[{"text":"A constraint.","sources":[]}]}', 'invalid-sources'],
+    ['{"paragraphs":[{"text":"A constraint.","sources":["unknown"]}]}', 'unknown-source'],
+    [
+      '{"paragraphs":[{"text":"A constraint.","sources":["synthetic/a.md#L1-L1"],"covers":[]}]}',
+      'invalid-covers',
+    ],
+  ])('preserves the bounded format issue %s → %s across WASM', (response, formatIssue) => {
+    const searchPlan = planIndexedSearchQueriesRust({ question: 'alpha', scopes: [] });
+    if (!searchPlan) throw new Error('search plan is unavailable');
+    const sourceIds = ['synthetic/a.md#L1-L1'];
+    const answerPlan = planIndexedReviewAnswerPlanRust({
+      searchPlan,
+      evidence: [{ sourceId: sourceIds[0], path: 'synthetic/a.md', quote: 'alpha' }],
+    });
+    if (!answerPlan) throw new Error('answer plan is unavailable');
+    expect(validateIndexedReviewAnswerRust({ sourceIds, answerPlan, response })).toEqual({
+      valid: false,
+      reason: 'invalid-format',
+      missingFacetIds: [],
+      formatIssue,
+    });
+  });
+
   it('rejects a comparison answer that omits a required facet', () => {
     const searchPlan = planIndexedSearchQueriesRust({
       question: 'Compare alpha and beta',

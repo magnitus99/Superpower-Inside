@@ -2502,6 +2502,46 @@ describe('indexed search/answer wire wrappers', () => {
     );
   });
 
+  it('preserves bounded format issues and rejects malformed wire diagnostics', () => {
+    const input: RustIndexedReviewAnswerValidationInput = {
+      sourceIds: [],
+      answerPlan: {
+        mode: 'single',
+        facets: [],
+        requiredFacetIds: [],
+        missingFacetIds: [],
+        synthesisRequired: false,
+      },
+      response: '',
+    };
+    const failure = { valid: false, reason: 'invalid-format', missingFacetIds: [] };
+    for (const formatIssue of [
+      'invalid-json',
+      'invalid-paragraphs',
+      'invalid-text',
+      'invalid-sources',
+      'unknown-source',
+      'invalid-covers',
+    ]) {
+      rustWireExports.validate_indexed_review_answer_json.mockReturnValue(
+        JSON.stringify({ ...failure, formatIssue }),
+      );
+      expect(validateIndexedReviewAnswerRust(input)).toEqual({ ...failure, formatIssue });
+    }
+    rustWireExports.validate_indexed_review_answer_json.mockReturnValue(JSON.stringify(failure));
+    expect(validateIndexedReviewAnswerRust(input)).toEqual(failure);
+    for (const formatIssue of ['untrusted diagnostic text', 1, null]) {
+      rustWireExports.validate_indexed_review_answer_json.mockReturnValue(
+        JSON.stringify({ ...failure, formatIssue }),
+      );
+      expect(validateIndexedReviewAnswerRust(input)).toBeNull();
+    }
+    rustWireExports.validate_indexed_review_answer_json.mockReturnValue(
+      JSON.stringify({ ...failure, reason: 'missing-facet', formatIssue: 'unknown-source' }),
+    );
+    expect(validateIndexedReviewAnswerRust(input)).toBeNull();
+  });
+
   it('preserves indexed evidence query indexes and backfills legacy output', () => {
     const input = {
       question: 'alpha',

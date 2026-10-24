@@ -638,6 +638,33 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.citations.map((citation) => citation.id)).toEqual([SOURCE_ID, OTHER_SOURCE_ID]);
   });
 
+  it('형식 실패의 고정 코드를 원문 없이 교정 요청에 전달하고 한 번만 재시도한다', async () => {
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue(comparisonEvidencePlan());
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    vi.mocked(planIndexedReviewAnswerPlanRust).mockReturnValue(comparisonAnswerPlan());
+    vi.mocked(validateIndexedReviewAnswerRust).mockReturnValue({
+      valid: false,
+      reason: 'invalid-format',
+      missingFacetIds: [],
+      formatIssue: 'unknown-source',
+    });
+    const { provider, calls } = scriptedAnswerProvider(['{"paragraphs":[]}']);
+    const result = await reviewIndexedVault(
+      reviewOptions({ provider, searchPlan: COMPARISON_SEARCH_PLAN }),
+    );
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.at(-1)).toEqual({
+      role: 'user',
+      content: t('llmIndexedReviewAnswerCorrection', {
+        reason: 'invalid-format:unknown-source',
+        facets: '-',
+      }),
+    });
+    expect(result.diagnostics.counts.answerCorrectionRequests).toBe(1);
+    expect(result.outcome).toBe('evidence-only');
+    expect(result.citations.every((citation) => citation.status === 'verified')).toBe(true);
+  });
+
   it('두 번 모두 missing facet이면 불완전한 답변을 게시하지 않고 검증 근거로 폴백한다', async () => {
     vi.mocked(planIndexedEvidenceRust).mockReturnValue(comparisonEvidencePlan());
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
