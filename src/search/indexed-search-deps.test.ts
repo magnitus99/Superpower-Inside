@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
 import type { QueryResult, RAGQueryEngine, RAGQueryOptions } from '../rag/query';
-import type { IndexedSearchPlan } from '../rag/rust-core';
+import { planIndexedEvidenceRust, type IndexedSearchPlan } from '../rag/rust-core';
 import type { IndexedSearchCorpus } from './indexed-search-deps';
 import {
   collectIndexedSearchSource,
@@ -124,6 +124,72 @@ function engine(results: QueryResult[]): RAGQueryEngine {
 }
 
 describe('검색 의존성 factory', () => {
+  it.each(['single', 'comparison'] as const)(
+    '%s 질의의 언어 변형은 비교 facet을 만들지 않고 엔진 wire 계약을 유지한다',
+    async (mode) => {
+      const basePlan: IndexedSearchPlan = {
+        mode,
+        facets: [
+          { id: 'question', kind: 'question', query: 'base', queryIndex: 0, terms: [] },
+          ...(mode === 'comparison'
+            ? [{ id: 'subject-1', kind: 'subject' as const, query: 'subject', queryIndex: 1, terms: [] }]
+            : []),
+        ],
+      };
+      planIndexedSearchQueries.mockImplementation(({ question }: { question: string }) =>
+        question === 'base' ? basePlan : {
+          mode: 'comparison',
+          facets: [
+            ...singlePlan(question).facets,
+            { id: 'subject-1', kind: 'subject', query: question, queryIndex: 1, terms: [] },
+          ],
+        },
+      );
+      const variants = ['variant-a', 'variant-b', 'variant-c'];
+      const paths = ['base', 'subject', ...variants].map((name) => `Synthetic/${name}.md`);
+      const source = await collectIndexedSearchSource(
+        {
+          app: app({}),
+          documentCorpus: { ...corpus(), getIndexedFilePaths: () => Promise.resolve(paths) },
+          ragEngine: {
+            query: () => Promise.resolve([]),
+            queryBm25Exhaustive: (query: string) => Promise.resolve([
+              { path: `Synthetic/${query}.md`, startLine: 1, endLine: 1, score: 1, rank: 1 },
+            ]),
+          } as unknown as RAGQueryEngine,
+        },
+        'base',
+        undefined,
+        'base',
+        true,
+        8_000,
+        () => Promise.resolve(variants),
+      );
+      const candidates = source?.candidates ?? [];
+      expect(candidates.filter((candidate) => candidate.path.includes('variant-'))).toHaveLength(3);
+      expect(candidates.filter((candidate) => candidate.path.includes('variant-'))
+        .every((candidate) => candidate.queryIndex === 0)).toBe(true);
+      if (mode === 'comparison') {
+        expect(candidates.find((candidate) => candidate.path === 'Synthetic/subject.md')?.queryIndex)
+          .toBe(1);
+      }
+      expect(source?.searchPlan?.facets).toEqual(basePlan.facets);
+      const plan = planIndexedEvidenceRust({
+        question: 'base',
+        candidates,
+        documents: paths.map((path) => ({
+          path, text: 'base subject supporting text', revision: '1:1', indexed: true,
+          reviewState: 'reviewed', startLine: 1,
+        })),
+      });
+      expect(plan).not.toBeNull();
+      expect(plan?.evidence.length).toBeGreaterThan(0);
+      expect(plan?.evidence.every((item) => (item.queryIndexes ?? []).every((index) => index <= 1)))
+        .toBe(true);
+      expect(plan?.evidence.filter((item) => item.path.includes('variant-'))
+        .every((item) => (item.queryIndexes ?? []).every((index) => index === 0))).toBe(true);
+    },
+  );
   it('facet 핵심어별 색인 전체 일치 집계를 중복·상한 없이 모은다', async () => {
     planIndexedSearchQueries.mockReturnValue({
       mode: 'single',

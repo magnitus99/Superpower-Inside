@@ -1105,14 +1105,17 @@ async function runIndexedVaultReview(
       for (const path of stale) {
         const source = currentSources.get(path);
         if (!source || source.text === null) continue;
-        freshDocuments.push({
-          path,
-          revision: source.revision,
-          indexed: true,
-          reviewState: 'reviewed',
-          text: source.text,
-          startLine: 1,
-        });
+        // 복구도 현재 청킹의 절대 줄 주소를 유지해 원래 검색 신호로 구절을 고릅니다.
+        const chunks = source.chunks ?? [{ text: source.text, startLine: 1 }];
+        for (const chunk of chunks) {
+          freshDocuments.push({
+            ...chunk,
+            path,
+            revision: source.revision,
+            indexed: true,
+            reviewState: 'reviewed',
+          });
+        }
       }
       if (freshDocuments.length > 0) {
         const recoveryBudget = DEFAULT_EVIDENCE_BUDGET;
@@ -1120,6 +1123,7 @@ async function runIndexedVaultReview(
           question: options.scoringQuestion ?? options.question,
           documents: freshDocuments,
           scopes: options.scopes,
+          candidates: options.candidates ? [...options.candidates] : undefined,
           ...(options.filters ? { filters: options.filters } : {}),
           budget: recoveryBudget,
           inventory: {

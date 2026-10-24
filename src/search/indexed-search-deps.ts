@@ -408,7 +408,7 @@ export function createPluginSearchPort(host: IndexedSearchDepsHost): SearchPort 
  * 기존 하이브리드 query engine 결과를 엔진 후보 신호로 옮긴다.
  * 후보 신호를 못 만들면 색인 본문만으로 검색하고 그 사실을 로그에 남긴다.
  */
-/** 교차 언어 질의별 hybrid 후보를 수집하며 queryIndex를 분리해 예산을 나눠 씁니다. */
+/** 언어 변형 후보는 원래 질문의 보조 신호이며 비교 facet 귀속을 새로 만들지 않습니다. */
 async function collectVariantCandidates(
   engine: RAGQueryEngine | null,
   variants: readonly string[],
@@ -418,7 +418,7 @@ async function collectVariantCandidates(
   if (!engine) return [];
   const collected: IndexedSearchCandidate[] = [];
   const limited = variants.slice(0, MAX_QUERY_VARIANTS);
-  for (const [index, variant] of limited.entries()) {
+  for (const variant of limited) {
     signal?.throwIfAborted();
     const plan = planIndexedSearchQueriesRust({
       question: variant,
@@ -427,9 +427,8 @@ async function collectVariantCandidates(
     });
     if (!plan) continue;
     const resolution = await collectHybridCandidates(engine, plan, signal, semanticTimeoutMs);
-    const offset = (index + 1) * MAX_HYBRID_FACETS;
     for (const candidate of resolution.candidates ?? []) {
-      collected.push({ ...candidate, queryIndex: (candidate.queryIndex ?? 0) + offset });
+      collected.push({ ...candidate, queryIndex: 0 });
     }
   }
   return collected;

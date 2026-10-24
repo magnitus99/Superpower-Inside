@@ -1060,6 +1060,47 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.content).not.toContain(t('indexedReviewNoEvidence'));
   });
 
+  it('줄 주소가 바뀐 근거는 현재 청크와 기존 검색 신호로 복구하고 재검증한다', async () => {
+    const plan = vi.mocked(planIndexedEvidenceRust);
+    const verify = vi.mocked(verifyIndexedEvidenceRust);
+    const initial = planFixture();
+    const item = initial.evidence[0];
+    if (!item) throw new Error('fixture evidence missing');
+    const recovered = { ...item, revision: '1:11', startLine: 81, endLine: 82 };
+    plan.mockReturnValueOnce(initial).mockReturnValue({ ...initial, evidence: [recovered] });
+    verify.mockImplementation(verifiedStatuses);
+    const { provider, calls } = answerProvider();
+    const chunks = [
+      { text: 'Synthetic introductory section.', startLine: 1, endLine: 1 },
+      { text: item.quote, startLine: 81, endLine: 82 },
+    ];
+    const candidates = [{ path: RELEVANT, score: 0.9, queryIndex: 0, source: 'vector' as const, rank: 1 }];
+
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        provider,
+        candidates,
+        sourceReader: () => Promise.resolve({ revision: '1:11', text: 'full source', chunks }),
+      }),
+    );
+
+    const recovery = plan.mock.calls.at(-1)?.[0];
+    expect(recovery?.documents).toEqual(
+      chunks.map((chunk) => ({
+        ...chunk,
+        path: RELEVANT,
+        revision: '1:11',
+        indexed: true,
+        reviewState: 'reviewed',
+      })),
+    );
+    expect(recovery?.candidates).toEqual(candidates);
+    expect(verify.mock.calls.at(-1)?.[0].documents).toEqual(recovery?.documents);
+    expect(result.evidence).toEqual([recovered]);
+    expect(result.citations[0]?.line).toBe(81);
+    expect(calls).toHaveLength(1);
+  });
+
   it('stale 제거로 결과가 비면 no-evidence와 미완료 고지를 유지한다', async () => {
     vi.mocked(planIndexedEvidenceRust).mockReturnValue(twoDocumentPlan());
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);

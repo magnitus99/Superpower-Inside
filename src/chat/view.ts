@@ -3190,6 +3190,7 @@ export class ChatView extends ItemView {
             app: this.app,
             ragEngine: this.plugin.ragEngine,
             documentCorpus: this.plugin.documentCorpus,
+            settings: this.plugin.settings,
             getCandidateCount: () =>
               this.plugin.getRagRuntimeState?.()?.ragStatus?.totalDocuments,
             isIndexing: () => isPluginSearching(this.plugin),
@@ -5028,6 +5029,7 @@ export class ChatView extends ItemView {
               app: this.app,
               ragEngine: this.plugin.ragEngine,
               documentCorpus: this.plugin.documentCorpus,
+              settings: this.plugin.settings,
               getCandidateCount: () =>
                 this.plugin.getRagRuntimeState?.()?.ragStatus?.totalDocuments,
               isIndexing: () => isPluginSearching(this.plugin),

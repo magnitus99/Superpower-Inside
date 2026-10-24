@@ -37,6 +37,18 @@ function readFixture<T>(name: string): T {
 }
 
 describe('chat UX fixture gate', () => {
+  it('일반 질문과 승인 재개 모두 색인과 같은 설정으로 현재 원문을 검증한다', () => {
+    const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
+    const searchHosts = [
+      ...viewSource.matchAll(/await collectIndexedSearchSource\(\s*(\{[\s\S]*?\n\s*\}),/g),
+    ];
+
+    expect(searchHosts).toHaveLength(2);
+    for (const [, host] of searchHosts) {
+      expect(host).toContain('settings: this.plugin.settings,');
+    }
+  });
+
   it('빈 대화와 자동 문서 참조 안내는 실제 sidebar 구조와 반응형 CSS에 고정된다', () => {
     const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
     const styles = readFileSync(resolve(__dirname, '../../styles.css'), 'utf8');

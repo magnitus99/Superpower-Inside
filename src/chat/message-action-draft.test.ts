@@ -20,6 +20,10 @@ vi.mock('../llm/provider-resolution', () => ({
   buildStoredChatModelRef: vi.fn(),
 }));
 vi.mock('../agent/indexed-vault-review', () => ({ reviewIndexedVault: vi.fn() }));
+vi.mock('../utils/vault', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/vault')>()),
+  getRagCandidateFiles: vi.fn(() => Promise.resolve([])),
+}));
 
 afterEach(() => vi.unstubAllGlobals());
 
