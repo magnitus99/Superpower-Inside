@@ -258,6 +258,23 @@ describe('Rust WASM RAG core bridge', () => {
     expect(tokens).toContain('포인트');
   });
 
+  it('내장 WASM에서 분리형 한글 비교 질문과 검색어를 정규화한다', async () => {
+    const actual = await vi.importActual<typeof import('../../generated/rag-wasm/rag_wasm.js')>(
+      '../../generated/rag-wasm/rag_wasm.js',
+    );
+    rustWireExports.plan_indexed_search_queries_json.mockImplementation(
+      actual.plan_indexed_search_queries_json,
+    );
+    const question = '구리 저장소와 유리 큐의 지연 차이를 설명해줘';
+    const composed = planIndexedSearchQueriesRust({ question });
+    const decomposed = planIndexedSearchQueriesRust({ question: question.normalize('NFD') });
+    expect(composed?.mode).toBe('comparison');
+    expect(decomposed?.mode).toBe('comparison');
+    expect(decomposed?.facets[0]?.query).toBe(question.normalize('NFD'));
+    expect(decomposed?.facets[0]?.terms).toEqual(composed?.facets[0]?.terms);
+    expect(decomposed?.facets.slice(1)).toEqual(composed?.facets.slice(1));
+  });
+
   it('plans implicit folder evidence and programming-only Context7 through WASM', () => {
     expect(
       planImplicitFolderQueryPathsRust('오로라 프로젝트의 진행 상황은?', [
@@ -2289,6 +2306,37 @@ describe('planIndexedEvidenceRust / verifyIndexedEvidenceRust', () => {
     expect(verification).toBeNull();
   });
 
+  it('현재 구절의 유일한 주소 제안을 WASM에서 읽되 재검증 전 상태는 유지한다', () => {
+    const evidence = {
+      sourceId: 'old',
+      path: 'notes/synthetic.md',
+      quote: 'Unique cooling condition.',
+      revision: 'old',
+      startLine: 1,
+      endLine: 1,
+    };
+    const documents = [
+      {
+        path: evidence.path,
+        text: 'Introduction.\nUnique cooling condition.',
+        revision: 'new',
+        startLine: 40,
+      },
+    ];
+    const result = verifyIndexedEvidenceRust({ evidence: [evidence], documents });
+    expect(result?.statuses[0]).toMatchObject({
+      status: 'revision-mismatch',
+      relocation: { startLine: 41, endLine: 41, revision: 'new' },
+    });
+    const relocation = result?.statuses[0]?.relocation;
+    expect(relocation).toBeDefined();
+    const verified = verifyIndexedEvidenceRust({
+      evidence: [{ ...evidence, ...relocation }],
+      documents,
+    });
+    expect(verified?.statuses[0]?.status).toBe('verified');
+  });
+
   it('honors the deterministic evidence contract once the glue export lands', () => {
     const plan = planIndexedEvidenceRust(planInput);
     if (plan === null) return;
@@ -2379,7 +2427,13 @@ describe('indexed search/answer wire wrappers', () => {
     const wire = {
       mode: 'comparison',
       facets: [
-        { id: 'question', kind: 'question', query: 'alpha beta', queryIndex: 0, terms: ['alpha', 'beta'] },
+        {
+          id: 'question',
+          kind: 'question',
+          query: 'alpha beta',
+          queryIndex: 0,
+          terms: ['alpha', 'beta'],
+        },
         { id: 'subject-0', kind: 'subject', query: 'alpha', queryIndex: 1, terms: ['alpha'] },
       ],
     };

@@ -841,6 +841,7 @@ fn collect_research_terms_and_facets(
 
 /// Appends lexical terms that remain after removing conversational research boilerplate.
 pub fn append_meaningful_tokens(target: &mut Vec<String>, text: &str) {
+    let text = crate::normalize_nfc(text);
     for raw_token in text.split(|character: char| {
         !character.is_alphanumeric() && character != '_' && character != '-'
     }) {
@@ -924,6 +925,7 @@ fn collect_matching_candidates(
         .enumerate()
         .filter_map(|(index, (path, sample))| {
             let combined = format!("{}\n{}", path.to_lowercase(), sample.to_lowercase());
+            let combined = crate::normalize_nfc(&combined);
             let term_match_count = normalized_terms
                 .iter()
                 .filter(|term| combined.contains(term.as_str()))
@@ -2108,6 +2110,35 @@ mod tests {
                 "planFingerprint": output.get("planFingerprint"),
             })
         );
+    }
+
+    #[test]
+    fn candidate_selection_matches_canonically_equivalent_questions_paths_and_samples() {
+        use unicode_normalization::UnicodeNormalization;
+
+        for decomposed_question in [false, true] {
+            for decomposed_source in [false, true] {
+                let normalize = |text: &str, decompose: bool| {
+                    if decompose {
+                        text.nfd().collect::<String>()
+                    } else {
+                        text.to_owned()
+                    }
+                };
+                let output = parse_output(&plan_research_candidate_selection_json(
+                    &json!({
+                        "currentQuestion": normalize("구리 저장소 자료를 조사해줘", decomposed_question),
+                        "previousUserQuestions": [],
+                        "paths": [normalize("구리/기록.md", decomposed_source), "archive.md", "unrelated.md"],
+                        "samples": ["", normalize("저장소", decomposed_source), "unrelated"],
+                    })
+                    .to_string(),
+                ));
+                assert_eq!(output.get("selectedIndices"), Some(&json!([0, 1])));
+                assert_eq!(output.get("matchedCandidateCount"), Some(&json!(2)));
+                assert_eq!(output.get("terms"), Some(&json!(["구리", "저장소"])));
+            }
+        }
     }
 
     #[test]

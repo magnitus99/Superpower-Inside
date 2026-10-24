@@ -3220,6 +3220,7 @@ export class ChatView extends ItemView {
           revisionReader: searchSource?.revisionReader,
           sourceReader: searchSource?.sourceReader,
           searchPlan: searchSource?.searchPlan,
+          queryVariants: searchSource?.queryVariants,
           provider,
           systemPrompt: getEffectiveSystemPrompt(this.plugin.settings, this.sessionSystemPrompt),
           previousUserQuestions,
@@ -5065,6 +5066,7 @@ export class ChatView extends ItemView {
             revisionReader: resumeSource?.revisionReader,
             sourceReader: resumeSource?.sourceReader,
             searchPlan: resumeSource?.searchPlan,
+            queryVariants: resumeSource?.queryVariants,
             provider,
             previousUserQuestions,
             scoringQuestion:

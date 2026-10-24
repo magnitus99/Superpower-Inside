@@ -455,6 +455,8 @@ fn korean_subject_head(text: &str) -> &str {
 
 /// 기존 비교 probe 분할에서 subject 정체성을 순서대로 보존합니다.
 fn comparison_subject_queries(question: &str) -> Vec<String> {
+    let question = crate::normalize_nfc(question);
+    let question = question.as_ref();
     let normalized = question.to_lowercase();
     let interpretation = [
         "어떻게 해석",
@@ -1160,6 +1162,45 @@ mod tests {
                     .get("query")
                     .and_then(Value::as_str)
                     .is_some_and(|query| query.contains(second))
+            );
+        }
+    }
+
+    #[test]
+    fn search_query_plan_normalizes_subjects_and_terms_but_preserves_main_query() {
+        use unicode_normalization::UnicodeNormalization;
+
+        for composed in [
+            "구리 저장소와 유리 큐의 지연 차이를 설명해줘",
+            "보관 기록과 오린 퀼런은 원장 3장을 어떻게 해석하고 있어?",
+        ] {
+            let decomposed = composed.nfd().collect::<String>();
+            let plan_for = |question: &str| {
+                serde_json::from_str::<Value>(&plan_indexed_search_queries_json(
+                    &json!({"question": question}).to_string(),
+                ))
+                .unwrap_or(Value::Null)
+            };
+            let composed_plan = plan_for(composed);
+            let decomposed_plan = plan_for(&decomposed);
+            assert_eq!(decomposed_plan.get("mode"), Some(&json!("comparison")));
+            assert_eq!(
+                decomposed_plan.pointer("/facets/0/query"),
+                Some(&json!(decomposed))
+            );
+            assert_eq!(
+                decomposed_plan.pointer("/facets/0/terms"),
+                composed_plan.pointer("/facets/0/terms")
+            );
+            for index in [1, 2] {
+                assert_eq!(
+                    decomposed_plan.pointer(&format!("/facets/{index}")),
+                    composed_plan.pointer(&format!("/facets/{index}"))
+                );
+            }
+            assert_eq!(
+                search_probes(&decomposed, &["Research"]),
+                search_probes(composed, &["Research"])
             );
         }
     }

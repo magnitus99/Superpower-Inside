@@ -233,6 +233,7 @@ export async function collectIndexedSearchSource(
   });
   return {
     corpus,
+    queryVariants: queryVariants?.slice(0, MAX_QUERY_VARIANTS),
     getIndexedPaths: () => Promise.resolve(indexedPaths),
     candidates: candidateResolution.exhaustiveReview
       ? candidateResolution.candidates?.filter((candidate) => reviewPathSet.has(candidate.path))

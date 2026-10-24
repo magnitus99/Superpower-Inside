@@ -40,6 +40,7 @@ export interface IndexedSearchSource {
   candidatesState?: SearchCandidateState;
   scopes?: readonly string[];
   searchPlan?: IndexedSearchPlan;
+  queryVariants?: readonly string[];
   /** 색인 리비전과 현재 vault 리비전(mtime:size)을 대조하는 reader. 없으면 결과를 verified로 표시하지 않는다. */
   revisionReader?: (path: string) => Promise<string | null>;
   /** 답변 전에 채택 문서의 현재 원문을 다시 읽는 로컬 vault reader. */
@@ -83,6 +84,7 @@ export function createIndexedSearchPort(
     const searchStarted = performance.now();
     const result = await search({
       question: request.query,
+      queryVariants: source.queryVariants,
       indexedPaths,
       scopes: source.scopes ?? [],
       corpus: source.corpus,

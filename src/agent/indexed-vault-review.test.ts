@@ -325,6 +325,25 @@ function reviewOptions(
 }
 
 describe('엔진 근거 기반 색인 검토', () => {
+  it('후보 수집의 번역 구문을 원문 구절 평가에도 전달한다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const result = await reviewIndexedVault(reviewOptions({
+      question: '냉각 주기',
+      queryVariants: ['Quartz cooling cycles'],
+      candidates: undefined,
+      deferAnswer: true,
+    }));
+    expect(result.evidence.map((item) => item.path)).toContain(RELEVANT);
+    expect(result.evidence.map((item) => item.path)).not.toContain(OTHER);
+    expect(result.dossier.queryPlan.queryTokens.map((token) => token.text)).toContain('cooling');
+    expect(result.dossier.queryPlan.phrases).toEqual([]);
+    expect(planIndexedEvidenceRust).toHaveBeenCalledWith(expect.objectContaining({
+      question: '냉각 주기', queryVariants: ['Quartz cooling cycles'],
+    }));
+  });
+
   it('기본 review와 명시적 all은 전체를 조회하고 candidates는 호환 목적으로만 후보를 조회한다', async () => {
     const corpus = corpusFixture();
     const read = vi.spyOn(corpus, 'getEntriesByFilePaths');
@@ -600,7 +619,12 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(planIndexedReviewAnswerPlanRust).toHaveBeenCalledWith({
       searchPlan: COMPARISON_SEARCH_PLAN,
       evidence: [
-        { sourceId: SOURCE_ID, path: RELEVANT, quote: planFixture().evidence[0]?.quote, queryIndexes: [1] },
+        {
+          sourceId: SOURCE_ID,
+          path: RELEVANT,
+          quote: planFixture().evidence[0]?.quote,
+          queryIndexes: [1],
+        },
         {
           sourceId: OTHER_SOURCE_ID,
           path: OTHER,
@@ -611,10 +635,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     });
     expect(result.outcome).toBe('answered');
     expect(result.content).toContain('종합한 비교 답변');
-    expect(result.citations.map((citation) => citation.id)).toEqual([
-      SOURCE_ID,
-      OTHER_SOURCE_ID,
-    ]);
+    expect(result.citations.map((citation) => citation.id)).toEqual([SOURCE_ID, OTHER_SOURCE_ID]);
   });
 
   it('두 번 모두 missing facet이면 불완전한 답변을 게시하지 않고 검증 근거로 폴백한다', async () => {
@@ -653,9 +674,7 @@ describe('엔진 근거 기반 색인 검토', () => {
       ...COMPARISON_SEARCH_PLAN,
       failedFacetIds: ['subject-1'],
     };
-    const result = await reviewIndexedVault(
-      reviewOptions({ provider, searchPlan: failedPlan }),
-    );
+    const result = await reviewIndexedVault(reviewOptions({ provider, searchPlan: failedPlan }));
     const missingNotice = t('indexedReviewComparisonMissing', { facets: 'Synthetic Beta' });
     const failedNotice = t('indexedReviewComparisonSearchFailed', {
       facets: 'Synthetic Beta',
@@ -679,10 +698,7 @@ describe('엔진 근거 기반 색인 검토', () => {
       result.content.indexOf(result.coverageNotice),
     );
     expect(result.content.endsWith(result.coverageNotice)).toBe(true);
-    expect(result.citations.map((citation) => citation.id)).toEqual([
-      SOURCE_ID,
-      OTHER_SOURCE_ID,
-    ]);
+    expect(result.citations.map((citation) => citation.id)).toEqual([SOURCE_ID, OTHER_SOURCE_ID]);
   });
 
   it('한쪽 facet만 지원되면 그 facet만 답하고 missing label을 안전한 한계 고지로 덧붙인다', async () => {
@@ -835,8 +851,8 @@ describe('엔진 근거 기반 색인 검토', () => {
       }),
     );
 
-    // 검색·현재 원문 검증 뒤에 stale 복구 계획 검증이 한 번 더 돕니다.
-    expect(verify).toHaveBeenCalledTimes(3);
+    // 검색·현재 원문 검증 뒤에 주소 제안과 복구 계획 검증이 이어집니다.
+    expect(verify).toHaveBeenCalledTimes(4);
     expect(verify.mock.calls[1]?.[0].documents).toMatchObject([
       { path: RELEVANT, revision: '1:10', text: currentText },
     ]);
@@ -854,9 +870,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     const verify = vi.mocked(verifyIndexedEvidenceRust);
     verify.mockReset();
     verify.mockReturnValue(verificationFixture());
-    const sourceReader = vi.fn(() =>
-      Promise.resolve({ revision: '1:10', text: null }),
-    );
+    const sourceReader = vi.fn(() => Promise.resolve({ revision: '1:10', text: null }));
     const { provider, calls } = answerProvider();
 
     const result = await reviewIndexedVault(reviewOptions({ provider, sourceReader }));
@@ -885,8 +899,8 @@ describe('엔진 근거 기반 색인 검토', () => {
       }),
     );
 
-    // null 검증 실패 뒤에도 stale 복구 계획 검증이 시도됩니다.
-    expect(verify).toHaveBeenCalledTimes(3);
+    // null 검증 실패 뒤에도 주소 제안과 복구 계획 검증이 시도됩니다.
+    expect(verify).toHaveBeenCalledTimes(4);
     expect(calls).toHaveLength(0);
     expect(result.evidence).toEqual([]);
     expect(result.citations).toEqual([]);
@@ -1060,6 +1074,56 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.content).not.toContain(t('indexedReviewNoEvidence'));
   });
 
+  it.each([true, false])(
+    '유일한 원문 구절의 주소 제안은 재검증 성공(%s)일 때만 보존한다',
+    async (accept) => {
+      const initial = planFixture();
+      const original = initial.evidence[0];
+      if (!original) throw new Error('fixture evidence missing');
+      const plan = vi
+        .mocked(planIndexedEvidenceRust)
+        .mockClear()
+        .mockReturnValueOnce(initial)
+        .mockReturnValue(null);
+      const verify = vi.mocked(verifyIndexedEvidenceRust);
+      verify.mockImplementationOnce(verifiedStatuses).mockImplementation((input) => ({
+        statuses: verifiedStatuses(input).statuses.map((status) => ({
+          ...status,
+          status: input.evidence[0]?.startLine === 81 && accept ? 'verified' : 'position-mismatch',
+          relocation: { startLine: 81, endLine: 81, revision: '1:11' },
+        })),
+      }));
+      const { provider, calls } = answerProvider();
+      const result = await reviewIndexedVault(
+        reviewOptions({
+          provider,
+          sourceReader: () =>
+            Promise.resolve({
+              revision: '1:11',
+              text: original.quote,
+              chunks: [{ text: original.quote, startLine: 81, endLine: 81 }],
+            }),
+        }),
+      );
+      if (accept) {
+        expect(result.evidence).toHaveLength(1);
+        expect(result.evidence[0]).toMatchObject({
+          ...original,
+          startLine: 81,
+          endLine: 81,
+          revision: '1:11',
+        });
+        expect(result.citations[0]?.line).toBe(81);
+        expect(calls).toHaveLength(1);
+        expect(plan).toHaveBeenCalledTimes(1);
+      } else {
+        expect(result.evidence).toEqual([]);
+        expect(calls).toHaveLength(0);
+      }
+      expect(verify.mock.calls.some(([input]) => input.evidence[0]?.startLine === 81)).toBe(true);
+    },
+  );
+
   it('줄 주소가 바뀐 근거는 현재 청크와 기존 검색 신호로 복구하고 재검증한다', async () => {
     const plan = vi.mocked(planIndexedEvidenceRust);
     const verify = vi.mocked(verifyIndexedEvidenceRust);
@@ -1074,12 +1138,15 @@ describe('엔진 근거 기반 색인 검토', () => {
       { text: 'Synthetic introductory section.', startLine: 1, endLine: 1 },
       { text: item.quote, startLine: 81, endLine: 82 },
     ];
-    const candidates = [{ path: RELEVANT, score: 0.9, queryIndex: 0, source: 'vector' as const, rank: 1 }];
+    const candidates = [
+      { path: RELEVANT, score: 0.9, queryIndex: 0, source: 'vector' as const, rank: 1 },
+    ];
 
     const result = await reviewIndexedVault(
       reviewOptions({
         provider,
         candidates,
+        queryVariants: ['cooling cycles'],
         sourceReader: () => Promise.resolve({ revision: '1:11', text: 'full source', chunks }),
       }),
     );
@@ -1095,6 +1162,7 @@ describe('엔진 근거 기반 색인 검토', () => {
       })),
     );
     expect(recovery?.candidates).toEqual(candidates);
+    expect(recovery?.queryVariants).toEqual(['cooling cycles']);
     expect(verify.mock.calls.at(-1)?.[0].documents).toEqual(recovery?.documents);
     expect(result.evidence).toEqual([recovered]);
     expect(result.citations[0]?.line).toBe(81);
@@ -1274,9 +1342,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(calls).toHaveLength(1);
     expect(result.coverageNotice).toBe(limited);
     expect(result.content).toContain('두 번 냉각한 뒤');
-    expect(result.content.indexOf('두 번 냉각한 뒤')).toBeLessThan(
-      result.content.indexOf(limited),
-    );
+    expect(result.content.indexOf('두 번 냉각한 뒤')).toBeLessThan(result.content.indexOf(limited));
     expect(result.content.endsWith(limited)).toBe(true);
     expect(result.coverageNotice).not.toContain('검수 미완료');
   });

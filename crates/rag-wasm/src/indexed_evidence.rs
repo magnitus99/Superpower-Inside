@@ -2093,7 +2093,35 @@ fn build_evidence_rows(
 /// 원문 구절·진단 계획을 조립합니다.
 fn plan_evidence(value: &Value) -> Option<Value> {
     let input = plan_input(value)?;
-    let (tokens, phrases) = parse_query(&input.question);
+    let (mut tokens, phrases) = parse_query(&input.question);
+    let variants = optional_string_array(value.get("queryVariants"))?;
+    if variants.len() > 3
+        || variants
+            .iter()
+            .any(|query| query.trim().is_empty() || query.len() > 16_384)
+    {
+        return None;
+    }
+    // 기존 번역 구문은 후보 수집뿐 아니라 원문 구절의 lexical 평가에도 사용합니다.
+    // 번역은 검색 힌트이므로 원래 부정·필드 연산자를 덮거나 직접 인용 구문을 만들지 않습니다.
+    for variant in &variants {
+        let (variant_tokens, _) = parse_query(variant);
+        for mut token in variant_tokens {
+            if token.negated || tokens.iter().any(|existing| existing.text == token.text) {
+                continue;
+            }
+            token.position = tokens
+                .last()
+                .map_or(0, |last| last.position.saturating_add(1));
+            token.phrase_index = None;
+            "body".clone_into(&mut token.field);
+            token.explicit_field = false;
+            if token.kind == "quoted" {
+                token.kind = "term";
+            }
+            tokens.push(token);
+        }
+    }
     let terms = positive_terms(&tokens);
     let kinds = term_kinds(&tokens);
     let negated = negated_terms(&tokens);
@@ -2589,6 +2617,48 @@ fn status_name(verified: &VerifiedQuote) -> &'static str {
     }
 }
 
+/// 현재 원문에 유일하게 남은 구절의 주소만 제안하며 검증 상태는 바꾸지 않습니다.
+fn relocate_quote(
+    item: &EvidenceRef,
+    documents: &[&VerifyDocument],
+    scopes: &[String],
+) -> Option<Value> {
+    if item.quote.is_empty() {
+        return None;
+    }
+    let mut locations = BTreeSet::new();
+    for document in documents {
+        let effective_scopes = if document.scopes.is_empty() {
+            scopes
+        } else {
+            &document.scopes
+        };
+        if !document.indexed
+            || document.review_state != "reviewed"
+            || !path_in_scopes(&document.path, effective_scopes)
+        {
+            continue;
+        }
+        let revision = document.revision.as_deref()?;
+        for (index, _) in document.text.match_indices(&item.quote) {
+            locations.insert((
+                line_of(&document.text, document.start_line, index),
+                line_of(
+                    &document.text,
+                    document.start_line,
+                    index + item.quote.len() - 1,
+                ),
+                revision,
+            ));
+        }
+    }
+    if locations.len() != 1 {
+        return None;
+    }
+    let (start, end, revision) = locations.into_iter().next()?;
+    Some(json!({"startLine": start, "endLine": end, "revision": revision}))
+}
+
 /// 모든 채택 구절의 상태를 결정적으로 검증합니다.
 fn verify_evidence(value: &Value) -> Option<Value> {
     let evidence = parse_evidence_refs(value.get("evidence"))?;
@@ -2620,6 +2690,7 @@ fn verify_evidence(value: &Value) -> Option<Value> {
             "scopeState": verified.scope_state,
             "reviewState": verified.review_state,
             "duplicateOf": duplicate_of,
+            "relocation": if status_name(&verified) == "verified" { None } else { relocate_quote(item, &candidates, &scopes) },
         }));
     }
     Some(json!({"statuses": statuses}))
@@ -3100,6 +3171,83 @@ mod tests {
     }
 
     #[test]
+    fn plan_uses_cross_language_variants_for_passage_scoring_not_phrase_claims() {
+        let input = json!({
+            "question": "저장소 지연",
+            "queryVariants": ["\"storage latency\""],
+            "documents": [
+                {"path":"unrelated.md","text":"Storage room decoration and shelves.","revision":"1:1","indexed":true},
+                {"path":"performance.md","text":"Storage latency depends on write batching. Storage latency improves with sequential writes.","revision":"1:1","indexed":true}
+            ]
+        });
+        let plan = plan_of(&input);
+        assert_eq!(
+            plan.pointer("/evidence/0/path"),
+            Some(&json!("performance.md"))
+        );
+        assert!(
+            plan.get("phrases")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        );
+        assert_eq!(plan.pointer("/evidence/0/phraseMatches"), Some(&json!(0)));
+        assert!(
+            plan.get("queryTokens")
+                .and_then(Value::as_array)
+                .is_some_and(|tokens| tokens
+                    .iter()
+                    .any(|token| token.get("text") == Some(&json!("latency"))))
+        );
+    }
+
+    #[test]
+    fn plan_bounds_variants_and_preserves_original_operators() {
+        let mut input = json!({
+            "question":"title:copper -glass \"write queue\"",
+            "queryVariants":["copper glass \"storage latency\""],
+            "documents":[{"path":"copper.md","text":"write queue storage latency","revision":"1:1","indexed":true}]
+        });
+        let plan = plan_of(&input);
+        let tokens = plan
+            .get("queryTokens")
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        let glass = tokens
+            .iter()
+            .filter(|token| token.get("text") == Some(&json!("glass")))
+            .collect::<Vec<_>>();
+        assert_eq!(glass.len(), 1);
+        assert_eq!(
+            glass.first().and_then(|token| token.get("negated")),
+            Some(&json!(true))
+        );
+        let copper = tokens
+            .iter()
+            .filter(|token| token.get("text") == Some(&json!("copper")))
+            .collect::<Vec<_>>();
+        assert_eq!(copper.len(), 1);
+        assert_eq!(
+            copper.first().and_then(|token| token.get("field")),
+            Some(&json!("title"))
+        );
+        assert_eq!(
+            plan.get("phrases").and_then(Value::as_array).map(Vec::len),
+            Some(1)
+        );
+        for invalid in [
+            json!(["a", "b", "c", "d"]),
+            json!([5]),
+            json!([""]),
+            json!(["a".repeat(16_385)]),
+        ] {
+            if let Some(variants) = input.get_mut("queryVariants") {
+                *variants = invalid;
+            }
+            assert!(plan_indexed_evidence_json(&input.to_string()).is_empty());
+        }
+    }
+
+    #[test]
     fn plan_selects_ranked_passage_with_context_and_lines() {
         let plan = plan_of(&json!({
             "question": "설치 방법",
@@ -3521,6 +3669,38 @@ mod tests {
             get(&first_row(&not_indexed, "statuses"), "status"),
             &json!("not-indexed")
         );
+    }
+
+    #[test]
+    fn verify_suggests_only_unique_current_quote_addresses_without_accepting_them() {
+        let evidence = json!([{"sourceId": "old", "path": "a.md", "revision": "old", "startLine": 2, "endLine": 2, "quote": "고유 구절"}]);
+        let document = json!({"path": "a.md", "revision": "new", "startLine": 10, "text": "도입\n고유 구절", "indexed": true, "reviewState": "reviewed"});
+        let result = verify_of(&json!({"evidence": evidence, "documents": [document]}));
+        let status = first_row(&result, "statuses");
+        assert_eq!(get(&status, "status"), &json!("revision-mismatch"));
+        assert_eq!(
+            get(&status, "relocation"),
+            &json!({"startLine": 11, "endLine": 11, "revision": "new"})
+        );
+        // 겹치는 청크에서 같은 절대 주소를 두 번 보아도 하나의 위치입니다.
+        let overlap = verify_of(&json!({"evidence": evidence, "documents": [document, document]}));
+        assert_eq!(
+            get(&first_row(&overlap, "statuses"), "relocation"),
+            get(&status, "relocation")
+        );
+        for documents in [
+            json!([{"path": "a.md", "revision": "new", "text": "고유 구절\n고유 구절"}]),
+            json!([{"path": "a.md", "revision": "new", "text": "고유 구절", "reviewState": "unreviewed"}]),
+            json!([{"path": "a.md", "revision": "new", "text": "고유 구절", "indexed": false}]),
+            json!([{"path": "a.md", "text": "고유 구절"}]),
+        ] {
+            let result = verify_of(&json!({"evidence": evidence, "documents": documents}));
+            assert!(get(&first_row(&result, "statuses"), "relocation").is_null());
+        }
+        let excluded = verify_of(
+            &json!({"evidence": evidence, "documents": [document], "scopes": ["elsewhere"]}),
+        );
+        assert!(get(&first_row(&excluded, "statuses"), "relocation").is_null());
     }
 
     #[test]

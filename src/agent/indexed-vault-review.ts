@@ -80,6 +80,7 @@ export type IndexedVaultDocumentScope = 'all' | 'candidates';
 
 export interface IndexedVaultSearchOptions {
   question: string;
+  queryVariants?: readonly string[];
   indexedPaths: readonly string[];
   scopes: readonly string[];
   corpus: IndexedVaultCorpus;
@@ -174,6 +175,7 @@ function candidateScopedPaths(
 
 interface IndexedEvidenceEngineInput {
   question: string;
+  queryVariants?: readonly string[];
   documents: RustIndexedEvidenceDocument[];
   scopes: string[];
   filters?: RustIndexedEvidenceFilters;
@@ -409,6 +411,7 @@ export async function searchIndexedVault(
       encoder.encode(
         JSON.stringify({
           question: options.question,
+          queryVariants: options.queryVariants,
           documents: [],
           scopes: options.scopes,
           filters: options.filters,
@@ -424,6 +427,7 @@ export async function searchIndexedVault(
       options.signal?.throwIfAborted();
       const engineInput: IndexedEvidenceEngineInput = {
         question: options.question,
+        queryVariants: options.queryVariants,
         documents: batch,
         scopes: [...options.scopes],
         filters: options.filters,
@@ -457,6 +461,7 @@ export async function searchIndexedVault(
   if (plans.length === 0) {
     const engineInput: IndexedEvidenceEngineInput = {
       question: options.question,
+      queryVariants: options.queryVariants,
       documents: [],
       scopes: [...options.scopes],
       filters: options.filters,
@@ -606,6 +611,7 @@ export interface IndexedVaultReviewOptions {
   systemPrompt?: string;
   previousUserQuestions?: readonly string[];
   scoringQuestion?: string;
+  queryVariants?: readonly string[];
   deferAnswer?: boolean;
   /** 검색 도중 재색인·corpus refresh가 시작되면 결과를 폐기합니다. */
   isCurrent?: () => boolean;
@@ -731,10 +737,7 @@ function verificationWindow(
   const lines = source.text.split('\n');
   if (lines.length === 0) return null;
   const start = Math.max(1, Math.min(item.startLine, lines.length) - 3);
-  const end = Math.min(
-    lines.length,
-    Math.max(item.endLine, item.startLine) + 3,
-  );
+  const end = Math.min(lines.length, Math.max(item.endLine, item.startLine) + 3);
   const text = lines.slice(start - 1, end).join('\n') + (end < lines.length ? '\n' : '');
   if (encoder.encode(text).byteLength > VERIFICATION_WINDOW_BYTES) return null;
   return {
@@ -883,6 +886,7 @@ async function runIndexedVaultReview(
       ? await interruptible(
           searchIndexedVault({
             question: options.scoringQuestion ?? options.question,
+            queryVariants: options.queryVariants,
             indexedPaths: options.indexedPaths,
             scopes: options.scopes,
             corpus: options.corpus,
@@ -1064,9 +1068,12 @@ async function runIndexedVaultReview(
         });
         if (!currentVerification) {
           for (const item of verifiableEvidence) rejectedPaths.add(item.path);
-          appLogger.warn('Current source verification unavailable; discarding unverified evidence.', {
-            source: 'chat.indexed-review',
-          });
+          appLogger.warn(
+            'Current source verification unavailable; discarding unverified evidence.',
+            {
+              source: 'chat.indexed-review',
+            },
+          );
         } else {
           const statuses = new Map(
             currentVerification.statuses.map((status) => [status.sourceId, status]),
@@ -1078,10 +1085,7 @@ async function runIndexedVaultReview(
             const status = statuses.get(item.sourceId)?.status ?? 'missing-status';
             const extension = item.path.split('.').pop() ?? '';
             rejectedByStatus.set(status, (rejectedByStatus.get(status) ?? 0) + 1);
-            rejectedByExtension.set(
-              extension,
-              (rejectedByExtension.get(extension) ?? 0) + 1,
-            );
+            rejectedByExtension.set(extension, (rejectedByExtension.get(extension) ?? 0) + 1);
             rejectedPaths.add(item.path);
           }
           if (rejectedPaths.size > 0) {
@@ -1118,20 +1122,71 @@ async function runIndexedVaultReview(
         }
       }
       if (freshDocuments.length > 0) {
-        const recoveryBudget = DEFAULT_EVIDENCE_BUDGET;
-        const recoveryPlan = planIndexedEvidenceRust({
-          question: options.scoringQuestion ?? options.question,
+        // 재선택 전에 원래 구절을 보존합니다. 주소 계산은 Rust가 맡고 제안도 엄격히 재검증합니다.
+        const original = search.evidence.filter((item) => stale.has(item.path));
+        const relocation = verifyIndexedEvidenceRust({
+          evidence: original.map(({ revision, ...item }) => ({
+            ...item,
+            ...(revision !== null ? { revision } : {}),
+          })),
           documents: freshDocuments,
           scopes: options.scopes,
-          candidates: options.candidates ? [...options.candidates] : undefined,
-          ...(options.filters ? { filters: options.filters } : {}),
-          budget: recoveryBudget,
-          inventory: {
-            indexedCount: freshDocuments.length,
-            unreviewedCount: 0,
-            notIndexedCount: 0,
-          },
         });
+        const suggested = new Map(
+          relocation?.statuses.map((status) => [status.sourceId, status.relocation]),
+        );
+        const relocated = original.flatMap((item) => {
+          const address = suggested.get(item.sourceId);
+          return address
+            ? [
+                {
+                  ...item,
+                  ...address,
+                  contentHash: currentSources.get(item.path)?.contentHash,
+                  contextBefore: '',
+                  contextAfter: '',
+                },
+              ]
+            : [];
+        });
+        if (relocated.length > 0) {
+          const verification = verifyIndexedEvidenceRust({
+            evidence: relocated,
+            documents: freshDocuments,
+            scopes: options.scopes,
+          });
+          const verified = new Set(
+            verification?.statuses
+              .filter((status) => status.status === 'verified')
+              .map((status) => status.sourceId),
+          );
+          const preserved = relocated.filter((item) => verified.has(item.sourceId));
+          evidence = [...evidence, ...preserved];
+          for (const item of preserved) stale.delete(item.path);
+          appLogger.debug('Preserved selected quotes at verified current source addresses.', {
+            source: 'chat.indexed-review',
+            data: { preserved: preserved.length },
+          });
+        }
+        const unresolved = freshDocuments.filter((document) => stale.has(document.path));
+        const recoveryBudget = DEFAULT_EVIDENCE_BUDGET;
+        const recoveryPlan =
+          unresolved.length > 0
+            ? planIndexedEvidenceRust({
+                question: options.scoringQuestion ?? options.question,
+                queryVariants: options.queryVariants,
+                documents: unresolved,
+                scopes: options.scopes,
+                candidates: options.candidates ? [...options.candidates] : undefined,
+                ...(options.filters ? { filters: options.filters } : {}),
+                budget: recoveryBudget,
+                inventory: {
+                  indexedCount: unresolved.length,
+                  unreviewedCount: 0,
+                  notIndexedCount: 0,
+                },
+              })
+            : null;
         if (recoveryPlan && recoveryPlan.evidence.length > 0) {
           const recoveryVerification = verifyIndexedEvidenceRust({
             evidence: recoveryPlan.evidence.map((item) => ({
@@ -1298,9 +1353,12 @@ async function runIndexedVaultReview(
       return finishAsEvidenceOnly(comparisonLimitations);
     }
     if (answerPlan?.mode === 'comparison' && answerPlan.requiredFacetIds.length === 0) {
-      appLogger.warn('Indexed comparison has no supported subject facet; returning verified evidence only.', {
-        source: 'chat.indexed-review',
-      });
+      appLogger.warn(
+        'Indexed comparison has no supported subject facet; returning verified evidence only.',
+        {
+          source: 'chat.indexed-review',
+        },
+      );
       return finishAsEvidenceOnly(comparisonLimitations);
     }
     if (options.deferAnswer || evidence.length === 0) {

@@ -166,6 +166,7 @@ describe('검색 의존성 factory', () => {
         () => Promise.resolve(variants),
       );
       const candidates = source?.candidates ?? [];
+      expect(source?.queryVariants).toEqual(variants);
       expect(candidates.filter((candidate) => candidate.path.includes('variant-'))).toHaveLength(3);
       expect(candidates.filter((candidate) => candidate.path.includes('variant-'))
         .every((candidate) => candidate.queryIndex === 0)).toBe(true);

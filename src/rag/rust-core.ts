@@ -5251,6 +5251,8 @@ export interface RustIndexedEvidenceBudget {
 
 export interface RustIndexedEvidenceInput {
   question: string;
+  /** 후보 수집에 사용한 교차 언어 검색 힌트입니다. 직접 인용 구문으로 취급하지 않습니다. */
+  queryVariants?: readonly string[];
   documents: readonly RustIndexedEvidenceDocument[];
   scopes?: readonly string[];
   filters?: RustIndexedEvidenceFilters;
@@ -5380,6 +5382,7 @@ export type RustIndexedEvidenceStatusName =
   | 'not-indexed';
 
 export interface RustIndexedEvidenceStatus {
+  relocation?: { startLine: number; endLine: number; revision: string };
   sourceId: string;
   path: string;
   status: RustIndexedEvidenceStatusName;
@@ -5545,9 +5548,7 @@ function readIndexedEvidencePhrase(value: unknown): RustIndexedEvidencePhrase | 
 }
 
 /** evidence highlight 구간을 검증해 복사합니다. */
-function readEvidenceHighlights(
-  value: unknown,
-): readonly { start: number; end: number }[] | null {
+function readEvidenceHighlights(value: unknown): readonly { start: number; end: number }[] | null {
   if (!Array.isArray(value)) return null;
   const highlights: { start: number; end: number }[] = [];
   for (const row of value) {
@@ -5718,6 +5719,17 @@ function readIndexedEvidencePlan(value: unknown): RustIndexedEvidencePlan | null
 
 function readIndexedEvidenceStatus(value: unknown): RustIndexedEvidenceStatus | null {
   if (!isStringRecordValueMap(value)) return null;
+  const relocation = value.relocation;
+  if (
+    relocation != null &&
+    (!isStringRecordValueMap(relocation) ||
+      !isNonNegativeSafeInteger(relocation.startLine) ||
+      relocation.startLine < 1 ||
+      !isNonNegativeSafeInteger(relocation.endLine) ||
+      relocation.endLine < relocation.startLine ||
+      !isStringValue(relocation.revision))
+  )
+    return null;
   const statuses: readonly string[] = [
     'verified',
     'quote-missing',
@@ -5745,6 +5757,15 @@ function readIndexedEvidenceStatus(value: unknown): RustIndexedEvidenceStatus | 
     sourceId: value.sourceId,
     path: value.path,
     status: value.status as RustIndexedEvidenceStatusName,
+    ...(isStringRecordValueMap(relocation)
+      ? {
+          relocation: {
+            startLine: relocation.startLine as number,
+            endLine: relocation.endLine as number,
+            revision: relocation.revision as string,
+          },
+        }
+      : {}),
     exists: value.exists,
     lineMatches: value.lineMatches,
     offsetMatches: value.offsetMatches,
@@ -5816,7 +5837,9 @@ export function validateIndexedReviewAnswerRust(
 }
 
 /** 질의 토큰 위치·필드·exact·부정 신호와 원문 구절 선택 계획을 계산합니다. */
-export function planIndexedEvidenceRust(input: RustIndexedEvidenceInput): RustIndexedEvidencePlan | null {
+export function planIndexedEvidenceRust(
+  input: RustIndexedEvidenceInput,
+): RustIndexedEvidencePlan | null {
   if (!ensureRustCore()) return null;
   if (
     input.candidates?.some(
