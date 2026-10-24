@@ -25,6 +25,8 @@ const DEFAULT_MAX_CHARS: usize = 262_144;
 const HARD_MAX_CHARS: usize = 4 * 1024 * 1024;
 /// 구절 창 반경(`UTF-8` byte)입니다.
 const PASSAGE_RADIUS_BYTES: usize = 480;
+/// 경계 줄 전체를 보존할 때 허용하는 구절 길이(`UTF-8` byte)입니다.
+const MAX_BOUNDARY_PASSAGE_BYTES: usize = PASSAGE_RADIUS_BYTES * 8;
 /// 구절 앞뒤 문맥 최대 길이(`UTF-8` byte)입니다.
 const PASSAGE_CONTEXT_BYTES: usize = 120;
 /// 구절 하나가 가질 수 있는 강조 구간 수 상한입니다.
@@ -1483,6 +1485,27 @@ fn build_passage(
 ) -> PassageDraft {
     let start = floor_char_boundary(&document.text, anchor.saturating_sub(PASSAGE_RADIUS_BYTES));
     let end = ceil_char_boundary(&document.text, anchor.saturating_add(PASSAGE_RADIUS_BYTES));
+    // 줄 중간의 byte 절단으로 같은 문장의 전제·조건·결론이 사라지지 않게 합니다.
+    let line_start = document
+        .line_starts
+        .get(
+            document
+                .line_starts
+                .partition_point(|offset| *offset <= start)
+                .saturating_sub(1),
+        )
+        .copied()
+        .unwrap_or(start);
+    let line_end = document
+        .line_starts
+        .get(document.line_starts.partition_point(|offset| *offset < end))
+        .map_or(document.text.len(), |offset| offset.saturating_sub(1))
+        .max(end);
+    let (start, end) = if line_end.saturating_sub(line_start) <= MAX_BOUNDARY_PASSAGE_BYTES {
+        (line_start, line_end)
+    } else {
+        (start, end)
+    };
     let quote = document.text.get(start..end).unwrap_or_default().to_owned();
     let context_before = document
         .text
@@ -3200,6 +3223,54 @@ mod tests {
         let number = find_row(&tokens, "text", "2024").unwrap_or(&NULL);
         assert_eq!(get(number, "kind"), &json!("number"));
         assert!(get(install, "field").is_string(), "field is a string");
+    }
+
+    #[test]
+    fn passage_preserves_boundary_lines_with_their_conditions() {
+        for (prefix, term, suffix) in [
+            (
+                "background ".repeat(65),
+                "copper latch",
+                " exception".repeat(65),
+            ),
+            (
+                "주변 설명 ".repeat(40),
+                "은하 관측",
+                " 제한 조건".repeat(40),
+            ),
+        ] {
+            let line = format!("PREMISE {prefix}{term}{suffix} CONSEQUENCE");
+            let body = format!("OUTSIDE BEFORE\n{line}\nOUTSIDE AFTER");
+            let plan = plan_of(&json!({
+                "question": term,
+                "documents": [{"path": "synthetic.md", "text": body, "startLine": 16}],
+            }));
+            let evidence = first_row(&plan, "evidence");
+            assert_eq!(get(&evidence, "quote"), &json!(line));
+            assert_eq!(get(&evidence, "startLine"), &json!(17));
+            assert_eq!(get(&evidence, "endLine"), &json!(17));
+            let verified = verify_of(&json!({
+                "evidence": [evidence],
+                "documents": [{"path": "synthetic.md", "text": body, "startLine": 16}],
+            }));
+            assert_eq!(
+                get(&first_row(&verified, "statuses"), "status"),
+                &json!("verified")
+            );
+        }
+    }
+
+    #[test]
+    fn passage_does_not_expand_an_unbounded_line() {
+        let body = format!("{} 은하 관측 {}", "가".repeat(3000), "나".repeat(3000));
+        let plan = plan_of(&json!({
+            "question": "은하 관측",
+            "documents": [{"path": "synthetic.md", "text": body}],
+        }));
+        let evidence = first_row(&plan, "evidence");
+        let quote = text(get(&evidence, "quote"));
+        assert!(quote.contains("은하 관측"));
+        assert!(quote.len() <= PASSAGE_RADIUS_BYTES * 2 + 6);
     }
 
     #[test]
