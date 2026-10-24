@@ -198,6 +198,8 @@ struct TokenOccurrence {
     token: String,
     /// 토큰이 시작한 `UTF-8` byte 위치입니다.
     byte_start: usize,
+    /// 원문 토큰 run이 끝난 `UTF-8` byte 위치입니다.
+    byte_end: usize,
 }
 
 /// 검증을 통과한 문서 입력입니다.
@@ -808,7 +810,11 @@ fn push_occurrences(
 ) {
     for token in crate::tokenize(run) {
         *frequencies.entry(token.clone()).or_default() += 1;
-        occurrences.push(TokenOccurrence { token, byte_start });
+        occurrences.push(TokenOccurrence {
+            token,
+            byte_start,
+            byte_end: byte_start.saturating_add(run.len()),
+        });
     }
 }
 
@@ -1372,7 +1378,7 @@ fn candidate_start_byte(document: &ScannedDocument, candidate_line: u64) -> Opti
     document.line_starts.get(index).copied()
 }
 
-/// 구절 anchor를 고릅니다: 정확 구문 → 후보 위치 → 근접 일치 위치 순서입니다.
+/// 정확 구문을 우선하고, 반복 빈도 대신 구절 안의 서로 다른 질의어 수를 최대화합니다.
 fn select_anchor(
     document: &ScannedDocument,
     matched: &BTreeSet<String>,
@@ -1382,28 +1388,49 @@ fn select_anchor(
     if let Some(offset) = phrase_offsets.iter().min() {
         return Some(*offset);
     }
-    if let Some(offset) = candidate_start {
-        return Some(offset);
-    }
     let positions = document
         .occurrences
         .iter()
         .filter(|occurrence| matched.contains(&occurrence.token))
-        .map(|occurrence| occurrence.byte_start)
         .collect::<Vec<_>>();
-    let mut anchor = *positions.first()?;
-    let mut best_distance = usize::MAX;
-    for pair in positions.windows(2) {
-        let distance = pair
-            .last()
-            .zip(pair.first())
-            .map_or(usize::MAX, |(right, left)| right.saturating_sub(*left));
-        if distance < best_distance {
-            best_distance = distance;
-            anchor = *pair.first().unwrap_or(&anchor);
+    let mut anchor = candidate_start;
+    let mut counts = BTreeMap::<&str, usize>::new();
+    let mut left = 0;
+    let mut best_count = 0;
+    let mut best_span = usize::MAX;
+    for (right, occurrence) in positions.iter().enumerate() {
+        *counts.entry(&occurrence.token).or_default() += 1;
+        while left < right {
+            let first = positions.get(left)?;
+            let span = occurrence.byte_end.saturating_sub(first.byte_start);
+            let repeated = counts.get(first.token.as_str()).copied().unwrap_or(0) > 1;
+            if span <= PASSAGE_RADIUS_BYTES.saturating_mul(2) && !repeated {
+                break;
+            }
+            if let Some(count) = counts.get_mut(first.token.as_str()) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    counts.remove(first.token.as_str());
+                }
+            }
+            left = left.saturating_add(1);
+        }
+        let start = positions.get(left)?.byte_start;
+        let span = occurrence.byte_end.saturating_sub(start);
+        let center = start.saturating_add(span.div_euclid(2));
+        let nearer_candidate = candidate_start.is_some_and(|candidate| {
+            center.abs_diff(candidate) < anchor.unwrap_or(candidate).abs_diff(candidate)
+        });
+        if counts.len() > best_count
+            || (counts.len() == best_count
+                && (span < best_span || (span == best_span && nearer_candidate)))
+        {
+            anchor = Some(center);
+            best_count = counts.len();
+            best_span = span;
         }
     }
-    Some(anchor)
+    anchor
 }
 
 /// 원문 구절 초안입니다.
@@ -3105,7 +3132,12 @@ mod tests {
     use serde_json::{Value, json};
     use unicode_normalization::UnicodeNormalization;
 
-    use super::{plan_indexed_evidence_json, verify_indexed_evidence_json};
+    use std::collections::BTreeSet;
+
+    use super::{
+        PASSAGE_RADIUS_BYTES, ceil_char_boundary, floor_char_boundary, plan_indexed_evidence_json,
+        scan_input_document, select_anchor, verify_indexed_evidence_json,
+    };
 
     /// 없는 값을 대신하는 공유 `null`입니다.
     static NULL: Value = Value::Null;
@@ -3168,6 +3200,79 @@ mod tests {
         let number = find_row(&tokens, "text", "2024").unwrap_or(&NULL);
         assert_eq!(get(number, "kind"), &json!("number"));
         assert!(get(install, "field").is_string(), "field is a string");
+    }
+
+    #[test]
+    fn plan_prefers_distinct_query_terms_over_repetition_or_candidate_start() {
+        for with_candidate in [false, true] {
+            let input = json!({
+                "question": "cobalt longitudinal throughput",
+                "documents": [{
+                    "path": "synthetic.md",
+                    "text": format!(
+                        "{}\nA separate section explains cobalt longitudinal throughput together.",
+                        "cobalt cobalt ".repeat(160)
+                    ),
+                    "startLine": 1,
+                }],
+                "budget": {"maxPassages": 1},
+                "candidates": if with_candidate { json!([{
+                    "path": "synthetic.md", "score": 0.8, "rank": 1,
+                    "source": "vector", "queryIndex": 0, "startLine": 1, "endLine": 1,
+                }]) } else { json!([]) },
+            });
+            let evidence = first_row(&plan_of(&input), "evidence");
+            let quote = text(get(&evidence, "quote"));
+            assert!(quote.contains("longitudinal throughput"));
+        }
+    }
+
+    #[test]
+    fn anchor_keeps_utf8_term_spans_inside_the_passage_window() -> Result<(), &'static str> {
+        let document = scan_input_document(&json!({
+            "path": "synthetic.md",
+            "text": format!("{}은하 관측 조건", "잡음 ".repeat(400)),
+        }))
+        .ok_or("합성 문서")?;
+        let matched = ["은하", "관측", "조건"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let anchor = select_anchor(&document, &matched, &[], Some(0)).ok_or("구절 위치")?;
+        let start =
+            floor_char_boundary(&document.text, anchor.saturating_sub(PASSAGE_RADIUS_BYTES));
+        let end = ceil_char_boundary(&document.text, anchor.saturating_add(PASSAGE_RADIUS_BYTES));
+        if !document
+            .text
+            .get(start..end)
+            .unwrap_or_default()
+            .contains("은하 관측 조건")
+        {
+            return Err("구절이 서로 다른 질의어를 포함해야 함");
+        }
+        if select_anchor(&document, &matched, &[0], None) != Some(0) {
+            return Err("정확 구문 우선순위를 보존해야 함");
+        }
+        if select_anchor(&document, &BTreeSet::new(), &[], Some(7)) != Some(7) {
+            return Err("본문 일치가 없을 때 후보 위치를 보존해야 함");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn anchor_does_not_combine_terms_beyond_the_passage_width() -> Result<(), &'static str> {
+        let document = scan_input_document(&json!({
+            "path": "synthetic.md",
+            "text": format!("alpha {} beta", "filler ".repeat(400)),
+        }))
+        .ok_or("합성 문서")?;
+        let matched = ["alpha", "beta"].into_iter().map(str::to_owned).collect();
+        let candidate = document.text.find("beta").ok_or("후보 위치")?;
+        let anchor = select_anchor(&document, &matched, &[], Some(candidate)).ok_or("구절 위치")?;
+        if anchor.abs_diff(candidate) >= PASSAGE_RADIUS_BYTES {
+            return Err("멀리 떨어진 질의어를 한 구절로 합치지 않아야 함");
+        }
+        Ok(())
     }
 
     #[test]
