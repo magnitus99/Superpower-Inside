@@ -68,6 +68,31 @@ describe('UI 언어 계약', () => {
     },
   );
 
+  it.each(['ko', 'en'] as const)(
+    '%s 답변 지침은 결론의 조건과 개념 구분을 보존하고 대립 구조를 강제하지 않는다',
+    (lang) => {
+      setLanguage(lang);
+      const prompt = t('llmIndexedReviewAnswer');
+      const expected =
+        lang === 'ko'
+          ? [
+              '조건·예외·적용 범위를 해당 주장과 함께 설명',
+              '근거가 구분하는 개념을 하나로 합치거나 조건부 주장을 일반화하지',
+              '근거에 없는 대립을 억지로 만들지',
+            ]
+          : [
+              'conditions, exceptions, and scope limits alongside the claims they qualify',
+              'Do not collapse distinctions made by the evidence or generalize conditional claims',
+              'do not invent opposition absent from the evidence',
+            ];
+      for (const fragment of expected) expect(prompt).toContain(fragment);
+      expect(prompt).not.toMatch(/세 부분으로 나눠|write three parts/);
+      expect(prompt).toContain('sourceId');
+      expect(prompt).toContain('requiredFacetIds');
+      expect(prompt).toContain('synthesisRequired');
+    },
+  );
+
   it.each(['ko', 'en'] as const)('%s 검토 문구의 변수 자리표시자를 모두 보존한다', (lang) => {
     setLanguage(lang);
     const reviewPlaceholders = [
