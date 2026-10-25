@@ -124,6 +124,133 @@ function engine(results: QueryResult[]): RAGQueryEngine {
 }
 
 describe('검색 의존성 factory', () => {
+  it.each(['empty', 'unavailable'] as const)(
+    '원래 질의 후보가 %s여도 언어 변형으로 발견한 경로와 원문 평가 힌트를 보존한다',
+    async (outcome) => {
+      planIndexedSearchQueries.mockImplementation(({ question }: { question: string }) =>
+        singlePlan(question),
+      );
+      const loadQueryVariants = vi.fn(() => Promise.resolve(['lunar archive']));
+      const queryBm25Exhaustive = vi.fn((query: string) =>
+        Promise.resolve(
+          query === 'lunar archive'
+            ? [{ path: 'Synthetic/Beta.md', score: 2, rank: 1 }]
+            : outcome === 'unavailable'
+              ? null
+              : [],
+        ),
+      );
+      const source = await collectIndexedSearchSource(
+        {
+          app: app({}),
+          documentCorpus: corpus(),
+          ragEngine: {
+            query: () => Promise.resolve([]),
+            queryBm25Exhaustive,
+            getCandidateReadiness: () => 'ready' as const,
+          } as unknown as RAGQueryEngine,
+        },
+        '달 기록을 설명해줘',
+        undefined,
+        undefined,
+        true,
+        undefined,
+        loadQueryVariants,
+      );
+
+      expect(loadQueryVariants).toHaveBeenCalledOnce();
+      expect(queryBm25Exhaustive).toHaveBeenCalledWith('lunar archive', 96, undefined);
+      expect(source?.queryVariants).toEqual(['lunar archive']);
+      expect(source?.candidates).toContainEqual({
+        path: 'Synthetic/Beta.md',
+        score: 2,
+        source: 'bm25',
+        rank: 1,
+        queryIndex: 0,
+      });
+      expect(source?.exhaustiveReview).toBe(false);
+      expect(source?.reviewPaths).toBeUndefined();
+      expect(await source?.getIndexedPaths()).toEqual(['Synthetic/Alpha.md', 'Synthetic/Beta.md']);
+    },
+  );
+
+  it('후보 엔진이 없으면 언어 변형으로 실패를 우회하지 않는다', async () => {
+    planIndexedSearchQueries.mockImplementation(({ question }: { question: string }) =>
+      singlePlan(question),
+    );
+    const loadQueryVariants = vi.fn(() => Promise.resolve(['lunar archive']));
+    const source = await collectIndexedSearchSource(
+      { app: app({}), documentCorpus: corpus(), ragEngine: null },
+      '달 기록을 설명해줘',
+      undefined,
+      undefined,
+      true,
+      undefined,
+      loadQueryVariants,
+    );
+    expect(loadQueryVariants).not.toHaveBeenCalled();
+    expect(source?.queryVariants).toBeUndefined();
+    expect(source?.candidates).toBeUndefined();
+    expect(source?.candidatesState).toBe('initializing');
+    expect(source?.exhaustiveReview).toBe(false);
+    expect(source?.reviewPaths).toBeUndefined();
+  });
+
+  it.each(['indexing', 'empty-index'] as const)(
+    '%s 상태에서는 언어 변형을 요청하지 않는다',
+    async (status) => {
+      planIndexedSearchQueries.mockReturnValue(singlePlan('synthetic'));
+      const loadQueryVariants = vi.fn(() => Promise.resolve(['lunar archive']));
+      await collectIndexedSearchSource(
+        {
+          app: app({}),
+          ragEngine: null,
+          documentCorpus: {
+            ...corpus(),
+            getIndexedFilePaths: () =>
+              Promise.resolve(status === 'empty-index' ? [] : ['Synthetic/Alpha.md']),
+          },
+          isIndexing: () => status === 'indexing',
+        },
+        'synthetic',
+        undefined,
+        undefined,
+        true,
+        undefined,
+        loadQueryVariants,
+      );
+      expect(loadQueryVariants).not.toHaveBeenCalled();
+    },
+  );
+
+  it('언어 변형 요청 중 취소되면 후보를 수집하거나 결과를 반환하지 않는다', async () => {
+    planIndexedSearchQueries.mockReturnValue(singlePlan('synthetic'));
+    const controller = new AbortController();
+    const reason = new Error('synthetic cancellation');
+    const queryBm25Exhaustive = vi.fn(() => Promise.resolve([]));
+    const source = collectIndexedSearchSource(
+      {
+        app: app({}),
+        documentCorpus: corpus(),
+        ragEngine: {
+          query: () => Promise.resolve([]),
+          queryBm25Exhaustive,
+        } as unknown as RAGQueryEngine,
+      },
+      'synthetic',
+      controller.signal,
+      undefined,
+      true,
+      undefined,
+      () => {
+        controller.abort(reason);
+        return Promise.resolve(['lunar archive']);
+      },
+    );
+    await expect(source).rejects.toBe(reason);
+    expect(queryBm25Exhaustive).toHaveBeenCalledOnce();
+  });
+
   it.each(['single', 'comparison'] as const)(
     '%s 질의의 언어 변형은 비교 facet을 만들지 않고 엔진 wire 계약을 유지한다',
     async (mode) => {

@@ -191,11 +191,13 @@ export async function collectIndexedSearchSource(
             exhaustiveReview: false,
           }
         : await collectHybridCandidates(host.ragEngine, searchPlan, signal, semanticTimeoutMs);
-  // 교차 언어 검색 구문으로도 같은 hybrid 수집을 돌려 후보를 합칩니다.
-  const queryVariants = candidateResolution.candidates?.length
-    ? await loadQueryVariants?.()
-    : undefined;
-  if (queryVariants && queryVariants.length > 0 && candidateResolution.candidates) {
+  // 원래 질의가 0건이어도 언어 변형으로 첫 후보를 발견할 수 있습니다.
+  const queryVariants =
+    host.ragEngine && indexedPaths.length > 0 && host.isIndexing?.() !== true
+      ? await loadQueryVariants?.()
+      : undefined;
+  signal?.throwIfAborted();
+  if (queryVariants && queryVariants.length > 0) {
     const extra = await collectVariantCandidates(
       host.ragEngine,
       queryVariants,
@@ -205,7 +207,8 @@ export async function collectIndexedSearchSource(
     if (extra.length > 0) {
       candidateResolution = {
         ...candidateResolution,
-        candidates: mergeCandidateLists(candidateResolution.candidates, extra),
+        candidates: mergeCandidateLists(candidateResolution.candidates ?? [], extra),
+        state: 'ready',
       };
     }
   }
