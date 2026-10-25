@@ -3489,6 +3489,7 @@ const ko: I18nKeys = {
     '이 호출은 toolChoice:none입니다. 재검색하거나 도구를 사용하지 말고 제공된 검증 근거만으로 현재 질문에 답하세요.',
     '지원되는 결론을 먼저 자연스럽게 쓰고, 범위·불확실성 안내는 결론 뒤에 짧게 덧붙이세요.',
     'answerPlan이 있으면 requiredFacetIds의 supported facet별 핵심 주장을 먼저 제시하세요. 공통점·차이·충돌·조건·예외를 해당 근거에 연결하고, 양쪽 supported facet의 근거가 모두 있을 때만 직접 비교하거나 종합하세요.',
+    '관계·비교를 설명할 때는 세 부분으로 나눠 쓰세요: (1) 같은 종류의 주장인지, (2) 다른 점·분류 되는 지점, (3) 서로 긴장하거나 반대되는 해석. 각 부분 근거 sourceId를 인접하게 붙이세요.',
     'answerPlan.missingFacetIds와 searchPlan.failedFacetIds는 검토 범위에서 확인하지 못한 항목입니다. 해당 facet을 검증된 사실처럼 서술하거나 볼트 전체의 부재로 단정하지 마세요.',
     'matchInventory는 엔진이 색인 전체에서 정확 term·구문을 센 값입니다(일치 문서 수·근거 구간 수·발생 횟수, documents는 발생이 많은 상위 경로). 수치를 물으면 이 값을 그대로 인용하고, matchInventory에 없는 문서·수치·비율·순위를 만들지 마세요. 집계는 자료의 규모를 설명하는 값이며 검토한 문서 수나 인용한 근거 수와 다릅니다.',
     '직접 인용 여부는 evidence의 원문 구절과 정확히 일치할 때만 인정하고, 어형 변화·번역·바꿔쓴 표현은 직접 인용이 아니라고 구분하세요. 열거를 요청하면 matchInventory.documents와 evidence의 항목을 빠짐없이 나열하고, 밝히는 개수는 실제로 나열한 항목 수와 일치시키세요.',
@@ -3496,6 +3497,7 @@ const ko: I18nKeys = {
     '근거가 지지하지 않는 인과·시간 순서·동일성을 추가하지 마세요. 각 문단의 covers에는 answerPlan facet ID만 넣고, 모든 requiredFacetIds를 다루세요. synthesisRequired이면 requiredFacetIds 전체를 covers에 넣고 각 facet의 source를 하나 이상 포함한 종합 문단을 반드시 작성하세요.',
     '각 사실·해석에는 입력 evidence의 sourceId를 그대로 복사해 인접하게 인용하세요. sources에는 vault: 접두사를 붙이지 말고 문단마다 1~8개의 채택된 출처를 넣으세요. text에는 [vault:] 마커를 넣지 마세요.',
     'answerPlan이 있으면 covers는 모든 문단에서 필수입니다. answerPlan이 없는 legacy searchPlan 경로에서는 covers를 생략할 수 있습니다. 사용자 지침의 언어·형식·분량을 따르세요.',
+    '결론을 마친 뒤에는 이어서 읽을 근거의 우선순위를 한 문장으로 제시하세요. 나열할 경로는 evidence와 matchInventory_documents에 있는 것만 사용합니다. 제시한 모든 근거는 계속 존재하는 원문 구절과 붙여 두세요.',
     'JSON만 반환하세요: {"paragraphs":[{"text":string,"sources":string[],"covers":string[]}]}',
   ].join('\n'),
   llmIndexedReviewAnswerCorrection: [
@@ -5525,6 +5527,7 @@ const en: I18nKeys = {
     'This call uses toolChoice:none. Do not search again or use tools; answer the current question using only the supplied verified evidence.',
     'State supported conclusions naturally first, then add a brief note about scope or uncertainty after the conclusion.',
     'When answerPlan is present, lead with the core claims for each supported facet in requiredFacetIds. Connect commonalities, differences, conflicts, conditions, and exceptions to that evidence. Compare or synthesize directly only when both supported facets have supplied evidence.',
+    'When explaining relation or comparison, write three parts: (1) which assertions belong to the same kind, (2) where they differ, (3) interpretations that conflict or stay in tension. Attach the supporting sourceIds next to each part.',
     'answerPlan.missingFacetIds and searchPlan.failedFacetIds are items that could not be confirmed in the reviewed scope. Do not present those facets as verified facts or claim vault-wide absence.',
     'matchInventory holds engine counts over the whole index for exact terms and phrases (matching documents, evidence spans, occurrences; documents lists only the top paths by occurrence). When the user asks for numbers, quote these values exactly, and never invent documents, counts, ratios, or ranks that are not in matchInventory. Counts describe how much material exists; they are not the number of reviewed documents or cited evidence items.',
     'Accept a direct quote only when it matches a verbatim evidence passage, and distinguish inflection, translation, or paraphrase from direct quotation. When the user asks for an enumeration, list every item in matchInventory.documents and the evidence, and make any stated total match the number of listed items.',
@@ -5532,6 +5535,7 @@ const en: I18nKeys = {
     'Do not add causality, chronology, or identity unsupported by evidence. Use only answerPlan facet IDs in each paragraph covers array and cover every requiredFacetIds entry. If synthesisRequired, include one synthesis paragraph that covers all requiredFacetIds and contains at least one source from each facet.',
     'Cite each fact or interpretation with the exact sourceId copied verbatim from the input evidence. Do not add a vault: prefix to sources, and include 1-8 adopted sources in every paragraph. Do not put [vault:] markers inside text.',
     'When answerPlan is present, covers is required in every paragraph. In the legacy searchPlan path without answerPlan, covers may be omitted. Follow the user language, format, and length.',
+    'After the conclusion, add a one-sentence reading-order note naming which evidence paths to read next, and use only paths present in evidence and matchInventory_documents. Every named source must keep a verbatim passage that still exists.',
     'Return JSON only: {"paragraphs":[{"text":string,"sources":string[],"covers":string[]}]}',
   ].join('\n'),
   llmIndexedReviewAnswerCorrection: [
