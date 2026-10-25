@@ -1344,6 +1344,7 @@ export interface RustChatMessagePlan {
   retrievalTrace?: unknown[];
   indexedReviewDiagnostics?: unknown;
   indexedReviewNotice?: string;
+  indexedMatchInventory?: readonly import('../agent/indexed-vault-review').IndexedMatchCount[];
   errorKind?: string;
   errorRetryAt?: string;
   actionHistory?: unknown[];
@@ -8717,6 +8718,7 @@ function isChatMessagePlan(value: unknown): value is RustChatMessagePlan {
         message.dataBoundarySnapshot !== null)) &&
     (message.usageSnapshot === undefined || isTurnUsageSnapshot(message.usageSnapshot)) &&
     (message.retrievalTrace === undefined || Array.isArray(message.retrievalTrace)) &&
+    (message.indexedMatchInventory === undefined || Array.isArray(message.indexedMatchInventory)) &&
     (message.indexedReviewDiagnostics === undefined ||
       (typeof message.indexedReviewDiagnostics === 'object' &&
         message.indexedReviewDiagnostics !== null)) &&

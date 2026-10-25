@@ -1,4 +1,5 @@
 import { getLanguage, t } from '../i18n';
+import type { IndexedMatchCount } from '../agent/indexed-vault-review';
 import { isDomInstance } from '../utils/dom';
 import type {
   ContextAttachment,
@@ -46,6 +47,7 @@ export interface ContextAttachmentChipView {
 export interface SourcePanelHandlers {
   setIcon(element: HTMLElement, icon: string): void;
   openCitation(citation: SourceCitation): void | Promise<void>;
+  openDiscoveredPath?(path: string): void | Promise<void>;
   copyCitationLink(citation: SourceCitation, button: HTMLButtonElement): void | Promise<void>;
   insertCitation(citation: SourceCitation): void | Promise<void>;
   repairSourceWarning?(warning: SourceValidationWarning, messageId: string): void | Promise<void>;
@@ -490,6 +492,78 @@ export class SourcePanel {
       );
       const insertBtn = actions.createEl('button', { text: t('sourceInsertIntoNoteAction') });
       insertBtn.addEventListener('click', () => void this.handlers.insertCitation(citation));
+    }
+  }
+
+  renderMatchInventorySection(
+    container: HTMLElement,
+    inventory: readonly IndexedMatchCount[] | undefined,
+  ): void {
+    const existing = container.querySelector('.superpower-inside-chat-discovery');
+    if (!inventory?.length) {
+      existing?.remove();
+      return;
+    }
+    const state = readDisclosureSnapshot(
+      existing,
+      '.superpower-inside-chat-discovery-toggle',
+      false,
+    );
+    const section = isDomInstance(existing, HTMLElement)
+      ? existing
+      : container.createDiv({ cls: 'superpower-inside-chat-discovery' });
+    section.empty();
+    const content = this.renderDisclosure(section, {
+      buttonClassName:
+        'superpower-inside-chat-citations-label superpower-inside-chat-discovery-toggle',
+      iconClassName: 'superpower-inside-chat-citations-toggle-icon',
+      contentClassName: 'superpower-inside-chat-citations-content',
+      contentId: state.contentId ?? `superpower-inside-discovery-${++this.sectionSequence}`,
+      label: t('sourceDiscoveryTitle'),
+      expanded: state.expanded,
+    });
+    content.createDiv({
+      cls: 'superpower-inside-chat-citation-meta superpower-inside-chat-discovery-limit',
+      text: t('sourceDiscoveryLimit'),
+    });
+    for (const match of inventory) {
+      const group = content.createDiv({ cls: 'superpower-inside-chat-discovery-group' });
+      group.createDiv({ cls: 'superpower-inside-chat-discovery-term', text: match.query });
+      group.createDiv({
+        cls: 'superpower-inside-chat-citation-meta superpower-inside-chat-discovery-summary',
+        text: t('sourceDiscoverySummary', {
+          documents: match.totalDocuments,
+          chunks: match.totalChunks,
+          occurrences: match.totalOccurrences,
+        }),
+      });
+      group.createDiv({
+        cls: 'superpower-inside-chat-citation-meta superpower-inside-chat-discovery-path-count',
+        text: t('sourceDiscoveryPathCount', {
+          shown: match.documents.length,
+          total: match.totalDocuments,
+        }),
+      });
+      const list = group.createEl('ul');
+      for (const document of match.documents) {
+        const row = list.createEl('li');
+        row.createSpan({ text: document.sourcePath });
+        row.createSpan({ text: t('sourceDiscoveryOccurrences', { count: document.occurrences }) });
+        if (this.handlers.openDiscoveredPath) {
+          const open = row.createEl('button', {
+            cls: 'superpower-inside-chat-discovery-open',
+            text: t('sourceOpenAction'),
+            attr: {
+              type: 'button',
+              'aria-label': t('sourceDiscoveryOpen', { path: document.sourcePath }),
+            },
+          });
+          open.addEventListener(
+            'click',
+            () => void this.handlers.openDiscoveredPath?.(document.sourcePath),
+          );
+        }
+      }
     }
   }
 

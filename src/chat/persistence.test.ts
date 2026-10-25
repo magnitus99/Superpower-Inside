@@ -24,6 +24,33 @@ vi.mock('obsidian', () => {
 });
 
 describe('chat persistence', () => {
+  it('발견 집계를 출처와 분리해 저장하고 손상된 집계만 제외한다', async () => {
+    const inventory = [
+      {
+        query: 'synthetic term',
+        totalDocuments: 5,
+        totalChunks: 8,
+        totalOccurrences: 12,
+        documents: [{ sourcePath: 'synthetic/unreviewed.md', occurrences: 3 }],
+      },
+    ];
+    const vault = createVault();
+    const message = createMessage({
+      role: 'assistant',
+      content: '독립 합성 답변',
+      indexedMatchInventory: inventory,
+    });
+    const file = await saveChat(vault, [message], 'Chats');
+    const loaded = await loadChat(vault, file.path);
+    expect(loaded.messages[0].indexedMatchInventory).toEqual(inventory);
+    expect(loaded.messages[0].citations).toEqual(message.citations);
+    const raw = await vault.cachedRead(file);
+    await vault.modify(file, raw.replace('"totalDocuments": 5', '"totalDocuments": -1'));
+    const damaged = await loadChat(vault, file.path);
+    expect(damaged.messages[0].indexedMatchInventory).toBeUndefined();
+    expect(damaged.messages[0].content).toBe(message.content);
+  });
+
   it('단계별 검수 비용과 미완료 고지를 저장하고 복원한다', async () => {
     const vault = createVault();
     const phase = () => ({

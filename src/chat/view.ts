@@ -231,6 +231,7 @@ interface MessageMetaInput {
   retrievalTrace?: ChatMessageWithMeta['retrievalTrace'];
   indexedReviewDiagnostics?: ChatMessageWithMeta['indexedReviewDiagnostics'];
   indexedReviewNotice?: string;
+  indexedMatchInventory?: ChatMessageWithMeta['indexedMatchInventory'];
   providerKey?: ChatMessageWithMeta['providerKey'];
   providerLabel?: string;
   model?: string;
@@ -363,7 +364,8 @@ export class ChatView extends ItemView {
     this.compatibilityToolModels = new Set();
     this.sourcePanel = new SourcePanel({
       setIcon: (element, icon) => setIcon(element, icon),
-      openCitation: (citation) => this.openCitation(citation),
+      openCitation: (citation) => this.openSourcePath(citation.filePath),
+      openDiscoveredPath: (path) => this.openSourcePath(path),
       copyCitationLink: (citation, button) => this.copyCitationLink(citation, button),
       insertCitation: (citation) => this.insertCitationIntoActiveNote(citation),
       repairSourceWarning: (warning, messageId) => this.repairSourceWarning(warning, messageId),
@@ -1210,6 +1212,7 @@ export class ChatView extends ItemView {
       retrievalTrace: metaInput?.retrievalTrace,
       indexedReviewDiagnostics: metaInput?.indexedReviewDiagnostics,
       indexedReviewNotice: metaInput?.indexedReviewNotice,
+      indexedMatchInventory: metaInput?.indexedMatchInventory,
       id,
       role,
       content,
@@ -1311,6 +1314,8 @@ export class ChatView extends ItemView {
       message.indexedReviewDiagnostics =
         metaInput?.indexedReviewDiagnostics ?? message.indexedReviewDiagnostics;
       message.indexedReviewNotice = metaInput?.indexedReviewNotice ?? message.indexedReviewNotice;
+      message.indexedMatchInventory =
+        metaInput?.indexedMatchInventory ?? message.indexedMatchInventory;
       if (
         isDone &&
         content &&
@@ -1430,6 +1435,7 @@ export class ChatView extends ItemView {
       hasAnswer: Boolean(msg.content.trim() || msg.assistantQuestion),
       hasWork: Boolean(msg.reasoning?.trim() || msg.toolCalls?.length || hasAnswerDiagnostics(msg)),
       sourceCount: this.getAssistantResponseSourceCount(msg),
+      hasDiscovery: (msg.indexedMatchInventory?.length ?? 0) > 0,
       isComplete:
         msg.turnStage === 'complete' || (msg.turnStage === undefined && msg.status === 'complete'),
     };
@@ -1788,15 +1794,15 @@ export class ChatView extends ItemView {
     this.lastStreamingMarkdownAt = 0;
   }
 
-  private async openCitation(citation: SourceCitation): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(citation.filePath);
+  private async openSourcePath(path: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) {
-      new Notice(t('sourceFileNotFound', { path: citation.filePath }));
+      new Notice(t('sourceFileNotFound', { path }));
       return;
     }
     try {
       await this.app.workspace.getLeaf(false).openFile(file);
-      new Notice(t('sourceOpenedNotice', { path: citation.filePath }));
+      new Notice(t('sourceOpenedNotice', { path }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(t('sourceOpenFailedNotice', { message }), 5000);
@@ -1997,6 +2003,7 @@ export class ChatView extends ItemView {
     const layout = this.assistantResponseLayouts.get(bubbleContainer);
     if (layout) renderAnswerDiagnostics(layout.panels.work, msg);
     const sourcesPanel = layout?.panels.sources ?? bubbleContainer;
+    this.sourcePanel.renderMatchInventorySection(sourcesPanel, msg.indexedMatchInventory);
     this.sourcePanel.renderContextAttachmentsSection(sourcesPanel, msg.contextAttachments ?? []);
     this.sourcePanel.renderContextBudgetSection(sourcesPanel, msg.contextBudgetSnapshot);
     this.sourcePanel.renderDataBoundarySection(sourcesPanel, msg.dataBoundarySnapshot);
@@ -3042,6 +3049,7 @@ export class ChatView extends ItemView {
       | 'citations'
       | 'indexedReviewDiagnostics'
       | 'indexedReviewNotice'
+      | 'indexedMatchInventory'
     > = {
       contextAttachments: promptContext.attachments,
       contextBudgetSnapshot,
@@ -3191,8 +3199,7 @@ export class ChatView extends ItemView {
             ragEngine: this.plugin.ragEngine,
             documentCorpus: this.plugin.documentCorpus,
             settings: this.plugin.settings,
-            getCandidateCount: () =>
-              this.plugin.getRagRuntimeState?.()?.ragStatus?.totalDocuments,
+            getCandidateCount: () => this.plugin.getRagRuntimeState?.()?.ragStatus?.totalDocuments,
             isIndexing: () => isPluginSearching(this.plugin),
           },
           searchQuestion,
@@ -3270,6 +3277,7 @@ export class ChatView extends ItemView {
         if (!isChatRunActive(this.activeRun, run)) return;
         contextMeta.indexedReviewDiagnostics = researchResult.diagnostics;
         contextMeta.indexedReviewNotice = researchResult.coverageNotice;
+        contextMeta.indexedMatchInventory = researchResult.dossier.matchInventory;
         // 검수에 이관한 검색 대기는 결과가 나온 뒤 미발견 첨부로 남기지 않습니다.
         promptContext.attachments = promptContext.attachments.filter(
           (attachment) => attachment.id !== 'rag:auto',
@@ -5085,6 +5093,7 @@ export class ChatView extends ItemView {
           });
           if (!isChatRunActive(this.activeRun, run)) return;
           message.indexedReviewNotice = researchResult.coverageNotice;
+          message.indexedMatchInventory = researchResult.dossier.matchInventory;
           message.indexedReviewDiagnostics = researchResult.diagnostics;
           resumedResearchDocumentCount = researchResult.providerTransfer.sentPaths
             ? new Set([
@@ -5172,6 +5181,7 @@ export class ChatView extends ItemView {
             dataBoundarySnapshot: resumePlan.dataBoundarySnapshot,
             indexedReviewDiagnostics: message.indexedReviewDiagnostics,
             indexedReviewNotice: message.indexedReviewNotice,
+            indexedMatchInventory: message.indexedMatchInventory,
           },
           mentionedServers,
           explicitToolServerCount: mentionOnlyServers.length,

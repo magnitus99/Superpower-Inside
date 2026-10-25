@@ -69,6 +69,7 @@ interface MessagePersistMeta {
   retrievalTrace?: ChatMessageWithMeta['retrievalTrace'];
   indexedReviewDiagnostics?: ChatMessageWithMeta['indexedReviewDiagnostics'];
   indexedReviewNotice?: string;
+  indexedMatchInventory?: ChatMessageWithMeta['indexedMatchInventory'];
   errorKind?: ChatMessageWithMeta['errorKind'];
   errorRetryAt?: string;
   actionHistory?: ChatMessageWithMeta['actionHistory'];
@@ -457,6 +458,7 @@ function formatMessage(
     retrievalTrace: message.retrievalTrace,
     indexedReviewDiagnostics: message.indexedReviewDiagnostics,
     indexedReviewNotice: message.indexedReviewNotice,
+    indexedMatchInventory: message.indexedMatchInventory,
     errorKind: message.errorKind,
     errorRetryAt: message.errorRetryAt,
     actionHistory: message.actionHistory,
@@ -613,6 +615,7 @@ function chatMessageFromRustPlan(plan: RustChatMessagePlan): ChatMessageWithMeta
     indexedReviewDiagnostics:
       plan.indexedReviewDiagnostics as ChatMessageWithMeta['indexedReviewDiagnostics'],
     indexedReviewNotice: plan.indexedReviewNotice,
+    indexedMatchInventory: plan.indexedMatchInventory,
     errorKind: plan.errorKind as ChatMessageWithMeta['errorKind'],
     errorRetryAt: plan.errorRetryAt,
     actionHistory: plan.actionHistory as ChatMessageWithMeta['actionHistory'],

@@ -10506,6 +10506,12 @@ fn copy_optional_chat_diagnostics(
     {
         target.insert("retrievalTrace".to_owned(), trace.clone());
     }
+    if let Some(inventory) = source
+        .get("indexedMatchInventory")
+        .filter(|value| valid_chat_match_inventory(value))
+    {
+        target.insert("indexedMatchInventory".to_owned(), inventory.clone());
+    }
     if let Some(diagnostics) = source
         .get("indexedReviewDiagnostics")
         .and_then(validated_indexed_review_diagnostics)
@@ -10622,6 +10628,34 @@ fn validated_review_outcome(value: Option<&JsonValue>) -> Option<&'static str> {
     ]
     .into_iter()
     .find(|candidate| *candidate == outcome)
+}
+
+/// 저장된 일치 집계는 검색 단서이며 검증된 인용으로 승격하지 않습니다.
+fn valid_chat_match_inventory(value: &JsonValue) -> bool {
+    let count = |value: &JsonValue| {
+        value
+            .as_u64()
+            .is_some_and(|number| number <= 9_007_199_254_740_991)
+    };
+    value.as_array().is_some_and(|matches| {
+        matches.iter().all(|entry| {
+            entry.get("query").is_some_and(JsonValue::is_string)
+                && ["totalDocuments", "totalChunks", "totalOccurrences"]
+                    .iter()
+                    .all(|key| entry.get(key).is_some_and(count))
+                && entry
+                    .get("documents")
+                    .and_then(JsonValue::as_array)
+                    .is_some_and(|documents| {
+                        u64::try_from(documents.len()).is_ok_and(|length| {
+                            length <= entry["totalDocuments"].as_u64().unwrap_or(0)
+                        }) && documents.iter().all(|document| {
+                            document.get("sourcePath").is_some_and(JsonValue::is_string)
+                                && document.get("occurrences").is_some_and(count)
+                        })
+                    })
+        })
+    })
 }
 
 /// 저장된 검색 진단이 화면의 반복문·번역 키·점수 표시 계약을 충족하는지 확인합니다.
@@ -14682,6 +14716,8 @@ mod tests {
         for metadata in [
             r#"{"usageSnapshot":{"requests":1,"reportedRequests":2}}"#,
             r#"{"usageSnapshot":{"requests":1,"reportedRequests":1,"inputTokens":"bad"}}"#,
+            r#"{"indexedMatchInventory":[null]}"#,
+            r#"{"indexedMatchInventory":[{"query":"synthetic","totalDocuments":1,"totalChunks":1,"totalOccurrences":1,"documents":[null]}]}"#,
             r#"{"retrievalTrace":[null]}"#,
             r#"{"retrievalTrace":[{"query":"synthetic","diagnostics":null,"results":[]}]}"#,
             r#"{"retrievalTrace":[{"query":"synthetic","diagnostics":[{"providerId":"x","source":"unknown","status":"ok","durationMs":1,"candidateCount":1,"readiness":"ready","estimatedCost":"free"}],"results":[]}]}"#,
@@ -14710,7 +14746,51 @@ mod tests {
             );
             assert!(message.is_some_and(|value| value.get("usageSnapshot").is_none()));
             assert!(message.is_some_and(|value| value.get("retrievalTrace").is_none()));
+            assert!(message.is_some_and(|value| value.get("indexedMatchInventory").is_none()));
         }
+    }
+
+    /// 발견 집계는 안전한 수치와 경로만 허용하며 인용으로 바꾸지 않습니다.
+    #[test]
+    fn chat_match_inventory_validates_nested_display_contract() {
+        let valid = serde_json::json!([{
+            "query": "synthetic", "totalDocuments": 5, "totalChunks": 8,
+            "totalOccurrences": 10,
+            "documents": [{"sourcePath": "Synthetic.md", "occurrences": 3}]
+        }]);
+        assert!(valid_chat_match_inventory(&valid));
+        assert!(valid_chat_match_inventory(&serde_json::json!([])));
+        for (field, value) in [
+            ("query", serde_json::json!(null)),
+            ("totalDocuments", serde_json::json!(0)),
+            ("totalChunks", serde_json::json!(-1)),
+            ("totalOccurrences", serde_json::json!(1.5)),
+            (
+                "totalOccurrences",
+                serde_json::json!(9_007_199_254_740_992_u64),
+            ),
+            (
+                "documents",
+                serde_json::json!([{"sourcePath": null, "occurrences": 1}]),
+            ),
+            (
+                "documents",
+                serde_json::json!([{"sourcePath": "Synthetic.md", "occurrences": "bad"}]),
+            ),
+        ] {
+            let mut invalid = valid.clone();
+            let replaced = invalid
+                .get_mut(0)
+                .and_then(JsonValue::as_object_mut)
+                .map(|row| row.insert(field.to_owned(), value));
+            assert!(replaced.is_some());
+            assert!(!valid_chat_match_inventory(&invalid), "{field}");
+        }
+        let mut target = JsonMap::new();
+        let source = JsonMap::from_iter([("indexedMatchInventory".to_owned(), valid.clone())]);
+        copy_optional_chat_diagnostics(&source, &mut target);
+        assert_eq!(target.get("indexedMatchInventory"), Some(&valid));
+        assert!(target.get("citations").is_none());
     }
 
     /// 정상 검색 진단은 유지하고 잘못된 enum·수치·후보 필드만 차단합니다.

@@ -158,6 +158,82 @@ afterAll(() => {
 });
 
 describe('SourcePanel view model contract', () => {
+  it('일치 집계와 제한된 발견 경로를 미검증 단서로 표시하고 펼침 상태를 보존한다', () => {
+    setLanguage('ko');
+    const openDiscoveredPath = vi.fn();
+    const panel = new SourcePanel({
+      setIcon: vi.fn(),
+      openCitation: vi.fn(),
+      copyCitationLink: vi.fn(),
+      insertCitation: vi.fn(),
+      openDiscoveredPath,
+    });
+    const container = new TestHTMLElement();
+    const inventory = [
+      {
+        query: '<합성 검색어>',
+        totalDocuments: 9,
+        totalChunks: 17,
+        totalOccurrences: 23,
+        documents: [{ sourcePath: 'synthetic/未確認.md', occurrences: 4 }],
+      },
+    ];
+    const render = () =>
+      panel.renderMatchInventorySection(container as unknown as HTMLElement, inventory);
+    render();
+    const toggle = container.querySelector('.superpower-inside-chat-discovery-toggle')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(
+      container.querySelector('.superpower-inside-chat-discovery-limit')?.textContent,
+    ).toContain('원문 검증');
+    expect(
+      container.querySelector('.superpower-inside-chat-discovery-summary')?.textContent,
+    ).toContain('9');
+    expect(
+      container.querySelector('.superpower-inside-chat-discovery-path-count')?.textContent,
+    ).toContain('1 / 9');
+    expect(container.querySelector('.superpower-inside-chat-discovery-term')?.textContent).toBe(
+      '<합성 검색어>',
+    );
+    expect(container.querySelector('.superpower-inside-chat-citation-status')).toBeNull();
+    toggle.click();
+    render();
+    expect(
+      container
+        .querySelector('.superpower-inside-chat-discovery-toggle')
+        ?.getAttribute('aria-expanded'),
+    ).toBe('true');
+    container.querySelector('.superpower-inside-chat-discovery-open')?.click();
+    expect(openDiscoveredPath).toHaveBeenCalledWith('synthetic/未確認.md');
+    panel.renderMatchInventorySection(container as unknown as HTMLElement, undefined);
+    expect(container.children).toHaveLength(0);
+    setLanguage('en');
+  });
+
+  it('일치 0건은 집계로 표시하지만 집계 없는 과거 답변에 문서 부재를 만들지 않는다', () => {
+    const panel = new SourcePanel({
+      setIcon: vi.fn(),
+      openCitation: vi.fn(),
+      copyCitationLink: vi.fn(),
+      insertCitation: vi.fn(),
+    });
+    const container = new TestHTMLElement();
+    panel.renderMatchInventorySection(container as unknown as HTMLElement, []);
+    expect(container.children).toHaveLength(0);
+    panel.renderMatchInventorySection(container as unknown as HTMLElement, [
+      {
+        query: 'synthetic empty',
+        totalDocuments: 0,
+        totalChunks: 0,
+        totalOccurrences: 0,
+        documents: [],
+      },
+    ]);
+    expect(
+      container.querySelector('.superpower-inside-chat-discovery-summary')?.textContent,
+    ).toContain('0');
+    expect(container.querySelector('.superpower-inside-chat-discovery-open')).toBeNull();
+  });
   it('같은 출처 경고라도 클릭한 답변의 식별자로 확인을 요청한다', () => {
     const repairSourceWarning = vi.fn();
     const panel = new SourcePanel({

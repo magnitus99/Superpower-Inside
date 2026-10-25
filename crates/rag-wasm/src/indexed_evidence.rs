@@ -2185,9 +2185,9 @@ fn select_evidence_indices(
     let mut used_chars = 0_usize;
     let mut selected = BTreeSet::<usize>::new();
     let mut selected_terms = BTreeMap::<String, BTreeSet<String>>::new();
+    // facet 예약은 일반 순위의 깊이 제한과 분리하되 최종 구절·문자 예산은 공유합니다.
     let nonzero_query_indexes = drafts
         .iter()
-        .take(depth)
         .flat_map(|draft| draft.query_indexes.iter().copied())
         .filter(|index| *index > 0)
         .collect::<BTreeSet<_>>();
@@ -2202,17 +2202,11 @@ fn select_evidence_indices(
         }) {
             continue;
         }
-        if let Some((index, draft)) =
-            drafts
-                .iter()
-                .take(depth)
-                .enumerate()
-                .find(|(index, draft)| {
-                    !selected.contains(index)
-                        && draft.query_indexes.contains(&query_index)
-                        && used_chars.saturating_add(draft_chars(draft)) <= max_chars
-                })
-        {
+        if let Some((index, draft)) = drafts.iter().enumerate().find(|(index, draft)| {
+            !selected.contains(index)
+                && draft.query_indexes.contains(&query_index)
+                && used_chars.saturating_add(draft_chars(draft)) <= max_chars
+        }) {
             used_chars = used_chars.saturating_add(draft_chars(draft));
             selected.insert(index);
             selected_terms
@@ -2274,7 +2268,6 @@ fn collect_evidence_rows(
     let mut seen_quotes = BTreeMap::<String, String>::new();
     for draft in drafts
         .iter()
-        .take(depth)
         .enumerate()
         .filter_map(|(index, draft)| selected.contains(&index).then_some(draft))
     {
@@ -5125,6 +5118,74 @@ mod tests {
             .collect::<Vec<_>>();
         drafts.push(draft(0.0, Some(2)));
         assert_eq!(super::candidate_depth(&drafts, 16, 2), 9);
+    }
+
+    #[test]
+    fn plan_reserves_sparse_facets_outside_the_document_depth() {
+        for (question, frequent, sparse) in [
+            (
+                "Compare copper glass",
+                "copper glass copper glass",
+                "silica needs pressure",
+            ),
+            (
+                "나무와 돌 비교",
+                "나무 돌 나무 돌",
+                "다공성 구조는 수분을 보존한다",
+            ),
+        ] {
+            let mut documents = (0..12)
+                .map(|index| json!({"path": format!("common-{index}.md"), "text": frequent}))
+                .collect::<Vec<_>>();
+            documents.push(json!({"path": "sparse.md", "text": sparse}));
+            let mut candidates = (0..12)
+                .map(|index| {
+                    json!({
+                        "path": format!("common-{index}.md"), "source": "bm25",
+                        "rank": index + 1, "score": 100.0, "queryIndex": 2,
+                        "startLine": 1, "endLine": 1,
+                    })
+                })
+                .collect::<Vec<_>>();
+            candidates.push(json!({
+                "path": "sparse.md", "source": "vector", "rank": 1000,
+                "score": 0.001, "queryIndex": 1, "startLine": 1, "endLine": 1,
+            }));
+            let plan = plan_of(&json!({
+                "question": question, "documents": documents, "candidates": candidates,
+                "budget": {"maxDocuments": 8, "maxPassages": 3, "maxChars": 256},
+            }));
+            let evidence = rows(&plan, "evidence");
+            assert_eq!(evidence.len(), 3);
+            for query_index in [1, 2] {
+                assert!(
+                    evidence.iter().any(|row| {
+                        get(row, "queryIndexes")
+                            .as_array()
+                            .is_some_and(|indexes| indexes.contains(&json!(query_index)))
+                    }),
+                    "후보 깊이 밖의 비교 항목도 대표 구절을 예약해야 합니다"
+                );
+            }
+            for (max_passages, max_chars) in [(1, 256), (3, 1)] {
+                let limited = plan_of(&json!({
+                    "question": question, "documents": documents, "candidates": candidates,
+                    "budget": {"maxDocuments": 8, "maxPassages": max_passages, "maxChars": max_chars},
+                }));
+                assert!(rows(&limited, "evidence").len() <= max_passages);
+                if max_chars == 1 {
+                    assert!(rows(&limited, "evidence").is_empty());
+                }
+            }
+            let verification = verify_of(&json!({
+                "evidence": evidence, "documents": documents,
+            }));
+            assert!(
+                rows(&verification, "statuses")
+                    .iter()
+                    .all(|status| { get(status, "status") == &json!("verified") })
+            );
+        }
     }
 
     #[test]

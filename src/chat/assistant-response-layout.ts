@@ -10,6 +10,7 @@ export interface AssistantResponseLayoutState {
   hasAnswer: boolean;
   hasWork: boolean;
   sourceCount: number;
+  hasDiscovery?: boolean;
   isComplete: boolean;
 }
 
@@ -60,7 +61,10 @@ function normalizeSourceCount(sourceCount: number): number {
 
 function isAvailable(
   tab: AssistantResponseTab,
-  state: Pick<AssistantResponseLayoutState, 'hasAnswer' | 'hasWork' | 'sourceCount'>,
+  state: Pick<
+    AssistantResponseLayoutState,
+    'hasAnswer' | 'hasWork' | 'sourceCount' | 'hasDiscovery'
+  >,
 ): boolean {
   switch (tab) {
     case 'answer':
@@ -68,7 +72,7 @@ function isAvailable(
     case 'work':
       return state.hasWork;
     case 'sources':
-      return state.sourceCount > 0;
+      return state.sourceCount > 0 || state.hasDiscovery === true;
   }
 }
 
@@ -77,7 +81,7 @@ function chooseAutomaticTab(state: AssistantResponseLayoutState): AssistantRespo
   if (!state.isComplete && !state.hasAnswer && state.hasWork) return 'work';
   if (state.hasAnswer) return 'answer';
   if (state.hasWork) return 'work';
-  if (state.sourceCount > 0) return 'sources';
+  if (isAvailable('sources', state)) return 'sources';
   return null;
 }
 
@@ -89,6 +93,7 @@ export function createAssistantResponseLayoutViewModel(
     hasAnswer: input.hasAnswer,
     hasWork: input.hasWork,
     sourceCount,
+    hasDiscovery: input.hasDiscovery,
     isComplete: input.isComplete,
   };
   const manualActiveTab =

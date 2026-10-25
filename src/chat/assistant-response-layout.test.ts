@@ -102,6 +102,29 @@ const labels: AssistantResponseLayoutLabels = {
 };
 
 describe('Assistant response layout view model', () => {
+  it('미검증 발견 집계만 있어도 출처 탭을 열되 출처 수에는 더하지 않는다', () => {
+    const view = createAssistantResponseLayoutViewModel({
+      hasAnswer: false,
+      hasWork: false,
+      sourceCount: 0,
+      hasDiscovery: true,
+      isComplete: true,
+      labels,
+    });
+    expect(view.sourceCount).toBe(0);
+    expect(view.activeTab).toBe('sources');
+    expect(view.tabs.find((tab) => tab.key === 'sources')?.available).toBe(true);
+    const empty = createAssistantResponseLayoutViewModel({
+      hasAnswer: false,
+      hasWork: false,
+      sourceCount: 0,
+      hasDiscovery: false,
+      isComplete: true,
+      labels,
+    });
+    expect(empty.tabs.find((tab) => tab.key === 'sources')?.available).toBe(false);
+  });
+
   it('진행 중 답변이 비어 있고 작업이 있으면 작업을 선택한다', () => {
     const view = createAssistantResponseLayoutViewModel({
       hasAnswer: false,

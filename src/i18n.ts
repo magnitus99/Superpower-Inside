@@ -826,6 +826,12 @@ export interface I18nKeys {
   assistantQuestionRequiredNotice: string;
   toolApproveExecution: string;
   sourceVerifiedCount: string;
+  sourceDiscoveryTitle: string;
+  sourceDiscoveryLimit: string;
+  sourceDiscoverySummary: string;
+  sourceDiscoveryPathCount: string;
+  sourceDiscoveryOccurrences: string;
+  sourceDiscoveryOpen: string;
   sourceCitationSelectionFailed: string;
   sourceSearchVerifiedCount: string;
   sourceOpenAction: string;
@@ -2680,6 +2686,14 @@ const ko: I18nKeys = {
   assistantQuestionRequiredNotice: '답변할 항목을 선택하거나 직접 입력하세요.',
   toolApproveExecution: '실행 승인',
   sourceVerifiedCount: '출처 {count}개 확인됨',
+  sourceDiscoveryTitle: '검색 일치와 발견 경로',
+  sourceDiscoveryLimit:
+    '검색 당시 색인의 검색어 일치 집계입니다. 의미상 관련성이나 직접 인용 판정이 아니며, 아래 경로는 현재 원문 검증을 마친 출처가 아닙니다.',
+  sourceDiscoverySummary: '일치 문서 {documents}개 · 색인 구간 {chunks}개 · 발생 {occurrences}회',
+  sourceDiscoveryPathCount:
+    '표시 경로 {shown} / {total}개 — 엔진이 반환한 경로만 표시합니다. 나머지 경로는 이 목록에 포함되지 않습니다.',
+  sourceDiscoveryOccurrences: ' · {count}회 ',
+  sourceDiscoveryOpen: '미검증 발견 문서 열기: {path}',
   sourceCitationSelectionFailed: '최종 답변의 출처를 정리할 수 없습니다.',
   sourceSearchVerifiedCount: '출처 {verified}/{total}개 확인됨',
   sourceOpenAction: '열기',
@@ -4698,6 +4712,15 @@ const en: I18nKeys = {
   assistantQuestionRequiredNotice: 'Select an item to answer or enter a response directly.',
   toolApproveExecution: 'Approve run',
   sourceVerifiedCount: '{count} sources checked',
+  sourceDiscoveryTitle: 'Search matches and discovered paths',
+  sourceDiscoveryLimit:
+    'Term matches in the index at search time, not semantic relevance or a direct-quotation judgment. The paths below are not sources verified against the current text.',
+  sourceDiscoverySummary:
+    '{documents} matching documents · {chunks} indexed passages · {occurrences} occurrences',
+  sourceDiscoveryPathCount:
+    'Paths shown: {shown} / {total} — only paths returned by the engine are listed. Remaining paths are not included here.',
+  sourceDiscoveryOccurrences: ' · {count} occurrences ',
+  sourceDiscoveryOpen: 'Open unverified discovered document: {path}',
   sourceCitationSelectionFailed: 'The final answer sources could not be prepared.',
   sourceSearchVerifiedCount: '{verified}/{total} sources checked',
   sourceOpenAction: 'Open',

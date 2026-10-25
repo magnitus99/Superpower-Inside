@@ -269,6 +269,8 @@ export interface ChatMessageWithMeta extends Omit<ChatMessage, 'toolCalls'> {
   usageSnapshot?: TurnUsageSnapshot;
   indexedReviewDiagnostics?: import('../agent/indexed-vault-review').IndexedReviewDiagnostics;
   indexedReviewNotice?: string;
+  /** 검색 당시의 색인 집계이며 현재 원문을 검증한 출처가 아닙니다. */
+  indexedMatchInventory?: readonly import('../agent/indexed-vault-review').IndexedMatchCount[];
   errorKind?: ChatErrorKind;
   errorRetryAt?: string;
   actionHistory?: ChatActionHistoryEntry[];
