@@ -230,15 +230,13 @@ export class RAGQueryEngine {
     if (normalizedLimit === 0) return [];
     // 한 파일이 많은 청크를 차지해도 다른 파일의 후보를 잘라내지 않도록
     // 필요한 대표 경로를 모두 모을 때까지 조회 범위를 넓힙니다.
-    // limit이 없으면 요청은 색인 전체 순위를 뜻하므로 예전처럼 전체를 조회하고,
-    // limit이 있으면 그 몇 배(최소 512건)까지만 히트를 받아 전송량을 줄입니다.
-    // BM25는 어차피 전체 문서를 점수화하므로 이 상한은 순위가 아니라 반환량만 제한합니다.
-    const lookupCeiling = Math.min(totalDocs, Math.max(normalizedLimit * 8, 512));
+    // 청크 조회 상한을 요청 경로 수의 배수로 자르면 긴 문서 뒤의 다른 경로가 누락됩니다.
+    // 충분한 경로를 모으거나 전체 히트를 소진할 때까지만 점진적으로 넓힙니다.
     let lookupLimit = Math.min(totalDocs, Math.max(normalizedLimit * 4, 256));
     let representatives = await this.collectBm25Representatives(question, lookupLimit, normalizedLimit, signal);
     while (representatives.hits.length > 0) {
-      if (representatives.complete || lookupLimit >= lookupCeiling) break;
-      lookupLimit = Math.min(lookupCeiling, lookupLimit * 4);
+      if (representatives.complete || lookupLimit >= totalDocs) break;
+      lookupLimit = Math.min(totalDocs, lookupLimit * 4);
       representatives = await this.collectBm25Representatives(
         question,
         lookupLimit,

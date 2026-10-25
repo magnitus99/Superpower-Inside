@@ -194,7 +194,36 @@ describe('RAGQueryEngine', () => {
       { path: 'Synthetic/A.md', score: 100, rank: 1 },
       { path: 'Synthetic/B.md', score: 1, rank: 257 },
     ]);
-    expect(search.mock.calls.map((call) => call[1])).toEqual([256, 512]);
+    expect(search.mock.calls.map((call) => call[1])).toEqual([256, 1_000]);
+  });
+
+  it.each([
+    { chunks: 800, lookups: [256, 1_024] },
+    { chunks: 3_000, lookups: [256, 1_024, 4_096] },
+  ])('한 문서가 $chunks개 청크를 차지해도 요청한 고유 경로를 모은다', async ({ chunks, lookups }) => {
+    const bm25 = await createBm25([]);
+    vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(true);
+    vi.spyOn(bm25, 'totalDocs', 'get').mockReturnValue(4_096);
+    const hits = [
+      ...Array.from({ length: chunks }, (_, index) => ({
+        docId: `a-${index}`,
+        sourcePath: 'Synthetic/A.md',
+        score: chunks - index,
+      })),
+      { docId: 'b-1', sourcePath: 'Synthetic/B.md', score: 0.5 },
+    ];
+    const search = vi
+      .spyOn(bm25, 'searchTopWithSources')
+      .mockImplementation((_query, limit) => Promise.resolve(hits.slice(0, limit)));
+    const documents = vi.spyOn(bm25, 'getCorpusDocumentsByIds').mockResolvedValue([]);
+    const engine = new RAGQueryEngine(null, null, bm25);
+
+    await expect(engine.queryBm25Exhaustive('synthetic', 2)).resolves.toEqual([
+      { path: 'Synthetic/A.md', score: chunks, rank: 1 },
+      { path: 'Synthetic/B.md', score: 0.5, rank: chunks + 1 },
+    ]);
+    expect(search.mock.calls.map((call) => call[1])).toEqual(lookups);
+    expect(documents).toHaveBeenCalledWith(['a-0', 'b-1']);
   });
 
   it('검색 중 BM25 runtime이 닫히면 정상적인 0건이 아니라 null을 반환한다', async () => {
