@@ -4036,6 +4036,15 @@ fn serialize_mcp_json_validation_plan(plan: &McpJsonValidationPlan) -> String {
     JsonValue::Object(output).to_string()
 }
 
+/// 불변 벡터 색인에서 마지막 정규화 질의의 행별 점수만 재사용합니다.
+#[derive(Default)]
+struct VectorScoreCache {
+    /// 점수를 계산한 정규화 질의입니다.
+    query: Vec<f32>,
+    /// 아직 계산하지 않은 행은 `None`이며, 검색 범위는 호출마다 별도로 적용합니다.
+    scores: Vec<Option<f64>>,
+}
+
 /// JS wrapper가 재사용할 수 있는 normalized vector runtime index.
 #[wasm_bindgen]
 pub struct VectorRuntimeIndex {
@@ -4047,6 +4056,8 @@ pub struct VectorRuntimeIndex {
     normalized_vectors: Vec<f32>,
     /// zero/invalid vector를 제외하기 위한 row별 validity flag.
     valid_rows: Vec<bool>,
+    /// 질의 하나만 보관하며, 색인이 교체되면 인스턴스와 함께 폐기됩니다.
+    score_cache: std::cell::RefCell<VectorScoreCache>,
 }
 
 #[wasm_bindgen]
@@ -4066,6 +4077,7 @@ impl VectorRuntimeIndex {
                 row_count: 0,
                 normalized_vectors: Vec::new(),
                 valid_rows: Vec::new(),
+                score_cache: std::cell::RefCell::default(),
             };
         }
 
@@ -4081,6 +4093,7 @@ impl VectorRuntimeIndex {
             row_count,
             normalized_vectors,
             valid_rows,
+            score_cache: std::cell::RefCell::default(),
         }
     }
 
@@ -4127,6 +4140,12 @@ impl VectorRuntimeIndex {
             return Box::default();
         };
 
+        let mut cache = self.score_cache.borrow_mut();
+        if cache.query != normalized_query {
+            cache.query.clone_from(&normalized_query);
+            cache.scores.resize(self.row_count, None);
+            cache.scores.fill(None);
+        }
         let mut scored = Vec::with_capacity(top_k);
         match row_indices {
             Some(indices) => {
@@ -4134,23 +4153,36 @@ impl VectorRuntimeIndex {
                     let Some(row_index) = bounded_u32_index(row_index_raw, self.row_count) else {
                         continue;
                     };
-                    self.push_runtime_score(row_index, &normalized_query, top_k, &mut scored);
+                    self.push_runtime_score(
+                        row_index,
+                        &normalized_query,
+                        &mut cache.scores,
+                        top_k,
+                        &mut scored,
+                    );
                 }
             }
             None => {
                 for row_index in 0..self.row_count {
-                    self.push_runtime_score(row_index, &normalized_query, top_k, &mut scored);
+                    self.push_runtime_score(
+                        row_index,
+                        &normalized_query,
+                        &mut cache.scores,
+                        top_k,
+                        &mut scored,
+                    );
                 }
             }
         }
         encode_scored_rows(&scored)
     }
 
-    /// 단일 row score를 top-k 버퍼에 반영한다.
+    /// 단일 row의 기존 점수를 재사용하거나 계산해 top-k 버퍼에 반영합니다.
     fn push_runtime_score(
         &self,
         row_index: usize,
         normalized_query: &[f32],
+        cached_scores: &mut [Option<f64>],
         top_k: usize,
         scored: &mut Vec<ScoredRow>,
     ) {
@@ -4164,7 +4196,10 @@ impl VectorRuntimeIndex {
         else {
             return;
         };
-        let score = normalized_f32_dot(normalized_query, row);
+        let Some(cached) = cached_scores.get_mut(row_index) else {
+            return;
+        };
+        let score = *cached.get_or_insert_with(|| normalized_f32_dot(normalized_query, row));
         push_top_k_scored_row(scored, ScoredRow { row_index, score }, top_k);
     }
 }
@@ -15236,6 +15271,54 @@ mod tests {
         assert_float_close_f32(pair_value(&filtered, 1), 0.6, "filtered best score");
         assert_float_close(pair_value(&filtered, 2), 0.0, "filtered second row index");
         assert_float_close(pair_value(&filtered, 3), 0.0, "filtered second score");
+    }
+
+    #[test]
+    fn vector_runtime_index_reuses_scores_across_top_k_requests() {
+        let vectors = [1.0_f32, 0.0, 0.6, 0.8, 0.0, 1.0, 0.0, 0.0, 1.0, -0.0];
+        let index = VectorRuntimeIndex::new(&vectors, 2);
+        assert!(index.score_cache.borrow().scores.is_empty());
+        let first = index.rank_top_k(&[1.0, 0.0], 1);
+        let cached = index.score_cache.borrow().scores.clone();
+        assert_eq!(cached.iter().filter(|score| score.is_some()).count(), 4);
+        assert_eq!(cached.get(3), Some(&None));
+        let all = index.rank_top_k(&[1.0, 0.0], 4);
+        assert_eq!(all.get(..2), Some(first.as_ref()));
+        assert_eq!(all.get(..4), Some([0.0, 1.0, 4.0, 1.0].as_slice()));
+        assert_eq!(index.rank_top_k(&[2.0, -0.0], 4), all);
+        assert_eq!(index.score_cache.borrow().scores, cached);
+        assert_eq!(
+            all,
+            VectorRuntimeIndex::new(&vectors, 2).rank_top_k(&[1.0, 0.0], 4)
+        );
+    }
+
+    #[test]
+    fn vector_runtime_score_cache_respects_filters_queries_and_index_generation() {
+        let vectors = [1.0_f32, 0.0, 0.6, 0.8, 0.0, 1.0];
+        let index = VectorRuntimeIndex::new(&vectors, 2);
+        let query = [1.0_f32, 0.0];
+        let _ = index.rank_top_k_filtered(&query, &[0], 1);
+        assert_eq!(index.score_cache.borrow().scores, [Some(1.0), None, None]);
+        let filtered = index.rank_top_k_filtered(&query, &[2, 1, 1, u32::MAX], 4);
+        assert_eq!(
+            filtered,
+            VectorRuntimeIndex::new(&vectors, 2).rank_top_k_filtered(
+                &query,
+                &[2, 1, 1, u32::MAX],
+                4
+            )
+        );
+        assert_eq!(index.score_cache.borrow().scores.first(), Some(&Some(1.0)));
+        assert!(index.rank_top_k_filtered(&query, &[], 4).is_empty());
+        for invalid in [&[0.0_f32, 0.0][..], &[f32::NAN, 0.0], &[1.0]] {
+            assert!(index.rank_top_k(invalid, 3).is_empty());
+        }
+        let changed = index.rank_top_k_filtered(&[0.0, 1.0], &[2], 1);
+        assert_eq!(changed.as_ref(), &[2.0, 1.0]);
+        assert_eq!(index.score_cache.borrow().scores, [None, None, Some(1.0)]);
+        let replacement = VectorRuntimeIndex::new(&[0.0, 1.0, 1.0, 0.0], 2);
+        assert_eq!(replacement.rank_top_k(&query, 1).as_ref(), &[1.0, 1.0]);
     }
 
     /// IVF runtime index는 build/probe/scoring을 내부 상태로 처리하고 global row index를 반환해야 한다.
