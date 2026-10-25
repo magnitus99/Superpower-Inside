@@ -29,6 +29,8 @@ const PASSAGE_RADIUS_BYTES: usize = 480;
 const MAX_BOUNDARY_PASSAGE_BYTES: usize = PASSAGE_RADIUS_BYTES * 8;
 /// 구절 앞뒤 문맥 최대 길이(`UTF-8` byte)입니다.
 const PASSAGE_CONTEXT_BYTES: usize = 120;
+/// 한 문서에서 facet 범위가 빠질 때 만들어진 보완 초안의 상한입니다.
+const EXTRA_CANDIDATE_DRAFTS_PER_DOCUMENT: usize = 2;
 /// 구절 하나가 가질 수 있는 강조 구간 수 상한입니다.
 const MAX_HIGHLIGHTS: usize = 32;
 /// `exact` 숫자·식별자 일치마다 더하는 가중치입니다.
@@ -1526,6 +1528,160 @@ fn passage_bounds(document: &ScannedDocument, anchor: usize) -> (usize, usize) {
     }
 }
 
+/// 한 문서의 근거 초안을 만들 때 공유하는 배치 수준 계산장입니다.
+struct PlanScoringContext<'a> {
+    /// 후보 사전 점수입니다.
+    candidates: &'a BTreeMap<String, CandidatePrior>,
+    /// 배치 통계(IDF·평균 길이)입니다.
+    statistics: &'a (BTreeMap<String, f64>, f64),
+    /// 검색 계획의 허용 필드 목록입니다.
+    allowed: &'a BTreeMap<String, BTreeSet<String>>,
+    /// 토큰 종류입니다.
+    kinds: &'a BTreeMap<String, &'static str>,
+    /// 원자 식별자입니다.
+    atomic: &'a BTreeMap<String, BTreeSet<String>>,
+    /// 질의 구문입니다.
+    phrases: &'a [QueryPhrase],
+    /// 부정 토큰입니다.
+    negated: &'a BTreeSet<String>,
+}
+
+/// 문서 하나의 대표 초안과 facet 보완 초안을 만듭니다.
+fn document_passage_drafts(
+    document: &ScannedDocument,
+    scoring: &PlanScoringContext,
+) -> Vec<PassageDraft> {
+    let candidate = scoring.candidates.get(&document.path);
+    let prior = candidate.map_or(0.0, |candidate| candidate.prior);
+    let score = score_document(
+        document,
+        scoring.allowed,
+        scoring.kinds,
+        scoring.atomic,
+        scoring.statistics,
+        prior,
+    );
+    let forced = candidate.is_some();
+    if score.matched.is_empty() && !forced {
+        return Vec::new();
+    }
+    let prior_rank = candidate.map_or(usize::MAX, |candidate| candidate.best_rank);
+    let candidate_start = candidate
+        .and_then(|candidate| candidate.start_line)
+        .and_then(|line| candidate_start_byte(document, line));
+    let phrase_offsets = phrase_hit_offsets(document, scoring.phrases);
+    let anchor =
+        select_anchor(document, &score.matched, &phrase_offsets, candidate_start).unwrap_or(0);
+    let mut drafts = vec![build_passage(
+        document,
+        anchor,
+        &score,
+        prior,
+        scoring.phrases,
+        scoring.negated,
+    )];
+    for draft in &mut drafts {
+        draft.candidate_rank = prior_rank;
+    }
+    if let Some(candidate) = candidate {
+        tag_candidate_query_indexes(candidate, &mut drafts);
+        append_uncovered_facet_drafts(
+            document,
+            candidate,
+            &score,
+            prior,
+            prior_rank,
+            scoring,
+            &mut drafts,
+        );
+    }
+    drafts
+}
+
+/// 초안과 겹치는 facet 범위만 초안에 붙입니다.
+fn tag_candidate_query_indexes(candidate: &CandidatePrior, drafts: &mut [PassageDraft]) {
+    for draft in drafts.iter_mut() {
+        for range in &candidate.query_ranges {
+            if draft.start_line <= range.end_line && draft.end_line >= range.start_line {
+                draft.query_indexes.insert(range.query_index);
+            }
+        }
+    }
+}
+
+/// 초안은 행 번호를 가지므로 range와의 겹침을 그대로 판정합니다.
+const fn draft_overlaps_range(draft: &PassageDraft, range: &CandidateFacetRange) -> bool {
+    draft.start_line <= range.end_line && draft.end_line >= range.start_line
+}
+
+/// 대표 초안이 아예 겹치지 않은 facet 범위는 보완 초안으로 남깁니다.
+/// facet 근거가 후보 수집 단계에만 존재하다가 근거 목록에서 통째로 빠지는
+/// 손실을 막습니다.
+fn append_uncovered_facet_drafts(
+    document: &ScannedDocument,
+    candidate: &CandidatePrior,
+    score: &DocumentScore,
+    prior: f64,
+    prior_rank: usize,
+    scoring: &PlanScoringContext,
+    doc_drafts: &mut Vec<PassageDraft>,
+) {
+    if candidate.query_ranges.is_empty() {
+        return;
+    }
+    // facet별 대표 범위를 모아 facet당 하나의 보완 초안만 만듭니다.
+    let representative = candidate.query_ranges.iter().fold(
+        BTreeMap::<usize, &CandidateFacetRange>::new(),
+        |mut ranges, range| {
+            ranges
+                .entry(range.query_index)
+                .and_modify(|current| {
+                    if (range.start_line, range.end_line) < (current.start_line, current.end_line) {
+                        *current = range;
+                    }
+                })
+                .or_insert(range);
+            ranges
+        },
+    );
+    for (query_index, range) in &representative {
+        let extras = doc_drafts.len().saturating_sub(1);
+        if extras >= EXTRA_CANDIDATE_DRAFTS_PER_DOCUMENT {
+            break;
+        }
+        let ranges_of_facet = candidate
+            .query_ranges
+            .iter()
+            .filter(|item| item.query_index == *query_index);
+        let covered = doc_drafts.iter().any(|draft| {
+            ranges_of_facet
+                .clone()
+                .any(|item| draft_overlaps_range(draft, item))
+        });
+        if covered {
+            continue;
+        }
+        let Some(anchor) = candidate_start_byte(document, range.start_line) else {
+            continue;
+        };
+        let mut draft = build_passage(
+            document,
+            anchor,
+            score,
+            prior,
+            scoring.phrases,
+            scoring.negated,
+        );
+        draft.candidate_rank = prior_rank;
+        for item in &candidate.query_ranges {
+            if draft_overlaps_range(&draft, item) {
+                draft.query_indexes.insert(item.query_index);
+            }
+        }
+        doc_drafts.push(draft);
+    }
+}
+
 /// 원문 구절의 주소·문맥·점수 신호를 조립합니다.
 fn build_passage(
     document: &ScannedDocument,
@@ -2226,43 +2382,18 @@ fn plan_evidence(value: &Value) -> Option<Value> {
     let statistics = batch_statistics(&input.documents, &terms)?;
     let allowed = allowed_fields(&tokens);
     let atomic = atomic_identifiers(&tokens);
+    let scoring = PlanScoringContext {
+        candidates: &input.candidates,
+        statistics: &statistics,
+        allowed: &allowed,
+        kinds: &kinds,
+        atomic: &atomic,
+        phrases: &phrases,
+        negated: &negated,
+    };
     let mut drafts = Vec::new();
     for document in &input.documents {
-        let prior = input
-            .candidates
-            .get(&document.path)
-            .map_or(0.0, |candidate| candidate.prior);
-        let score = score_document(document, &allowed, &kinds, &atomic, &statistics, prior);
-        let prior_rank = input
-            .candidates
-            .get(&document.path)
-            .map_or(usize::MAX, |candidate| candidate.best_rank);
-        let forced = input.candidates.contains_key(&document.path);
-        if score.matched.is_empty() && !forced {
-            continue;
-        }
-        let candidate_start = input
-            .candidates
-            .get(&document.path)
-            .and_then(|candidate| candidate.start_line)
-            .and_then(|line| candidate_start_byte(document, line));
-        let phrase_offsets = phrase_hit_offsets(document, &phrases);
-        let anchor =
-            select_anchor(document, &score.matched, &phrase_offsets, candidate_start).unwrap_or(0);
-        let mut draft = build_passage(document, anchor, &score, prior, &phrases, &negated);
-        draft.candidate_rank = prior_rank;
-        if let Some(candidate) = input.candidates.get(&document.path) {
-            draft.query_indexes.extend(
-                candidate
-                    .query_ranges
-                    .iter()
-                    .filter(|range| {
-                        draft.start_line <= range.end_line && draft.end_line >= range.start_line
-                    })
-                    .map(|range| range.query_index),
-            );
-        }
-        drafts.push(draft);
+        drafts.extend(document_passage_drafts(document, &scoring));
     }
     // 구문 일치 초안이 하나라도 있으면 그 초안만 채택합니다. 배치 안에 전부
     // 미일치면 구문이 코퍼스에 없는 경우이므로 토큰 일치 초안을 유지하고,
@@ -3197,6 +3328,7 @@ mod tests {
     use unicode_normalization::UnicodeNormalization;
 
     use std::collections::BTreeSet;
+    use std::fmt::Write as _;
 
     use super::{
         PASSAGE_RADIUS_BYTES, ceil_char_boundary, floor_char_boundary, plan_indexed_evidence_json,
@@ -4874,6 +5006,95 @@ mod tests {
         let evidence = rows(&plan, "evidence");
         let first = evidence.first().unwrap_or(&NULL);
         assert_eq!(rows(first, "queryIndexes"), Vec::<Value>::new());
+    }
+
+    /// 대표 초안과 겹치지 않은 facet 범위는 보완 초안으로 남는다.
+    #[test]
+    fn plan_keeps_a_far_facet_range_as_an_extra_anchor_draft() {
+        // facet 0 후보는 문서 앞부분, facet 1 후보는 문서 뒤쪽 실제 행을 가리킨다.
+        // 대표 초안(앞부분 문구)이 뒤쪽 facet 1 범위와 겹치지 않으면
+        // facet 1 근거가 통째로 빠지는 회귀를 이 테스트가 잡는다.
+        let dense: String = std::iter::repeat_n("copper\n", 700).collect();
+        let body = format!("{dense}plain residue\nplain residue");
+        let plan = plan_of(&json!({
+            "question": "Compare copper and glass",
+            "documents": [{"path": "shared.md", "text": body}],
+            "candidates": [
+                {"path": "shared.md", "source": "bm25", "rank": 1, "score": 100.0, "queryIndex": 0, "startLine": 1, "endLine": 1},
+                {"path": "shared.md", "source": "bm25", "rank": 2, "score": 90.0, "queryIndex": 1, "startLine": 702, "endLine": 702}
+            ],
+            "budget": {"maxPassages": 4}
+        }));
+        let evidence = rows(&plan, "evidence");
+        let facet_passages: Vec<&Value> = evidence
+            .iter()
+            .filter(|row| rows(row, "queryIndexes").contains(&json!(1)))
+            .collect();
+        assert_eq!(facet_passages.len(), 1, "facet-1 passage exists");
+        let passage = facet_passages.into_iter().next().unwrap_or(&NULL);
+        assert_eq!(get(passage, "path"), &json!("shared.md"));
+        assert!(
+            text(get(passage, "quote")).contains("plain residue"),
+            "quote covers the far facet line"
+        );
+        assert!(get(passage, "endLine").as_u64().unwrap_or(0) >= 202);
+        assert!(rows(passage, "queryIndexes").contains(&json!(1)));
+    }
+
+    /// 같은 facet 범위가 대표 초안과 겹치면 보완 초안을 만들지 않는다.
+    #[test]
+    fn plan_keeps_a_single_draft_when_all_ranges_overlap() {
+        let plan = plan_of(&json!({
+            "question": "Compare copper and glass",
+            "documents": [{"path": "shared.md", "text": "copper glass"}],
+            "candidates": [
+                {"path": "shared.md", "source": "bm25", "rank": 1, "score": 100.0, "queryIndex": 0, "startLine": 1, "endLine": 1},
+                {"path": "shared.md", "source": "bm25", "rank": 2, "score": 90.0, "queryIndex": 1, "startLine": 1, "endLine": 1}
+            ]
+        }));
+        assert_eq!(rows(&plan, "evidence").len(), 1);
+        let first = first_row(&plan, "evidence");
+        let indexes = rows(&first, "queryIndexes");
+        assert!(indexes.contains(&json!(0)));
+        assert!(indexes.contains(&json!(1)));
+    }
+
+    /// facet별 보완 초안은 문서당 상한을 넘지 않는다.
+    #[test]
+    fn plan_caps_extra_anchor_drafts_per_document() {
+        // 네 facet 클러스터가 문맥 범위보다 멀리 떨어져 있어도
+        // 보완 초안은 EXTRA_CANDIDATE_DRAFTS_PER_DOCUMENT개까지만 만든다.
+        let mut body = String::new();
+        body.push_str(&"copper\n".repeat(700));
+        // 4개의 facet 클러스터는 서로 1200행(8400바이트) 간격으로 떨어져 있다.
+        let cluster_line = |i: usize| 1301 + i * 1200;
+        for label in ["one", "two", "three", "four"] {
+            body.push_str(&"filler\n".repeat(600));
+            let _ = writeln!(body, "residue {label}");
+            body.push_str(&"filler\n".repeat(599));
+        }
+        let document_text = body.trim_end().to_owned();
+        let plan = plan_of(&json!({
+            "question": "Compare copper glass slate lead",
+            "documents": [{"path": "shared.md", "text": document_text}],
+            "candidates": [
+                {"path": "shared.md", "source": "bm25", "rank": 1, "score": 100.0, "queryIndex": 0, "startLine": 1, "endLine": 1},
+                {"path": "shared.md", "source": "bm25", "rank": 2, "score": 90.0, "queryIndex": 1, "startLine": cluster_line(0), "endLine": cluster_line(0)},
+                {"path": "shared.md", "source": "bm25", "rank": 3, "score": 80.0, "queryIndex": 2, "startLine": cluster_line(1), "endLine": cluster_line(1)},
+                {"path": "shared.md", "source": "bm25", "rank": 4, "score": 70.0, "queryIndex": 3, "startLine": cluster_line(2), "endLine": cluster_line(2)},
+                {"path": "shared.md", "source": "bm25", "rank": 5, "score": 60.0, "queryIndex": 3, "startLine": cluster_line(3), "endLine": cluster_line(3)}
+            ],
+            "budget": {"maxPassages": 16}
+        }));
+        let path_passages = rows(&plan, "evidence")
+            .into_iter()
+            .filter(|row| get(row, "path") == &json!("shared.md"))
+            .count();
+        assert_eq!(
+            path_passages,
+            1 + super::EXTRA_CANDIDATE_DRAFTS_PER_DOCUMENT,
+            "primary plus capped extras"
+        );
     }
 
     #[test]

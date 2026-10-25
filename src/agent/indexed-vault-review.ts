@@ -482,11 +482,12 @@ export async function searchIndexedVault(
   }
   const bySource = new Map(statuses.map((status) => [status.sourceId, status]));
   // 근거 자격은 엔진 검증이 정하고, 전역 순위·중복 제거·예산 절단은 엔진 병합이 정합니다.
+  const mergePlans = plans.map((plan) => ({
+    ...plan,
+    evidence: plan.evidence.filter((item) => bySource.get(item.sourceId)?.status === 'verified'),
+  }));
   const merged = mergeIndexedEvidencePlansRust({
-    plans: plans.map((plan) => ({
-      ...plan,
-      evidence: plan.evidence.filter((item) => bySource.get(item.sourceId)?.status === 'verified'),
-    })),
+    plans: mergePlans,
     budget: { maxPassages: budget.maxPassages, maxChars: budget.maxChars },
   });
   if (!merged) return null;
