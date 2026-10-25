@@ -1495,15 +1495,12 @@ fn passage_body_terms(
         .collect()
 }
 
-/// 원문 구절을 만들고 `phrase`·부정 신호를 반영합니다.
-fn build_passage(
-    document: &ScannedDocument,
-    anchor: usize,
-    score: &DocumentScore,
-    prior: f64,
-    phrases: &[QueryPhrase],
-    negated: &BTreeSet<String>,
-) -> PassageDraft {
+/// 길이 상한 안에서 청크 전체 또는 경계 줄을 보존할 구절 범위입니다.
+fn passage_bounds(document: &ScannedDocument, anchor: usize) -> (usize, usize) {
+    // 이미 제한된 청크의 전제·예외를 별도 인용 창으로 다시 잘라 버리지 않습니다.
+    if document.text.len() <= MAX_BOUNDARY_PASSAGE_BYTES {
+        return (0, document.text.len());
+    }
     let start = floor_char_boundary(&document.text, anchor.saturating_sub(PASSAGE_RADIUS_BYTES));
     let end = ceil_char_boundary(&document.text, anchor.saturating_add(PASSAGE_RADIUS_BYTES));
     // 줄 중간의 byte 절단으로 같은 문장의 전제·조건·결론이 사라지지 않게 합니다.
@@ -1522,11 +1519,23 @@ fn build_passage(
         .get(document.line_starts.partition_point(|offset| *offset < end))
         .map_or(document.text.len(), |offset| offset.saturating_sub(1))
         .max(end);
-    let (start, end) = if line_end.saturating_sub(line_start) <= MAX_BOUNDARY_PASSAGE_BYTES {
+    if line_end.saturating_sub(line_start) <= MAX_BOUNDARY_PASSAGE_BYTES {
         (line_start, line_end)
     } else {
         (start, end)
-    };
+    }
+}
+
+/// 원문 구절의 주소·문맥·점수 신호를 조립합니다.
+fn build_passage(
+    document: &ScannedDocument,
+    anchor: usize,
+    score: &DocumentScore,
+    prior: f64,
+    phrases: &[QueryPhrase],
+    negated: &BTreeSet<String>,
+) -> PassageDraft {
+    let (start, end) = passage_bounds(document, anchor);
     let quote = document.text.get(start..end).unwrap_or_default().to_owned();
     let context_before = document
         .text
@@ -3258,6 +3267,32 @@ mod tests {
     }
 
     #[test]
+    fn passage_preserves_a_bounded_chunk_with_its_separate_context() {
+        for (term, padding) in [
+            ("cobalt valve", "neutral ".repeat(100)),
+            ("항성 신호", "여백 ".repeat(90)),
+        ] {
+            let body = format!(
+                "# Scope\nPrerequisite: keep the chamber sealed.\n\n{padding}\n{term}\n\nException: stop when the seal fails."
+            );
+            assert!(body.len() <= super::MAX_BOUNDARY_PASSAGE_BYTES);
+            let document = json!({"path": "synthetic.md", "text": body, "startLine": 16});
+            let plan = plan_of(&json!({"question": term, "documents": [document]}));
+            let evidence = first_row(&plan, "evidence");
+            assert_eq!(get(&evidence, "quote"), &json!(body));
+            assert_eq!(get(&evidence, "startLine"), &json!(16));
+            assert_eq!(get(&evidence, "endLine"), &json!(22));
+            assert_eq!(get(&evidence, "contextBefore"), &json!(""));
+            assert_eq!(get(&evidence, "contextAfter"), &json!(""));
+            let verified = verify_of(&json!({"evidence": [evidence], "documents": [document]}));
+            assert_eq!(
+                get(&first_row(&verified, "statuses"), "status"),
+                &json!("verified")
+            );
+        }
+    }
+
+    #[test]
     fn passage_preserves_boundary_lines_with_their_conditions() {
         for (prefix, term, suffix) in [
             (
@@ -3272,7 +3307,7 @@ mod tests {
             ),
         ] {
             let line = format!("PREMISE {prefix}{term}{suffix} CONSEQUENCE");
-            let body = format!("OUTSIDE BEFORE\n{line}\nOUTSIDE AFTER");
+            let body = format!("{}\n{line}\nOUTSIDE AFTER", "OUTSIDE BEFORE ".repeat(300));
             let plan = plan_of(&json!({
                 "question": term,
                 "documents": [{"path": "synthetic.md", "text": body, "startLine": 16}],
