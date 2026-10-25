@@ -15737,6 +15737,34 @@ mod tests {
         );
     }
 
+    /// 검색용 부분 토큰은 원래 단어의 정확 일치 횟수에 더하지 않는다.
+    #[test]
+    fn bm25_aggregate_keeps_literal_terms_separate_from_search_expansion() {
+        for (query, distractor) in [
+            ("은하수", "은하 하수"),
+            ("星空帳", "星空 空帳"),
+            ("LunarAtlas", "lunar atlas"),
+        ] {
+            let mut index = Bm25RuntimeIndex::new(2);
+            index.add_new_document("match::0", &format!("{query} {query}"), "match.md", 2);
+            index.add_new_document("partial::0", distractor, "partial.md", 2);
+            let aggregate = serde_json::from_str::<JsonValue>(&index.aggregate_json(query, 10))
+                .unwrap_or(JsonValue::Null);
+            assert_eq!(
+                aggregate.get("totalDocuments").and_then(JsonValue::as_u64),
+                Some(1),
+                "부분 토큰만 있는 문서를 원래 단어의 정확 일치로 세지 않는다",
+            );
+            assert_eq!(
+                aggregate
+                    .get("totalOccurrences")
+                    .and_then(JsonValue::as_u64),
+                Some(2),
+                "검색용 파생 토큰이 같은 발생을 중복 집계하지 않는다",
+            );
+        }
+    }
+
     /// 필드 제한 집계는 해당 필드 구간의 발생만 세야 한다.
     #[test]
     fn bm25_aggregate_respects_field_restriction() {

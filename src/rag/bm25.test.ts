@@ -198,6 +198,28 @@ describe('IndexedDbBM25Index', () => {
       bm25.close();
     }
   });
+  it('집계는 원래 단어만 세고 후보 검색은 부분 토큰을 계속 발견한다', async () => {
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
+    await bm25.load();
+    try {
+      for (const [index, [query, distractor]] of ([
+        ['은하수', '은하 하수'],
+        ['星空帳', '星空 空帳'],
+        ['LunarAtlas', 'lunar atlas'],
+      ] as const).entries()) {
+        const matchId = `match-${index}::0`;
+        const partialId = `partial-${index}::0`;
+        bm25.addDocument(matchId, `${query} ${query}`, `match-${index}.md`);
+        bm25.addDocument(partialId, distractor, `partial-${index}.md`);
+
+        expect((await bm25.aggregateMatches(query, 10))?.totalDocuments).toBe(1);
+        expect((await bm25.aggregateMatches(query, 10))?.totalOccurrences).toBe(2);
+        expect([...bm25.search(query).keys()]).toEqual(expect.arrayContaining([matchId, partialId]));
+      }
+    } finally {
+      bm25.close();
+    }
+  });
   it('현행 WASM 런타임에서 문서 교체와 원문별 삭제 후 검색·저장을 보존한다', () => {
     const runtime = RustBm25RuntimeIndex.empty(2);
     if (!runtime) throw new Error('WASM 초기화 실패');

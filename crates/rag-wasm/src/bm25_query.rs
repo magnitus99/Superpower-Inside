@@ -145,7 +145,7 @@ impl Bm25ScoreAccumulator {
 /// 위치·필드 색인을 사용해 query 점수를 계산한다.
 #[must_use]
 pub fn search_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore> {
-    let clauses = parse_query(query);
+    let clauses = parse_query(query, false);
     if clauses.is_empty() {
         return Vec::new();
     }
@@ -215,7 +215,7 @@ pub fn search_index_relaxed(
     query: &str,
     limit: usize,
 ) -> Option<Bm25RelaxedSearch> {
-    let clauses = parse_query(query);
+    let clauses = parse_query(query, false);
     if clauses.is_empty() {
         return None;
     }
@@ -293,7 +293,7 @@ fn coverage_ladder(clause_count: usize) -> Vec<usize> {
 
 /// query 문자열을 절 목록으로 파싱한다.
 #[must_use]
-fn parse_query(query: &str) -> Vec<Bm25QueryClause> {
+fn parse_query(query: &str, exact_terms: bool) -> Vec<Bm25QueryClause> {
     let characters = query.chars().collect::<Vec<_>>();
     let mut clauses = Vec::<Bm25QueryClause>::new();
     let mut seen = BTreeSet::<ClauseKey>::new();
@@ -317,7 +317,7 @@ fn parse_query(query: &str) -> Vec<Bm25QueryClause> {
         }
         let (text, next_cursor) = read_word(&characters, cursor);
         cursor = next_cursor;
-        push_term_clause(&mut clauses, &mut seen, &text, field);
+        push_term_clause(&mut clauses, &mut seen, &text, field, exact_terms);
     }
     clauses
 }
@@ -428,7 +428,7 @@ fn push_phrase_clause(
     let terms = tokenize(text);
     if terms.len() < 2 {
         for term in terms {
-            push_term_clause(clauses, seen, &term, field);
+            push_term_clause(clauses, seen, &term, field, true);
         }
         return;
     }
@@ -454,6 +454,7 @@ fn push_term_clause(
     seen: &mut BTreeSet<ClauseKey>,
     text: &str,
     field: Option<u8>,
+    exact_terms: bool,
 ) {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -465,8 +466,8 @@ fn push_term_clause(
     } else {
         trimmed
     };
-    // 필드 제한과 prefix는 식별자 하나를 그대로 쓴다. 평문은 기존 BM25 token 계약을 따른다.
-    let terms = if field.is_some() || prefix {
+    // 정확 집계는 파생 토큰을 제외하고, 후보 검색만 기존 확장 토큰을 쓴다.
+    let terms = if exact_terms || field.is_some() || prefix {
         let normalized = normalize_token(body);
         if normalized.is_empty() {
             Vec::new()
@@ -864,7 +865,7 @@ pub fn aggregate_matches(index: &Bm25IndexData, query: &str) -> Vec<Bm25MatchAgg
     if index.positions.is_empty() {
         return Vec::new();
     }
-    let clauses = parse_query(query);
+    let clauses = parse_query(query, true);
     let mut counts = BTreeMap::<String, usize>::new();
     for clause in &clauses {
         match clause {
