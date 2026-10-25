@@ -1467,6 +1467,8 @@ struct PassageDraft {
     field_score: f64,
     /// 일치한 필드 이름입니다.
     field_matches: BTreeSet<String>,
+    /// 구절 본문 안에서 실제로 일치한 긍정 질의 토큰입니다.
+    body_terms: BTreeSet<String>,
     /// 긍정 질의 토큰이 하나 이상 매칭됐는지입니다.
     matched: bool,
     /// 후보 신호의 가장 좋은 순위(없으면 `usize::MAX`)입니다.
@@ -1474,6 +1476,25 @@ struct PassageDraft {
     /// 이 구절을 지목한 검색 facet query index 합집합입니다.
     query_indexes: BTreeSet<usize>,
 }
+/// 제목·경로 신호를 제외하고 선택한 구절 안의 실제 질의어만 모읍니다.
+fn passage_body_terms(
+    document: &ScannedDocument,
+    matched: &BTreeSet<String>,
+    start: usize,
+    end: usize,
+) -> BTreeSet<String> {
+    document
+        .occurrences
+        .iter()
+        .filter(|occurrence| {
+            occurrence.byte_start >= start
+                && occurrence.byte_start < end
+                && matched.contains(&occurrence.token)
+        })
+        .map(|occurrence| occurrence.token.clone())
+        .collect()
+}
+
 /// 원문 구절을 만들고 `phrase`·부정 신호를 반영합니다.
 fn build_passage(
     document: &ScannedDocument,
@@ -1577,6 +1598,7 @@ fn build_passage(
         negated_nearby,
         exact: score.exact.clone(),
         field_score: score.field_score,
+        body_terms: passage_body_terms(document, &score.matched, start, end),
         matched: !score.matched.is_empty(),
         candidate_rank: usize::MAX,
         query_indexes: BTreeSet::new(),
@@ -1997,7 +2019,7 @@ fn select_evidence_indices(
 ) -> (BTreeSet<usize>, usize) {
     let mut used_chars = 0_usize;
     let mut selected = BTreeSet::<usize>::new();
-    let mut selected_paths = BTreeSet::<String>::new();
+    let mut selected_terms = BTreeMap::<String, BTreeSet<String>>::new();
     let nonzero_query_indexes = drafts
         .iter()
         .take(depth)
@@ -2028,16 +2050,23 @@ fn select_evidence_indices(
         {
             used_chars = used_chars.saturating_add(draft_chars(draft));
             selected.insert(index);
-            selected_paths.insert(draft.path.clone());
+            selected_terms
+                .entry(draft.path.clone())
+                .or_default()
+                .extend(draft.body_terms.iter().cloned());
         }
     }
-    // 같은 문서의 여러 구간이 예산을 독점하지 않도록 문서별 최상위 구간을 먼저 채웁니다.
-    // 이 단계 뒤에 남는 칸은 원래 점수 순서로 채워 깊은 문서 근거를 버리지 않습니다.
+    // 같은 문서의 반복 구간은 뒤로 미루되, 새 질의어를 설명하는 보완 구간은 보존합니다.
+    // 제목·경로 일치가 아니라 실제 구절 본문의 일치만 보완 근거로 사용합니다.
     for (index, draft) in drafts.iter().take(depth).enumerate() {
         if selected.len() >= max_passages {
             break;
         }
-        if selected.contains(&index) || selected_paths.contains(&draft.path) {
+        if selected.contains(&index)
+            || selected_terms
+                .get(&draft.path)
+                .is_some_and(|terms| draft.body_terms.is_subset(terms))
+        {
             continue;
         }
         let chars = draft_chars(draft);
@@ -2046,7 +2075,10 @@ fn select_evidence_indices(
         }
         used_chars = used_chars.saturating_add(chars);
         selected.insert(index);
-        selected_paths.insert(draft.path.clone());
+        selected_terms
+            .entry(draft.path.clone())
+            .or_default()
+            .extend(draft.body_terms.iter().cloned());
     }
     for (index, draft) in drafts.iter().take(depth).enumerate() {
         if selected.len() >= max_passages {
@@ -3488,6 +3520,64 @@ mod tests {
     }
 
     #[test]
+    fn plan_keeps_complementary_passages_before_redundant_document_matches() {
+        for (question, first, second, repeated) in [
+            (
+                "ceramic firing cooling",
+                "ceramic firing uses a controlled temperature.",
+                "ceramic cooling requires a gradual transition.",
+                "ceramic",
+            ),
+            (
+                "조립 검사 포장",
+                "조립 검사 작업은 승인된 순서로 진행한다.",
+                "조립 포장 작업에는 별도의 보호재를 사용한다.",
+                "조립",
+            ),
+        ] {
+            let plan = plan_of(&json!({
+                "question": question,
+                "documents": [
+                    {"path": "guide.md", "text": first, "startLine": 1},
+                    {"path": "guide.md", "text": second, "startLine": 20},
+                    {"path": "index.md", "text": repeated},
+                ],
+                "budget": {"maxDocuments": 3, "maxPassages": 2, "maxChars": 100_000},
+            }));
+            let evidence = rows(&plan, "evidence");
+            assert_eq!(evidence.len(), 2);
+            assert!(evidence.iter().all(|row| get(row, "path") == "guide.md"));
+            assert!(evidence.iter().any(|row| text(get(row, "quote")) == first));
+            assert!(evidence.iter().any(|row| text(get(row, "quote")) == second));
+            assert_eq!(get(get(&plan, "coverage"), "status"), "budget-exhausted");
+        }
+    }
+
+    #[test]
+    fn plan_does_not_treat_metadata_as_complementary_body_evidence() {
+        let plan = plan_of(&json!({
+            "question": "ceramic firing cooling",
+            "documents": [
+                {"path": "guide.md", "title": "firing", "text": "ceramic"},
+                {"path": "guide.md", "title": "cooling", "text": "ceramic", "startLine": 20},
+                {"path": "index.md", "text": "ceramic"},
+            ],
+            "budget": {"maxDocuments": 3, "maxPassages": 2, "maxChars": 100_000},
+        }));
+        let paths = rows(&plan, "evidence")
+            .into_iter()
+            .filter_map(|row| row.get("path").and_then(Value::as_str).map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            paths,
+            ["guide.md", "index.md"]
+                .map(str::to_owned)
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
     fn plan_marks_duplicate_passages() {
         let plan = plan_of(&json!({
             "question": "설치 방법",
@@ -4769,6 +4859,7 @@ mod tests {
             highlights: Vec::new(),
             field_score: 0.0,
             field_matches: std::collections::BTreeSet::new(),
+            body_terms: std::collections::BTreeSet::new(),
             matched: score > 0.0,
             candidate_rank: query_index.map_or(usize::MAX, |_| 1000),
             query_indexes: query_index.into_iter().collect(),
