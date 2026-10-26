@@ -5366,6 +5366,8 @@ export interface RustIndexedEvidenceInput {
   question: string;
   /** 후보 수집에 사용한 교차 언어 검색 힌트입니다. 직접 인용 구문으로 취급하지 않습니다. */
   queryVariants?: readonly string[];
+  /** 독립 후속 질의의 대표 구절을 공유 예산 안에서 각각 보존합니다. */
+  queryFacets?: readonly string[];
   documents: readonly RustIndexedEvidenceDocument[];
   scopes?: readonly string[];
   filters?: RustIndexedEvidenceFilters;

@@ -1598,6 +1598,61 @@ fn document_passage_drafts(
     drafts
 }
 
+/// 이미 읽은 문서를 독립 질의별로 평가하고 같은 구절의 질의 귀속을 합칩니다.
+fn independent_facet_drafts(input: &PlanInput, facets: &[String]) -> Option<Vec<PassageDraft>> {
+    let candidates = BTreeMap::new();
+    let mut unique = BTreeMap::<(String, u64, u64, String), PassageDraft>::new();
+    for (index, question) in facets.iter().enumerate() {
+        let (tokens, phrases) = parse_query(question);
+        let statistics = batch_statistics(&input.documents, &positive_terms(&tokens))?;
+        let allowed = allowed_fields(&tokens);
+        let kinds = term_kinds(&tokens);
+        let atomic = atomic_identifiers(&tokens);
+        let negated = negated_terms(&tokens);
+        let scoring = PlanScoringContext {
+            candidates: &candidates,
+            statistics: &statistics,
+            allowed: &allowed,
+            kinds: &kinds,
+            atomic: &atomic,
+            phrases: &phrases,
+            negated: &negated,
+        };
+        let mut drafts = input
+            .documents
+            .iter()
+            .flat_map(|document| document_passage_drafts(document, &scoring))
+            .collect::<Vec<_>>();
+        if phrases
+            .iter()
+            .any(|phrase| !phrase.negated && !phrase.text.is_empty())
+            && drafts.iter().any(|draft| draft.phrase_matches > 0)
+        {
+            drafts.retain(|draft| draft.phrase_matches > 0);
+        }
+        for mut draft in drafts {
+            draft.query_indexes.insert(index.saturating_add(1));
+            let key = (
+                draft.path.clone(),
+                draft.start_line,
+                draft.end_line,
+                draft.quote.clone(),
+            );
+            if let Some(existing) = unique.get_mut(&key) {
+                if draft.score > existing.score {
+                    draft.query_indexes.extend(&existing.query_indexes);
+                    *existing = draft;
+                } else {
+                    existing.query_indexes.extend(&draft.query_indexes);
+                }
+            } else {
+                unique.insert(key, draft);
+            }
+        }
+    }
+    Some(unique.into_values().collect())
+}
+
 /// 초안과 겹치는 facet 범위만 초안에 붙입니다.
 fn tag_candidate_query_indexes(candidate: &CandidatePrior, drafts: &mut [PassageDraft]) {
     for draft in drafts.iter_mut() {
@@ -2335,6 +2390,17 @@ fn plan_evidence(value: &Value) -> Option<Value> {
     let input = plan_input(value)?;
     let (mut tokens, phrases) = parse_query(&input.question);
     let variants = optional_string_array(value.get("queryVariants"))?;
+    let facets = optional_string_array(value.get("queryFacets"))?;
+    if value.get("queryFacets").is_some_and(|item| !item.is_null())
+        && (facets.is_empty()
+            || facets.len() > MAX_CANDIDATE_QUERY_INDEX
+            || facets
+                .iter()
+                .any(|query| query.trim().is_empty() || query.len() > 16_384)
+            || !input.candidates.is_empty())
+    {
+        return None;
+    }
     if variants.len() > 3
         || variants
             .iter()
@@ -2344,7 +2410,7 @@ fn plan_evidence(value: &Value) -> Option<Value> {
     }
     // 기존 번역 구문은 후보 수집뿐 아니라 원문 구절의 lexical 평가에도 사용합니다.
     // 번역은 검색 힌트이므로 원래 부정·필드 연산자를 덮거나 직접 인용 구문을 만들지 않습니다.
-    for variant in &variants {
+    for variant in variants.iter().chain(&facets) {
         let (variant_tokens, _) = parse_query(variant);
         for mut token in variant_tokens {
             if token.negated || tokens.iter().any(|existing| existing.text == token.text) {
@@ -2384,14 +2450,20 @@ fn plan_evidence(value: &Value) -> Option<Value> {
         phrases: &phrases,
         negated: &negated,
     };
-    let mut drafts = Vec::new();
-    for document in &input.documents {
-        drafts.extend(document_passage_drafts(document, &scoring));
-    }
+    let mut drafts = if facets.is_empty() {
+        input
+            .documents
+            .iter()
+            .flat_map(|document| document_passage_drafts(document, &scoring))
+            .collect()
+    } else {
+        independent_facet_drafts(&input, &facets)?
+    };
     // 구문 일치 초안이 하나라도 있으면 그 초안만 채택합니다. 배치 안에 전부
     // 미일치면 구문이 코퍼스에 없는 경우이므로 토큰 일치 초안을 유지하고,
     // 구문 보너스(`PHRASE_SIGNAL_BONUS`)만 받지 못하게 합니다.
     if has_positive_phrase
+        && facets.is_empty()
         && !has_comparison_facets
         && drafts.iter().any(|draft| draft.phrase_matches > 0)
     {
@@ -5186,6 +5258,145 @@ mod tests {
                     .all(|status| { get(status, "status") == &json!("verified") })
             );
         }
+    }
+
+    #[test]
+    fn plan_reserves_independent_query_facets_before_the_shared_budget_fill() {
+        for (first, second, sparse) in [
+            (
+                "larch conifer",
+                "indigo etching",
+                "indigo etching retains moisture",
+            ),
+            ("단풍 잎맥", "안료 판화", "안료 판화는 습도를 유지한다"),
+        ] {
+            let mut documents = (0..16).map(|index| json!({
+                "path": format!("common-{index}.md"), "text": format!("{first} ").repeat(12),
+            })).collect::<Vec<_>>();
+            documents.push(json!({"path": "sparse.md", "text": format!("{sparse} {}", "ambient detail ".repeat(60))}));
+            let input = json!({
+                "question": first, "queryVariants": [second],
+                "queryFacets": [first, second], "documents": documents,
+                "budget": {"maxDocuments": 8, "maxPassages": 2, "maxChars": 2048},
+            });
+            let plan = plan_of(&input);
+            let evidence = rows(&plan, "evidence");
+            assert_eq!(evidence.len(), 2);
+            assert!(
+                evidence
+                    .iter()
+                    .any(|row| get(row, "path") == &json!("sparse.md"))
+            );
+            for index in [1, 2] {
+                assert!(
+                    evidence
+                        .iter()
+                        .any(|row| rows(row, "queryIndexes").contains(&json!(index)))
+                );
+            }
+            let merged = merge_of(&json!({
+                "plans": [plan], "budget": {"maxPassages": 2, "maxChars": 2048},
+            }));
+            assert!(
+                rows(&merged, "evidence")
+                    .iter()
+                    .any(|row| get(row, "path") == &json!("sparse.md"))
+            );
+            let mut limited = input.as_object().cloned().unwrap_or_default();
+            limited.insert(
+                "budget".to_owned(),
+                json!({"maxDocuments": 8, "maxPassages": 1, "maxChars": 2048}),
+            );
+            assert_eq!(
+                rows(&plan_of(&Value::Object(limited.clone())), "evidence").len(),
+                1
+            );
+            limited.insert(
+                "budget".to_owned(),
+                json!({"maxDocuments": 8, "maxPassages": 2, "maxChars": 1}),
+            );
+            assert!(rows(&plan_of(&Value::Object(limited)), "evidence").is_empty());
+        }
+    }
+
+    #[test]
+    fn plan_unions_query_facets_for_the_same_passage_and_checks_scope() {
+        let input = json!({
+            "question": "larch",
+            "queryFacets": ["larch", "conifer"], "scopes": ["Allowed"],
+            "documents": [
+                {"path": "Allowed/shared.md", "text": "larch conifer"},
+                {"path": "Hidden/private.md", "text": "larch conifer"},
+            ],
+        });
+        let plan = plan_of(&input);
+        let evidence = rows(&plan, "evidence");
+        assert_eq!(evidence.len(), 1);
+        let shared = first_row(&plan, "evidence");
+        assert_eq!(get(&shared, "queryIndexes"), &json!([1, 2]));
+        assert_eq!(get(&shared, "path"), &json!("Allowed/shared.md"));
+        assert!(
+            rows(&plan, "queryTokens")
+                .iter()
+                .any(|token| get(token, "text") == &json!("conifer"))
+        );
+        let verification = verify_of(
+            &json!({"evidence": evidence, "documents": get(&input, "documents"), "scopes": ["Allowed"]}),
+        );
+        assert!(
+            rows(&verification, "statuses")
+                .iter()
+                .all(|row| get(row, "status") == &json!("verified"))
+        );
+        for facets in [
+            json!([]),
+            json!([""]),
+            json!(["a", "b", "c", "d"]),
+            json!([12]),
+        ] {
+            let mut invalid = input.as_object().cloned().unwrap_or_default();
+            invalid.insert("queryFacets".to_owned(), facets);
+            assert_eq!(
+                plan_indexed_evidence_json(&Value::Object(invalid).to_string()),
+                ""
+            );
+        }
+    }
+
+    #[test]
+    fn plan_keeps_independent_phrase_facets_and_their_negation() {
+        let input = json!({
+            "question": "\"amber kiln\" -damp",
+            "queryFacets": ["\"amber kiln\" -damp", "cobalt basin -amber"],
+            "documents": [
+                {"path": "first.md", "text": "amber kiln remains dry"},
+                {"path": "second.md", "text": "cobalt basin retains moisture"},
+            ],
+            "budget": {"maxPassages": 2},
+        });
+        let plan = plan_of(&input);
+        let evidence = rows(&plan, "evidence");
+        assert_eq!(evidence.len(), 2);
+        assert!(
+            evidence
+                .iter()
+                .any(|row| get(row, "path") == &json!("second.md")
+                    && get(row, "queryIndexes") == &json!([2]))
+        );
+        assert!(
+            evidence
+                .iter()
+                .all(|row| get(row, "negatedNearby") == &json!(false))
+        );
+        let mut invalid = input.as_object().cloned().unwrap_or_default();
+        invalid.insert(
+            "candidates".to_owned(),
+            json!([{"path": "first.md", "source": "bm25", "rank": 1, "queryIndex": 1}]),
+        );
+        assert_eq!(
+            plan_indexed_evidence_json(&Value::Object(invalid).to_string()),
+            ""
+        );
     }
 
     #[test]

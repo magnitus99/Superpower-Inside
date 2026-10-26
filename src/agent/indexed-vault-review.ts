@@ -85,6 +85,8 @@ export type IndexedVaultDocumentScope = 'all' | 'candidates';
 export interface IndexedVaultSearchOptions {
   question: string;
   queryVariants?: readonly string[];
+  /** 번역 변형과 달리 각각 대표 근거를 보존할 독립 후속 질의입니다. */
+  queryFacets?: readonly string[];
   indexedPaths: readonly string[];
   scopes: readonly string[];
   corpus: IndexedVaultCorpus;
@@ -180,6 +182,7 @@ function candidateScopedPaths(
 interface IndexedEvidenceEngineInput {
   question: string;
   queryVariants?: readonly string[];
+  queryFacets?: readonly string[];
   documents: RustIndexedEvidenceDocument[];
   scopes: string[];
   filters?: RustIndexedEvidenceFilters;
@@ -416,6 +419,7 @@ export async function searchIndexedVault(
         JSON.stringify({
           question: options.question,
           queryVariants: options.queryVariants,
+          queryFacets: options.queryFacets,
           documents: [],
           scopes: options.scopes,
           filters: options.filters,
@@ -432,6 +436,7 @@ export async function searchIndexedVault(
       const engineInput: IndexedEvidenceEngineInput = {
         question: options.question,
         queryVariants: options.queryVariants,
+        queryFacets: options.queryFacets,
         documents: batch,
         scopes: [...options.scopes],
         filters: options.filters,
@@ -466,6 +471,7 @@ export async function searchIndexedVault(
     const engineInput: IndexedEvidenceEngineInput = {
       question: options.question,
       queryVariants: options.queryVariants,
+      queryFacets: options.queryFacets,
       documents: [],
       scopes: [...options.scopes],
       filters: options.filters,
@@ -991,6 +997,7 @@ async function runIndexedVaultReview(
       (queries, paths) => searchIndexedVault({
         question: queries[0] ?? options.question,
         queryVariants: queries.slice(1),
+        queryFacets: queries,
         indexedPaths: paths,
         scopes: options.scopes,
         corpus: options.corpus!,

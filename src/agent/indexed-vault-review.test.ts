@@ -333,7 +333,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     const calls: ChatMessage[][] = [];
     const streamChat = vi.fn((messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
       calls.push(messages);
-      consume({ content: calls.length === 1 ? '["delivery schedule"]' : JSON.stringify({
+      consume({ content: calls.length === 1 ? '["delivery schedule", "cooling protocol"]' : JSON.stringify({
         paragraphs: [{ text: '근거의 조건을 함께 설명합니다.', sources: sourceMissing ? [SOURCE_ID] : [SOURCE_ID, OTHER_SOURCE_ID] }],
       }) });
       return Promise.resolve();
@@ -352,6 +352,11 @@ describe('엔진 근거 기반 색인 검토', () => {
     }));
     expect(result.dossier.followup?.status).toBe('searched');
     expect(result.diagnostics.counts.followupRequests).toBe(1);
+    expect(vi.mocked(planIndexedEvidenceRust).mock.calls[1]?.[0]).toMatchObject({
+      question: 'delivery schedule',
+      queryVariants: ['cooling protocol'],
+      queryFacets: ['delivery schedule', 'cooling protocol'],
+    });
     expect(vi.mocked(planIndexedEvidenceRust).mock.calls[1]?.[0].candidates).toBeUndefined();
     expect(calls).toHaveLength(2);
     expect(sourceReader).toHaveBeenCalledWith(OTHER, expect.any(AbortSignal));
@@ -425,6 +430,21 @@ describe('엔진 근거 기반 색인 검토', () => {
     });
     expect(filtered.readDiscoveryPage).toBeUndefined();
     expect(filtered.dossier.discoverySummary).toBeUndefined();
+  });
+
+  it('독립 후속 질의의 대표 근거와 귀속을 WASM 계획·병합까지 보존한다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const result = await searchIndexedVault({
+      question: 'cooling cycles', queryVariants: ['delivery schedule'],
+      queryFacets: ['cooling cycles', 'delivery schedule'],
+      indexedPaths: [RELEVANT, OTHER], scopes: [], corpus: corpusFixture(),
+      budget: { maxPassages: 2, maxChars: 8192 },
+    });
+    expect(result?.evidence).toHaveLength(2);
+    expect(result?.evidence.find((item) => item.path === RELEVANT)?.queryIndexes).toEqual([1]);
+    expect(result?.evidence.find((item) => item.path === OTHER)?.queryIndexes).toEqual([2]);
   });
 
   it('후보 수집의 번역 구문을 원문 구절 평가에도 전달한다', async () => {
