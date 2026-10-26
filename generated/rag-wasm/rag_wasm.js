@@ -4202,6 +4202,26 @@ export function rrf_score_or_nan(source_codes, ranks, bm25_weight) {
 }
 
 /**
+ * 검색 가능한 경로를 반환하되 발견·검토·원문 검증 완료로 승격하지 않습니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function scope_indexed_discovery_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.scope_indexed_discovery_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 질문 토큰과 겹치는 비율만 계산하고 임계 판정은 호스트에 맡깁니다.
  * @param {string} input
  * @returns {string}

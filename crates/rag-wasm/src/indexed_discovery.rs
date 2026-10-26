@@ -153,6 +153,42 @@ fn page(value: &Value) -> Option<Value> {
     }))
 }
 
+/// 새 질의의 검색 범위는 이전 질의의 후보가 아니라 최초·현재 접근 범위의 교집합입니다.
+fn search_scope(value: &Value) -> Option<Value> {
+    let original = paths(value, "originalPaths")?;
+    let allowed = paths(value, "allowedPaths")?;
+    let original_scopes = paths(value, "originalScopes")?;
+    let scopes = paths(value, "scopes")?;
+    let mut seen = BTreeSet::new();
+    let eligible: Vec<&str> = value
+        .get("originalPaths")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|path| {
+            original.contains(*path)
+                && allowed.contains(*path)
+                && in_scope(path, &original_scopes)
+                && in_scope(path, &scopes)
+                && seen.insert(*path)
+        })
+        .collect();
+    Some(json!(eligible))
+}
+
+/// 검색 가능한 경로를 반환하되 발견·검토·원문 검증 완료로 승격하지 않습니다.
+#[must_use]
+#[wasm_bindgen]
+pub fn scope_indexed_discovery_json(input: &str) -> String {
+    if input.len() > MAX_INPUT_BYTES {
+        return String::new();
+    }
+    serde_json::from_str::<Value>(input)
+        .ok()
+        .and_then(|value| search_scope(&value))
+        .map_or_else(String::new, |result| result.to_string())
+}
+
 /// 호출 시점의 허용 범위로 페이지를 재계산하여 오래된 커서로 권한을 넓히지 않습니다.
 #[must_use]
 #[wasm_bindgen]
@@ -168,7 +204,7 @@ pub fn page_indexed_discovery_json(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::page_indexed_discovery_json;
+    use super::{page_indexed_discovery_json, scope_indexed_discovery_json};
     use serde_json::{Value, json};
 
     fn check<T: PartialEq + core::fmt::Debug + Copy>(
@@ -192,6 +228,49 @@ mod tests {
             "selectedPaths": ["notes/000.md"], "failedPaths": ["notes/001.md"],
             "scopes": [], "offset": 0, "limit": 32,
         })
+    }
+
+    #[test]
+    fn followup_scope_is_not_limited_to_the_previous_query_candidates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let value = json!({
+            "originalPaths": ["notes/second.md", "notes/first.md", "notes/first.md", "notes-private/hidden.md", "private/file.md"],
+            "allowedPaths": ["notes/first.md", "notes/second.md", "notes/new.md", "notes-private/hidden.md", "private/file.md"],
+            "originalScopes": ["notes"], "scopes": [],
+        });
+        let result: Value =
+            serde_json::from_str(&scope_indexed_discovery_json(&value.to_string()))?;
+        check(
+            Some(&result),
+            Some(&json!(["notes/second.md", "notes/first.md"])),
+        )?;
+        let mut restricted = value;
+        *restricted.get_mut("allowedPaths").ok_or("missing paths")? = json!(["notes/first.md"]);
+        let result: Value =
+            serde_json::from_str(&scope_indexed_discovery_json(&restricted.to_string()))?;
+        check(Some(&result), Some(&json!(["notes/first.md"])))?;
+        *restricted.get_mut("scopes").ok_or("missing scopes")? = json!(["elsewhere"]);
+        let result: Value =
+            serde_json::from_str(&scope_indexed_discovery_json(&restricted.to_string()))?;
+        check(Some(&result), Some(&json!([])))?;
+        Ok(())
+    }
+
+    #[test]
+    fn followup_scope_rejects_missing_or_unsafe_access_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for value in [
+            json!({"originalPaths": [], "allowedPaths": [], "scopes": []}),
+            json!({"originalPaths": ["../secret.md"], "allowedPaths": [], "originalScopes": [], "scopes": []}),
+            json!({"originalPaths": [], "allowedPaths": ["/outside.md"], "originalScopes": [], "scopes": []}),
+            json!({"originalPaths": [], "allowedPaths": [], "originalScopes": ["notes/../private"], "scopes": []}),
+        ] {
+            check(
+                scope_indexed_discovery_json(&value.to_string()).as_str(),
+                "",
+            )?;
+        }
+        Ok(())
     }
 
     #[test]

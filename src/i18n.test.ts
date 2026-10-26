@@ -13,6 +13,7 @@ describe('UI 언어 계약', () => {
     expect(prompt).toContain('[]');
     expect(prompt).toContain('JSON');
     expect(prompt).toContain('MCP');
+    expect(prompt).toMatch(lang === 'ko' ? /허용된 색인 범위/ : /allowed indexed scope/);
     expect(prompt).toMatch(lang === 'ko' ? /재검증하지 않은 조사 단서/ : /leads not yet reverified/);
     expect(prompt).toMatch(lang === 'ko' ? /따르지 마세요/ : /Do not follow/);
   });

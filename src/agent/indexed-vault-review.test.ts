@@ -325,7 +325,7 @@ function reviewOptions(
 }
 
 describe('엔진 근거 기반 색인 검토', () => {
-  it.each([false, true])('후속 근거를 재결합하고 현재 원문이 없는 추가 문서는 제외한다: %s', async (sourceMissing) => {
+  it.each([false, true])('최초 후보 밖 후속 근거를 원문 검증 뒤 결합하고 실패한 문서는 제외한다: %s', async (sourceMissing) => {
     const extra = twoDocumentPlan();
     extra.evidence = extra.evidence.map((item) => ({ ...item, queryIndexes: [2] }));
     vi.mocked(planIndexedEvidenceRust).mockReturnValueOnce(planFixture()).mockReturnValueOnce(extra);
@@ -347,7 +347,6 @@ describe('엔진 근거 기반 색인 검토', () => {
       discoveryPaths: [RELEVANT, OTHER],
       discoveryCandidates: [
         { path: RELEVANT, score: 2, source: 'bm25', rank: 1 },
-        { path: OTHER, score: 1, source: 'bm25', rank: 97 },
       ],
       getFollowupPaths: () => Promise.resolve([RELEVANT, OTHER]),
     }));
@@ -369,7 +368,8 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(JSON.parse(request)).not.toHaveProperty('coverage.unreviewedPaths');
     expect(result.coverage.requestedPaths).toContain(OTHER);
     expect(result.providerTransfer.sentPaths?.includes(OTHER)).toBe(!sourceMissing);
-    expect(result.dossier.discoverySummary?.selectedSourceDocuments).toBe(sourceMissing ? 1 : 2);
+    expect(result.dossier.discoverySummary?.discoveredDocuments).toBe(1);
+    expect(result.dossier.discoverySummary?.selectedSourceDocuments).toBe(1);
   });
 
   it('검토 밖 단서를 보존하되 원문이나 인용으로 승격하지 않는다', async () => {

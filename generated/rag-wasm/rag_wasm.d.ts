@@ -1067,6 +1067,11 @@ export function render_indexed_review_answer_json(source_ids: string, response: 
 export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
 
 /**
+ * 검색 가능한 경로를 반환하되 발견·검토·원문 검증 완료로 승격하지 않습니다.
+ */
+export function scope_indexed_discovery_json(input: string): string;
+
+/**
  * 질문 토큰과 겹치는 비율만 계산하고 임계 판정은 호스트에 맡깁니다.
  */
 export function score_indexed_review_segments_json(input: string): string;
@@ -1374,6 +1379,7 @@ export interface InitOutput {
     readonly recompute_centroids: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly render_indexed_review_answer_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly rrf_score_or_nan: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly scope_indexed_discovery_json: (a: number, b: number) => [number, number];
     readonly score_indexed_review_segments_json: (a: number, b: number) => [number, number];
     readonly select_diverse_indices: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly select_plugin_context7_library_id: (a: number, b: number, c: number, d: number) => [number, number];

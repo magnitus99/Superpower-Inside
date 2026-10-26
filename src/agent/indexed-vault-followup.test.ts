@@ -54,6 +54,20 @@ describe('발견 단서의 한 차례 후속 검색', () => {
     expect(JSON.stringify(f.streamChat.mock.calls)).not.toContain('private/hidden.md');
   });
 
+  it('새 질의는 최초 후보에 없던 색인 문서도 조사하되 최초·현재 접근 범위 밖으로 넓히지 않는다', async () => {
+    const f = fixture();
+    f.options.discoveryCandidates = [f.options.discoveryCandidates![0]];
+    f.options.getFollowupPaths = () => Promise.resolve([
+      ...f.paths, 'notes/created-after-search.md',
+    ]);
+    await searchIndexedFollowup(f.options, f.base, f.runSearch);
+    expect(f.runSearch).toHaveBeenCalledWith(
+      ['cooling exception'], ['notes/start.md', 'notes/later.md'],
+    );
+    const request = f.streamChat.mock.calls[0][0].find((message) => message.role === 'user');
+    expect(JSON.parse(request?.content ?? '{}')).toMatchObject({ discoveredDocuments: 1 });
+  });
+
   it('첫 페이지 이후의 발견 단서도 후속 검색 범위에서 잃지 않는다', async () => {
     const f = fixture();
     const paths = Array.from({ length: 200 }, (_, index) => `notes/item-${index}.md`);

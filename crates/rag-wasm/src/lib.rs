@@ -71,7 +71,7 @@ pub use evidence_collection::{plan_evidence_collection_json, plan_indexed_search
 /// 위치·필드 기반 `BM25` 질의 parser와 구문 검증.
 mod bm25_query;
 mod indexed_discovery;
-pub use indexed_discovery::page_indexed_discovery_json;
+pub use indexed_discovery::{page_indexed_discovery_json, scope_indexed_discovery_json};
 mod indexed_evidence;
 pub use indexed_evidence::{
     merge_indexed_evidence_plans_json, plan_indexed_evidence_json, verify_indexed_evidence_json,

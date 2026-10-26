@@ -5253,6 +5253,21 @@ export interface RustIndexedDiscoveryInput {
   limit: number;
 }
 
+/** 최초 색인 범위와 현재 허용 범위만 적용하며 이전 질의 후보로 자르지 않습니다. */
+export function scopeIndexedDiscoveryRust(
+  input: Pick<RustIndexedDiscoveryInput, 'originalPaths' | 'originalScopes' | 'allowedPaths' | 'scopes'>,
+): string[] | null {
+  if (!ensureRustCore()) return null;
+  const run = resolveRustStringExport('scope_indexed_discovery_json');
+  if (!run) return null;
+  try {
+    const value: unknown = JSON.parse(run(JSON.stringify(input)));
+    return Array.isArray(value) && value.every(isStringValue) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface RustIndexedDiscoverySummary {
   basis: 'collected-candidates';
   candidateRecords: number;

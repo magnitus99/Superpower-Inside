@@ -1,7 +1,7 @@
 import { t } from '../i18n';
 import type { ChatMessage, TokenUsage } from '../llm/providers';
 import { prepareProviderRequest } from '../llm/request-budget';
-import { pageIndexedDiscoveryRust, planModelContextRust, planVaultQueryExpansionRust } from '../rag/rust-core';
+import { pageIndexedDiscoveryRust, planModelContextRust, planVaultQueryExpansionRust, scopeIndexedDiscoveryRust } from '../rag/rust-core';
 import { appLogger } from '../utils/logger';
 import type { IndexedVaultReviewOptions, IndexedVaultSearchResult } from './indexed-vault-review';
 
@@ -11,7 +11,7 @@ export interface IndexedFollowupResult {
   queries?: readonly string[];
 }
 
-/** 기본 발견을 대체하지 않고 보존한 단서 안에서 한 번만 추가 질의를 실행한다. */
+/** 기본 발견을 대체하지 않고 보존한 단서를 바탕으로 한 번만 추가 질의를 실행한다. */
 export async function searchIndexedFollowup(
   options: IndexedVaultReviewOptions,
   base: IndexedVaultSearchResult,
@@ -76,8 +76,16 @@ export async function searchIndexedFollowup(
     const plan = planVaultQueryExpansionRust(options.question, response);
     if (!plan?.variants.length) return { status: 'skipped' };
     // 계획 생성 중 바뀐 제외·접근 범위를 검색 직전에 다시 적용한다.
-    const currentPaths = await collectPaths();
-    if (!currentPaths?.length) return { status: 'skipped' };
+    check();
+    const allowedPaths = await getFollowupPaths();
+    check();
+    if (options.isCurrent?.() === false) return { status: 'skipped' };
+    const currentPaths = scopeIndexedDiscoveryRust({
+      originalPaths: discoveryPaths, originalScopes: options.scopes,
+      allowedPaths, scopes: options.scopes,
+    });
+    if (!currentPaths) return { status: 'failed' };
+    if (!currentPaths.length) return { status: 'skipped' };
     const search = await runSearch(plan.variants, currentPaths);
     check();
     if (options.isCurrent?.() === false) return { status: 'skipped' };
