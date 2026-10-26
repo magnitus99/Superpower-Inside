@@ -3214,6 +3214,10 @@ export class ChatView extends ItemView {
           ? indexedPaths
           : (searchSource?.reviewPaths ?? indexedPaths);
         const searchInventory = searchSource?.inventory;
+        const searchPolicy = JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]);
+        const isReviewCurrent = () =>
+          isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready' &&
+          JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]) === searchPolicy;
         const researchResult = await reviewIndexedVault({
           question: text,
           indexedPaths: reviewPaths,
@@ -3222,12 +3226,23 @@ export class ChatView extends ItemView {
           candidates: searchSource?.candidates,
           discoveryCandidates: searchSource?.discoveryCandidates,
           discoveryPaths: indexedPaths,
+          getFollowupPaths: async () => {
+            const { getRagCandidateFiles } = await import('../utils/vault');
+            const files = await getRagCandidateFiles(
+              this.app.vault, this.plugin.settings.rag, this.plugin.settings.chat,
+            );
+            return isReviewCurrent() ? files.map((file) => file.path) : [];
+          },
           candidatesState: searchSource?.candidatesState,
           inventory: searchInventory,
           matchInventory: searchSource?.matchInventory,
           filters: mentionedTags.length > 0 ? { tags: mentionedTags } : undefined,
           revisionReader: searchSource?.revisionReader,
-          sourceReader: searchSource?.sourceReader,
+          sourceReader: searchSource?.sourceReader
+            ? (path, signal) => isReviewCurrent()
+              ? searchSource.sourceReader!(path, signal)
+              : Promise.resolve({ revision: null, text: null })
+            : undefined,
           searchPlan: searchSource?.searchPlan,
           queryVariants: searchSource?.queryVariants,
           provider,
@@ -3237,8 +3252,7 @@ export class ChatView extends ItemView {
           deferAnswer,
           documentScope: 'all',
           exhaustiveReview: restrictedSearch ? false : searchSource?.exhaustiveReview === true,
-          isCurrent: () =>
-            isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready',
+          isCurrent: isReviewCurrent,
           onDiagnostics: (diagnostics) => {
             if (!isChatRunActive(this.activeRun, run)) return;
             indexedReviewDiagnostics = diagnostics;

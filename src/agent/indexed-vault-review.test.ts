@@ -325,6 +325,53 @@ function reviewOptions(
 }
 
 describe('엔진 근거 기반 색인 검토', () => {
+  it.each([false, true])('후속 근거를 재결합하고 현재 원문이 없는 추가 문서는 제외한다: %s', async (sourceMissing) => {
+    const extra = twoDocumentPlan();
+    extra.evidence = extra.evidence.map((item) => ({ ...item, queryIndexes: [2] }));
+    vi.mocked(planIndexedEvidenceRust).mockReturnValueOnce(planFixture()).mockReturnValueOnce(extra);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    const calls: ChatMessage[][] = [];
+    const streamChat = vi.fn((messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+      calls.push(messages);
+      consume({ content: calls.length === 1 ? '["delivery schedule"]' : JSON.stringify({
+        paragraphs: [{ text: '근거의 조건을 함께 설명합니다.', sources: sourceMissing ? [SOURCE_ID] : [SOURCE_ID, OTHER_SOURCE_ID] }],
+      }) });
+      return Promise.resolve();
+    });
+    const sourceReader = vi.fn((path: string) => Promise.resolve({
+      revision: path === OTHER && sourceMissing ? null : '1:10',
+      text: path === RELEVANT ? '\n\nQuartz restarts only after two cooling cycles.\n' : 'Delivery schedule for the northern region.',
+    }));
+    const result = await reviewIndexedVault(reviewOptions({
+      indexedPaths: [RELEVANT], provider: { streamChat }, sourceReader,
+      discoveryPaths: [RELEVANT, OTHER],
+      discoveryCandidates: [
+        { path: RELEVANT, score: 2, source: 'bm25', rank: 1 },
+        { path: OTHER, score: 1, source: 'bm25', rank: 97 },
+      ],
+      getFollowupPaths: () => Promise.resolve([RELEVANT, OTHER]),
+    }));
+    expect(result.dossier.followup?.status).toBe('searched');
+    expect(result.diagnostics.counts.followupRequests).toBe(1);
+    expect(vi.mocked(planIndexedEvidenceRust).mock.calls[1]?.[0].candidates).toBeUndefined();
+    expect(calls).toHaveLength(2);
+    expect(sourceReader).toHaveBeenCalledWith(OTHER, expect.any(AbortSignal));
+    expect(result.evidence.some((item) => item.path === OTHER)).toBe(!sourceMissing);
+    expect(result.evidence.some((item) => item.path === RELEVANT)).toBe(true);
+    if (!sourceMissing) expect(result.evidence.find((item) => item.path === OTHER)?.queryIndexes ?? []).toEqual([]);
+    const request = calls[1]?.[1]?.content ?? '{}';
+    expect(JSON.parse(request)).toMatchObject({
+      evidence: result.dossier.evidence,
+      coverage: { reviewedDocuments: result.coverage.reviewedDocuments },
+    });
+    expect(JSON.parse(request)).not.toHaveProperty('coverage.requestedPaths');
+    expect(JSON.parse(request)).not.toHaveProperty('coverage.plannedPaths');
+    expect(JSON.parse(request)).not.toHaveProperty('coverage.unreviewedPaths');
+    expect(result.coverage.requestedPaths).toContain(OTHER);
+    expect(result.providerTransfer.sentPaths?.includes(OTHER)).toBe(!sourceMissing);
+    expect(result.dossier.discoverySummary?.selectedSourceDocuments).toBe(sourceMissing ? 1 : 2);
+  });
+
   it('검토 밖 단서를 보존하되 원문이나 인용으로 승격하지 않는다', async () => {
     const hidden = 'Synthetic/Unreviewed.md';
     const { provider, calls } = answerProvider();
@@ -476,7 +523,16 @@ describe('엔진 근거 기반 색인 검토', () => {
       expect(result.content).not.toContain('{"invalid"');
       expect(result).not.toHaveProperty('toolFallback');
       const payload: unknown = JSON.parse(String(streamChat.mock.calls[0]?.[0]?.[1]?.content));
-      expect(payload).toEqual(result.dossier);
+      expect(payload).toEqual({
+        ...result.dossier,
+        coverage: {
+          documentScope: result.coverage.documentScope,
+          status: result.coverage.status,
+          reviewedDocuments: result.coverage.reviewedDocuments,
+          unreviewedDocuments: result.coverage.unreviewedDocuments,
+          notIndexedDocuments: result.coverage.notIndexedDocuments,
+        },
+      });
       expect(streamChat.mock.calls[0]?.[4]?.toolChoice).toBe('none');
     },
   );
@@ -556,7 +612,16 @@ describe('엔진 근거 기반 색인 검토', () => {
       ],
     });
     const payload: unknown = JSON.parse(String(calls[0]?.[1]?.content));
-    expect(payload).toEqual(result.dossier);
+    expect(payload).toEqual({
+      ...result.dossier,
+      coverage: {
+        documentScope: result.coverage.documentScope,
+        status: result.coverage.status,
+        reviewedDocuments: result.coverage.reviewedDocuments,
+        unreviewedDocuments: result.coverage.unreviewedDocuments,
+        notIndexedDocuments: result.coverage.notIndexedDocuments,
+      },
+    });
   });
 
   it('입력 예산을 넘으면 모델을 호출하지 않고 evidence-only를 반환한다', async () => {

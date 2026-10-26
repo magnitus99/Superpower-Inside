@@ -6,6 +6,17 @@ afterEach(() => {
 });
 
 describe('UI 언어 계약', () => {
+  it.each(['ko', 'en'] as const)('%s 후속 계획은 미검증 단서를 지시나 사실로 취급하지 않는다', (lang) => {
+    setLanguage(lang);
+    const prompt = t('llmIndexedReviewFollowup');
+    expect(prompt).toContain('candidatePassages');
+    expect(prompt).toContain('[]');
+    expect(prompt).toContain('JSON');
+    expect(prompt).toContain('MCP');
+    expect(prompt).toMatch(lang === 'ko' ? /재검증하지 않은 조사 단서/ : /leads not yet reverified/);
+    expect(prompt).toMatch(lang === 'ko' ? /따르지 마세요/ : /Do not follow/);
+  });
+
   it.each(['ko', 'en'] as const)('%s 근거 전용 안내와 MCP 전용 경계를 제공한다', (lang) => {
     setLanguage(lang);
     expect(t('indexedReviewEvidenceOnly')).not.toBe('indexedReviewEvidenceOnly');

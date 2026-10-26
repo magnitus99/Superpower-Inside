@@ -31,6 +31,7 @@ import type { IndexedEvidenceSourceSnapshot } from '../search/engine-adapter';
 import type { SearchCandidateState } from '../search/engine-port';
 import { appLogger } from '../utils/logger';
 import { selectAnswerCitations } from './citation-selection';
+import { searchIndexedFollowup } from './indexed-vault-followup';
 import type { VaultResearchProgress } from './research-agent';
 
 /** 색인 본문·리비전만으로 근거를 선별하는 엔진 연결(provider 미사용)입니다. */
@@ -586,6 +587,8 @@ export interface IndexedReviewDiagnostics {
     reduceRequests: number;
     cacheHits: number;
     answerCorrectionRequests?: number;
+    followupRequests?: number;
+    followupDocuments?: number;
   };
   /** 최종 리뷰 결과 종류입니다. 디버그 추적에서 답변이 왜 근거만 나왔는지 판단할 때 씁니다. */
   outcome?: IndexedReviewOutcome;
@@ -605,6 +608,8 @@ export interface IndexedVaultReviewOptions {
   /** 검토 예산 밖 후보와 수집 시점 허용 경로입니다. 후보는 확정 근거가 아닙니다. */
   discoveryCandidates?: readonly IndexedEvidenceCandidate[];
   discoveryPaths?: readonly string[];
+  /** 후속 검색 직전에 현재 접근·제외 정책으로 허용 경로를 다시 읽습니다. */
+  getFollowupPaths?: () => Promise<readonly string[]>;
   /** 색인 전체 일치 집계입니다. 없으면 집계 수치 없이 근거만으로 답합니다. */
   matchInventory?: readonly IndexedMatchCount[];
   exhaustiveReview?: boolean;
@@ -642,6 +647,7 @@ export interface IndexedEvidenceDossier {
   documentScope: IndexedVaultDocumentScope;
   /** 발견 범위와 실제 근거 검토를 분리한 집계입니다. 후보 원문이나 인용은 아닙니다. */
   discoverySummary?: RustIndexedDiscoverySummary;
+  followup?: { status: 'skipped' | 'searched' | 'failed'; queries?: readonly string[] };
   evidence: readonly IndexedEvidenceItem[];
   coverage: IndexedVaultSearchCoverage;
   diagnostics: IndexedEvidencePlan['diagnostics'] | null;
@@ -906,7 +912,7 @@ async function runIndexedVaultReview(
         engineUnavailable: true,
       };
     }
-    const search = options.corpus
+    let search = options.corpus
       ? await interruptible(
           searchIndexedVault({
             question: options.scoringQuestion ?? options.question,
@@ -976,6 +982,79 @@ async function runIndexedVaultReview(
         diagnostics,
         engineUnavailable: true,
       };
+    }
+    const baseSearch = search;
+    const followupUsage: TokenUsage[] = [];
+    const followup = await interruptible(searchIndexedFollowup(
+      options,
+      baseSearch,
+      (queries, paths) => searchIndexedVault({
+        question: queries[0] ?? options.question,
+        queryVariants: queries.slice(1),
+        indexedPaths: paths,
+        scopes: options.scopes,
+        corpus: options.corpus!,
+        // 이전 질의의 순위·facet은 새 질의의 후보 prior로 넘기지 않습니다.
+        documentScope: 'all',
+        filters: options.filters,
+        budget: { maxDocuments: 8, maxPassages: 8, maxChars: 32_768 },
+        signal: options.signal,
+      }),
+      (update) => {
+        followupUsage.push(update);
+        const usage = planTurnUsageRust({ requests: [followupUsage] });
+        if (usage) Object.assign(diagnostics.phases.reduce, usage);
+      },
+      () => { diagnostics.counts.followupRequests = 1; },
+    ));
+    check();
+    if (followup.search) {
+      const extra = followup.search;
+      const merged = mergeIndexedEvidencePlansRust({
+        plans: [
+          { ...baseSearch.plan, evidence: baseSearch.evidence },
+          // 후속 질의의 번호는 원래 비교 facet의 번호가 아니므로 재사용하지 않습니다.
+          { ...extra.plan, evidence: extra.evidence.map((item) => ({ ...item, queryIndexes: [] })) },
+        ],
+        budget: {
+          maxPassages: baseSearch.evidence.length + extra.evidence.length,
+          maxChars: baseSearch.plan.budget.maxChars + extra.plan.budget.maxChars,
+        },
+      });
+      if (merged) {
+        // 경로 집계는 실제 I/O 작업의 합집합이며, 근거 선택·중복 제거는 Rust가 담당합니다.
+        const requestedPaths = [...new Set([...baseSearch.coverage.requestedPaths, ...extra.coverage.requestedPaths])];
+        const plannedPaths = [...new Set([...baseSearch.coverage.plannedPaths, ...extra.coverage.plannedPaths])];
+        const reviewed = new Set(plannedPaths);
+        const unreviewedPaths = [...new Set([...baseSearch.coverage.unreviewedPaths, ...extra.coverage.unreviewedPaths])]
+          .filter((path) => !reviewed.has(path));
+        const coverage: IndexedVaultSearchCoverage = {
+          ...baseSearch.coverage,
+          status: merged.coverage.status,
+          requestedPaths, plannedPaths, unreviewedPaths,
+          reviewedDocuments: plannedPaths.length,
+          unreviewedDocuments: unreviewedPaths.length,
+        };
+        search = {
+          ...baseSearch,
+          plan: {
+            ...baseSearch.plan, evidence: merged.evidence, order: merged.order,
+            budget: { ...baseSearch.plan.budget, ...merged.budget },
+            diagnostics: {
+              ...baseSearch.plan.diagnostics,
+              selectedDocuments: merged.diagnostics.selectedDocuments,
+              selectedChunks: merged.diagnostics.selectedChunks,
+              truncated: baseSearch.plan.diagnostics.truncated || extra.plan.diagnostics.truncated || merged.diagnostics.truncated,
+            },
+          },
+          evidence: merged.evidence,
+          rejected: [...baseSearch.rejected, ...extra.rejected],
+          coverage,
+        };
+        diagnostics.counts.followupDocuments = extra.coverage.plannedPaths.length;
+      } else {
+        followup.status = 'failed';
+      }
     }
     diagnostics.counts.candidateSegments = search.plan.evidence.length;
     diagnostics.counts.screenAcceptedSegments = search.evidence.length;
@@ -1344,6 +1423,7 @@ async function runIndexedVaultReview(
       previousUserQuestions: options.previousUserQuestions ?? [],
       queryPlan: { queryTokens: search.plan.queryTokens, phrases: search.plan.phrases },
       ...(discoveryPage ? { discoverySummary: discoveryPage.summary } : {}),
+      ...(options.getFollowupPaths ? { followup: { status: followup.status, queries: followup.queries } } : {}),
       matchInventory: options.matchInventory,
       documentScope,
       evidence,
@@ -1461,7 +1541,17 @@ async function runIndexedVaultReview(
         },
         {
           role: 'user',
-          content: JSON.stringify(dossier),
+          // 경로별 조사 원장은 결과와 페이지 조회에 보존하고, 모델에는 검토 집계만 전달합니다.
+          content: JSON.stringify({
+            ...dossier,
+            coverage: {
+              documentScope: dossier.coverage.documentScope,
+              status: dossier.coverage.status,
+              reviewedDocuments: dossier.coverage.reviewedDocuments,
+              unreviewedDocuments: dossier.coverage.unreviewedDocuments,
+              notIndexedDocuments: dossier.coverage.notIndexedDocuments,
+            },
+          }),
         },
       ];
       if (previousAnswer !== undefined) {
