@@ -69,6 +69,37 @@ describe('UI 언어 계약', () => {
   );
 
   it.each(['ko', 'en'] as const)(
+    '%s 집계 지침과 표시 단위는 색인 내 반복 일치를 원문 고유 발생과 구분한다',
+    (lang) => {
+      setLanguage(lang);
+      const prompt = t('llmIndexedReviewAnswer');
+      expect(prompt).toContain('totalDocuments');
+      expect(prompt).toContain('totalChunks');
+      expect(prompt).toContain('totalOccurrences');
+      expect(prompt).toContain('documents[].occurrences');
+      expect(prompt).toContain(
+        lang === 'ko'
+          ? '중첩 청크와 제목·헤딩 필드의 반복 일치'
+          : 'repeated matches in overlapping chunks and title/heading fields',
+      );
+      expect(prompt).toContain(
+        lang === 'ko'
+          ? '원문 고유 발생 횟수로 제시하거나 추정하지'
+          : 'Do not present or estimate unique occurrences in the original text',
+      );
+      expect(t('sourceDiscoveryLimit')).toContain(
+        lang === 'ko' ? '원문 고유 발생 횟수가 아닙니다' : 'not unique occurrences in the original text',
+      );
+      expect(t('sourceDiscoverySummary')).toContain(
+        lang === 'ko' ? '색인 내 일치 {occurrences}회' : '{occurrences} indexed matches',
+      );
+      expect(t('sourceDiscoveryOccurrences')).toContain(
+        lang === 'ko' ? '색인 내 일치 {count}회' : '{count} indexed matches',
+      );
+    },
+  );
+
+  it.each(['ko', 'en'] as const)(
     '%s 답변 지침은 결론의 조건과 개념 구분을 보존하고 대립 구조를 강제하지 않는다',
     (lang) => {
       setLanguage(lang);

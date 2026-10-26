@@ -188,7 +188,10 @@ describe('SourcePanel view model contract', () => {
     ).toContain('원문 검증');
     expect(
       container.querySelector('.superpower-inside-chat-discovery-summary')?.textContent,
-    ).toContain('9');
+    ).toContain('색인 내 일치 23회');
+    expect(
+      container.querySelector('.superpower-inside-chat-discovery-limit')?.textContent,
+    ).toContain('원문 고유 발생 횟수가 아닙니다');
     expect(
       container.querySelector('.superpower-inside-chat-discovery-path-count')?.textContent,
     ).toContain('1 / 9');

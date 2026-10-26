@@ -2688,11 +2688,11 @@ const ko: I18nKeys = {
   sourceVerifiedCount: '출처 {count}개 확인됨',
   sourceDiscoveryTitle: '검색 일치와 발견 경로',
   sourceDiscoveryLimit:
-    '검색 당시 색인의 검색어 일치 집계입니다. 의미상 관련성이나 직접 인용 판정이 아니며, 아래 경로는 현재 원문 검증을 마친 출처가 아닙니다.',
-  sourceDiscoverySummary: '일치 문서 {documents}개 · 색인 구간 {chunks}개 · 발생 {occurrences}회',
+    '검색 당시 색인의 검색어 일치 집계입니다. 색인 내 일치는 중첩 청크와 제목·헤딩 필드의 반복 일치를 포함하므로 원문 고유 발생 횟수가 아닙니다. 의미상 관련성이나 직접 인용 판정이 아니며, 아래 경로는 현재 원문 검증을 마친 출처가 아닙니다.',
+  sourceDiscoverySummary: '일치 문서 {documents}개 · 색인 구간 {chunks}개 · 색인 내 일치 {occurrences}회',
   sourceDiscoveryPathCount:
     '표시 경로 {shown} / {total}개 — 엔진이 반환한 경로만 표시합니다. 나머지 경로는 이 목록에 포함되지 않습니다.',
-  sourceDiscoveryOccurrences: ' · {count}회 ',
+  sourceDiscoveryOccurrences: ' · 색인 내 일치 {count}회 ',
   sourceDiscoveryOpen: '미검증 발견 문서 열기: {path}',
   sourceCitationSelectionFailed: '최종 답변의 출처를 정리할 수 없습니다.',
   sourceSearchVerifiedCount: '출처 {verified}/{total}개 확인됨',
@@ -3505,7 +3505,7 @@ const ko: I18nKeys = {
     'answerPlan이 있으면 requiredFacetIds의 supported facet별 핵심 주장을 먼저 제시하세요. 공통점·차이·충돌·조건·예외를 해당 근거에 연결하고, 양쪽 supported facet의 근거가 모두 있을 때만 직접 비교하거나 종합하세요.',
     '질문의 결론이나 비교를 달라지게 하는 근거의 조건·예외·적용 범위를 해당 주장과 함께 설명하세요. 근거가 구분하는 개념을 하나로 합치거나 조건부 주장을 일반화하지 마세요. 관계·비교는 확인된 공통점·차이·긴장을 중심으로 설명하고, 근거에 없는 대립을 억지로 만들지 마세요.',
     'answerPlan.missingFacetIds와 searchPlan.failedFacetIds는 검토 범위에서 확인하지 못한 항목입니다. 해당 facet을 검증된 사실처럼 서술하거나 볼트 전체의 부재로 단정하지 마세요.',
-    'matchInventory는 엔진이 색인 전체에서 정확 term·구문을 센 값입니다(일치 문서 수·근거 구간 수·발생 횟수, documents는 발생이 많은 상위 경로). 수치를 물으면 이 값을 그대로 인용하고, matchInventory에 없는 문서·수치·비율·순위를 만들지 마세요. 집계는 자료의 규모를 설명하는 값이며 검토한 문서 수나 인용한 근거 수와 다릅니다.',
+    'matchInventory는 엔진이 색인 전체에서 정확 term·구문을 센 값입니다. totalDocuments는 중복을 제거한 일치 경로 수, totalChunks는 일치 색인 청크 수입니다. totalOccurrences와 documents[].occurrences는 중첩 청크와 제목·헤딩 필드의 반복 일치를 포함한 색인 내 일치 횟수입니다. 이를 원문 고유 발생 횟수로 제시하거나 추정하지 마세요. documents는 색인 내 일치가 많은 상위 경로만 담습니다. 수치를 물으면 단위를 밝혀 이 값을 그대로 인용하고, matchInventory에 없는 문서·수치·비율·순위를 만들지 마세요. 집계는 검토한 문서 수나 인용한 근거 수와도 다릅니다.',
     '직접 인용 여부는 evidence의 원문 구절과 정확히 일치할 때만 인정하고, 어형 변화·번역·바꿔쓴 표현은 직접 인용이 아니라고 구분하세요. 열거를 요청하면 matchInventory.documents와 evidence의 항목을 빠짐없이 나열하고, 밝히는 개수는 실제로 나열한 항목 수와 일치시키세요.',
     '검토 예산이나 상위 k 컷 때문에 집계·열거를 축소하지 마세요. total*은 색인 전체 기준이고 documents는 상위 경로만 담으므로, 나머지는 경로 이름을 지어내지 말고 남은 경로 수로 밝히세요.',
     '근거가 지지하지 않는 인과·시간 순서·동일성을 추가하지 마세요. 각 문단의 covers에는 answerPlan facet ID만 넣고, 모든 requiredFacetIds를 다루세요. synthesisRequired이면 requiredFacetIds 전체를 covers에 넣고 각 facet의 source를 하나 이상 포함한 종합 문단을 반드시 작성하세요.',
@@ -4714,12 +4714,12 @@ const en: I18nKeys = {
   sourceVerifiedCount: '{count} sources checked',
   sourceDiscoveryTitle: 'Search matches and discovered paths',
   sourceDiscoveryLimit:
-    'Term matches in the index at search time, not semantic relevance or a direct-quotation judgment. The paths below are not sources verified against the current text.',
+    'Term matches in the index at search time. Indexed matches include repeated matches in overlapping chunks and title/heading fields; they are not unique occurrences in the original text. Counts do not indicate semantic relevance or a direct-quotation judgment. The paths below are not sources verified against the current text.',
   sourceDiscoverySummary:
-    '{documents} matching documents · {chunks} indexed passages · {occurrences} occurrences',
+    '{documents} matching documents · {chunks} indexed passages · {occurrences} indexed matches',
   sourceDiscoveryPathCount:
     'Paths shown: {shown} / {total} — only paths returned by the engine are listed. Remaining paths are not included here.',
-  sourceDiscoveryOccurrences: ' · {count} occurrences ',
+  sourceDiscoveryOccurrences: ' · {count} indexed matches ',
   sourceDiscoveryOpen: 'Open unverified discovered document: {path}',
   sourceCitationSelectionFailed: 'The final answer sources could not be prepared.',
   sourceSearchVerifiedCount: '{verified}/{total} sources checked',
@@ -5552,7 +5552,7 @@ const en: I18nKeys = {
     'When answerPlan is present, lead with the core claims for each supported facet in requiredFacetIds. Connect commonalities, differences, conflicts, conditions, and exceptions to that evidence. Compare or synthesize directly only when both supported facets have supplied evidence.',
     'Explain evidence-backed conditions, exceptions, and scope limits alongside the claims they qualify when they change the answer or comparison. Do not collapse distinctions made by the evidence or generalize conditional claims. Explain relationships through supported commonalities, differences, and tensions; do not invent opposition absent from the evidence.',
     'answerPlan.missingFacetIds and searchPlan.failedFacetIds are items that could not be confirmed in the reviewed scope. Do not present those facets as verified facts or claim vault-wide absence.',
-    'matchInventory holds engine counts over the whole index for exact terms and phrases (matching documents, evidence spans, occurrences; documents lists only the top paths by occurrence). When the user asks for numbers, quote these values exactly, and never invent documents, counts, ratios, or ranks that are not in matchInventory. Counts describe how much material exists; they are not the number of reviewed documents or cited evidence items.',
+    'matchInventory holds engine counts over the whole index for exact terms and phrases. totalDocuments is the deduplicated matching path count; totalChunks is the matching indexed chunk count. totalOccurrences and documents[].occurrences count indexed matches, including repeated matches in overlapping chunks and title/heading fields. Do not present or estimate unique occurrences in the original text from these values. documents lists only the top paths by indexed match count. When the user asks for numbers, name the counting unit and quote these values exactly; never invent documents, counts, ratios, or ranks that are not in matchInventory. These counts are also not the number of reviewed documents or cited evidence items.',
     'Accept a direct quote only when it matches a verbatim evidence passage, and distinguish inflection, translation, or paraphrase from direct quotation. When the user asks for an enumeration, list every item in matchInventory.documents and the evidence, and make any stated total match the number of listed items.',
     'Do not shrink counts or enumerations because of a review budget or top-k cut. total* covers the whole index while documents holds only top paths, so state the remaining path count instead of inventing names for paths that are not listed.',
     'Do not add causality, chronology, or identity unsupported by evidence. Use only answerPlan facet IDs in each paragraph covers array and cover every requiredFacetIds entry. If synthesisRequired, include one synthesis paragraph that covers all requiredFacetIds and contains at least one source from each facet.',
