@@ -2555,6 +2555,29 @@ describe('indexed search/answer wire wrappers', () => {
     expect(planIndexedEvidenceRust(input)?.evidence[0].queryIndexes).toEqual([]);
   });
 
+  it('병합의 원래 배치 순위·점수 비율을 보존하고 잘못된 wire 값은 거절한다', () => {
+    const input = { question: 'alpha', documents: [{ path: 'notes/alpha.md', text: 'alpha' }] };
+    const ranking = { rank: 2, scoreRatio: 0.75 };
+    const wire = JSON.parse(evidencePlanWire()) as { evidence: { mergeRanking?: unknown }[] };
+    wire.evidence[0].mergeRanking = ranking;
+    rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(JSON.stringify(wire));
+    expect(planIndexedEvidenceRust(input)?.evidence[0]).toMatchObject({ mergeRanking: ranking });
+    for (const invalid of [
+      null,
+      {},
+      { rank: 0, scoreRatio: 0.5 },
+      { rank: 1.5, scoreRatio: 0.5 },
+      { rank: '1', scoreRatio: 0.5 },
+      { rank: 1, scoreRatio: -0.1 },
+      { rank: 1, scoreRatio: 1.1 },
+      { rank: 1, scoreRatio: '0.5' },
+    ]) {
+      wire.evidence[0].mergeRanking = invalid;
+      rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(JSON.stringify(wire));
+      expect(planIndexedEvidenceRust(input)).toBeNull();
+    }
+  });
+
   it('preserves independent facet representatives and accepts legacy evidence', () => {
     const input = { question: 'alpha', documents: [{ path: 'notes/alpha.md', text: 'alpha' }] };
     rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire([1, 3], [3]));

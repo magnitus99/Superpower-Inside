@@ -5414,6 +5414,8 @@ export interface RustIndexedEvidencePassage {
   queryIndexes?: readonly number[];
   /** 독립 질의가 다른 질의 점수와 합치기 전에 최상위로 지목한 귀속입니다. */
   preferredQueryIndexes?: readonly number[];
+  /** 순차 병합에서 다시 계산하지 않을 원래 배치의 순위와 점수 비율입니다. */
+  mergeRanking?: { rank: number; scoreRatio: number };
   negatedNearby: boolean;
   highlights: readonly { start: number; end: number }[];
   duplicateOf: string | null;
@@ -5701,6 +5703,20 @@ function readIndexedEvidencePassage(value: unknown): RustIndexedEvidencePassage 
   if (!isStringRecordValueMap(value)) return null;
   const queryIndexes = readIndexedQueryIndexes(value.queryIndexes);
   const preferredQueryIndexes = readIndexedQueryIndexes(value.preferredQueryIndexes);
+  const ranking = value.mergeRanking;
+  let mergeRanking: RustIndexedEvidencePassage['mergeRanking'];
+  if (ranking !== undefined) {
+    if (
+      !isStringRecordValueMap(ranking) ||
+      !isNonNegativeSafeInteger(ranking.rank) ||
+      ranking.rank < 1 ||
+      typeof ranking.scoreRatio !== 'number' ||
+      !Number.isFinite(ranking.scoreRatio) ||
+      ranking.scoreRatio < 0 ||
+      ranking.scoreRatio > 1
+    ) return null;
+    mergeRanking = { rank: ranking.rank, scoreRatio: ranking.scoreRatio };
+  }
   if (
     !preferredQueryIndexes ||
     !preferredQueryIndexes.every((index) => queryIndexes?.includes(index)) ||
@@ -5751,6 +5767,7 @@ function readIndexedEvidencePassage(value: unknown): RustIndexedEvidencePassage 
     fieldMatches: Array.isArray(value.fieldMatches) && value.fieldMatches.every(isStringValue) ? value.fieldMatches : [],
     queryIndexes,
     preferredQueryIndexes,
+    ...(mergeRanking === undefined ? {} : { mergeRanking }),
     exactSignals: value.exactSignals,
     negatedNearby: value.negatedNearby,
     duplicateOf: value.duplicateOf,

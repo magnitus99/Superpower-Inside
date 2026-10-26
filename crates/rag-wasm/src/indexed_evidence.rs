@@ -3031,6 +3031,8 @@ struct MergeEntry {
     rrf_score: f64,
     /// 배치 내부 유효 순위입니다.
     rank: usize,
+    /// 이전 병합이 원래 배치 순위와 점수 비율을 보존했는지입니다.
+    ranking_preserved: bool,
     /// 부정 토큰이 구절 근처에 있는지입니다.
     negated_nearby: bool,
     /// 신호에 `candidate`가 포함됐는지입니다.
@@ -3091,12 +3093,28 @@ fn merge_entry(value: &Value) -> Option<MergeEntry> {
     }
     let quote = value.get("quote")?.as_str()?.to_owned();
     let source_id = value.get("sourceId")?.as_str()?.to_owned();
-    let rank = value
-        .get("rank")
-        .and_then(Value::as_u64)
-        .and_then(|rank| usize::try_from(rank).ok())
-        .filter(|rank| *rank > 0)
-        .unwrap_or(0);
+    let preserved_ranking = match value.get("mergeRanking") {
+        None => None,
+        Some(ranking) => {
+            let rank = usize::try_from(ranking.get("rank")?.as_u64()?).ok()?;
+            let score_ratio = ranking.get("scoreRatio")?.as_f64()?;
+            if rank == 0 || !score_ratio.is_finite() || !(0.0..=1.0).contains(&score_ratio) {
+                return None;
+            }
+            Some((rank, score_ratio))
+        }
+    };
+    let rank = preserved_ranking.map_or_else(
+        || {
+            value
+                .get("rank")
+                .and_then(Value::as_u64)
+                .and_then(|rank| usize::try_from(rank).ok())
+                .filter(|rank| *rank > 0)
+                .unwrap_or(0)
+        },
+        |(rank, _)| rank,
+    );
     let negated_nearby = value
         .get("negatedNearby")
         .and_then(Value::as_bool)
@@ -3136,9 +3154,10 @@ fn merge_entry(value: &Value) -> Option<MergeEntry> {
     Some(MergeEntry {
         value: value.clone(),
         score,
-        local_score: 0.0,
+        local_score: preserved_ranking.map_or(0.0, |(_, score_ratio)| score_ratio),
         rrf_score: 0.0,
         rank,
+        ranking_preserved: preserved_ranking.is_some(),
         negated_nearby,
         has_candidate,
         phrase_matches,
@@ -3181,10 +3200,15 @@ fn collect_merge_entries(plans: &[Value]) -> Option<(Vec<MergeEntry>, MergeCover
             .map(merge_entry)
             .collect::<Option<Vec<_>>>()?;
         let mut ranks = BTreeSet::new();
+        let fresh_count = plan_entries
+            .iter()
+            .filter(|entry| !entry.ranking_preserved)
+            .count();
         let ranks_valid = plan_entries
             .iter()
+            .filter(|entry| !entry.ranking_preserved)
             .all(|entry| entry.rank > 0 && ranks.insert(entry.rank))
-            && ranks.iter().copied().eq(1..=plan_entries.len());
+            && ranks.iter().copied().eq(1..=fresh_count);
         if !ranks_valid {
             plan_entries.sort_by(|left, right| {
                 right
@@ -3196,17 +3220,24 @@ fn collect_merge_entries(plans: &[Value]) -> Option<(Vec<MergeEntry>, MergeCover
                     .then_with(|| left.quote.cmp(&right.quote))
                     .then_with(|| left.source_id.cmp(&right.source_id))
             });
-            for (index, entry) in plan_entries.iter_mut().enumerate() {
+            for (index, entry) in plan_entries
+                .iter_mut()
+                .filter(|entry| !entry.ranking_preserved)
+                .enumerate()
+            {
                 entry.rank = index.saturating_add(1);
             }
         }
         let max_score = plan_entries
             .iter()
+            .filter(|entry| !entry.ranking_preserved)
             .map(|entry| entry.score)
             .fold(0.0_f64, f64::max);
         let denominator = max_score.max(1e-12);
         for entry in &mut plan_entries {
-            entry.local_score = (entry.score / denominator).clamp(0.0, 1.0);
+            if !entry.ranking_preserved {
+                entry.local_score = (entry.score / denominator).clamp(0.0, 1.0);
+            }
             let rank = crate::usize_to_f64(entry.rank).unwrap_or(f64::MAX);
             entry.rrf_score = (MERGE_RRF_K + 1.0) / (MERGE_RRF_K + rank);
         }
@@ -3390,6 +3421,13 @@ fn merge_plans(value: &Value) -> Option<Value> {
         if let Some(object) = row.as_object_mut() {
             object.insert("sourceId".to_owned(), json!(source_id));
             object.insert("rank".to_owned(), json!(rank));
+            object.insert(
+                "mergeRanking".to_owned(),
+                json!({
+                    "rank": entry.rank,
+                    "scoreRatio": entry.local_score,
+                }),
+            );
             object.insert("queryIndexes".to_owned(), json!(entry.query_indexes));
             object.insert(
                 "preferredQueryIndexes".to_owned(),
@@ -4748,6 +4786,67 @@ mod tests {
             let backward = merge_of(&json!({"plans": reversed}));
             assert_eq!(forward, backward);
             assert_eq!(target_order(&forward), expected);
+        }
+    }
+
+    #[test]
+    fn incremental_merge_preserves_original_batch_ranking() {
+        let make_plan = |prefix: &str, first_score: f64, second_score: f64| {
+            plan(
+                &json!([
+                    {"sourceId": format!("{prefix}-first.md#L1-L1"), "path": format!("{prefix}-first.md"), "startLine": 1, "endLine": 1, "quote": "shared signal", "score": first_score, "rank": 1},
+                    {"sourceId": format!("{prefix}-second.md#L1-L1"), "path": format!("{prefix}-second.md"), "startLine": 1, "endLine": 1, "quote": "supporting condition", "score": second_score, "rank": 2}
+                ]),
+                None,
+            )
+        };
+        let plans = vec![
+            make_plan("amber", 100.0, 90.0),
+            make_plan("birch", 1.0, 0.9),
+            make_plan("cedar", 10.0, 8.0),
+        ];
+        for max_passages in [3, 6] {
+            let budget = json!({"maxPassages": max_passages});
+            let expected = merge_of(&json!({"plans": plans, "budget": budget}));
+            for inputs in [plans.clone(), plans.iter().rev().cloned().collect()] {
+                let mut current: Option<Value> = None;
+                for next in inputs {
+                    let inputs = match current {
+                        Some(prior) => vec![prior, next],
+                        None => vec![next],
+                    };
+                    current = Some(merge_of(&json!({"plans": inputs, "budget": budget})));
+                }
+                let actual = current.unwrap_or(Value::Null);
+                assert_eq!(signatures(&actual), signatures(&expected));
+                assert_eq!(actual.get("evidence"), expected.get("evidence"));
+            }
+        }
+    }
+
+    #[test]
+    fn merge_rejects_invalid_preserved_ranking_and_accepts_legacy_rows() {
+        let row = json!({"sourceId": "memo.md#L1-L1", "path": "memo.md", "startLine": 1, "endLine": 1, "quote": "ordinary condition", "score": 1.0});
+        let legacy = plan(&json!([row]), None);
+        assert_eq!(
+            rows(&merge_of(&json!({"plans": [legacy]})), "evidence").len(),
+            1
+        );
+        for invalid in [
+            Value::Null,
+            json!({}),
+            json!({"rank": 0, "scoreRatio": 0.5}),
+            json!({"rank": -1, "scoreRatio": 0.5}),
+            json!({"rank": 1.5, "scoreRatio": 0.5}),
+            json!({"rank": "1", "scoreRatio": 0.5}),
+            json!({"rank": 1, "scoreRatio": -0.1}),
+            json!({"rank": 1, "scoreRatio": 1.1}),
+            json!({"rank": 1, "scoreRatio": "0.5"}),
+        ] {
+            let mut invalid_row = row.as_object().cloned().unwrap_or_default();
+            invalid_row.insert("mergeRanking".to_owned(), invalid);
+            let input = json!({"plans": [plan(&json!([invalid_row]), None)]});
+            assert!(super::merge_indexed_evidence_plans_json(&input.to_string()).is_empty());
         }
     }
 
