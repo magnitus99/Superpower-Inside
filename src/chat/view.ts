@@ -3220,6 +3220,8 @@ export class ChatView extends ItemView {
           scopes: mentionedFolders.map((folder) => folder.name),
           corpus: searchSource?.corpus,
           candidates: searchSource?.candidates,
+          discoveryCandidates: searchSource?.discoveryCandidates,
+          discoveryPaths: indexedPaths,
           candidatesState: searchSource?.candidatesState,
           inventory: searchInventory,
           matchInventory: searchSource?.matchInventory,
@@ -3235,7 +3237,8 @@ export class ChatView extends ItemView {
           deferAnswer,
           documentScope: 'all',
           exhaustiveReview: restrictedSearch ? false : searchSource?.exhaustiveReview === true,
-          isCurrent: () => this.plugin.getRetrievalReadiness() === 'ready',
+          isCurrent: () =>
+            isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready',
           onDiagnostics: (diagnostics) => {
             if (!isChatRunActive(this.activeRun, run)) return;
             indexedReviewDiagnostics = diagnostics;
@@ -5067,6 +5070,8 @@ export class ChatView extends ItemView {
             scopes: resumeFolderScopes,
             corpus: resumeSource?.corpus,
             candidates: resumeSource?.candidates,
+            discoveryCandidates: resumeSource?.discoveryCandidates,
+            discoveryPaths: indexedPaths,
             candidatesState: resumeSource?.candidatesState,
             inventory: resumeInventory,
             matchInventory: resumeSource?.matchInventory,
@@ -5083,7 +5088,8 @@ export class ChatView extends ItemView {
             deferAnswer: true,
             documentScope: 'all',
             exhaustiveReview: resumeRestricted ? false : resumeSource?.exhaustiveReview === true,
-            isCurrent: () => this.plugin.getRetrievalReadiness() === 'ready',
+            isCurrent: () =>
+              isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready',
             signal: abortController.signal,
             onDiagnostics: (diagnostics) => {
               if (!isChatRunActive(this.activeRun, run)) return;

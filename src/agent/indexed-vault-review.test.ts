@@ -325,6 +325,61 @@ function reviewOptions(
 }
 
 describe('엔진 근거 기반 색인 검토', () => {
+  it('검토 밖 단서를 보존하되 원문이나 인용으로 승격하지 않는다', async () => {
+    const hidden = 'Synthetic/Unreviewed.md';
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(reviewOptions({
+      provider,
+      discoveryCandidates: [
+        { path: RELEVANT, score: 2, source: 'bm25', rank: 1, startLine: 1, endLine: 3 },
+        { path: hidden, score: 1, source: 'bm25', rank: 97, startLine: 8, endLine: 12 },
+      ],
+      discoveryPaths: [RELEVANT, OTHER, hidden],
+    }));
+    expect(result.dossier.discoverySummary).toMatchObject({
+      discoveredDocuments: 2, selectedSourceDocuments: 1, unreviewedDocuments: 1,
+    });
+    const page = result.readDiscoveryPage?.({
+      allowedPaths: [RELEVANT, hidden], scopes: [], offset: 0, limit: 32,
+    });
+    expect(page?.items.find((item) => item.path === hidden)).toMatchObject({
+      startLine: 8, endLine: 12, state: 'unreviewed', verification: 'unverified',
+    });
+    expect(result.citations.some((citation) => citation.filePath === hidden)).toBe(false);
+    expect(JSON.stringify(calls)).not.toContain(hidden);
+    expect(result.readDiscoveryPage?.({
+      allowedPaths: [RELEVANT], scopes: [], offset: 0, limit: 32,
+    })?.summary.discoveredDocuments).toBe(1);
+  });
+
+  it('현재 실행이 끝났거나 취소된 단서 조회는 중단하고 필터 경계를 우회하지 않는다', async () => {
+    let current = true;
+    const originalController = new AbortController();
+    const options = reviewOptions({
+      deferAnswer: true,
+      signal: originalController.signal,
+      isCurrent: () => current,
+      discoveryCandidates: [{ path: RELEVANT, score: 2, source: 'bm25', rank: 1 }],
+      discoveryPaths: [RELEVANT],
+    });
+    const result = await reviewIndexedVault(options);
+    const request = { allowedPaths: [RELEVANT], scopes: [], offset: 0, limit: 32 };
+    expect(result.readDiscoveryPage?.(request)?.summary.discoveredDocuments).toBe(1);
+    const controller = new AbortController();
+    controller.abort();
+    expect(() => result.readDiscoveryPage?.({ ...request, signal: controller.signal })).toThrow();
+    current = false;
+    expect(result.readDiscoveryPage?.(request)).toBeNull();
+    current = true;
+    originalController.abort();
+    expect(() => result.readDiscoveryPage?.(request)).toThrow();
+    const filtered = await reviewIndexedVault({
+      ...options, signal: undefined, filters: { tags: ['restricted'] },
+    });
+    expect(filtered.readDiscoveryPage).toBeUndefined();
+    expect(filtered.dossier.discoverySummary).toBeUndefined();
+  });
+
   it('후보 수집의 번역 구문을 원문 구절 평가에도 전달한다', async () => {
     const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
     vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);

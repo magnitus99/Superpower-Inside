@@ -5240,6 +5240,94 @@ export interface RustIndexedEvidenceCandidate {
   queryIndex?: number;
 }
 
+export interface RustIndexedDiscoveryInput {
+  candidates: readonly RustIndexedEvidenceCandidate[];
+  originalPaths: readonly string[];
+  originalScopes: readonly string[];
+  allowedPaths: readonly string[];
+  reviewedPaths: readonly string[];
+  selectedPaths: readonly string[];
+  failedPaths: readonly string[];
+  scopes: readonly string[];
+  offset: number;
+  limit: number;
+}
+
+export interface RustIndexedDiscoverySummary {
+  basis: 'collected-candidates';
+  candidateRecords: number;
+  discoveredDocuments: number;
+  indexedReviewedDocuments: number;
+  selectedSourceDocuments: number;
+  failedSourceDocuments: number;
+  unreviewedDocuments: number;
+}
+
+export interface RustIndexedDiscoveryItem extends RustIndexedEvidenceCandidate {
+  state: 'unreviewed' | 'indexed-reviewed' | 'source-selected' | 'source-failed';
+  verification: 'unverified';
+}
+
+export interface RustIndexedDiscoveryPage {
+  summary: RustIndexedDiscoverySummary;
+  items: readonly RustIndexedDiscoveryItem[];
+  nextOffset: number | null;
+}
+
+/** 조사 단서는 원문 근거가 아니며 페이지마다 현재 허용 범위를 다시 적용합니다. */
+export function pageIndexedDiscoveryRust(
+  input: RustIndexedDiscoveryInput,
+): RustIndexedDiscoveryPage | null {
+  if (!ensureRustCore()) return null;
+  const run = resolveRustStringExport('page_indexed_discovery_json');
+  if (!run) return null;
+  try {
+    const value: unknown = JSON.parse(run(JSON.stringify(input)));
+    if (!isStringRecordValueMap(value) || !isStringRecordValueMap(value.summary)) return null;
+    const summary = value.summary;
+    if (
+      summary.basis !== 'collected-candidates' ||
+      !isNonNegativeSafeInteger(summary.candidateRecords) ||
+      !isNonNegativeSafeInteger(summary.discoveredDocuments) ||
+      !isNonNegativeSafeInteger(summary.indexedReviewedDocuments) ||
+      !isNonNegativeSafeInteger(summary.selectedSourceDocuments) ||
+      !isNonNegativeSafeInteger(summary.failedSourceDocuments) ||
+      !isNonNegativeSafeInteger(summary.unreviewedDocuments) ||
+      !(value.nextOffset === null || isNonNegativeSafeInteger(value.nextOffset)) ||
+      !Array.isArray(value.items)
+    ) return null;
+    const items: RustIndexedDiscoveryItem[] = [];
+    for (const row of value.items) {
+      if (
+        !isStringRecordValueMap(row) || !isStringValue(row.path) ||
+        !isStringValue(row.source) || !isNonNegativeSafeInteger(row.rank) || row.rank === 0 ||
+        typeof row.score !== 'number' || !Number.isFinite(row.score) ||
+        !['bm25', 'lexical', 'vector', 'ann', 'structural'].includes(row.source) ||
+        !(row.startLine === undefined || isNonNegativeSafeInteger(row.startLine)) ||
+        !(row.endLine === undefined || isNonNegativeSafeInteger(row.endLine)) ||
+        !(row.queryIndex === undefined || isIndexedQueryIndex(row.queryIndex)) ||
+        row.verification !== 'unverified' ||
+        (row.state !== 'unreviewed' && row.state !== 'indexed-reviewed' &&
+          row.state !== 'source-selected' && row.state !== 'source-failed')
+      ) return null;
+      items.push({ path: row.path, source: row.source, rank: row.rank, score: row.score,
+        startLine: row.startLine, endLine: row.endLine, queryIndex: row.queryIndex,
+        state: row.state, verification: row.verification });
+    }
+    return {
+      summary: { basis: summary.basis, candidateRecords: summary.candidateRecords,
+        discoveredDocuments: summary.discoveredDocuments,
+        indexedReviewedDocuments: summary.indexedReviewedDocuments,
+        selectedSourceDocuments: summary.selectedSourceDocuments,
+        failedSourceDocuments: summary.failedSourceDocuments,
+        unreviewedDocuments: summary.unreviewedDocuments },
+      items, nextOffset: value.nextOffset,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface RustIndexedEvidenceInventory {
   indexedCount: number;
   unreviewedCount: number;

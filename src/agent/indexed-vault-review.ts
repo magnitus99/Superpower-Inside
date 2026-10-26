@@ -3,6 +3,7 @@ import type { ChatMessage, LLMProvider, TokenUsage } from '../llm/providers';
 import { prepareProviderRequest } from '../llm/request-budget';
 import {
   mergeIndexedEvidencePlansRust,
+  pageIndexedDiscoveryRust,
   planIndexedEvidenceRust,
   planIndexedReviewAnswerPlanRust,
   planModelContextRust,
@@ -11,6 +12,8 @@ import {
   validateIndexedReviewAnswerRust,
   verifyIndexedEvidenceRust,
   type IndexedSearchPlan,
+  type RustIndexedDiscoveryPage,
+  type RustIndexedDiscoverySummary,
   type RustIndexedEvidenceBudget,
   type RustIndexedEvidenceCoverage,
   type RustIndexedEvidenceDocument,
@@ -599,6 +602,9 @@ export interface IndexedVaultReviewOptions {
   candidates?: readonly IndexedEvidenceCandidate[];
   candidatesState?: SearchCandidateState;
   inventory?: IndexedEvidenceInventory;
+  /** 검토 예산 밖 후보와 수집 시점 허용 경로입니다. 후보는 확정 근거가 아닙니다. */
+  discoveryCandidates?: readonly IndexedEvidenceCandidate[];
+  discoveryPaths?: readonly string[];
   /** 색인 전체 일치 집계입니다. 없으면 집계 수치 없이 근거만으로 답합니다. */
   matchInventory?: readonly IndexedMatchCount[];
   exhaustiveReview?: boolean;
@@ -634,6 +640,8 @@ export interface IndexedEvidenceDossier {
    */
   matchInventory?: readonly IndexedMatchCount[];
   documentScope: IndexedVaultDocumentScope;
+  /** 발견 범위와 실제 근거 검토를 분리한 집계입니다. 후보 원문이나 인용은 아닙니다. */
+  discoverySummary?: RustIndexedDiscoverySummary;
   evidence: readonly IndexedEvidenceItem[];
   coverage: IndexedVaultSearchCoverage;
   diagnostics: IndexedEvidencePlan['diagnostics'] | null;
@@ -649,7 +657,18 @@ export type IndexedReviewOutcome =
   | 'engine-unavailable'
   | 'indexing';
 
+export interface IndexedDiscoveryPageRequest {
+  /** 후속 호출 시 다시 확인한 현재 허용 경로와 폴더 범위입니다. */
+  allowedPaths: readonly string[];
+  scopes: readonly string[];
+  offset: number;
+  limit: number;
+  signal?: AbortSignal;
+}
+
 export interface IndexedVaultReviewResult {
+  /** 미검증 단서만 조회합니다. 실제 근거 채택에는 별도의 현재 원문 검증이 필요합니다. */
+  readDiscoveryPage?: (request: IndexedDiscoveryPageRequest) => RustIndexedDiscoveryPage | null;
   outcome: IndexedReviewOutcome;
   dossier: IndexedEvidenceDossier;
   evidence: readonly IndexedEvidenceItem[];
@@ -759,7 +778,10 @@ export async function reviewIndexedVault(
   options.signal?.addEventListener('abort', cancel, { once: true });
   if (options.signal?.aborted) cancel();
   try {
-    const result = await runIndexedVaultReview({ ...options, signal: controller.signal });
+    const result = await runIndexedVaultReview(
+      { ...options, signal: controller.signal },
+      options.signal,
+    );
     // 엔진 진단과 결과 종류를 남겨야 후속 디버그 추적이 0건 원인을 설명할 수 있습니다.
     result.diagnostics.outcome = result.outcome;
     result.diagnostics.search = result.dossier.diagnostics ?? null;
@@ -772,6 +794,7 @@ export async function reviewIndexedVault(
 
 async function runIndexedVaultReview(
   options: IndexedVaultReviewOptions,
+  discoverySignal?: AbortSignal,
 ): Promise<IndexedVaultReviewResult> {
   const phase = (): IndexedReviewPhaseDiagnostics => ({
     durationMs: 0,
@@ -1286,11 +1309,41 @@ async function runIndexedVaultReview(
       : limitedReview
         ? t('indexedReviewLimitedNotice', noticeValues)
         : coverage;
+    // 태그·시각 필터의 후보 메타데이터가 없으면 범위 밖 단서를 노출하지 않습니다.
+    const discoveryInput = options.discoveryCandidates && options.discoveryPaths && !options.filters
+      ? {
+          candidates: options.discoveryCandidates,
+          originalPaths: options.discoveryPaths,
+          originalScopes: options.scopes,
+          reviewedPaths: search.coverage.plannedPaths,
+          selectedPaths: [...accepted],
+          failedPaths: [...stale],
+        }
+      : undefined;
+    const readDiscoveryPage = discoveryInput
+      ? (request: IndexedDiscoveryPageRequest): RustIndexedDiscoveryPage | null => {
+          discoverySignal?.throwIfAborted();
+          request.signal?.throwIfAborted();
+          if (options.isCurrent?.() === false) return null;
+          return pageIndexedDiscoveryRust({
+            ...discoveryInput,
+            allowedPaths: request.allowedPaths,
+            scopes: request.scopes,
+            offset: request.offset,
+            limit: request.limit,
+          });
+        }
+      : undefined;
+    const discoveryPage = readDiscoveryPage?.({
+      allowedPaths: options.discoveryPaths ?? [], scopes: options.scopes, offset: 0, limit: 32,
+      signal: options.signal,
+    });
     const dossier: IndexedEvidenceDossier = {
       question: options.question,
       scoringQuestion: options.scoringQuestion ?? options.question,
       previousUserQuestions: options.previousUserQuestions ?? [],
       queryPlan: { queryTokens: search.plan.queryTokens, phrases: search.plan.phrases },
+      ...(discoveryPage ? { discoverySummary: discoveryPage.summary } : {}),
       matchInventory: options.matchInventory,
       documentScope,
       evidence,
@@ -1334,6 +1387,7 @@ async function runIndexedVaultReview(
       return {
         outcome: 'evidence-only',
         dossier,
+        readDiscoveryPage,
         evidence,
         coverage: effectiveCoverage,
         content,
@@ -1372,6 +1426,7 @@ async function runIndexedVaultReview(
       return {
         outcome: evidence.length === 0 ? 'no-evidence' : 'evidence-only',
         dossier,
+        readDiscoveryPage,
         evidence,
         coverage: effectiveCoverage,
         content,
@@ -1552,6 +1607,7 @@ async function runIndexedVaultReview(
     return {
       outcome: resolved ? 'answered' : 'evidence-only',
       dossier,
+      readDiscoveryPage,
       evidence,
       coverage: effectiveCoverage,
       content,

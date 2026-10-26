@@ -241,6 +241,7 @@ export async function collectIndexedSearchSource(
     candidates: candidateResolution.exhaustiveReview
       ? candidateResolution.candidates?.filter((candidate) => reviewPathSet.has(candidate.path))
       : candidateResolution.candidates,
+    discoveryCandidates: candidateResolution.candidates,
     reviewPaths,
     exhaustiveReview: candidateResolution.exhaustiveReview,
     candidatesState: candidateResolution.state,
@@ -468,16 +469,12 @@ async function collectHybridCandidates(
   }
   signal?.throwIfAborted();
   const facets = plan.facets.slice(0, MAX_HYBRID_FACETS);
-  const facetLimit = Math.max(
-    1,
-    Math.ceil(EXHAUSTIVE_REVIEW_PATH_LIMIT / Math.max(1, facets.length)),
-  );
   const outcomes = await Promise.all(
     facets.map(async (facet) => {
       const semanticStartedAt = performance.now();
       let semanticDurationMs = 0;
       const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
-        Promise.resolve().then(() => engine.queryBm25Exhaustive(facet.query, facetLimit, signal)),
+        Promise.resolve().then(() => engine.queryBm25Exhaustive(facet.query, undefined, signal)),
         querySemanticCandidates(engine, facet, signal, semanticTimeoutMs).finally(() => {
           semanticDurationMs = performance.now() - semanticStartedAt;
         }),

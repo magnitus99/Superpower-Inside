@@ -433,6 +433,11 @@ export function normalize_reasoning_stream_json(state: string, content: string, 
 export function normalize_vault_link_target_json(raw: string): string;
 
 /**
+ * 호출 시점의 허용 범위로 페이지를 재계산하여 오래된 커서로 권한을 넓히지 않습니다.
+ */
+export function page_indexed_discovery_json(input: string): string;
+
+/**
  * MCP tool 실행 인자 문자열을 TypeScript 호스트 경계 계약으로 정규화한다.
  */
 export function parse_mcp_tool_arguments_json(arguments_text: string): string;
@@ -1247,6 +1252,7 @@ export interface InitOutput {
     readonly normalize_reasoning_chunk_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly normalize_reasoning_stream_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly normalize_vault_link_target_json: (a: number, b: number) => [number, number];
+    readonly page_indexed_discovery_json: (a: number, b: number) => [number, number];
     readonly parse_mcp_tool_arguments_json: (a: number, b: number) => [number, number];
     readonly parse_mention_candidates_json: (a: number, b: number) => [number, number];
     readonly parse_settings_number: (a: number, b: number, c: number, d: number, e: number) => number;

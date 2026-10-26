@@ -1442,6 +1442,26 @@ export function normalize_vault_link_target_json(raw) {
 }
 
 /**
+ * 호출 시점의 허용 범위로 페이지를 재계산하여 오래된 커서로 권한을 넓히지 않습니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function page_indexed_discovery_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.page_indexed_discovery_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * MCP tool 실행 인자 문자열을 TypeScript 호스트 경계 계약으로 정규화한다.
  * @param {string} arguments_text
  * @returns {string}

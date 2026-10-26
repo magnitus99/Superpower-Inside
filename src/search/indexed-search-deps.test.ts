@@ -159,7 +159,7 @@ describe('검색 의존성 factory', () => {
       );
 
       expect(loadQueryVariants).toHaveBeenCalledOnce();
-      expect(queryBm25Exhaustive).toHaveBeenCalledWith('lunar archive', 96, undefined);
+      expect(queryBm25Exhaustive).toHaveBeenCalledWith('lunar archive', undefined, undefined);
       expect(source?.queryVariants).toEqual(['lunar archive']);
       expect(source?.candidates).toContainEqual({
         path: 'Synthetic/Beta.md',
@@ -504,6 +504,10 @@ describe('검색 의존성 factory', () => {
     expect(call?.[4]?.signal).toBeInstanceOf(AbortSignal);
     await expect(source?.getIndexedPaths()).resolves.toEqual(indexedPaths);
     expect(source?.exhaustiveReview).toBe(true);
+    expect(source?.discoveryCandidates?.some(
+      (candidate) => candidate.path === indexedPaths[100] && candidate.source === 'bm25',
+    )).toBe(true);
+    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', undefined, undefined);
     expect(source?.reviewPaths).toHaveLength(96);
     expect(source?.reviewPaths).toContain(indexedPaths[0]);
     expect(new Set(source?.candidates?.map((candidate) => candidate.path)).size).toBe(96);
@@ -545,7 +549,7 @@ describe('검색 의존성 factory', () => {
     );
 
     expect(bm25.length + semantic.length).toBe(200);
-    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', 96, undefined);
+    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', undefined, undefined);
     expect(source?.reviewPaths).toHaveLength(96);
     expect(new Set(source?.reviewPaths).size).toBe(96);
     for (const candidateSource of ['bm25', 'vector', 'ann', 'structural']) {
@@ -780,7 +784,7 @@ describe('검색 의존성 factory', () => {
       '합성 질의',
     );
 
-    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', 96, undefined);
+    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', undefined, undefined);
     expect(source?.exhaustiveReview).toBe(false);
     expect(source?.reviewPaths).toBeUndefined();
     await expect(source?.getIndexedPaths()).resolves.toEqual([

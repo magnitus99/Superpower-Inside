@@ -32,8 +32,10 @@ export interface IndexedSearchSource {
   reviewPaths?: readonly string[];
   /** 전체 색인 lexical 검토 성공 여부입니다. 생략하면 부분 후보 검토로 취급합니다. */
   exhaustiveReview?: boolean;
-  /** 하이브리드 검색이 지목한 순위 prior입니다. 검토 범위는 전체 색인입니다. */
+  /** 근거 선택에 쓰는 순위 prior입니다. 전체 발견 단서와 검토 범위를 뜻하지 않습니다. */
   candidates?: readonly (IndexedEvidenceCandidate & { queryIndex?: number })[];
+  /** 검토 예산으로 자르기 전의 조사 단서입니다. 원문 근거가 아니며 외부에 직접 전달하지 않습니다. */
+  discoveryCandidates?: readonly IndexedEvidenceCandidate[];
   inventory?: IndexedEvidenceInventory;
   /** 엔진이 센 색인 전체 일치 집계입니다. 순위·후보 선발에는 쓰지 않습니다. */
   matchInventory?: readonly IndexedMatchCount[];
