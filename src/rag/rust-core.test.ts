@@ -2367,7 +2367,7 @@ describe('planIndexedEvidenceRust / verifyIndexedEvidenceRust', () => {
 });
 
 describe('indexed search/answer wire wrappers', () => {
-  function evidencePlanWire(queryIndexes?: readonly number[]): string {
+  function evidencePlanWire(queryIndexes?: readonly number[], preferredQueryIndexes?: readonly unknown[]): string {
     return JSON.stringify({
       queryTokens: [],
       phrases: [],
@@ -2393,6 +2393,7 @@ describe('indexed search/answer wire wrappers', () => {
           highlights: [],
           duplicateOf: null,
           ...(queryIndexes === undefined ? {} : { queryIndexes }),
+          ...(preferredQueryIndexes === undefined ? {} : { preferredQueryIndexes }),
         },
       ],
       order: ['notes/alpha.md#L1-L1'],
@@ -2552,6 +2553,18 @@ describe('indexed search/answer wire wrappers', () => {
 
     rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire());
     expect(planIndexedEvidenceRust(input)?.evidence[0].queryIndexes).toEqual([]);
+  });
+
+  it('preserves independent facet representatives and accepts legacy evidence', () => {
+    const input = { question: 'alpha', documents: [{ path: 'notes/alpha.md', text: 'alpha' }] };
+    rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire([1, 3], [3]));
+    expect(planIndexedEvidenceRust(input)?.evidence[0].preferredQueryIndexes).toEqual([3]);
+    rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire([1, 3]));
+    expect(planIndexedEvidenceRust(input)?.evidence[0].preferredQueryIndexes).toEqual([]);
+    for (const invalid of [[2], [-1], [4], [1.5], ['1']]) {
+      rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire([1, 3], invalid));
+      expect(planIndexedEvidenceRust(input)).toBeNull();
+    }
   });
 
   it.each([-1, 4, 1.5])('rejects invalid indexed evidence query index %s', (queryIndex) => {

@@ -327,7 +327,7 @@ function reviewOptions(
 describe('엔진 근거 기반 색인 검토', () => {
   it.each([false, true])('최초 후보 밖 후속 근거를 원문 검증 뒤 결합하고 실패한 문서는 제외한다: %s', async (sourceMissing) => {
     const extra = twoDocumentPlan();
-    extra.evidence = extra.evidence.map((item) => ({ ...item, queryIndexes: [2] }));
+    extra.evidence = extra.evidence.map((item) => ({ ...item, queryIndexes: [2], preferredQueryIndexes: [2] }));
     vi.mocked(planIndexedEvidenceRust).mockReturnValueOnce(planFixture()).mockReturnValueOnce(extra);
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
     const calls: ChatMessage[][] = [];
@@ -362,7 +362,11 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(sourceReader).toHaveBeenCalledWith(OTHER, expect.any(AbortSignal));
     expect(result.evidence.some((item) => item.path === OTHER)).toBe(!sourceMissing);
     expect(result.evidence.some((item) => item.path === RELEVANT)).toBe(true);
-    if (!sourceMissing) expect(result.evidence.find((item) => item.path === OTHER)?.queryIndexes ?? []).toEqual([]);
+    if (!sourceMissing) {
+      const followup = result.evidence.find((item) => item.path === OTHER);
+      expect(followup?.queryIndexes ?? []).toEqual([]);
+      expect(followup?.preferredQueryIndexes ?? []).toEqual([]);
+    }
     const request = calls[1]?.[1]?.content ?? '{}';
     expect(JSON.parse(request)).toMatchObject({
       evidence: result.dossier.evidence,

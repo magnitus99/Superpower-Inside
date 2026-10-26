@@ -1021,7 +1021,7 @@ async function runIndexedVaultReview(
         plans: [
           { ...baseSearch.plan, evidence: baseSearch.evidence },
           // 후속 질의의 번호는 원래 비교 facet의 번호가 아니므로 재사용하지 않습니다.
-          { ...extra.plan, evidence: extra.evidence.map((item) => ({ ...item, queryIndexes: [] })) },
+          { ...extra.plan, evidence: extra.evidence.map((item) => ({ ...item, queryIndexes: [], preferredQueryIndexes: [] })) },
         ],
         budget: {
           maxPassages: baseSearch.evidence.length + extra.evidence.length,

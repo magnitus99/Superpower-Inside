@@ -5412,6 +5412,8 @@ export interface RustIndexedEvidencePassage {
   fieldMatches?: readonly string[];
   /** 비교 검색 후보를 만든 query index입니다. parser가 legacy 출력을 빈 배열로 보완합니다. */
   queryIndexes?: readonly number[];
+  /** 독립 질의가 다른 질의 점수와 합치기 전에 최상위로 지목한 귀속입니다. */
+  preferredQueryIndexes?: readonly number[];
   negatedNearby: boolean;
   highlights: readonly { start: number; end: number }[];
   duplicateOf: string | null;
@@ -5698,7 +5700,10 @@ function readEvidenceHighlights(value: unknown): readonly { start: number; end: 
 function readIndexedEvidencePassage(value: unknown): RustIndexedEvidencePassage | null {
   if (!isStringRecordValueMap(value)) return null;
   const queryIndexes = readIndexedQueryIndexes(value.queryIndexes);
+  const preferredQueryIndexes = readIndexedQueryIndexes(value.preferredQueryIndexes);
   if (
+    !preferredQueryIndexes ||
+    !preferredQueryIndexes.every((index) => queryIndexes?.includes(index)) ||
     !isStringValue(value.sourceId) ||
     !isStringValue(value.path) ||
     !(value.revision === null || isStringValue(value.revision)) ||
@@ -5745,6 +5750,7 @@ function readIndexedEvidencePassage(value: unknown): RustIndexedEvidencePassage 
     fieldScore: value.fieldScore,
     fieldMatches: Array.isArray(value.fieldMatches) && value.fieldMatches.every(isStringValue) ? value.fieldMatches : [],
     queryIndexes,
+    preferredQueryIndexes,
     exactSignals: value.exactSignals,
     negatedNearby: value.negatedNearby,
     duplicateOf: value.duplicateOf,

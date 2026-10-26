@@ -1477,6 +1477,8 @@ struct PassageDraft {
     candidate_rank: usize,
     /// 이 구절을 지목한 검색 facet query index 합집합입니다.
     query_indexes: BTreeSet<usize>,
+    /// 다른 질의 점수와 합치기 전에 독립 질의가 최상위로 지목한 귀속입니다.
+    preferred_query_indexes: BTreeSet<usize>,
 }
 /// 제목·경로 신호를 제외하고 선택한 구절 안의 실제 질의어만 모읍니다.
 fn passage_body_terms(
@@ -1630,6 +1632,12 @@ fn independent_facet_drafts(input: &PlanInput, facets: &[String]) -> Option<Vec<
         {
             drafts.retain(|draft| draft.phrase_matches > 0);
         }
+        sort_drafts(&mut drafts, input.max_documents, input.max_passages);
+        if let Some(first) = drafts.first_mut() {
+            first
+                .preferred_query_indexes
+                .insert(index.saturating_add(1));
+        }
         for mut draft in drafts {
             draft.query_indexes.insert(index.saturating_add(1));
             let key = (
@@ -1641,9 +1649,15 @@ fn independent_facet_drafts(input: &PlanInput, facets: &[String]) -> Option<Vec<
             if let Some(existing) = unique.get_mut(&key) {
                 if draft.score > existing.score {
                     draft.query_indexes.extend(&existing.query_indexes);
+                    draft
+                        .preferred_query_indexes
+                        .extend(&existing.preferred_query_indexes);
                     *existing = draft;
                 } else {
                     existing.query_indexes.extend(&draft.query_indexes);
+                    existing
+                        .preferred_query_indexes
+                        .extend(&draft.preferred_query_indexes);
                 }
             } else {
                 unique.insert(key, draft);
@@ -1822,6 +1836,7 @@ fn build_passage(
         matched: !score.matched.is_empty(),
         candidate_rank: usize::MAX,
         query_indexes: BTreeSet::new(),
+        preferred_query_indexes: BTreeSet::new(),
         field_matches: score.field_matches.clone(),
         highlights,
     }
@@ -2250,18 +2265,22 @@ fn select_evidence_indices(
         if selected.len() >= max_passages {
             break;
         }
-        if selected.iter().any(|index| {
-            drafts
-                .get(*index)
-                .is_some_and(|draft| draft.query_indexes.contains(&query_index))
-        }) {
-            continue;
-        }
-        if let Some((index, draft)) = drafts.iter().enumerate().find(|(index, draft)| {
-            !selected.contains(index)
-                && draft.query_indexes.contains(&query_index)
-                && used_chars.saturating_add(draft_chars(draft)) <= max_chars
-        }) {
+        let representative = drafts
+            .iter()
+            .enumerate()
+            .filter(|(index, draft)| {
+                draft.query_indexes.contains(&query_index)
+                    && (selected.contains(index)
+                        || used_chars.saturating_add(draft_chars(draft)) <= max_chars)
+            })
+            .min_by_key(|(index, draft)| {
+                (
+                    !draft.preferred_query_indexes.contains(&query_index),
+                    *index,
+                )
+            });
+        if let Some((index, draft)) = representative.filter(|(index, _)| !selected.contains(index))
+        {
             used_chars = used_chars.saturating_add(draft_chars(draft));
             selected.insert(index);
             selected_terms
@@ -2357,6 +2376,7 @@ fn collect_evidence_rows(
             "negatedNearby": draft.negated_nearby,
             "duplicateOf": duplicate_of,
             "queryIndexes": draft.query_indexes.iter().copied().collect::<Vec<_>>(),
+            "preferredQueryIndexes": draft.preferred_query_indexes.iter().copied().collect::<Vec<_>>(),
         }));
     }
     (
@@ -3033,8 +3053,25 @@ struct MergeEntry {
     source_id: String,
     /// 이 구절을 지목한 검색 facet query index입니다.
     query_indexes: BTreeSet<usize>,
+    /// 독립 질의의 배치 내 최상위 구절 귀속입니다.
+    preferred_query_indexes: BTreeSet<usize>,
     /// 인용과 문맥의 `UTF-16` 문자 수입니다.
     chars: usize,
+}
+
+/// 선택적 구절 질의 귀속을 wire 상한 안에서 읽습니다.
+fn passage_query_indexes(value: Option<&Value>) -> Option<BTreeSet<usize>> {
+    match value {
+        None | Some(Value::Null) => Some(BTreeSet::new()),
+        Some(values) => values
+            .as_array()?
+            .iter()
+            .map(|value| {
+                let index = usize::try_from(value.as_u64()?).ok()?;
+                (index <= MAX_CANDIDATE_QUERY_INDEX).then_some(index)
+            })
+            .collect(),
+    }
 }
 
 /// merge 출력용 실제 구절 정보입니다.
@@ -3088,17 +3125,11 @@ fn merge_entry(value: &Value) -> Option<MergeEntry> {
         .get("contextAfter")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let query_indexes = match value.get("queryIndexes") {
-        None | Some(Value::Null) => BTreeSet::new(),
-        Some(values) => values
-            .as_array()?
-            .iter()
-            .map(|value| {
-                let index = usize::try_from(value.as_u64()?).ok()?;
-                (index <= MAX_CANDIDATE_QUERY_INDEX).then_some(index)
-            })
-            .collect::<Option<BTreeSet<_>>>()?,
-    };
+    let query_indexes = passage_query_indexes(value.get("queryIndexes"))?;
+    let preferred_query_indexes = passage_query_indexes(value.get("preferredQueryIndexes"))?;
+    if !preferred_query_indexes.is_subset(&query_indexes) {
+        return None;
+    }
     let chars = crate::text_len(&quote)
         .saturating_add(crate::text_len(context_before))
         .saturating_add(crate::text_len(context_after));
@@ -3119,6 +3150,7 @@ fn merge_entry(value: &Value) -> Option<MergeEntry> {
         quote,
         source_id,
         query_indexes,
+        preferred_query_indexes,
         chars,
     })
 }
@@ -3234,9 +3266,9 @@ fn select_merge_entries(
             .then_with(|| left.quote.cmp(&right.quote))
             .then_with(|| left.source_id.cmp(&right.source_id))
     });
-    let mut seen = BTreeSet::<(String, u64, u64, String)>::new();
+    let mut seen = BTreeMap::<(String, u64, u64, String), usize>::new();
     let mut duplicates_dropped = 0_usize;
-    let mut unique = Vec::with_capacity(sorted.len());
+    let mut unique = Vec::<MergeEntry>::with_capacity(sorted.len());
     for entry in sorted {
         let key = (
             entry.path.clone(),
@@ -3244,38 +3276,48 @@ fn select_merge_entries(
             entry.end_line,
             normalize_phrase(&entry.quote),
         );
-        if !seen.insert(key) {
+        if let Some(existing) = seen.get(&key).and_then(|index| unique.get_mut(*index)) {
+            existing.query_indexes.extend(entry.query_indexes);
+            existing
+                .preferred_query_indexes
+                .extend(entry.preferred_query_indexes);
             duplicates_dropped = duplicates_dropped.saturating_add(1);
             continue;
         }
+        seen.insert(key, unique.len());
         unique.push(entry);
     }
     let mut selected_indices = BTreeSet::new();
-    let mut reserved_query_indexes = BTreeSet::new();
     let mut used_chars = 0_usize;
-    for (index, entry) in unique.iter().enumerate() {
-        let has_unreserved = entry
-            .query_indexes
-            .iter()
-            .any(|query_index| *query_index > 0 && !reserved_query_indexes.contains(query_index));
-        if !has_unreserved {
-            continue;
-        }
+    let query_indexes = unique
+        .iter()
+        .flat_map(|entry| entry.query_indexes.iter().copied())
+        .filter(|index| *index > 0)
+        .collect::<BTreeSet<_>>();
+    for query_index in query_indexes {
         if selected_indices.len() >= max_passages {
             break;
         }
-        if used_chars.saturating_add(entry.chars) > max_chars {
-            continue;
+        let representative = unique
+            .iter()
+            .enumerate()
+            .filter(|(index, entry)| {
+                entry.query_indexes.contains(&query_index)
+                    && (selected_indices.contains(index)
+                        || used_chars.saturating_add(entry.chars) <= max_chars)
+            })
+            .min_by_key(|(index, entry)| {
+                (
+                    !entry.preferred_query_indexes.contains(&query_index),
+                    *index,
+                )
+            });
+        if let Some((index, entry)) =
+            representative.filter(|(index, _)| !selected_indices.contains(index))
+        {
+            used_chars = used_chars.saturating_add(entry.chars);
+            selected_indices.insert(index);
         }
-        used_chars = used_chars.saturating_add(entry.chars);
-        selected_indices.insert(index);
-        reserved_query_indexes.extend(
-            entry
-                .query_indexes
-                .iter()
-                .copied()
-                .filter(|query_index| *query_index > 0),
-        );
     }
     for (index, entry) in unique.iter().enumerate() {
         if selected_indices.contains(&index) {
@@ -3348,6 +3390,11 @@ fn merge_plans(value: &Value) -> Option<Value> {
         if let Some(object) = row.as_object_mut() {
             object.insert("sourceId".to_owned(), json!(source_id));
             object.insert("rank".to_owned(), json!(rank));
+            object.insert("queryIndexes".to_owned(), json!(entry.query_indexes));
+            object.insert(
+                "preferredQueryIndexes".to_owned(),
+                json!(entry.preferred_query_indexes),
+            );
         }
         order.push(source_id);
         evidence.push(row);
@@ -5184,6 +5231,7 @@ mod tests {
             matched: score > 0.0,
             candidate_rank: query_index.map_or(usize::MAX, |_| 1000),
             query_indexes: query_index.into_iter().collect(),
+            preferred_query_indexes: BTreeSet::new(),
         };
         let mut drafts = (0..8)
             .map(|index| draft(100.0 - f64::from(index), None))
@@ -5317,6 +5365,91 @@ mod tests {
             );
             assert!(rows(&plan_of(&Value::Object(limited)), "evidence").is_empty());
         }
+    }
+
+    #[test]
+    fn independent_facets_keep_their_own_best_passage_when_scores_are_shared() {
+        let documents = json!([
+            {"path": "first.md", "text": "citrine prism ".repeat(12)},
+            {"path": "second.md", "text": "citrine prism ".repeat(10)},
+            {"path": "specific.md", "text": format!("citrine diffusion {}", "ambient detail ".repeat(60))},
+        ]);
+        let own = plan_of(&json!({"question": "citrine diffusion", "documents": documents}));
+        assert_eq!(
+            get(&first_row(&own, "evidence"), "path"),
+            &json!("specific.md")
+        );
+        let input = json!({
+            "question": "citrine prism", "queryFacets": ["citrine prism", "citrine diffusion"],
+            "documents": documents, "budget": {"maxDocuments": 8, "maxPassages": 2, "maxChars": 4096},
+        });
+        let plan = plan_of(&input);
+        assert!(
+            rows(&plan, "evidence")
+                .iter()
+                .any(|row| get(row, "path") == &json!("specific.md")),
+            "다른 질의의 높은 점수가 해당 질의의 최상위 구절을 대체해서는 안 됩니다"
+        );
+        let mut full = input.as_object().cloned().unwrap_or_default();
+        full.insert(
+            "budget".to_owned(),
+            json!({"maxPassages": 8, "maxChars": 4096}),
+        );
+        let merged = merge_of(&json!({
+            "plans": [plan_of(&Value::Object(full))], "budget": {"maxPassages": 2, "maxChars": 4096},
+        }));
+        assert!(
+            rows(&merged, "evidence")
+                .iter()
+                .any(|row| get(row, "path") == &json!("specific.md")),
+            "전역 병합도 독립 질의가 지목한 대표 구절을 보존해야 합니다"
+        );
+    }
+
+    #[test]
+    fn merge_preserves_duplicate_facet_nominations_and_rejects_invalid_membership() {
+        let first = plan_of(&json!({
+            "question": "citrine", "queryFacets": ["citrine"],
+            "documents": [{"path": "shared.md", "text": "citrine diffusion"}],
+        }));
+        let second_with = |preferred: Option<Value>| {
+            let mut row = first_row(&first, "evidence")
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            row.insert("queryIndexes".to_owned(), json!([2]));
+            row.remove("preferredQueryIndexes");
+            if let Some(preferred) = preferred {
+                row.insert("preferredQueryIndexes".to_owned(), preferred);
+            }
+            let mut plan = first.as_object().cloned().unwrap_or_default();
+            plan.insert("evidence".to_owned(), json!([row]));
+            Value::Object(plan)
+        };
+        let merged = merge_of(&json!({"plans": [first.clone(), second_with(Some(json!([2])))]}));
+        let row = first_row(&merged, "evidence");
+        assert_eq!(get(&row, "queryIndexes"), &json!([1, 2]));
+        assert_eq!(get(&row, "preferredQueryIndexes"), &json!([1, 2]));
+        for invalid in [
+            json!([1]),
+            json!([4]),
+            json!([-1]),
+            json!([1.5]),
+            json!(["2"]),
+        ] {
+            assert_eq!(
+                merge_of(&json!({"plans": [second_with(Some(invalid))]})),
+                Value::Null
+            );
+        }
+        assert_eq!(
+            rows(
+                &merge_of(&json!({"plans": [second_with(None)]})),
+                "evidence"
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]
