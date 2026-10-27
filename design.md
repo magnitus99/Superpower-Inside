@@ -4,7 +4,7 @@ type: module-design
 title: Obsidian 화면 디자인 계약
 status: draft
 parent: superpower-architecture
-references: [superpower-goals, chat-contract, product-philosophy, engineering-contract]
+references: [superpower-goals, chat-contract, engineering-contract]
 ---
 
 # Superpower Inside 디자인 언어

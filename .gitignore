@@ -49,40 +49,6 @@ simulations/
 !/marketing/videos/superpower-inside-promo/ko/BRIEF.md
 
 # 제품 철학은 검토한 텍스트·구조화 근거만 공유
-/product-philosophy/**
-!/product-philosophy/**/
-!/product-philosophy/AGENTS.md
-!/product-philosophy/00-index.md
-!/product-philosophy/01-research-scope.md
-!/product-philosophy/02-task-map.md
-!/product-philosophy/02-task-map.json
-!/product-philosophy/baseline/product-philosophy-2026-10-13.md
-!/product-philosophy/cases/apple/apple-2007-2011.md
-!/product-philosophy/cases/automotive/rolls-royce.md
-!/product-philosophy/cases/writing/montblanc.md
-!/product-philosophy/comparisons/automotive.md
-!/product-philosophy/comparisons/braun-vitsoe.md
-!/product-philosophy/comparisons/effortless-products.md
-!/product-philosophy/comparisons/software-workflows.md
-!/product-philosophy/comparisons/writing-instruments.md
-!/product-philosophy/decisions/approval-queue.md
-!/product-philosophy/decisions/approved.md
-!/product-philosophy/decisions/status.json
-!/product-philosophy/review/manual-review.md
-!/product-philosophy/sources/catalog.json
-!/product-philosophy/sources/community.md
-!/product-philosophy/sources/independent.md
-!/product-philosophy/sources/limitations.md
-!/product-philosophy/sources/official.md
-!/product-philosophy/sources/research.md
-!/product-philosophy/synthesis/application-examples.md
-!/product-philosophy/synthesis/candidates.md
-!/product-philosophy/synthesis/candidates.json
-!/product-philosophy/synthesis/core-directions.md
-!/product-philosophy/synthesis/evidence-perspectives.md
-!/product-philosophy/synthesis/p02-review.md
-!/product-philosophy/synthesis/p07-review.md
-!/product-philosophy/synthesis/value-to-behavior.md
 
 # CodeGraph 로컬 인덱스(기기 전용)
 .codegraph/

@@ -4,7 +4,7 @@ type: module-design
 status: draft
 title: 볼트 근거 심사와 답변 계약
 parent: superpower-architecture
-references: [superpower-goals, chat-contract, product-philosophy]
+references: [superpower-goals, chat-contract]
 ---
 
 # 볼트 근거 심사와 답변 계약

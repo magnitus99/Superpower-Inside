@@ -4,7 +4,7 @@ type: submodule-design
 title: 브랜드 영상의 시각·청각 표현 계약
 status: draft
 parent: marketing-contract
-references: [interface-design, product-philosophy]
+references: [interface-design, superpower-goals]
 ---
 
 # 브랜드 영상의 시각·청각 표현 계약

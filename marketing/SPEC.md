@@ -4,7 +4,7 @@ type: module-design
 status: draft
 title: 사용 가치 전달과 마케팅 계약
 parent: superpower-goals
-references: [superpower-goals, interface-design, release-contract, product-philosophy, brand-video-expression]
+references: [superpower-goals, interface-design, release-contract, brand-video-expression]
 ---
 
 # 사용 가치 전달과 마케팅 계약
@@ -13,7 +13,7 @@ references: [superpower-goals, interface-design, release-contract, product-philo
 
 1차 목표는 제품 다운로드·설치다. 기능 설명의 완전성이나 영상 길이 자체를 목표로 삼지 않는다. Obsidian에 자료를 모아 조사·학습·비교·집필하는 사람에게 프로젝트 복귀·자료의 비교와 이해·내 자료로 글쓰기를 통해 다음 작업을 이어 가는 가치를 먼저 전달한다. 근거 확인은 그 판단을 돕는 가치이며 타깃을 근거 검증만 원하는 사람으로 축소하지 않는다.
 
-초반부터 사용자가 얻는 변화와 결과를 보여 준다. 내부 처리·검색 로그·설정 과시 대신 목적 → 공감할 작업 결과 → 필요한 실제 제품 증거 → 제품 방향 → 설치 행동으로 연결한다. `product-philosophy`의 최소 관여·목적과 결과 중심의 주의·정돈된 사용 경험을 참고하되 지향점을 구현 성과로 표현하지 않는다.
+초반부터 사용자가 얻는 변화와 결과를 보여 준다. 내부 처리·검색 로그·설정 과시 대신 목적 → 공감할 작업 결과 → 필요한 실제 제품 증거 → 제품 방향 → 설치 행동으로 연결한다. `superpower-goals`의 최소 관여·목적과 결과 중심의 주의·정돈된 사용 경험을 참고하되 지향점을 구현 성과로 표현하지 않는다.
 
 ## 주장과 제품 화면의 경계
 
