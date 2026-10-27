@@ -1,3 +1,12 @@
+---
+id: interface-design
+type: module-design
+title: Obsidian 화면 디자인 계약
+status: draft
+parent: superpower-architecture
+references: [superpower-goals, chat-contract]
+---
+
 # Superpower Inside 디자인 언어
 
 차분한 행 구성과 답변 중심 채팅을 Obsidian의 설정 화면과 사이드 패널에 적용합니다. 설정은 Obsidian 기본 설정의 제목·간격·입력 정렬로 위계를 잡고 색상·글꼴·아이콘·입력 요소는 현재 테마를 따릅니다.

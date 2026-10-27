@@ -1,0 +1,33 @@
+---
+id: vault-evidence
+type: module-design
+status: draft
+title: 볼트 근거 심사와 답변 계약
+parent: superpower-architecture
+references: [superpower-goals, chat-contract]
+---
+
+# 볼트 근거 심사와 답변 계약
+
+## 책임과 의도
+
+공통 검색 입력에서 후보를 수집하고 원문을 검증해 답변용 dossier와 출처를 만든다. 기본 조사는 모델이 검색 도구를 자발적으로 고를 때까지 기다리지 않는다. LLM 후속 검색·읽기·연결 탐색은 엔진이 발견한 단서를 깊게 조사하는 수단이며 기본 발견·집계를 대체하지 않는다. 품질 하한은 `superpower-goals`를 따른다.
+
+엔진의 일치 인벤토리는 문서 수·근거 구간 수·발생 횟수와 구문 일치 문서를 표현한다. 순위나 채택 근거 수와 다르다. 직접 인용은 엔진 구문 판정으로만 서술하며 열거 질문에서는 확인된 문서를 예산을 이유로 생략하지 않는 것이 요구 계약이다.
+
+## 근거 자격과 실패 경계
+
+채팅에 채택할 문서는 현재 본문을 다시 읽고 같은 청킹 규칙의 구절·절대 행·revision을 Rust로 검증한다. 색인 후보, 인벤토리, 저장된 주소와 현재 원문 검증 출처를 구분한다. 읽기 전후 stat 검사는 파일 변경을 감지하는 보호 장치이며 그 자체가 quote 검증은 아니다.
+
+필터 제외·검증 실패·예산 밖·미검토·미색인·읽기 실패를 자료 부재나 모델의 관련성 판단으로 바꾸지 않는다. 하드 제외 자료는 후보·점수·집계의 세계 밖에 두고 검색 결과에서 그 존재를 노출하지 않는 것이 정책이다. 검색 내 미검토 자료와 하드 제외를 혼동하지 않는다.
+
+indexing·engine-unavailable·no-evidence·evidence-only를 구분하고 반환된 한계와 검증 출처를 유지한다. answerPlan 실패는 같은 제공자의 답변을 최대 한 번 교정하며 다시 실패하면 그 답변 시도를 검증된 evidence-only로 끝낸다. 외부 결과나 관련성 판단만으로 실패한 인용을 verified로 승격하지 않는다. 후속 조사에도 현재 정책·원문 검증·실행 취소 경계를 적용한다.
+
+## 현재 구현과 목표의 차이
+
+- `src/search/indexed-search-deps.ts`는 exhaustive lexical 후보와 discovery 단서를 보유하면서 원문 심사 경로를 최대 96개로 선택한다. 따라서 전체 lexical 평가를 전체 현재 원문 검토 완료로 해석할 수 없다. `indexed-vault-review.ts`의 `exhaustiveReview` coverage 표현 역시 이 두 의미가 분리돼 있음을 보장하지 못한다.
+- 기본 생성에는 인벤토리 총계가 전달되지만 문서별 검증 열거는 후속 `enumerate` 경로다. 임의 열거 질문의 무누락을 기본 생성만으로 보장하지 않는다. 관련 근거는 `indexed-vault-followup.ts`, `indexed-vault-enumeration.ts`와 `indexed-vault-review.test.ts`다.
+- 채팅 검증은 현재 본문을 사용하지만 정상 경로에서 색인 파일 content hash와 현재 hash를 직접 비교하는 게이트는 확인되지 않았다. [채팅 운영 계약](../chat/AGENTS.md#변경-계약)의 hash 확인 요구를 이미 충족했다고 간주하지 않는다. 검색 화면은 `verifyCurrentSource: false`이므로 같은 검증 보장이 아니다.
+- 기본 발견·집계·주소를 엔진 한 번·색인 한 순회에서 얻는 것이 목표다. 현재는 facet별 검색·집계와 배치별 WASM 계획이 있으며, `src/chat/query-variants.ts`의 제공자 호출은 로컬 질의 계획만 허용한 기존 계약과 다르다. 이번 편입에서 동작이나 정책을 변경하지 않는다.
+
+구현 중심은 `indexed-vault-review.ts`의 `searchIndexedVault`·`reviewIndexedVault`다. `research-agent.ts`의 존재를 현재 주 실행 경로의 증거로 쓰지 않는다. 회귀 근거는 `indexed-vault-review.test.ts`, `indexed-vault-search.test.ts`, `indexed-vault-followup.test.ts`, `src/search/indexed-search-deps.test.ts`, `src/search/engine-adapter.test.ts`다. 로컬 회귀 계약과 실제 답변·전체 recall 검증은 별개이며, 이번 편입에서는 실제 답변·전체 recall을 재측정하지 않았다. 달성 상태는 [검색 품질 체크리스트](../../SEARCH-QUALITY-CHECKLIST.md)가 소유한다.
