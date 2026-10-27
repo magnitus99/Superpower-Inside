@@ -45,6 +45,7 @@ Obsidian 데스크톱 플러그인. TypeScript strict·Obsidian DOM·esbuild CJS
 
 - 답변·설명·주석은 한국어, 코드 식별자는 영어입니다. macOS 명령은 fish를 명시하고 Windows는 PowerShell을 사용합니다. Node/npm 프로젝트이며 별도 요청 없이 Python을 도입하지 않습니다.
 - 먼저 `git status --short --branch`를 확인합니다. 사용자 변경·볼트·설정·키·저장 세션을 보존합니다. 커밋·푸시·릴리스는 사용자가 요청한 범위에서만 실행합니다.
+- 이번 브랜치 검토의 검색 품질 후속 작업은 [종료 체크리스트](SEARCH-QUALITY-CHECKLIST.md)를 현재 상태·할 일·완료 판정의 정본으로 사용합니다. 작업 시작·종료 시 해당 문서와 완료 근거를 갱신하며, 과거 사이클 메모를 별도 활성 할 일로 재실행하지 않습니다. 필수 기준을 충족하면 완료를 명시하고 종료하며, 추가 개선은 별도 요청으로 분리합니다.
 - 모델·추론 강도는 사용자가 선택합니다. 전역 도구·설정·승인 정책을 임의로 바꾸지 않습니다. 스킬은 필요한 작업에만 사용하며 범용 교재나 작업 기록을 저장소에 쌓지 않습니다.
 - `rg`로 관련 구현·호출부·테스트를 함께 읽고 테스트 계약부터 고정합니다. 라이브러리 API는 Context7, 없으면 공식 문서나 설치된 타입·소스로 확인합니다.
 - 진입점은 `main.ts`, 설정은 `src/settings.ts`, 계산은 `crates/rag-wasm/`, WASM 연결은 `src/rag/rust-core.ts`입니다. 채팅 변경 전 [src/chat/AGENTS.md](src/chat/AGENTS.md)를 읽습니다.
