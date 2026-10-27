@@ -1881,11 +1881,17 @@ fn candidate_depth(drafts: &[PassageDraft], max_documents: usize, max_passages: 
             break;
         }
     }
+    // 같은 경로의 여러 구간이 아니라 서로 다른 문서 수에 상한을 적용합니다.
+    let mut paths = BTreeSet::new();
+    let document_depth = drafts
+        .iter()
+        .position(|draft| paths.insert(&draft.path) && paths.len() > max_documents)
+        .unwrap_or(drafts.len());
     adaptive
         .max(matched)
         .max(protected)
         .max(facet_depth)
-        .min(max_documents)
+        .min(document_depth)
         .min(drafts.len())
 }
 
@@ -3922,6 +3928,40 @@ mod tests {
                 .into_iter()
                 .collect()
         );
+    }
+
+    #[test]
+    fn plan_counts_document_budget_by_path_instead_of_chunks() {
+        for (question, repeated, complementary) in [
+            (
+                "ceramic firing cooling",
+                "ceramic firing cooling",
+                "ceramic cooling",
+            ),
+            ("조립 검사 포장", "조립 검사 포장", "조립 포장"),
+        ] {
+            let mut documents = (0..12)
+                .map(|index| json!({"path": "a.md", "text": repeated, "startLine": index * 10 + 1}))
+                .collect::<Vec<_>>();
+            documents.push(json!({"path": "b.md", "text": complementary}));
+            for max_documents in [1, 2] {
+                let plan = plan_of(&json!({
+                    "question": question,
+                    "documents": documents,
+                    "budget": {"maxDocuments": max_documents, "maxPassages": 2},
+                }));
+                let paths = rows(&plan, "evidence")
+                    .iter()
+                    .map(|row| text(get(row, "path")))
+                    .collect::<BTreeSet<_>>();
+                let expected = if max_documents == 1 {
+                    BTreeSet::from(["a.md".to_owned()])
+                } else {
+                    BTreeSet::from(["a.md".to_owned(), "b.md".to_owned()])
+                };
+                assert_eq!(paths, expected);
+            }
+        }
     }
 
     #[test]
