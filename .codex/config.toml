@@ -1,7 +1,0 @@
-[agents]
-max_concurrent_threads_per_session = 4
-default_subagent_model = "ccs-commandcode/deepseek/deepseek-v4.1-flash"
-default_subagent_reasoning_effort = "max"
-
-[features]
-multi_agent_v2 = false
