@@ -32,6 +32,7 @@ import type { SearchCandidateState } from '../search/engine-port';
 import { appLogger } from '../utils/logger';
 import { selectAnswerCitations } from './citation-selection';
 import { searchIndexedFollowup } from './indexed-vault-followup';
+import { enumerateIndexedDocuments } from './indexed-vault-enumeration';
 import type { VaultResearchProgress } from './research-agent';
 
 /** 색인 본문·리비전만으로 근거를 선별하는 엔진 연결(provider 미사용)입니다. */
@@ -582,6 +583,8 @@ export interface IndexedReviewPhaseDiagnostics extends TurnUsageSnapshot {
 }
 
 export interface IndexedReviewDiagnostics {
+  /** 정상 집계는 작업 상세에 두고 경고만 답변 본문에 보존합니다. */
+  noticeLevel?: 'detail' | 'warning';
   phases: Record<IndexedReviewPhase, IndexedReviewPhaseDiagnostics>;
   counts: {
     candidateSegments: number;
@@ -636,6 +639,8 @@ export interface IndexedVaultReviewOptions {
   signal?: AbortSignal;
   onProgress?: (progress: VaultResearchProgress) => void;
   onAnswer?: (content: string) => void;
+  /** provider가 실제 제공한 추론 요약만 전달합니다. 답변 JSON은 검증 후 전달합니다. */
+  onReasoning?: (delta: string) => void;
   onDiagnostics?: (diagnostics: IndexedReviewDiagnostics) => void;
 }
 
@@ -654,6 +659,7 @@ export interface IndexedEvidenceDossier {
   /** 발견 범위와 실제 근거 검토를 분리한 집계입니다. 후보 원문이나 인용은 아닙니다. */
   discoverySummary?: RustIndexedDiscoverySummary;
   followup?: { status: 'skipped' | 'searched' | 'failed'; queries?: readonly string[] };
+  enumeration?: { content: string; citations: SourceCitation[]; incomplete: boolean };
   evidence: readonly IndexedEvidenceItem[];
   coverage: IndexedVaultSearchCoverage;
   diagnostics: IndexedEvidencePlan['diagnostics'] | null;
@@ -918,6 +924,7 @@ async function runIndexedVaultReview(
         engineUnavailable: true,
       };
     }
+    options.onProgress?.({ phase: 'search', completedFiles: 0, totalFiles: total });
     let search = options.corpus
       ? await interruptible(
           searchIndexedVault({
@@ -1012,7 +1019,10 @@ async function runIndexedVaultReview(
         const usage = planTurnUsageRust({ requests: [followupUsage] });
         if (usage) Object.assign(diagnostics.phases.reduce, usage);
       },
-      () => { diagnostics.counts.followupRequests = 1; },
+      () => {
+        diagnostics.counts.followupRequests = 1;
+        options.onProgress?.({ phase: 'followup', completedFiles: 0, totalFiles: total });
+      },
     ));
     check();
     if (followup.search) {
@@ -1032,15 +1042,14 @@ async function runIndexedVaultReview(
         // 경로 집계는 실제 I/O 작업의 합집합이며, 근거 선택·중복 제거는 Rust가 담당합니다.
         const requestedPaths = [...new Set([...baseSearch.coverage.requestedPaths, ...extra.coverage.requestedPaths])];
         const plannedPaths = [...new Set([...baseSearch.coverage.plannedPaths, ...extra.coverage.plannedPaths])];
-        const reviewed = new Set(plannedPaths);
-        const unreviewedPaths = [...new Set([...baseSearch.coverage.unreviewedPaths, ...extra.coverage.unreviewedPaths])]
-          .filter((path) => !reviewed.has(path));
+        // 같은 문서를 다시 계획에 넣은 사실만으로 앞선 부분 읽기 실패를 해소하지 않습니다.
+        const unreviewedPaths = [...new Set([...baseSearch.coverage.unreviewedPaths, ...extra.coverage.unreviewedPaths])];
         const coverage: IndexedVaultSearchCoverage = {
           ...baseSearch.coverage,
           status: merged.coverage.status,
           requestedPaths, plannedPaths, unreviewedPaths,
-          reviewedDocuments: plannedPaths.length,
-          unreviewedDocuments: unreviewedPaths.length,
+          reviewedDocuments: plannedPaths.filter((path) => !unreviewedPaths.includes(path)).length,
+          unreviewedDocuments: Math.max(unreviewedPaths.length, merged.coverage.unreviewedDocuments),
         };
         search = {
           ...baseSearch,
@@ -1067,9 +1076,10 @@ async function runIndexedVaultReview(
     diagnostics.counts.screenAcceptedSegments = search.evidence.length;
     diagnostics.counts.extractedSegments = search.evidence.length;
     activePhase = 'map';
-    options.onProgress?.({ phase: 'map', completedFiles: 0, totalFiles: total });
     // 채택 문서만 현재 vault 원문과 revision으로 다시 검증합니다.
     const adoptedPaths = [...new Set(search.evidence.map((item) => item.path))];
+    options.onProgress?.({ phase: 'verify', completedFiles: 0, totalFiles: adoptedPaths.length });
+    let completedSources = 0;
     const stale = new Set<string>();
     const currentSources = new Map<
       string,
@@ -1120,6 +1130,7 @@ async function runIndexedVaultReview(
           if (current !== null && current === expected) break;
         }
       }
+      options.onProgress?.({ phase: 'verify', completedFiles: ++completedSources, totalFiles: adoptedPaths.length, currentPath: path });
       if (
         expected === null ||
         current === null ||
@@ -1367,7 +1378,11 @@ async function runIndexedVaultReview(
     const newlyStale = [...stale].filter(
       (path) => !search.coverage.unreviewedPaths.includes(path),
     ).length;
-    const hasIncompleteCoverage = search.coverage.status === 'incomplete' || stale.size > 0;
+    const enumeration = followup.enumerate
+      ? await interruptible(enumerateIndexedDocuments(options, (request) => runIndexedVaultReview(request)))
+      : undefined;
+    check();
+    const hasIncompleteCoverage = search.coverage.status === 'incomplete' || stale.size > 0 || enumeration?.incomplete === true;
     const effectiveCoverage: IndexedVaultSearchCoverage = {
       ...search.coverage,
       status: hasIncompleteCoverage ? ('incomplete' as const) : search.coverage.status,
@@ -1396,7 +1411,7 @@ async function runIndexedVaultReview(
         ? t('indexedReviewLimitedNotice', noticeValues)
         : coverage;
     // 태그·시각 필터의 후보 메타데이터가 없으면 범위 밖 단서를 노출하지 않습니다.
-    const discoveryInput = options.discoveryCandidates && options.discoveryPaths && !options.filters
+    const discoveryInput = options.discoveryCandidates && options.discoveryPaths && (!options.filters || options.getFollowupPaths)
       ? {
           candidates: options.discoveryCandidates,
           originalPaths: options.discoveryPaths,
@@ -1432,6 +1447,7 @@ async function runIndexedVaultReview(
       ...(discoveryPage ? { discoverySummary: discoveryPage.summary } : {}),
       ...(options.getFollowupPaths ? { followup: { status: followup.status, queries: followup.queries } } : {}),
       matchInventory: options.matchInventory,
+      ...(enumeration ? { enumeration } : {}),
       documentScope,
       evidence,
       coverage: effectiveCoverage,
@@ -1548,9 +1564,15 @@ async function runIndexedVaultReview(
         },
         {
           role: 'user',
-          // 경로별 조사 원장은 결과와 페이지 조회에 보존하고, 모델에는 검토 집계만 전달합니다.
+          // 전체 경로 원장은 결과에 보존하고, 모델에는 집계와 검증 원문을 전달합니다.
           content: JSON.stringify({
             ...dossier,
+            matchInventory: dossier.matchInventory?.map((inventory) => ({
+              query: inventory.query,
+              totalDocuments: inventory.totalDocuments,
+              totalChunks: inventory.totalChunks,
+              totalOccurrences: inventory.totalOccurrences,
+            })),
             coverage: {
               documentScope: dossier.coverage.documentScope,
               status: dossier.coverage.status,
@@ -1574,6 +1596,7 @@ async function runIndexedVaultReview(
       const updates: TokenUsage[] = [];
       usage.push(updates);
       if (previousAnswer !== undefined) diagnostics.counts.answerCorrectionRequests = 1;
+      options.onProgress?.({ phase: previousAnswer === undefined ? 'answer' : 'repair', completedFiles: evidence.length, totalFiles: evidence.length });
       let content = '';
       try {
         sentToProvider = true;
@@ -1581,8 +1604,9 @@ async function runIndexedVaultReview(
           options.provider.streamChat(
             prepared.messages,
             (chunk) => {
-              if (options.signal?.aborted) return;
+              if (options.signal?.aborted || options.isCurrent?.() === false) return;
               content += chunk.content ?? '';
+              if (chunk.reasoning) options.onReasoning?.(chunk.reasoning);
             },
             0.2,
             undefined,
@@ -1688,7 +1712,9 @@ async function runIndexedVaultReview(
     const body = resolved
       ? [answer, comparisonLimitations].filter(Boolean).join('\n\n')
       : [evidenceOnlyContent(evidence), comparisonLimitations].filter(Boolean).join('\n\n');
-    const content = [body, notice].filter(Boolean).join('\n\n');
+    const showNotice = hasIncompleteCoverage || limitedReview || Boolean(comparisonLimitations) || !resolved;
+    diagnostics.noticeLevel = showNotice ? 'warning' : 'detail';
+    const content = [body, enumeration?.content, showNotice ? notice : ''].filter(Boolean).join('\n\n');
     options.onAnswer?.(content);
     options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
     if (hasIncompleteCoverage || limitedReview || !resolved)
@@ -1708,10 +1734,10 @@ async function runIndexedVaultReview(
       evidence,
       coverage: effectiveCoverage,
       content,
-      citations:
-        answer !== null
-          ? selectAnswerCitations(answer, [...citations.values()], 0)
-          : [...citations.values()],
+      citations: [...new Map([
+        ...(answer !== null ? selectAnswerCitations(answer, [...citations.values()], 0) : [...citations.values()]),
+        ...(enumeration?.citations ?? []),
+      ].map((citation) => [citation.id, citation])).values()],
       processedFiles: reviewed,
       totalFiles: total,
       rejectedFiles: verificationRejected,

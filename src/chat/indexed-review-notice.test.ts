@@ -101,6 +101,21 @@ describe('엔진 검토 고지와 근거 전용 렌더링', () => {
     },
   );
 
+  it('정상 집계는 본문에 덧붙이지 않고 펼침 상세용 메타데이터로 보존한다', () => {
+    const { view, message } = createHarness();
+    const phase = () => ({ durationMs: 0, requests: 0, reportedRequests: 0 });
+    view.updateMessage('answer', '합성 본문입니다.', true, undefined, undefined, {
+      indexedReviewNotice: '정상 집계 상세',
+      indexedReviewDiagnostics: {
+        noticeLevel: 'detail',
+        phases: { inventory: phase(), search: phase(), map: phase(), screen: phase(), extract: phase(), reduce: phase(), answer: phase() },
+        counts: { candidateSegments: 1, screenAcceptedSegments: 1, extractedSegments: 1, screenRetries: 0, extractRetries: 0, splitBatches: 0, reduceRequests: 0, cacheHits: 0 },
+      },
+    });
+    expect(message.content).toBe('합성 본문입니다.');
+    expect(message.indexedReviewNotice).toBe('정상 집계 상세');
+  });
+
   it('진행 중 본문과 고지 없는 완료 본문은 그대로 둔다', () => {
     const streaming = createHarness();
     streaming.view.updateMessage('answer', streaming.message.content, false, undefined, undefined, {

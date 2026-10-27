@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from '../i18n';
+import { enumerateIndexedDocuments } from './indexed-vault-enumeration';
 import { LLMProviderHttpError, type ChatMessage, type LLMProvider } from '../llm/providers';
 import {
   planIndexedEvidenceRust,
@@ -325,6 +326,30 @@ function reviewOptions(
 }
 
 describe('엔진 근거 기반 색인 검토', () => {
+  it('실제 검색·원문 검증·생성·교정 단계와 제공된 추론만 전달하고 미검증 JSON은 숨긴다', async () => {
+    const phases: string[] = [];
+    const onReasoning = vi.fn();
+    const onAnswer = vi.fn();
+    let requests = 0;
+    const streamChat: LLMProvider['streamChat'] = async (_messages, consume) => {
+      requests++;
+      consume({ content: requests === 1 ? '{"paragraphs":' : JSON.stringify({
+        paragraphs: [{ text: '냉각 조건을 확인했습니다.', sources: [SOURCE_ID] }],
+      }), reasoning: '제공된 근거의 조건을 확인합니다.', done: false });
+      expect(onAnswer).not.toHaveBeenCalled();
+      await Promise.resolve();
+    };
+    const result = await reviewIndexedVault(reviewOptions({
+      provider: { streamChat }, onAnswer, onReasoning,
+      onProgress: (progress) => phases.push(progress.phase),
+    }));
+    expect(phases).toEqual(expect.arrayContaining(['search', 'verify', 'answer', 'repair', 'complete']));
+    expect(onReasoning).toHaveBeenCalledTimes(2);
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+    expect(result.content).toContain('냉각 조건을 확인했습니다.');
+    expect(result.content).not.toContain('{"paragraphs":');
+  });
+
   it.each([false, true])('최초 후보 밖 후속 근거를 원문 검증 뒤 결합하고 실패한 문서는 제외한다: %s', async (sourceMissing) => {
     const extra = twoDocumentPlan();
     extra.evidence = extra.evidence.map((item) => ({ ...item, queryIndexes: [2], preferredQueryIndexes: [2] }));
@@ -379,6 +404,68 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.providerTransfer.sentPaths?.includes(OTHER)).toBe(!sourceMissing);
     expect(result.dossier.discoverySummary?.discoveredDocuments).toBe(1);
     expect(result.dossier.discoverySummary?.selectedSourceDocuments).toBe(1);
+  });
+
+  it.each([false, true])('필터·mixed 요청도 현재 범위의 마지막 페이지 단서로 후속 조사를 수행한다: %s', async (mixed) => {
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    const paths = Array.from({ length: 121 }, (_, index) => `Synthetic/Lead-${index}.md`);
+    const streamChat = vi.fn((_messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+      consume({ content: '{"queries":["cooling exceptions"],"enumerate":false}' });
+      return Promise.resolve();
+    });
+    const result = await reviewIndexedVault(reviewOptions({
+      provider: { streamChat }, deferAnswer: mixed, filters: { tags: [] },
+      discoveryCandidates: [RELEVANT, ...paths].map((path, index) => ({ path, score: 1, source: 'bm25', rank: index + 1 })),
+      discoveryPaths: [RELEVANT, ...paths],
+      getFollowupPaths: () => Promise.resolve([RELEVANT, ...paths.slice(1)]),
+    }));
+    const request: unknown = JSON.parse(streamChat.mock.calls[0]?.[0][1]?.content ?? '{}');
+    const expectedDiscovery: unknown = expect.arrayContaining([{ path: paths.at(-1), state: 'unreviewed', verification: 'unverified' }]);
+    expect(request).toMatchObject({ discovery: expectedDiscovery });
+    if (!request || typeof request !== 'object' || !('discovery' in request)) throw new Error('단서 목록 필요');
+    expect(request.discovery).toHaveLength(121);
+    expect(JSON.stringify(request)).not.toContain(paths[0]);
+    expect(result.dossier.followup?.status).toBe('searched');
+    expect(result.readDiscoveryPage).toBeTypeOf('function');
+    if (mixed) expect(streamChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('100개 문서 전체 열거를 상위 k와 분리해 검증하고 중복·읽기 실패·접근 변경을 보존한다', async () => {
+    const seed = await reviewIndexedVault(reviewOptions({ deferAnswer: true }));
+    const paths = Array.from({ length: 100 }, (_, index) => `Synthetic/Listing-${index}.md`);
+    const item = seed.evidence[0];
+    const citation = seed.citations[0];
+    if (!item || !citation) throw new Error('검증된 합성 근거 필요');
+    let allowed = paths;
+    const review = vi.fn((request: IndexedVaultReviewOptions) => {
+      const path = request.indexedPaths[0];
+      const sourceId = `${path}#L1-L1`;
+      return Promise.resolve({ ...seed, evidence: [{ ...item, path, sourceId, startLine: 1, endLine: 1 }],
+        citations: [{ ...citation, id: sourceId, filePath: path, status: 'verified' as const }] });
+    });
+    const options = reviewOptions({
+      indexedPaths: paths, discoveryPaths: paths, getFollowupPaths: () => Promise.resolve(allowed),
+      matchInventory: [{ query: 'quartz', totalDocuments: 100, totalChunks: 100, totalOccurrences: 100,
+        documents: paths.map((sourcePath) => ({ sourcePath, occurrences: 1 })) }],
+    });
+    const complete = await enumerateIndexedDocuments(options, review);
+    expect(complete.incomplete).toBe(false);
+    expect(complete.citations).toHaveLength(100);
+    expect(new Set(complete.citations.map((item) => item.filePath)).size).toBe(100);
+    expect(complete.content).toContain('Listing&#45;99');
+    expect(review).toHaveBeenCalledTimes(100);
+    expect(review.mock.calls[99]?.[0]).toMatchObject({ deferAnswer: true, matchInventory: undefined, indexedPaths: [paths[99]] });
+    const restricted = await enumerateIndexedDocuments({ ...options, matchInventory: [options.matchInventory![0], options.matchInventory![0]] }, async (request) => {
+      const result = await review(request);
+      if (request.indexedPaths[0] === paths[99]) allowed = paths.slice(1);
+      return request.indexedPaths[0] === paths[50] ? { ...result, evidence: [], citations: [] } : result;
+    });
+    expect(restricted.incomplete).toBe(true);
+    expect(restricted.citations).toHaveLength(98);
+    expect(restricted.content).not.toContain('Listing&#45;0 ');
+    const controller = new AbortController();
+    controller.abort();
+    await expect(enumerateIndexedDocuments({ ...options, signal: controller.signal }, review)).rejects.toThrow();
   });
 
   it('검토 밖 단서를 보존하되 원문이나 인용으로 승격하지 않는다', async () => {
@@ -638,6 +725,8 @@ describe('엔진 근거 기반 색인 검토', () => {
     const payload: unknown = JSON.parse(String(calls[0]?.[1]?.content));
     expect(payload).toEqual({
       ...result.dossier,
+      matchInventory: [{ query: 'quartz', totalDocuments: 12, totalChunks: 20,
+        totalOccurrences: 34 }],
       coverage: {
         documentScope: result.coverage.documentScope,
         status: result.coverage.status,
@@ -646,6 +735,31 @@ describe('엔진 근거 기반 색인 검토', () => {
         notIndexedDocuments: result.coverage.notIndexedDocuments,
       },
     });
+  });
+
+  it('큰 집계 원장은 결과에 보존하고 집계 요약과 검증 원문으로 답변을 생성한다', async () => {
+    const { provider, calls } = answerProvider();
+    const budget = planModelContextRust({});
+    if (!budget) throw new Error('모델 예산 계약을 초기화하지 못했습니다.');
+    const documents = Array.from({ length: 5_000 }, (_, index) => ({
+      sourcePath: `synthetic/${index}-${'x'.repeat(100)}.md`,
+      occurrences: 1,
+    }));
+    const result = await reviewIndexedVault(reviewOptions({
+      provider: { ...provider, contextBudget: { ...budget, inputBytes: 50_000 } },
+      matchInventory: [{ query: 'quartz', totalDocuments: 5_000, totalChunks: 5_000,
+        totalOccurrences: 5_000, documents }],
+    }));
+    expect(calls).toHaveLength(1);
+    expect(result.outcome).toBe('answered');
+    expect(result.dossier.matchInventory?.[0]?.documents).toHaveLength(5_000);
+    const payload = JSON.parse(String(calls[0]?.[1]?.content)) as {
+      matchInventory: { totalDocuments: number; documents?: unknown[] }[];
+      evidence: unknown[];
+    };
+    expect(payload.matchInventory[0]?.totalDocuments).toBe(5_000);
+    expect(payload.matchInventory[0]?.documents).toBeUndefined();
+    expect(payload.evidence).toEqual(result.dossier.evidence);
   });
 
   it('입력 예산을 넘으면 모델을 호출하지 않고 evidence-only를 반환한다', async () => {
@@ -719,8 +833,8 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.citations[0]?.preview).toBe(quote);
   });
   beforeEach(() => {
-    vi.mocked(planIndexedEvidenceRust).mockReturnValue(planFixture());
-    vi.mocked(verifyIndexedEvidenceRust).mockReturnValue(verificationFixture());
+    vi.mocked(planIndexedEvidenceRust).mockClear().mockReturnValue(planFixture());
+    vi.mocked(verifyIndexedEvidenceRust).mockClear().mockReturnValue(verificationFixture());
   });
 
   it('비교 답변의 missing facet은 같은 모델로 정확히 한 번 교정한 뒤 채택한다', async () => {

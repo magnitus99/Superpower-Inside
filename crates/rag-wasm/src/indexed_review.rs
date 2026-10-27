@@ -24,6 +24,50 @@ const MAX_PARAGRAPH_CHARS: usize = 8000;
 /// 문단 하나가 인용할 수 있는 source 수 상한입니다.
 const MAX_PARAGRAPH_SOURCES: usize = 8;
 
+/// 후속 조사 계획에서 검색 질의와 전체 열거 의도를 분리합니다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_indexed_followup_json(input: &str) -> String {
+    if input.len() > 16_384 {
+        return String::new();
+    }
+    let Ok(value) = serde_json::from_str::<Value>(input) else {
+        return String::new();
+    };
+    let Some(question) = value.get("question").and_then(Value::as_str) else {
+        return String::new();
+    };
+    let Some(response) = value.get("response").and_then(Value::as_str) else {
+        return String::new();
+    };
+    let parsed = serde_json::from_str::<Value>(response).ok();
+    let (queries, enumerate) = match parsed.as_ref() {
+        Some(Value::Array(_)) => (response.to_owned(), false),
+        Some(Value::Object(plan)) => {
+            let Some(queries) = plan.get("queries").filter(|queries| queries.is_array()) else {
+                return String::new();
+            };
+            let Some(enumerate) = plan.get("enumerate").and_then(Value::as_bool) else {
+                return String::new();
+            };
+            (queries.to_string(), enumerate)
+        }
+        _ => return String::new(),
+    };
+    if queries == "[]" {
+        return json!({"variants": [], "enumerate": enumerate}).to_string();
+    }
+    let plan = super::plan_vault_query_expansion_json(question, &queries);
+    let Ok(mut plan) = serde_json::from_str::<Value>(&plan) else {
+        return String::new();
+    };
+    let Some(object) = plan.as_object_mut() else {
+        return String::new();
+    };
+    object.insert("enumerate".to_owned(), json!(enumerate));
+    plan.to_string()
+}
+
 /// 이름·검색 순위로 자료를 제거하지 않고 색인과 허용 범위의 교집합을 반환합니다.
 #[must_use]
 #[wasm_bindgen]
@@ -1123,6 +1167,44 @@ fn score_segments(input: &str) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn followup_plan_keeps_listing_separate_from_search_and_accepts_legacy_arrays() {
+        for (response, enumerate, count) in [
+            (r#"{"queries":[],"enumerate":true}"#, true, 0),
+            (
+                r#"{"queries":["cooling exceptions"],"enumerate":false}"#,
+                false,
+                1,
+            ),
+            (r#"["remote conditions"]"#, false, 1),
+            ("[]", false, 0),
+        ] {
+            let plan: serde_json::Value = serde_json::from_str(&super::plan_indexed_followup_json(
+                &serde_json::json!({"question":"synthetic request", "response":response})
+                    .to_string(),
+            ))
+            .unwrap_or(Value::Null);
+            assert_eq!(plan.get("enumerate"), Some(&json!(enumerate)));
+            assert_eq!(
+                plan.get("variants").and_then(Value::as_array).map(Vec::len),
+                Some(count)
+            );
+        }
+        for response in [
+            r#"{"queries":[],"enumerate":"yes"}"#,
+            r#"{"queries":["\n"],"enumerate":true}"#,
+            "not-json",
+        ] {
+            assert!(
+                super::plan_indexed_followup_json(
+                    &serde_json::json!({"question":"synthetic request", "response":response})
+                        .to_string()
+                )
+                .is_empty()
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

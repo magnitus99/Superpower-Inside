@@ -78,10 +78,11 @@ pub use indexed_evidence::{
 };
 mod indexed_review;
 pub use indexed_review::{
-    plan_indexed_review_answer_plan_json, plan_indexed_review_inventory_json,
-    plan_indexed_review_segments_json, render_indexed_review_answer_json,
-    score_indexed_review_segments_json, validate_indexed_review_answer_json,
-    validate_indexed_review_json, validate_indexed_review_screen_json,
+    plan_indexed_followup_json, plan_indexed_review_answer_plan_json,
+    plan_indexed_review_inventory_json, plan_indexed_review_segments_json,
+    render_indexed_review_answer_json, score_indexed_review_segments_json,
+    validate_indexed_review_answer_json, validate_indexed_review_json,
+    validate_indexed_review_screen_json,
 };
 /// 완료된 채팅 세션의 제목 요약 입력과 정규화.
 mod session_title;
@@ -4620,6 +4621,26 @@ impl Bm25RuntimeIndex {
             &bm25_query::aggregate_matches(&self.index, query),
             limit,
         )
+    }
+
+    /// 허용 경로를 목록 절단 전 적용해 범위 내 총계만 반환합니다.
+    #[must_use]
+    pub fn aggregate_scoped_json(&self, query: &str, limit: usize, paths_json: &str) -> String {
+        let Ok(paths) = serde_json::from_str::<BTreeSet<String>>(paths_json) else {
+            return String::new();
+        };
+        let matches = bm25_query::aggregate_matches(&self.index, query)
+            .into_iter()
+            .filter(|entry| {
+                let path = self
+                    .index
+                    .doc_sources
+                    .get(&entry.doc_id)
+                    .unwrap_or(&entry.doc_id);
+                paths.contains(path)
+            })
+            .collect::<Vec<_>>();
+        serialize_bm25_match_aggregate_json(&self.index, &matches, limit)
     }
 
     /// compact v3 JSON payload로 직렬화한다.
@@ -10563,6 +10584,11 @@ fn validated_indexed_review_diagnostics(value: &JsonValue) -> Option<JsonValue> 
     let mut diagnostics = JsonMap::new();
     diagnostics.insert("phases".to_owned(), JsonValue::Object(phases));
     diagnostics.insert("counts".to_owned(), JsonValue::Object(counts));
+    if let Some(level @ ("detail" | "warning")) =
+        value.get("noticeLevel").and_then(JsonValue::as_str)
+    {
+        diagnostics.insert("noticeLevel".to_owned(), JsonValue::from(level));
+    }
     if let Some(outcome) = validated_review_outcome(value.get("outcome")) {
         diagnostics.insert("outcome".to_owned(), JsonValue::from(outcome));
     }

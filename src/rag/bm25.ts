@@ -628,6 +628,7 @@ export class IndexedDbBM25Index {
     query: string,
     limit: number,
     signal?: AbortSignal,
+    allowedPaths?: readonly string[],
   ): Promise<RustBm25MatchAggregate | null> {
     signal?.throwIfAborted();
     const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
@@ -639,9 +640,9 @@ export class IndexedDbBM25Index {
       await awaitBm25SearchQueue(this.workerQueue, signal);
       signal?.throwIfAborted();
       if (this.workerFailure || worker.isClosed || generation !== this.workerGeneration) return null;
-      return parseBm25MatchAggregateJson(await worker.aggregate(query, normalizedLimit, signal));
+      return parseBm25MatchAggregateJson(await worker.aggregate(query, normalizedLimit, signal, allowedPaths));
     }
-    return this.ensureRuntime().aggregate(query, normalizedLimit);
+    return this.ensureRuntime().aggregate(query, normalizedLimit, allowedPaths);
   }
 
   /** 이번 세션 런타임이 스냅샷+델타로 복구됐는지, 원문 전량 재구성인지 알려줍니다. */

@@ -3249,7 +3249,12 @@ fn collect_merge_entries(plans: &[Value]) -> Option<(Vec<MergeEntry>, MergeCover
                 "incomplete" => 1_u8,
                 _ => 0_u8,
             };
-            coverage_rank = coverage_rank.max(rank);
+            // 읽기 불완전은 단순 표시 예산 제한보다 우선합니다.
+            coverage_rank = if coverage_rank == 1 || rank == 1 {
+                1
+            } else {
+                coverage_rank.max(rank)
+            };
             let count = |key: &str| {
                 coverage
                     .get(key)
@@ -3437,10 +3442,10 @@ fn merge_plans(value: &Value) -> Option<Value> {
         order.push(source_id);
         evidence.push(row);
     }
-    let coverage_status = if coverage_rank == 2 || truncated {
-        "budget-exhausted"
-    } else if coverage_rank == 1 || unreviewed > 0 || not_indexed > 0 {
+    let coverage_status = if coverage_rank == 1 || unreviewed > 0 || not_indexed > 0 {
         "incomplete"
+    } else if coverage_rank == 2 || truncated {
+        "budget-exhausted"
     } else {
         "supported"
     };
@@ -3815,6 +3820,31 @@ mod tests {
         );
         let highlights = rows(first, "highlights");
         assert!(!highlights.is_empty(), "highlights are reported");
+    }
+
+    #[test]
+    fn merge_never_weakens_incomplete_coverage_to_a_budget_notice() {
+        let base = plan_of(&json!({
+            "question": "alpha", "documents": [{"path": "a.md", "text": "alpha"}],
+        }));
+        let mut incomplete = base.as_object().cloned().unwrap_or_default();
+        incomplete.insert("coverage".to_owned(), json!({"status": "incomplete", "reviewedDocuments": 0, "unreviewedDocuments": 1, "notIndexedDocuments": 0}));
+        let mut limited = base.as_object().cloned().unwrap_or_default();
+        limited.insert("coverage".to_owned(), json!({"status": "budget-exhausted", "reviewedDocuments": 1, "unreviewedDocuments": 0, "notIndexedDocuments": 0}));
+        for plans in [json!([incomplete, limited]), json!([limited, incomplete])] {
+            let merged = super::merge_indexed_evidence_plans_json(
+                &json!({
+                    "plans": plans, "budget": {"maxPassages": 1, "maxChars": 2000},
+                })
+                .to_string(),
+            );
+            let value: Value = serde_json::from_str(&merged).unwrap_or_default();
+            assert_eq!(get(get(&value, "coverage"), "status"), &json!("incomplete"));
+            assert_eq!(
+                get(get(&value, "coverage"), "unreviewedDocuments"),
+                &json!(1)
+            );
+        }
     }
 
     #[test]

@@ -62,6 +62,7 @@ describe('chat persistence', () => {
       totalTokens: 23,
     });
     const indexedReviewDiagnostics = {
+      noticeLevel: 'detail' as const,
       phases: {
         inventory: phase(),
         search: phase(),

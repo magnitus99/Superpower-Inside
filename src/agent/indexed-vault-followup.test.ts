@@ -80,6 +80,21 @@ describe('발견 단서의 한 차례 후속 검색', () => {
     expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], paths);
   });
 
+  it('발견이 수천 건이어도 첫 단서 페이지와 집계만 모델에 보내고 검색 범위는 모두 보존한다', async () => {
+    const f = fixture();
+    const paths = Array.from({ length: 4000 }, (_, index) => `notes/independent-discovery-${index}.md`);
+    f.options.discoveryPaths = paths;
+    f.options.discoveryCandidates = paths.map((path, index) => ({ path, rank: index + 1, source: 'bm25', score: 1 }));
+    f.options.getFollowupPaths = () => Promise.resolve(paths);
+    expect((await searchIndexedFollowup(f.options, f.base, f.runSearch)).status).toBe('searched');
+    const request = f.streamChat.mock.calls[0]?.[0].find((message) => message.role === 'user');
+    expect(JSON.parse(request?.content ?? '{}')).toMatchObject({
+      discoveredDocuments: 4000, discoveryNextOffset: 96,
+    });
+    expect(JSON.parse(request?.content ?? '{}')).toHaveProperty('discovery.length', 96);
+    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], paths);
+  });
+
   it('같은 문서의 여러 발견 기록을 문서 수나 후속 검색 경로에 중복 집계하지 않는다', async () => {
     const f = fixture();
     f.options.discoveryCandidates = [
@@ -92,10 +107,16 @@ describe('발견 단서의 한 차례 후속 검색', () => {
     expect(JSON.parse(request?.content ?? '{}')).toMatchObject({ discoveredDocuments: 2 });
   });
 
-  it.each(['deferAnswer', 'filters', 'missingScope', 'obsolete'] as const)('%s 경로는 후속 모델·검색을 실행하지 않는다', async (mode) => {
+  it.each(['deferAnswer', 'filters'] as const)('%s 경로도 같은 발견·원문 검증 후속 조사 계약을 사용한다', async (mode) => {
     const f = fixture();
     if (mode === 'deferAnswer') f.options.deferAnswer = true;
-    if (mode === 'filters') f.options.filters = { tags: ['limited'] };
+    else f.options.filters = { tags: ['limited'] };
+    expect((await searchIndexedFollowup(f.options, f.base, f.runSearch)).status).toBe('searched');
+    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], f.paths.slice(0, 2));
+  });
+
+  it.each(['missingScope', 'obsolete'] as const)('%s 경로는 후속 모델·검색을 실행하지 않는다', async (mode) => {
+    const f = fixture();
     if (mode === 'missingScope') f.options.getFollowupPaths = undefined;
     if (mode === 'obsolete') f.options.isCurrent = () => false;
     const result = await searchIndexedFollowup(f.options, f.base, f.runSearch);

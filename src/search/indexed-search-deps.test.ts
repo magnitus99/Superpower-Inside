@@ -366,6 +366,7 @@ describe('검색 의존성 factory', () => {
       'alpha',
       'beta',
       'gamma',
+      'delta',
     ]);
     expect(source?.matchInventory).toEqual([
       {
@@ -388,6 +389,13 @@ describe('검색 의존성 factory', () => {
         totalChunks: 3,
         totalOccurrences: 1,
         documents: [{ sourcePath: 'Synthetic/gamma.md', occurrences: 5 }],
+      },
+      {
+        query: 'delta',
+        totalDocuments: 2,
+        totalChunks: 3,
+        totalOccurrences: 1,
+        documents: [{ sourcePath: 'Synthetic/delta.md', occurrences: 5 }],
       },
     ]);
   });
@@ -742,7 +750,7 @@ describe('검색 의존성 factory', () => {
     }
   });
 
-  it('candidate 수가 있으면 허용 범위 전체 경로를 다시 열거하지 않는다', async () => {
+  it('candidate 수가 있어도 현재 접근 범위를 확인한 뒤 집계한다', async () => {
     planIndexedSearchQueries.mockReturnValue(singlePlan('합성 질의'));
     const getCandidatePaths = vi.fn(() =>
       Promise.resolve(['Synthetic/Alpha.md', 'Synthetic/Beta.md', 'Synthetic/New.md']),
@@ -761,7 +769,7 @@ describe('검색 의존성 factory', () => {
       '합성 질의',
     );
 
-    expect(getCandidatePaths).not.toHaveBeenCalled();
+    expect(getCandidatePaths).toHaveBeenCalledTimes(1);
     expect(source?.inventory).toEqual({
       indexedCount: 2,
       unreviewedCount: 0,
@@ -972,6 +980,18 @@ describe('검색 의존성 factory', () => {
     );
 
     await expect(source).rejects.toBe(abortError);
+  });
+
+  it('제한 범위 안 미색인은 보존하고 범위 밖 미색인은 집계하지 않는다', async () => {
+    planIndexedSearchQueries.mockReturnValue(singlePlan('합성 질의'));
+    const source = await collectIndexedSearchSource({
+      app: app({}), ragEngine: engine([]), documentCorpus: corpus(),
+      getCandidatePaths: () => Promise.resolve([
+        'Synthetic/Alpha.md', 'Synthetic/Beta.md', 'Synthetic/NotIndexed.md', 'Other/Hidden.md',
+      ]),
+      getCandidateCount: () => 4,
+    }, '합성 질의', undefined, undefined, true, undefined, undefined, { scopes: ['Synthetic'] });
+    expect(source?.inventory).toEqual({ indexedCount: 2, unreviewedCount: 0, notIndexedCount: 1 });
   });
 
   it('색인 저장소가 없으면 source를 만들지 않는다', async () => {

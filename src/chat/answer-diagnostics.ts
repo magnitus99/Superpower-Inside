@@ -96,6 +96,9 @@ export function renderAnswerDiagnostics(
   summary.setText(summaryParts.join(' · '));
 
   content.empty();
+  if (message.indexedReviewNotice) {
+    content.createDiv({ cls: 'superpower-inside-answer-diagnostics-note', text: message.indexedReviewNotice });
+  }
   if (message.status === 'pending' || message.status === 'streaming') {
     content.createDiv({
       cls: 'superpower-inside-answer-diagnostics-note',

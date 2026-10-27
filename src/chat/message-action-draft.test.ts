@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatView } from './view';
 import type { ChatMessageWithMeta, SourceValidationWarning } from './types';
-import { t } from '../i18n';
 import { prepareChatProviderForModel } from '../llm/provider-resolution';
 import { resolveProviderCapability } from '../llm/provider-capabilities';
 import type { LLMProvider } from '../llm/providers';
 import { RAGQueryEngine } from '../rag/query';
+import * as indexedSearch from '../search/indexed-search-deps';
+import { getRagCandidateFiles } from '../utils/vault';
 import { reviewIndexedVault, type IndexedVaultReviewResult } from '../agent/indexed-vault-review';
 
 vi.mock('obsidian', () => ({
@@ -237,6 +238,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
 
   function createView(maxToolRounds = 0) {
     vi.stubGlobal('HTMLElement', class {});
+    vi.stubGlobal('window', globalThis);
     const view = Object.create(ChatView.prototype) as ActionView;
     const storedMessages = messages.map((message) => ({ ...message }));
     const stream = vi.fn<LLMProvider['streamChat']>((_messages, onChunk) => {
@@ -288,8 +290,16 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       getEffectiveMcpServerNames: () => [],
       getMentionOnlyServers: () => [],
       buildPromptContext: context,
-      addMessage: (role: ChatMessageWithMeta['role'], content: string) => {
-        const message = { ...messages[0], role, content, id: `message-${storedMessages.length}` };
+      addMessage: (
+        role: ChatMessageWithMeta['role'],
+        content: string,
+        _reasoning: unknown,
+        _tools: unknown,
+        meta: Partial<ChatMessageWithMeta> = {},
+      ) => {
+        const message = {
+          ...messages[0], role, content, id: `message-${storedMessages.length}`, ...meta,
+        };
         storedMessages.push(message);
         return message.id;
       },
@@ -304,30 +314,167 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     return { view, stream, context, chat, storedMessages };
   }
 
-  it('vault 질문은 ready가 아니면 provider를 호출하지 않고 색인 준비 안내만 남긴다', async () => {
+  it('실제 채팅은 폴더·태그 제한을 집계 수집 시작부터 전달한다', async () => {
+    const { view, context } = createView();
+    context.mockResolvedValue({
+      systemPrompt: null, attachments: [], citations: [], warnings: [], vaultSearchEnabled: true,
+    });
+    Object.assign(view, {
+      parseMentions: () => [{ type: 'folder', name: 'Synthetic' }, { type: 'tag', name: 'limited' }],
+      plugin: {
+        settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        getRetrievalReadiness: () => 'ready', prepareRagForChat: vi.fn(),
+      },
+    });
+    vi.mocked(reviewIndexedVault).mockResolvedValue(createReviewResult());
+    const collect = vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(null);
+    try {
+      await view.handleSend('합성 범위 자료를 비교해줘');
+      expect(collect.mock.calls[0]?.[7]).toEqual({
+        scopes: ['Synthetic'], filters: { tags: ['limited'] },
+      });
+    } finally {
+      collect.mockRestore();
+    }
+  });
+
+  it('vault 질문은 준비 중 같은 실행을 보존하고 ready 전환 뒤 한 번만 재개한다', async () => {
+    vi.useFakeTimers();
     const { view, context, stream, chat, storedMessages } = createView();
+    const attachments = [{ id: 'synthetic-scope', type: 'folder', name: 'Synthetic', label: 'Synthetic' }];
     context.mockResolvedValue({
       systemPrompt: null,
-      attachments: [],
+      attachments,
       citations: [],
       warnings: [],
       vaultSearchEnabled: true,
     });
     const plugin = (view as unknown as { plugin: Record<string, unknown> }).plugin;
-    Object.assign(view, { plugin: { ...plugin, getRetrievalReadiness: () => 'preparing' } });
-    vi.mocked(reviewIndexedVault).mockClear();
-
-    await view.handleSend('합성 볼트 질문');
-
-    expect(reviewIndexedVault).not.toHaveBeenCalled();
-    expect(stream).not.toHaveBeenCalled();
-    expect(chat).not.toHaveBeenCalled();
-    expect(storedMessages.at(-1)).toMatchObject({
-      role: 'assistant',
-      content: t('chatReadinessRagIndexingDetail'),
-      status: 'complete',
+    let readiness = 'preparing';
+    Object.assign(view, {
+      parseMentions: () => [{ type: 'tag', name: 'synthetic-tag' }],
+      plugin: {
+        ...plugin,
+        getRetrievalReadiness: () => readiness,
+        prepareRagForChat: vi.fn(),
+        documentCorpus: {
+          getIndexedFilePaths: () => Promise.resolve([]),
+          getEntriesByFilePaths: () => Promise.resolve([]),
+          getFileIndexRecords: () => Promise.resolve([]),
+        },
+      },
     });
+    vi.mocked(reviewIndexedVault).mockClear();
+    vi.mocked(reviewIndexedVault).mockResolvedValue(createReviewResult());
+
+    try {
+      const pending = view.handleSend('합성 볼트 질문');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reviewIndexedVault).not.toHaveBeenCalled();
+      expect(stream).not.toHaveBeenCalled();
+      expect(chat).not.toHaveBeenCalled();
+      const activeRun = (view as unknown as { activeRun: { controller: AbortController } }).activeRun;
+      expect(activeRun).not.toBeNull();
+      expect(storedMessages.at(-1)?.status).not.toBe('complete');
+      expect(storedMessages.at(-1)?.turnStage).toBe('building-context');
+
+      readiness = 'ready';
+      await vi.advanceTimersByTimeAsync(500);
+      await pending;
+      expect(reviewIndexedVault).toHaveBeenCalledTimes(1);
+      const expectedProvider: unknown = expect.any(Object);
+      expect(reviewIndexedVault).toHaveBeenCalledWith(
+        expect.objectContaining({
+          question: '합성 볼트 질문', provider: expectedProvider,
+          signal: activeRun.controller.signal,
+          filters: { tags: ['synthetic-tag'] },
+        }),
+      );
+      expect(storedMessages.filter((message) => message.content === '합성 볼트 질문')).toHaveLength(1);
+      expect(storedMessages.at(-1)).toMatchObject({
+        model: 'synthetic', providerKey: 'ollama', contextAttachments: attachments,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
+
+  it.each(['stop', 'session', 'settings', 'model', 'degraded', 'read-error'] as const)(
+    '준비 대기의 %s 경계에서 늦은 ready와 재전송은 이전 질문을 실행하지 않는다',
+    async (outcome) => {
+      vi.useFakeTimers();
+      const { view, context, stream, chat, storedMessages } = createView();
+      const originalText = '합성 대기 질문 @folder:Synthetic';
+      view.inputArea.value = originalText;
+      context.mockResolvedValue({
+        systemPrompt: null,
+        attachments: [{ id: 'scope', type: 'folder', name: 'Synthetic', label: 'Synthetic' }],
+        citations: [], warnings: [], vaultSearchEnabled: true,
+      });
+      let readiness = 'preparing';
+      let failed = false;
+      const plugin = (view as unknown as { plugin: { settings: { chat: { defaultModel: string } } } }).plugin;
+      const controls = view as unknown as {
+        stopStreaming(): void;
+        invalidateActiveChatRun(restoreDraft: boolean): void;
+        updateMessage: ReturnType<typeof vi.fn>;
+        summarizeCurrentSessionTitle: ReturnType<typeof vi.fn>;
+      };
+      Object.assign(view, {
+        session: {},
+        modelSelectEl: { value: 'ollama:synthetic' },
+        plugin: {
+          ...plugin,
+          getRetrievalReadiness: () => {
+            if (failed) throw new Error('synthetic readiness failure');
+            return readiness;
+          },
+        },
+        inputArea: { value: originalText, focus: vi.fn() },
+        setLoading: vi.fn((loading: boolean) => Object.assign(view, { isStreaming: loading })),
+      });
+      vi.mocked(reviewIndexedVault).mockClear();
+      try {
+        const pending = view.handleSend();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(storedMessages.filter((message) => message.content === originalText)).toHaveLength(1);
+        await view.handleSend('무시할 중복 질문');
+        expect(storedMessages.some((message) => message.content === '무시할 중복 질문')).toBe(false);
+        if (outcome === 'stop') controls.stopStreaming();
+        if (outcome === 'session') {
+          controls.invalidateActiveChatRun(false);
+          Object.assign(view, { session: {} });
+        }
+        if (outcome === 'settings') plugin.settings.chat.defaultModel = 'ollama:changed';
+        if (outcome === 'model') {
+          Object.assign(view, { modelSelectEl: { value: 'ollama:changed' } });
+        }
+        if (outcome === 'degraded') readiness = 'degraded';
+        if (outcome === 'read-error') failed = true;
+        await vi.advanceTimersByTimeAsync(500);
+        await pending;
+        const updates = controls.updateMessage.mock.calls.length;
+        readiness = 'ready';
+        failed = false;
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(controls.updateMessage.mock.calls).toHaveLength(updates);
+        expect(reviewIndexedVault).not.toHaveBeenCalled();
+        expect(stream).not.toHaveBeenCalled();
+        expect(chat).not.toHaveBeenCalled();
+        expect(controls.summarizeCurrentSessionTitle).not.toHaveBeenCalled();
+        expect(view.inputArea.value).toBe(outcome === 'session' ? '' : originalText);
+        if (outcome === 'degraded' || outcome === 'read-error') {
+          expect(controls.updateMessage).toHaveBeenLastCalledWith(
+            expect.any(String), expect.any(String), true, undefined, undefined,
+            expect.objectContaining({ status: 'error', turnStage: 'error', stopReason: 'error' }),
+          );
+        }
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('태그 멘션을 검색 엔진 필터로 전달한다', async () => {
     const { view, context } = createView();
@@ -374,6 +521,9 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       vaultSearchEnabled: true,
     });
     const matchedPath = 'Synthetic/Matched.md';
+    vi.mocked(getRagCandidateFiles).mockResolvedValueOnce([
+      { path: matchedPath }, { path: 'Synthetic/Other.md' },
+    ] as import('obsidian').TFile[]);
     const queryBm25Exhaustive = vi.fn(() =>
       Promise.resolve([{ path: matchedPath, score: 3, rank: 1 }]),
     );
@@ -656,6 +806,9 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       warnings: [],
       vaultSearchEnabled: true,
     });
+    vi.mocked(getRagCandidateFiles).mockResolvedValueOnce([
+      { path: 'Synthetic/Hybrid.md' },
+    ] as import('obsidian').TFile[]);
     const corpus = {
       getIndexedFilePaths: () => Promise.resolve(['Synthetic/Hybrid.md']),
       getEntriesByFilePaths: () => Promise.resolve([]),
@@ -919,6 +1072,9 @@ describe('전수 검수 뒤 승인 대기 재개', () => {
       runToolResponseLoop,
       formatErrorDetail: () => '합성 오류',
     });
+    vi.mocked(getRagCandidateFiles).mockResolvedValueOnce([
+      { path: 'Current/Fresh.md' },
+    ] as import('obsidian').TFile[]);
     await view.approveToolCall('answer', 'pending-call');
     expect(reviewIndexedVault).toHaveBeenCalledWith(
       expect.objectContaining({

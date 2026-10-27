@@ -45,7 +45,7 @@ export interface VaultResearchModel {
   ): Promise<string>;
 }
 
-export type VaultResearchPhase = 'inventory' | 'map' | 'screen' | 'extract' | 'reduce' | 'complete';
+export type VaultResearchPhase = 'inventory' | 'map' | 'screen' | 'extract' | 'reduce' | 'search' | 'verify' | 'followup' | 'answer' | 'repair' | 'complete';
 
 export interface VaultResearchProgress {
   phase: VaultResearchPhase;
@@ -173,6 +173,16 @@ export function getVaultResearchPhaseLabel(phase: VaultResearchPhase): string {
       return t('vaultResearchPhaseExtract');
     case 'reduce':
       return t('vaultResearchPhaseReduce');
+    case 'search':
+      return t('vaultResearchPhaseSearch');
+    case 'verify':
+      return t('vaultResearchPhaseVerify');
+    case 'followup':
+      return t('vaultResearchPhaseFollowup');
+    case 'answer':
+      return t('vaultResearchPhaseAnswer');
+    case 'repair':
+      return t('vaultResearchPhaseRepair');
     case 'complete':
       return t('vaultResearchPhaseComplete');
   }

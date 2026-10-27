@@ -25,6 +25,25 @@ describe('교차 언어 검색 구문', () => {
     expect(variants).toEqual(['Psalm 51', 'The prayer of David']);
   });
 
+  it('진행 중인 번역에도 취소 신호와 원래 질문을 전달합니다', async () => {
+    const provider = fakeProvider('["robot thermal safety"]');
+    const controller = new AbortController();
+    await requestQueryVariants(provider, '로봇의 열 안전 조건', 'preserve topic', controller.signal);
+    expect(provider.chat).toHaveBeenCalledWith(
+      [{ role: 'system', content: 'preserve topic' }, { role: 'user', content: '로봇의 열 안전 조건' }],
+      undefined, undefined, { signal: controller.signal },
+    );
+  });
+
+  it('취소 뒤 늦게 도착한 번역은 검색에 사용하지 않습니다', async () => {
+    const controller = new AbortController();
+    const provider = { chat: vi.fn(() => {
+      controller.abort();
+      return Promise.resolve('["robot thermal safety"]');
+    }) };
+    await expect(requestQueryVariants(provider, '로봇의 열 안전 조건', 'prompt', controller.signal)).resolves.toEqual([]);
+  });
+
   it('Rust 확장기 상한을 넘는 응답은 버립니다', async () => {
     const provider = fakeProvider('["a", "b", "c", "d"]');
     await expect(requestQueryVariants(provider, '시편 51장', 'prompt')).resolves.toEqual([]);

@@ -581,9 +581,11 @@ export class RustBm25RuntimeIndex {
     }
   }
 
-  aggregate(query: string, limit: number): RustBm25MatchAggregate | null {
+  aggregate(query: string, limit: number, allowedPaths?: readonly string[]): RustBm25MatchAggregate | null {
     try {
-      return parseBm25MatchAggregateJson(this.inner.aggregate_json(query, limit));
+      return parseBm25MatchAggregateJson(allowedPaths === undefined
+        ? this.inner.aggregate_json(query, limit)
+        : this.inner.aggregate_scoped_json(query, limit, JSON.stringify(allowedPaths)));
     } catch {
       return null;
     }
@@ -5238,6 +5240,21 @@ export interface RustIndexedEvidenceCandidate {
   startLine?: number;
   endLine?: number;
   queryIndex?: number;
+}
+
+/** 후속 계획의 의도와 질의는 엔진이 파싱하며 legacy 배열도 읽습니다. */
+export function planIndexedFollowupRust(question: string, response: string): { variants: string[]; enumerate: boolean } | null {
+  if (!ensureRustCore()) return null;
+  const run = resolveRustStringExport('plan_indexed_followup_json');
+  if (!run) return null;
+  try {
+    const value: unknown = JSON.parse(run(JSON.stringify({ question, response })));
+    return isStringRecordValueMap(value) && Array.isArray(value.variants) &&
+      value.variants.every(isStringValue) && typeof value.enumerate === 'boolean'
+      ? { variants: value.variants, enumerate: value.enumerate } : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface RustIndexedDiscoveryInput {

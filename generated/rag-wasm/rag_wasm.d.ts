@@ -33,6 +33,10 @@ export class Bm25RuntimeIndex {
      */
     aggregate_json(query: string, limit: number): string;
     /**
+     * 허용 경로를 목록 절단 전 적용해 범위 내 총계만 반환합니다.
+     */
+    aggregate_scoped_json(query: string, limit: number, paths_json: string): string;
+    /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
      */
     static from_json(payload: string, fallback_tokenizer_version: number): Bm25RuntimeIndex;
@@ -650,6 +654,11 @@ export function plan_indexed_db_storage_layout_json(plugin_id: string, vault_ide
 export function plan_indexed_evidence_json(input: string): string;
 
 /**
+ * 후속 조사 계획에서 검색 질의와 전체 열거 의도를 분리합니다.
+ */
+export function plan_indexed_followup_json(input: string): string;
+
+/**
  * 비교 답변의 보존 대상 facet과 출처 상태를 계산합니다.
  */
 export function plan_indexed_review_answer_plan_json(input: string): string;
@@ -1193,6 +1202,7 @@ export interface InitOutput {
     readonly bm25runtimeindex_add_documents_json: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly bm25runtimeindex_add_new_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly bm25runtimeindex_aggregate_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly bm25runtimeindex_aggregate_scoped_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly bm25runtimeindex_from_json: (a: number, b: number, c: number) => number;
     readonly bm25runtimeindex_is_ready: (a: number) => number;
     readonly bm25runtimeindex_is_tokenizer_current: (a: number, b: number) => number;
@@ -1298,6 +1308,7 @@ export interface InitOutput {
     readonly plan_indexed_db_bounded_retention_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_indexed_db_storage_layout_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly plan_indexed_evidence_json: (a: number, b: number) => [number, number];
+    readonly plan_indexed_followup_json: (a: number, b: number) => [number, number];
     readonly plan_indexed_review_answer_plan_json: (a: number, b: number) => [number, number];
     readonly plan_indexed_review_inventory_json: (a: number, b: number) => [number, number];
     readonly plan_indexed_review_segments_json: (a: number, b: number, c: number) => [number, number];

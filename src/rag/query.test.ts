@@ -70,7 +70,9 @@ describe('RAGQueryEngine', () => {
     await expect(
       engine.queryMatchInventory('synthetic', 4, controller.signal),
     ).resolves.toBe(aggregate);
-    expect(aggregateMatches).toHaveBeenCalledWith('synthetic', 4, controller.signal);
+    expect(aggregateMatches).toHaveBeenCalledWith('synthetic', 4, controller.signal, undefined);
+    await engine.queryMatchInventory('synthetic', 0, controller.signal, ['Synthetic/Alpha.md']);
+    expect(aggregateMatches).toHaveBeenLastCalledWith('synthetic', 0, controller.signal, ['Synthetic/Alpha.md']);
   });
 
   it('준비된 exhaustive BM25의 0개 hit는 null이 아닌 빈 배열이다', async () => {

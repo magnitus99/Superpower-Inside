@@ -247,6 +247,13 @@ describe('답변의 검색 및 사용량 표시', () => {
     expect(allText(container)).not.toContain('internal-missing-index');
   });
 
+  it('정상 검토 집계를 기본 접힌 작업 상세에 보존한다', () => {
+    const container = new TestElement();
+    render(container, message({ indexedReviewNotice: '정상 집계 상세' }));
+    expect(allText(container)).toContain('정상 집계 상세');
+    expect(container.querySelector('.superpower-inside-answer-diagnostics-toggle')?.getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('진행 중 상태와 사용자가 펼친 상태 및 동일 버튼을 갱신 후에도 보존한다', () => {
     const container = new TestElement();
     render(container, message({ status: 'streaming' }));

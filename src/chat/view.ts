@@ -111,6 +111,7 @@ import {
 } from './chat-composer';
 import { evaluateToolTrace } from './quality-evaluation';
 import { createChatReadinessSnapshot, type ChatReadinessItem } from './chat-readiness';
+import { waitForRetrievalReady } from './retrieval-wait';
 import {
   createChatMessageMetaItems,
   createChatMessageTechnicalSummary,
@@ -762,7 +763,7 @@ export class ChatView extends ItemView {
         true,
         current.reasoning,
         this.cancelRunningToolCalls(current.toolCalls),
-        { status: 'complete', stopReason: 'cancelled' },
+        { status: 'complete', turnStage: 'cancelled', stopReason: 'cancelled' },
       );
     }
     this.inputArea?.focus({ preventScroll: true });
@@ -1320,6 +1321,7 @@ export class ChatView extends ItemView {
         isDone &&
         content &&
         message.indexedReviewNotice &&
+        message.indexedReviewDiagnostics?.noticeLevel !== 'detail' &&
         !content.includes(message.indexedReviewNotice)
       ) {
         content = `${content}\n\n${message.indexedReviewNotice}`;
@@ -2852,6 +2854,8 @@ export class ChatView extends ItemView {
       this.setLoading(false);
     };
 
+    const submittedSession = this.session;
+    const submittedSettings = JSON.stringify(this.plugin.settings);
     const selectedModel = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
     if (!selectedModel) {
       new Notice(t('defaultModelMissingNotice'));
@@ -3055,7 +3059,6 @@ export class ChatView extends ItemView {
       contextBudgetSnapshot,
       dataBoundarySnapshot,
     };
-    applyTurnEvent({ type: 'context-built' });
     const userMessageId = this.addMessage('user', text, undefined, undefined, {
       providerKey: key,
       providerLabel,
@@ -3069,26 +3072,8 @@ export class ChatView extends ItemView {
     });
     const requiresVaultSearch = wholeVaultResearch || promptContext.vaultSearchEnabled === true;
     const retrievalReadiness = this.plugin.getRetrievalReadiness?.() ?? 'ready';
-    if (requiresVaultSearch && retrievalReadiness !== 'ready') {
-      const content = t(
-        retrievalReadiness === 'preparing'
-          ? 'chatReadinessRagIndexingDetail'
-          : 'chatReadinessRagNotReadyDetail',
-      );
-      this.addMessage('assistant', content, undefined, undefined, {
-        providerKey: key,
-        providerLabel,
-        model: modelName,
-        providerCapability,
-        ...contextMeta,
-        ...toTurnMeta(),
-        ...assistantVariantMeta,
-        turnStage: 'complete',
-        status: 'complete',
-        stopReason: 'complete',
-      });
-      releaseSetupRun();
-      return;
+    if (!requiresVaultSearch || retrievalReadiness === 'ready') {
+      applyTurnEvent({ type: 'context-built' });
     }
 
     const toolModelKey = `${key}\u0000${modelName}`;
@@ -3122,7 +3107,11 @@ export class ChatView extends ItemView {
     });
     const assistantId = this.addMessage(
       'assistant',
-      providerCapability.streaming ? '' : waitStatus.headline,
+      requiresVaultSearch && retrievalReadiness !== 'ready'
+        ? t('chatRetrievalWaiting')
+        : providerCapability.streaming
+          ? ''
+          : waitStatus.headline,
       undefined,
       undefined,
       {
@@ -3147,6 +3136,38 @@ export class ChatView extends ItemView {
     let restoreDraft = false;
 
     try {
+      if (requiresVaultSearch) {
+        const waitResult = await waitForRetrievalReady({
+          signal: abortController.signal,
+          getReadiness: () => this.plugin.getRetrievalReadiness?.() ?? 'ready',
+          isCurrent: () =>
+            isChatRunActive(this.activeRun, run) &&
+            this.session === submittedSession &&
+            JSON.stringify(this.plugin.settings) === submittedSettings &&
+            (this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel) === selectedModel,
+        });
+        if (!isChatRunActive(this.activeRun, run)) return;
+        if (waitResult !== 'ready') {
+          const cancelled = waitResult === 'changed';
+          const content = t(cancelled ? 'chatRetrievalWaitChanged'
+            : waitResult === 'timeout' ? 'chatRetrievalWaitTimedOut' : 'chatRetrievalWaitFailed');
+          this.updateMessage(assistantId, content, true, undefined, undefined, {
+            ...contextMeta,
+            ...applyTurnEvent(
+              cancelled ? { type: 'cancel' } : { type: 'error', errorMessage: content },
+            ),
+          });
+          setHidden(this.typingIndicator, true);
+          restoreDraft = true;
+          return;
+        }
+        if (retrievalReadiness !== 'ready') {
+          this.updateMessage(assistantId, '', false, undefined, undefined, {
+            ...contextMeta,
+            ...applyTurnEvent({ type: 'context-built' }),
+          });
+        }
+      }
       const maxToolRounds = Math.max(0, Math.trunc(providerCapability.maxToolRounds));
       if (promptContext.pluginDocumentationFailure) {
         this.updateMessage(
@@ -3174,7 +3195,7 @@ export class ChatView extends ItemView {
         const localSearchQuestion =
           promptContext.scoringQuestion ??
           expandVaultSearchQueryLocally(text, previousUserQuestions);
-        const mentionedTags = this.parseMentions(text)
+        const mentionedTags = contextMentions
           .filter((mention) => mention.type === 'tag')
           .map((mention) => mention.name);
         const restrictedSearch = mentionedFolders.length > 0 || mentionedTags.length > 0;
@@ -3208,6 +3229,10 @@ export class ChatView extends ItemView {
           true,
           12_000,
           loadQueryVariants,
+          restrictedSearch ? {
+            scopes: mentionedFolders.map((folder) => folder.name),
+            filters: mentionedTags.length > 0 ? { tags: mentionedTags } : undefined,
+          } : undefined,
         );
         const indexedPaths = searchSource ? await searchSource.getIndexedPaths() : [];
         const reviewPaths = restrictedSearch
@@ -3218,6 +3243,7 @@ export class ChatView extends ItemView {
         const isReviewCurrent = () =>
           isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready' &&
           JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]) === searchPolicy;
+        let researchReasoning = '';
         const researchResult = await reviewIndexedVault({
           question: text,
           indexedPaths: reviewPaths,
@@ -3278,9 +3304,15 @@ export class ChatView extends ItemView {
               ...assistantVariantMeta,
             });
           },
+          onReasoning: (delta) => {
+            if (!isChatRunActive(this.activeRun, run)) return;
+            researchReasoning += delta;
+            const message = this.messages.find((item) => item.id === assistantId);
+            this.updateMessage(assistantId, message?.content ?? '', false, researchReasoning);
+          },
           onAnswer: (content) => {
             if (!isChatRunActive(this.activeRun, run)) return;
-            this.updateMessage(assistantId, content, false, undefined, undefined, {
+            this.updateMessage(assistantId, content, false, researchReasoning || undefined, undefined, {
               providerKey: key,
               providerLabel,
               model: modelName,
@@ -4013,7 +4045,7 @@ export class ChatView extends ItemView {
       }
       if (finalization.saveSession) {
         await this.saveCurrentSession();
-        await this.summarizeCurrentSessionTitle(provider, run);
+        if (!restoreDraft) await this.summarizeCurrentSessionTitle(provider, run);
         await this.saveCurrentSession();
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {

@@ -198,6 +198,22 @@ describe('IndexedDbBM25Index', () => {
       bm25.close();
     }
   });
+  it('허용 경로는 목록 상한을 적용하기 전에 집계 전체에 적용한다', async () => {
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
+    await bm25.load();
+    try {
+      bm25.addDocument('a::0', 'alpha alpha', 'allowed/a.md');
+      bm25.addDocument('a::1', 'alpha', 'allowed/a.md');
+      bm25.addDocument('b::0', 'alpha', 'allowed/b.md');
+      bm25.addDocument('hidden::0', 'alpha '.repeat(30), 'outside/hidden.md');
+      const result = await bm25.aggregateMatches('alpha', 1, undefined, ['allowed/a.md', 'allowed/b.md']);
+      expect(result).toMatchObject({ totalDocuments: 2, totalChunks: 3, totalOccurrences: 4 });
+      expect(result?.documents.map((item) => item.sourcePath)).toEqual(['allowed/a.md']);
+      expect(await bm25.aggregateMatches('alpha', 1, undefined, [])).toMatchObject({ totalDocuments: 0 });
+    } finally {
+      bm25.close();
+    }
+  });
   it('집계는 원래 단어만 세고 후보 검색은 부분 토큰을 계속 발견한다', async () => {
     const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
     await bm25.load();

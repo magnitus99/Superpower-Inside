@@ -39,6 +39,7 @@ export interface BM25WorkerRequest {
   target?: string;
   query?: string;
   limit?: number;
+  allowedPaths?: readonly string[];
 }
 
 export interface BM25WorkerResponse {
@@ -162,8 +163,8 @@ export class BM25WorkerRuntime {
   }
 
   /** 점수 없이 센 질의 일치 인벤토리 JSON을 받아옵니다. 해석은 호출자가 검증해 합니다. */
-  async aggregate(query: string, limit: number, signal?: AbortSignal): Promise<string> {
-    const response = await this.request({ operation: 'aggregate', query, limit }, signal);
+  async aggregate(query: string, limit: number, signal?: AbortSignal, allowedPaths?: readonly string[]): Promise<string> {
+    const response = await this.request({ operation: 'aggregate', query, limit, allowedPaths }, signal);
     return response.aggregateJson ?? '';
   }
 

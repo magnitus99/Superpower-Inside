@@ -280,9 +280,10 @@ export class RAGQueryEngine {
     question: string,
     limit = MATCH_INVENTORY_PATH_LIMIT,
     signal?: AbortSignal,
+    allowedPaths?: readonly string[],
   ): Promise<RustBm25MatchAggregate | null> {
     if (!this.bm25Index?.isReady) return null;
-    return this.bm25Index.aggregateMatches(question, limit, signal);
+    return this.bm25Index.aggregateMatches(question, limit, signal, allowedPaths);
   }
 
   /**

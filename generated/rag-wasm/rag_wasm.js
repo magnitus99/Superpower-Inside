@@ -113,6 +113,29 @@ export class Bm25RuntimeIndex {
         }
     }
     /**
+     * 허용 경로를 목록 절단 전 적용해 범위 내 총계만 반환합니다.
+     * @param {string} query
+     * @param {number} limit
+     * @param {string} paths_json
+     * @returns {string}
+     */
+    aggregate_scoped_json(query, limit, paths_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.bm25runtimeindex_aggregate_scoped_json(this.__wbg_ptr, ptr0, len0, limit, ptr1, len1);
+            deferred3_0 = ret[0];
+            deferred3_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
      * @param {string} payload
      * @param {number} fallback_tokenizer_version
@@ -2380,6 +2403,26 @@ export function plan_indexed_evidence_json(input) {
         const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.plan_indexed_evidence_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 후속 조사 계획에서 검색 질의와 전체 열거 의도를 분리합니다.
+ * @param {string} input
+ * @returns {string}
+ */
+export function plan_indexed_followup_json(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_indexed_followup_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);

@@ -1,4 +1,5 @@
-import { TFile, type App } from 'obsidian';
+import { TFile, getAllTags, type App } from 'obsidian';
+import { t } from '../i18n';
 import type {
   IndexedEvidenceCandidate,
   IndexedEvidenceInventory,
@@ -7,7 +8,7 @@ import type {
 } from '../agent/indexed-vault-review';
 import type { QueryResult, RAGQueryEngine } from '../rag/query';
 import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
-import { planIndexedSearchQueriesRust, type IndexedSearchPlan } from '../rag/rust-core';
+import { planIndexedSearchQueriesRust, planNativeVaultFilteredIndicesRust, scopeIndexedDiscoveryRust, type IndexedSearchPlan, type RustIndexedEvidenceFilters } from '../rag/rust-core';
 import { readSourceText } from '../rag/source-access';
 import { createContentHash } from '../rag/hash';
 import { chunkSourceDocument } from '../rag/source-document';
@@ -47,8 +48,6 @@ const MAX_HYBRID_FACETS = 3;
 const EXHAUSTIVE_REVIEW_PATH_LIMIT = 96;
 const MAX_QUERY_VARIANTS = 3;
 const REVIEW_PATHS_PER_SOURCE = 8;
-/** 집계 인벤토리에 담는 핵심어 수 상한입니다. */
-const MATCH_INVENTORY_TERM_LIMIT = 3;
 /**
  * 의미 후보 질의 하나가 기다릴 수 있는 시간입니다. 볼트 전체 벡터 색인은 첫 질의에서 만들어지고
  * 이후 질의는 수백 ms면 끝나므로, 검색 화면도 채팅과 같은 후보를 받도록 여유를 둡니다.
@@ -142,6 +141,7 @@ export async function collectIndexedSearchSource(
   forceRefreshSources = true,
   semanticTimeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
   loadQueryVariants?: () => Promise<readonly string[]>,
+  restriction?: { scopes: readonly string[]; filters?: RustIndexedEvidenceFilters },
 ): Promise<
   (IndexedSearchSource & { diagnostics?: readonly RetrievalProviderDiagnostic[] }) | null
 > {
@@ -149,11 +149,13 @@ export async function collectIndexedSearchSource(
   if (!corpus) return null;
   const startedAt = performance.now();
   const sourceReader = createVaultSourceReader(host.app, forceRefreshSources, host.settings?.rag);
-  const indexedPaths = await corpus.getIndexedFilePaths();
+  const allIndexedPaths = await corpus.getIndexedFilePaths();
+  const allowedPaths = await resolveIndexedSearchPaths(host, allIndexedPaths, restriction);
+  const indexedPaths = allowedPaths;
   const indexedPathsMs = performance.now() - startedAt;
   if (signal?.aborted) return null;
   const inventoryStartedAt = performance.now();
-  const inventory = await collectInventory(host, indexedPaths);
+  const inventory = await collectInventory(host, indexedPaths, restriction);
   const inventoryMs = performance.now() - inventoryStartedAt;
   if (signal?.aborted) return null;
   const searchPlan = planIndexedSearchQueriesRust({
@@ -218,7 +220,7 @@ export async function collectIndexedSearchSource(
     : undefined;
   const reviewPathSet = new Set(reviewPaths ?? []);
   const matchStartedAt = performance.now();
-  const matchInventory = await collectMatchInventory(host.ragEngine, searchPlan, signal);
+  const matchInventory = await collectMatchInventory(host.ragEngine, searchPlan, signal, indexedPaths);
   const matchMs = performance.now() - matchStartedAt;
   appLogger.debug('Indexed search source collected.', {
     source: 'search.source',
@@ -263,6 +265,7 @@ async function collectMatchInventory(
   engine: RAGQueryEngine | null,
   plan: IndexedSearchPlan,
   signal?: AbortSignal,
+  allowedPaths?: readonly string[],
 ): Promise<readonly IndexedMatchCount[] | undefined> {
   if (!engine) return undefined;
   const terms: string[] = [];
@@ -271,15 +274,13 @@ async function collectMatchInventory(
       const normalized = term.trim();
       if (normalized.length === 0 || terms.includes(normalized)) continue;
       terms.push(normalized);
-      if (terms.length >= MATCH_INVENTORY_TERM_LIMIT) break;
     }
-    if (terms.length >= MATCH_INVENTORY_TERM_LIMIT) break;
   }
   const counts: IndexedMatchCount[] = [];
   for (const term of terms) {
     signal?.throwIfAborted();
     try {
-      const aggregate = await engine.queryMatchInventory(term, undefined, signal);
+      const aggregate = await engine.queryMatchInventory(term, Math.max(1, allowedPaths?.length ?? 40), signal, allowedPaths);
       if (!aggregate) continue;
       counts.push({
         query: term,
@@ -302,6 +303,39 @@ async function collectMatchInventory(
     }
   }
   return counts.length > 0 ? counts : undefined;
+}
+
+/** 현재 접근·폴더·태그 범위를 집계와 후속 조사에 동일하게 적용합니다. */
+export async function resolveIndexedSearchPaths(
+  host: IndexedSearchDepsHost,
+  paths: readonly string[],
+  restriction?: { scopes: readonly string[]; filters?: RustIndexedEvidenceFilters },
+): Promise<string[]> {
+  const allowedPaths = await listCandidatePaths(host) ?? paths;
+  const scoped = scopeIndexedDiscoveryRust({
+    originalPaths: paths, allowedPaths,
+    originalScopes: restriction?.scopes ?? [], scopes: restriction?.scopes ?? [],
+  });
+  if (!scoped) throw new Error(t('nativeVaultSearchScopeFailed'));
+  if (!restriction?.filters) return scoped;
+  const files = scoped.flatMap((path) => {
+    const file = host.app.vault.getAbstractFileByPath(path);
+    return file instanceof TFile ? [file] : [];
+  });
+  const rows = files.map((file) => {
+    const cache = host.app.metadataCache.getFileCache(file);
+    return {
+      modifiedAt: file.stat.mtime,
+      tags: cache ? getAllTags(cache) ?? [] : [],
+      properties: cache?.frontmatter ?? {},
+    };
+  });
+  const indices = planNativeVaultFilteredIndicesRust(rows, {
+    tags: restriction.filters.tags ? [...restriction.filters.tags] : undefined,
+    modifiedAfter: restriction.filters.modifiedAfter,
+  });
+  if (!indices) throw new Error(t('nativeVaultSearchScopeFailed'));
+  return indices.flatMap((index) => files[index] ? [files[index].path] : []);
 }
 
 /**
@@ -365,8 +399,9 @@ function selectExhaustiveReviewPaths(
 async function collectInventory(
   host: IndexedSearchDepsHost,
   indexedPaths: readonly string[],
+  restriction?: { scopes: readonly string[]; filters?: RustIndexedEvidenceFilters },
 ): Promise<IndexedEvidenceInventory> {
-  const candidateCount = host.getCandidateCount?.();
+  const candidateCount = restriction ? undefined : host.getCandidateCount?.();
   if (Number.isSafeInteger(candidateCount) && candidateCount !== undefined && candidateCount >= 0) {
     return {
       indexedCount: indexedPaths.length,
@@ -374,7 +409,9 @@ async function collectInventory(
       notIndexedCount: Math.max(0, candidateCount - indexedPaths.length),
     };
   }
-  const candidatePaths = await listCandidatePaths(host);
+  const allCandidatePaths = await listCandidatePaths(host);
+  const candidatePaths = allCandidatePaths && restriction
+    ? await resolveIndexedSearchPaths(host, allCandidatePaths, restriction) : allCandidatePaths;
   const indexed = new Set(indexedPaths);
   return {
     indexedCount: indexedPaths.length,

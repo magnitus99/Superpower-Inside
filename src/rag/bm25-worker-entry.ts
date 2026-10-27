@@ -25,6 +25,7 @@ export interface BM25WorkerRequest {
   target?: string;
   query?: string;
   limit?: number;
+  allowedPaths?: readonly string[];
 }
 
 interface BM25WorkerHit {
@@ -164,10 +165,9 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
   } else if (request.operation === 'aggregate') {
     return {
       ...runtimeState(),
-      aggregateJson: active.aggregate_json(
-        request.query ?? '',
-        Math.max(0, Math.floor(request.limit ?? 0)),
-      ),
+      aggregateJson: request.allowedPaths === undefined
+        ? active.aggregate_json(request.query ?? '', Math.max(0, Math.floor(request.limit ?? 0)))
+        : active.aggregate_scoped_json(request.query ?? '', Math.max(0, Math.floor(request.limit ?? 0)), JSON.stringify(request.allowedPaths)),
     };
   }
   return runtimeState();

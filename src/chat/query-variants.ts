@@ -33,7 +33,10 @@ export async function requestQueryVariants(
   if (signal?.aborted) return [];
   let response: string;
   try {
-    response = await provider.chat([{ role: 'system', content: systemPrompt }, { role: 'user', content: question }]);
+    response = await provider.chat(
+      [{ role: 'system', content: systemPrompt }, { role: 'user', content: question }],
+      undefined, undefined, { signal },
+    );
   } catch {
     return [];
   }
