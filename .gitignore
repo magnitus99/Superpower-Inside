@@ -42,5 +42,6 @@ simulations/
 # CodeGraph 로컬 인덱스(기기 전용)
 .codegraph/
 
-# pi 개인별 모델·도구·스킬 설정, 에이전트 정의, 이력·이관 자료
-/.pi/
+# ThinkRail 개인별 엔진 설정·이력과 pi 호환 경로
+/.thinkrail/
+/.pi
