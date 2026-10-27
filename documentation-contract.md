@@ -4,7 +4,7 @@ type: architecture-design
 status: draft
 title: 문서 정본·근거와 이력의 소유권
 parent: superpower-goals
-references: [superpower-architecture, interface-design, search-quality, engineering-contract, release-contract, product-philosophy, philosophy-research, marketing-contract, brand-video-expression]
+references: [superpower-architecture, interface-design, engineering-contract, release-contract, product-philosophy, philosophy-research, marketing-contract, brand-video-expression]
 ---
 
 # 문서 정본·근거와 이력의 소유권
@@ -14,7 +14,7 @@ references: [superpower-architecture, interface-design, search-quality, engineer
 ThinkRail 스펙 그래프는 제품 의도·책임·경계·품질 요구의 정본이다. 경로를 바꾸기보다 기존 선언형 문서를 노드로 채택하고 혼합 문서의 지속 계약을 소유 스펙으로 이전한다. 새 초안은 내용 검토 전 draft로 유지하며 문서 import를 제품 합격·새 철학 승인으로 해석하지 않는다.
 
 - `superpower-goals`: 제품 목적·범위. `product-philosophy`: 고객 가치·승인 원칙. `philosophy-research`: 그 근거를 해석하는 계약.
-- `superpower-architecture` 및 모듈 SPEC: 구조·실패 경계·관찰한 구현 차이. `search-quality`: 전수검색·실제 답변의 품질 및 대조 기준.
+- `superpower-architecture` 및 모듈 SPEC: 구조·실패 경계·관찰한 구현 차이. `superpower-goals`·`engineering-contract`: 품질 요구·게이트·검증 상태.
 - `interface-design`: 실제 제품의 화면 언어. `marketing-contract`·`brand-video-expression`: 사용자 가치 전달 및 브랜드 영상 표현. 앱 UI 규칙을 영상 문서에 복제하지 않는다.
 - `engineering-contract`: 런타임 구현·데이터 보호·검증. `release-contract`: 버전·배포·제품 설명·수동 문구 검사.
 
@@ -24,7 +24,7 @@ AGENTS는 에이전트의 시작점·권한·실행 절차·관련 스펙 경로
 
 [제품 철학 자료 입구](product-philosophy/00-index.md)는 조사·승인·예시·과거 기준을 목적별로 연결한다. 출처 카드·레지스트리는 당시 원문 확인 구간·날짜·한계이고, 승인 기록은 당시 응답·조건의 증거다. 그 자체를 현재 구현의 보증이나 새 실행 권한으로 쓰지 않는다. 가상 적용 예시·후보·과거 보존본은 현행 규범 노드로 승격하지 않는다.
 
-[검색 품질 스펙](search-quality.md)의 검증 상태·종료 판정 절이 이번 브랜치의 미완료·실행 근거·판정 기준을 소유한다. 과거 회귀 결과·실제 답변 미달을 문서 마이그레이션으로 바꾸지 않는다. ThinkRail TODO는 현재 대화의 공유 실행 계획이고, 스펙의 상태 절은 세션이 바뀌어도 남는 지속 기록이다. 남은 실행 항목은 TODO에 두되 완료 판정은 스펙의 기준과 근거로 한다.
+[engineering-contract.md](engineering-contract.md#검증-상태와-이력)의 검증 상태·이력 절이 이번 브랜치의 미완료·실행 근거·판정 기준을 소유한다. 과거 회귀 결과·실제 답변 미달을 문서 마이그레이션으로 바꾸지 않는다. ThinkRail TODO는 현재 대화의 공유 실행 계획이고, 스펙의 상태 절은 세션이 바뀌어도 남는 지속 기록이다. 남은 실행 항목은 TODO에 두되 완료 판정은 스펙의 기준과 근거로 한다.
 
 [마케팅 제작 기록](marketing/video-plan.md)·[장면 자료](marketing/scenario.md)·작품별 brief/frame/storyboard는 날짜·작품 범위의 참고다. 카피는 게시 문구 스냅샷이며 API·기능 계약이 아니다. 최신 제작 상태를 영구적인 길이·서체·모델·성능 기준으로 바꾸지 않는다.
 

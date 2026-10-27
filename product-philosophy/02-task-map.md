@@ -68,7 +68,7 @@
 ## 문서 기반 답변·조사·판단·인용
 
 - 판단 질문: 같은 범위·일치 조건의 Ctrl+F 발견 결과와 읽을 수 있는 맥락을 발견·검증·전달·후속 조사·최종 답변에서 잃지 않는가? / 채택·제외와 미검토·읽기 실패를 구분하는가? / 모델별 실제 최종 답변의 내용 하한과 근거 정확성을 각각 확인했는가? / 사실·추론과 외부 근거의 경계를 유지했는가?
-- 현행 수단·검증 정본: [search-quality.md](../search-quality.md), [src/agent/SPEC.md](../src/agent/SPEC.md). 과거 screen→extract·강제 LLM 판정의 승인 이력은 현행 구현 지시와 구분한다.
+- 현행 수단·검증 정본: [품질 요구](../goal-and-requirements.md#품질-요구), [검증 상태](../engineering-contract.md#검증-상태와-이력), [src/agent/SPEC.md](../src/agent/SPEC.md). 과거 screen→extract·강제 LLM 판정의 승인 이력은 현행 구현 지시와 구분한다.
 - 작업 계약·현재 대상: [AGENTS.md](../AGENTS.md), [src/chat/AGENTS.md](../src/chat/AGENTS.md), [색인 전체 검토](../src/agent/indexed-vault-review.ts), [합성 회귀 테스트](../src/agent/indexed-vault-review.test.ts), [Rust 검증](../crates/rag-wasm/src/indexed_review.rs)
 - 필요할 때 볼 근거: [P16 기준](../product-philosophy.md#조사와-근거의-책임), [사용자 승인 기록](decisions/approved.md), [결정 데이터](decisions/status.json)
 - 출처 ID: 없음. 사용자 직접 지시와 현재 구현·테스트를 근거로 하며, 외부 브랜드 사례를 이 원칙의 승인 근거로 사용하지 않는다. 실제 동작과 기준의 차이 및 품질 검증 한계는 구분한다.

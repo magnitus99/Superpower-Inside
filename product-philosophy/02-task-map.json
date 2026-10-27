@@ -222,7 +222,8 @@
       "context_files": [
         "AGENTS.md",
         "src/chat/AGENTS.md",
-        "search-quality.md",
+        "goal-and-requirements.md",
+        "engineering-contract.md",
         "src/agent/SPEC.md",
         "src/chat/SPEC.md",
         "src/agent/indexed-vault-review.ts",

@@ -4,14 +4,14 @@ type: module-design
 status: draft
 title: 볼트 근거 심사와 답변 계약
 parent: superpower-architecture
-references: [superpower-goals, chat-contract, search-quality, product-philosophy]
+references: [superpower-goals, chat-contract, product-philosophy]
 ---
 
 # 볼트 근거 심사와 답변 계약
 
 ## 책임과 의도
 
-공통 검색 입력에서 후보를 수집하고 원문을 검증해 답변용 dossier와 출처를 만든다. 기본 조사는 모델이 검색 도구를 자발적으로 고를 때까지 기다리지 않는다. LLM 후속 검색·읽기·연결 탐색은 엔진이 발견한 단서를 깊게 조사하는 수단이며 기본 발견·집계를 대체하지 않는다. 품질·대조의 상세 정본은 `search-quality`를 따른다.
+공통 검색 입력에서 후보를 수집하고 원문을 검증해 답변용 dossier와 출처를 만든다. 기본 조사는 모델이 검색 도구를 자발적으로 고를 때까지 기다리지 않는다. LLM 후속 검색·읽기·연결 탐색은 엔진이 발견한 단서를 깊게 조사하는 수단이며 기본 발견·집계를 대체하지 않는다. 답변 총실도·참조 기준은 아래 절이 소유한다.
 
 엔진의 일치 인벤토리는 문서 수·근거 구간 수·발생 횟수와 구문 일치 문서를 표현한다. 순위나 채택 근거 수와 다르다. 직접 인용은 엔진 구문 판정으로만 서술하며 열거 질문에서는 확인된 문서를 예산을 이유로 생략하지 않는 것이 요구 계약이다.
 
@@ -37,6 +37,16 @@ quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검�
 
 확신도가 낮은 후보를 잘라 버리지 않는다. 확신도와 대안 해석을 함께 제시하고 확신이 높은 근거를 먼저 보여 주며, 확인한 범위와 의도한 자료가 다를 수 있음을 사용자가 확인할 수 있게 한다. 맥락이 다르다는 이유로 전부 제외하는 것과 확인을 요청하는 것은 다른 결과다.
 
+## 답변 총실도와 참조 기준
+
+볼트 답변의 참조 기준은 로컬에 보관한 사용자 제공 우수 답안이다. 원문·질의·문서명·답변은 공유 명세·fixture·기억에 복제하지 않는다. 같은 자료·질문·범위에서 색인 범위의 일치 문서 수·근거 구간 수·발생 횟수를 제시하고, 모든 주장에 문서·구간 주소를 연결하며, 직접 인용은 엔진 구문 판정으로만 서술하고, 열거 요청은 확인된 문서를 빠뜨리지 않고 전달한다. 아주 긴 열거는 묶음 요약과 추가 제공 제안으로 표시할 수 있으나 확인된 집합을 줄이거나 누락을 요약으로 숨기지 않는다. 예산·상위 k로 열거 누락을 정당화하거나 제품 실패를 자료 부족으로 설명하지 않는다.
+
+발견과 표시·검증 예산은 다르다. 전체 점수화·일치 총계가 전체 발견 결과의 보존을 뜻하지 않는다. 상위 근거만 현재 원문 검증·답변 컨텍스트에 넣더라도 나머지 경로·관련 구간·연결 단서를 추적하고 후속 조회할 수 있어야 하며, 모든 원문을 한 번에 모델에 넣으라는 뜻은 아니다.
+
+모델 공통 하한은 대상 모델별 실제 표시 답변에서 확인한다. 실행하지 않은 모델은 미검증이고 다른 모델의 통과로 대신하지 않는다. 발견 범위·근거 정확성·최종 답변 총실도를 각각 판정하며, 인용 형식·테스트·mock·오프라인 계약·선택 근거 및 개의 성공으로 해석 정확성이나 전체 recall을 증명하지 않는다.
+
+검색 개선은 같은 질문·자료·모델·설정의 실제 최종 표시 답변을 참조 답안·전수검색과 대조하는 것부터 시작한다. 전수검색 기준 → 엔진 발견 → 후보 보존 → 현재 원문 검증 → dossier 전달·후속 탐색 → 최종 답변 중 최초 손실을 나누고 발견 누락을 먼저 고친다. 합성 회귀는 실제 자료 평가를 대신하지 않는다.
+
 ## 현재 구현과 목표의 차이
 
 - `src/search/indexed-search-deps.ts`는 exhaustive lexical 후보와 discovery 단서를 보유하면서 원문 심사 경로를 최대 96개로 선택한다. 따라서 전체 lexical 평가를 전체 현재 원문 검토 완료로 해석할 수 없다. `indexed-vault-review.ts`의 `exhaustiveReview` coverage 표현 역시 이 두 의미가 분리돼 있음을 보장하지 못한다.
@@ -44,4 +54,4 @@ quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검�
 - 채팅 검증은 현재 본문을 사용하지만 정상 경로에서 색인 파일 content hash와 현재 hash를 직접 비교하는 게이트는 확인되지 않았다. 이 명세의 hash 확인 요구를 이미 충족했다고 간주하지 않는다. 검색 화면은 `verifyCurrentSource: false`이므로 같은 검증 보장이 아니다.
 - 기본 발견·집계·주소를 엔진 한 번·색인 한 순회에서 얻는 것이 목표다. 현재는 facet별 검색·집계와 배치별 WASM 계획이 있으며, `src/chat/query-variants.ts`의 제공자 호출은 로컬 질의 계획만 허용한 기존 계약과 다르다. 이번 편입에서 동작이나 정책을 변경하지 않는다.
 
-구현 중심은 `indexed-vault-review.ts`의 `searchIndexedVault`·`reviewIndexedVault`다. `research-agent.ts`의 존재를 현재 주 실행 경로의 증거로 쓰지 않는다. 회귀 근거는 `indexed-vault-review.test.ts`, `indexed-vault-search.test.ts`, `indexed-vault-followup.test.ts`, `src/search/indexed-search-deps.test.ts`, `src/search/engine-adapter.test.ts`다. 로컬 회귀 계약과 실제 답변·전체 recall 검증은 별개이며, 이번 편입에서는 실제 답변·전체 recall을 재측정하지 않았다. 달성 상태와 종료 판정은 [검색 품질 스펙](../../search-quality.md)의 검증 상태 절이 소유한다.
+구현 중심은 `indexed-vault-review.ts`의 `searchIndexedVault`·`reviewIndexedVault`다. `research-agent.ts`의 존재를 현재 주 실행 경로의 증거로 쓰지 않는다. 회귀 근거는 `indexed-vault-review.test.ts`, `indexed-vault-search.test.ts`, `indexed-vault-followup.test.ts`, `src/search/indexed-search-deps.test.ts`, `src/search/engine-adapter.test.ts`다. 로컬 회귀 계약과 실제 답변·전체 recall 검증은 별개이며, 이번 편입에서는 실제 답변·전체 recall을 재측정하지 않았다. 달성 상태와 종료 판정은 [engineering-contract.md](../../engineering-contract.md#검증-상태와-이력)의 검증 상태 절이 소유한다.

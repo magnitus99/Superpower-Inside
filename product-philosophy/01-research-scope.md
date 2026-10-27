@@ -4,14 +4,14 @@ type: module-design
 title: 제품 철학 조사와 근거 해석 계약
 status: draft
 parent: product-philosophy
-references: [documentation-contract, search-quality]
+references: [documentation-contract, engineering-contract]
 ---
 
 # 조사 범위와 근거 해석
 
 ## 자료의 역할과 적용 시점
 
-이 노드는 조사 범위·근거 종류·일반화 한계의 정본이다. 현행 고객 가치는 `product-philosophy`, 실제 검색의 요구·합격 기준은 `search-quality`가 소유한다. [00-index.md](00-index.md)에서 근거·승인 이력·가상 예시·과거 보존본을 구분해 찾아간다. 출처 카드와 레지스트리는 당시 확인 자료이며 외부 사실의 최신성·제품 효과를 이번 편입에서 재검증한 것은 아니다.
+이 노드는 조사 범위·근거 종류·일반화 한계의 정본이다. 현행 고객 가치는 `product-philosophy`, 실제 검색의 요구·합격 기준은 `superpower-goals`와 `engineering-contract`가 소유한다. [00-index.md](00-index.md)에서 근거·승인 이력·가상 예시·과거 보존본을 구분해 찾아간다. 출처 카드와 레지스트리는 당시 확인 자료이며 외부 사실의 최신성·제품 효과를 이번 편입에서 재검증한 것은 아니다.
 
 [승인 기록](decisions/approved.md)과 [결정 데이터](decisions/status.json)의 P01·P02·P04·P05·P09·P16 승인 6개, K01~03 지정 방향, 기존 범위 9개와 중복 제외 1개의 상태·조건은 보존한다. 초기 15개 후보 문서의 승인 5개는 P16 추가 전의 역사적 수치다. 과거 구현 수단·에이전트 역할·속도 목표는 당시 승인 증거이며 이후 계약과의 차이는 현행 철학의 적용 시점 절에서 확인한다. 후보·예시·근거 보강을 새 승인이나 실행 권한으로 승격하지 않는다.
 

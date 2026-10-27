@@ -4,7 +4,7 @@ type: module-design
 status: draft
 title: 대화 실행과 세션 계약
 parent: superpower-architecture
-references: [superpower-goals, vault-evidence, interface-design, external-tools, search-quality, engineering-contract]
+references: [superpower-goals, vault-evidence, interface-design, external-tools, engineering-contract]
 ---
 
 # 대화 실행과 세션 계약

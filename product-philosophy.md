@@ -4,7 +4,7 @@ type: architecture-design
 title: 고객 가치와 제품 철학
 status: draft
 parent: superpower-goals
-references: [search-quality, vault-evidence, interface-design, philosophy-research, release-contract]
+references: [vault-evidence, interface-design, philosophy-research, release-contract]
 ---
 
 # Superpower Inside 제품 철학
@@ -63,13 +63,13 @@ references: [search-quality, vault-evidence, interface-design, philosophy-resear
 
 선택한 모델이 달라도 필요한 자료를 조사하고 원문·맥락을 확인하고 주장에 근거를 연결하는 기본 수준은 제품이 책임진다. 상위 모델의 해석·종합 능력을 활용하되 사용자의 검색 재촉이나 모델의 자발적 도구 선택에 기본 조사를 맡기지 않는다. 토큰을 더 쓰더라도 정확하고 정교한 답변을 우선하며 새 근거 없는 반복·실패·취소·예산에는 유한한 종료 조건을 둔다. 선택한 모델·추론·권한은 유지한다.
 
-기본 답변의 발견·내용·맥락 보존과 모델별 원문 중심 정리/논리적 종합의 하한은 `search-quality`, 채택·제외·미검토·실패·현재 원문 검증의 구체 계약은 `vault-evidence`가 소유한다. 출처·형식·전체 점수화의 성공을 해석 정확성이나 모든 모델의 품질 동등성으로 표현하지 않는다. 검색 비활성·명시적 MCP의 경계를 유지하며 외부 근거를 볼트 근거로 바꾸지 않는다.
+기본 답변의 발견·내용·맥락 보존과 모델별 원문 중심 정리/논리적 종합의 하한은 `superpower-goals`의 품질 요구가, 채택·제외·미검토·실패·현재 원문 검증의 구체 계약은 `vault-evidence`가 소유한다. 출처·형식·전체 점수화의 성공을 해석 정확성이나 모든 모델의 품질 동등성으로 표현하지 않는다. 검색 비활성·명시적 MCP의 경계를 유지하며 외부 근거를 볼트 근거로 바꾸지 않는다.
 
 ### 수단·시점과 승인 이력의 구분
 
 [승인 기록](product-philosophy/decisions/approved.md)과 [결정 데이터](product-philosophy/decisions/status.json)는 P16의 최초 승인·전체 검토 구체화·2026-10-18 수단 재승인을 보존한다. 당시 수단은 전 문서 결정적 스크리닝, 검색 지목 세그먼트의 LLM 판정 강제 포함, 후보 screen→통과분 extract와 3계층 표기였다. 전 문서 LLM 판정을 요구한 것으로 바꾸지 않는다.
 
-이후 루트 계약과 검색 품질 스펙은 엔진의 전체 lexical 평가·선택한 현재 원문 검증·dossier 전달·단서 기반 추가 조사로 발전했고, 전체 답변 시간 대신 검색 엔진 지연만 보조 목표로 구분했다. 현행 수단의 정본은 `vault-evidence`·`search-quality`다. 과거 강제 파이프라인과 최대한 빠른 전체 답변 목표를 현재 구현 지시로 되살리지 않는다. 이전 승인 문장·조건을 소급 삭제하거나 이번 문서 마이그레이션을 새 재승인으로 세지 않는다. 구체적 구현 차이·답변 품질 미완료는 해당 모듈과 체크리스트에 남긴다.
+이후 루트 계약과 검색 품질 스펙은 엔진의 전체 lexical 평가·선택한 현재 원문 검증·dossier 전달·단서 기반 추가 조사로 발전했고, 전체 답변 시간 대신 검색 엔진 지연만 보조 목표로 구분했다. 현행 수단의 정본은 `vault-evidence`·`retrieval-index`·`engineering-contract`다. 과거 강제 파이프라인과 최대한 빠른 전체 답변 목표를 현재 구현 지시로 되살리지 않는다. 이전 승인 문장·조건을 소급 삭제하거나 이번 문서 마이그레이션을 새 재승인으로 세지 않는다. 구체적 구현 차이·답변 품질 미완료는 해당 모듈과 체크리스트에 남긴다.
 
 ## 전체 흐름과 시너지
 

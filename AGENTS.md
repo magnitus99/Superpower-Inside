@@ -10,7 +10,7 @@ Obsidian 데스크톱 플러그인. 제품 의도·경계·품질 요구의 정�
 
 ## 검색 개선 이정표
 
-검색 개선의 기준은 [search-quality.md](search-quality.md)(`search-quality`)로 이전했습니다. 새 사이클·루틴 전에 해당 스펙을 적용합니다. 근거 자격은 [src/agent/SPEC.md](src/agent/SPEC.md), 이번 브랜치의 검증 상태·종료 판정은 `search-quality`의 상태 절이, 남은 실행 항목은 ThinkRail TODO가 소유합니다. 과거 메모를 새 활성 할 일로 재실행하거나 문서 마이그레이션을 제품 품질 완료로 보고하지 않습니다.
+검색 개선의 기준은 [goal-and-requirements.md](goal-and-requirements.md#품질-요구)의 품질 요구, 근거 자격은 [src/agent/SPEC.md](src/agent/SPEC.md), 게이트·검증 상태는 [engineering-contract.md](engineering-contract.md#검증-상태와-이력)입니다. 새 사이클·루틴 전에 이들을 적용하고, 남은 실행 항목은 ThinkRail TODO가 소유합니다. 과거 메모를 새 활성 할 일로 재실행하거나 문서 마이그레이션을 제품 품질 완료로 보고하지 않습니다.
 
 ## 작업 계약
 
@@ -19,6 +19,7 @@ Obsidian 데스크톱 플러그인. 제품 의도·경계·품질 요구의 정�
 - 답변·설명·주석은 한국어, 식별자는 영어, 커밋은 영어 Conventional Commits입니다. 사용자용 macOS 명령은 fish, Windows는 PowerShell로 작성합니다. Node/npm 프로젝트이며 별도 요청 없이 Python을 도입하지 않습니다.
 - 개발 절차·질문·공유 계획·명세·검토·PR은 ThinkRail 내장 도구를 우선합니다. 모델·추론·과금 경로·전역 도구·승인 정책을 임의로 바꾸지 않습니다. 공유 실행 계획은 ThinkRail TODO를 사용합니다.
 - 낯선 구조는 codegraph, 관련 탐색은 rg, 라이브러리 API는 Context7을 우선합니다. 없으면 공식 문서·설치된 타입/소스로 확인합니다. 작업에 필요한 자료만 읽으며 Git 제외 자료는 명시적 요청 또는 해당 검증 계약이 허용한 범위에 한합니다.
+- 사용자가 지목한 파일·폴더는 먼저 실제로 열어 확인하고 그 대상에 대해 보고합니다. "조사만·의견만" 요청은 읽기 전용이며, 요청 범위 밖 저장소·시스템을 함께 조사하지 않습니다. 결함 하나를 보고받으면 같은 모듈의 관련 결함도 같은 패스에서 확인하고, 작업 규모를 대상의 실제 크기에 맞춥니다.
 - 진입점은 main.ts, 설정은 src/settings.ts, 계산은 crates/rag-wasm, WASM 연결은 src/rag/rust-core.ts입니다. 채팅 작업 전 [src/chat/AGENTS.md](src/chat/AGENTS.md), 마케팅 전 [marketing/AGENTS.md](marketing/AGENTS.md)를 읽습니다. 설치·디버깅 명령은 package.json·scripts, 릴리스 자산은 .github/workflows/release.yml에서 확인합니다.
 - 에이전트 실행 지침은 경로별 AGENTS에만 둡니다. 제품 규칙은 스펙에 한 번 기록하고 범용 교재·작업 일지를 docs/·README에 자동 생성하지 않습니다. 외부 스킬 설치본을 직접 수정하지 않습니다.
 - 답변은 결과부터 쓰고 실제 변경·검증·남은 한계를 구분합니다. 테스트 통과를 실제 모델 품질이나 사용자 효과의 증거로 대신하지 않습니다.
@@ -48,7 +49,7 @@ Obsidian 데스크톱 플러그인. 제품 의도·경계·품질 요구의 정�
 
 ## 검증·완료
 
-변경 전 테스트 계약을 고정하고 작업 중·변경 완료 후 npm run quality:local을 실행합니다. 상세 검증 범위·순서·화면 검수는 `engineering-contract`, 배포·Patina는 `release-contract`, 검색 실제품질은 `search-quality`를 적용합니다. 미실행·실패·차단을 완료로 표현하지 않습니다.
+변경 전 테스트 계약을 고정하고 작업 중·변경 완료 후 npm run quality:local을 실행합니다. 상세 검증 범위·순서·화면 검수는 `engineering-contract`, 배포·Patina는 `release-contract`, 검색 실제품질은 `engineering-contract`의 게이트·검증 상태를 적용합니다. 미실행·실패·차단을 완료로 표현하지 않습니다.
 
 ## 제품 철학 검증
 
