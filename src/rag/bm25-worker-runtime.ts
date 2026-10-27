@@ -61,7 +61,8 @@ export interface BM25WorkerResponse {
 interface PendingRequest {
   resolve(response: BM25WorkerResponse): void;
   reject(error: Error): void;
-  timeoutId: number;
+  message: BM25WorkerRequest;
+  timeoutId?: number;
   timeoutMs: number;
   expectedDocuments?: number;
   lastProcessedDocuments: number;
@@ -91,6 +92,7 @@ export class BM25WorkerRuntime {
   private readonly disposeWorker: () => void;
   private readonly pending = new Map<number, PendingRequest>();
   private nextRequestId = 1;
+  private activeRequestId: number | null = null;
   private closed = false;
   private hydration: { processedDocuments: number; expectedDocuments: number } | null = null;
 
@@ -179,6 +181,7 @@ export class BM25WorkerRuntime {
       request.reject(reason);
     }
     this.pending.clear();
+    this.activeRequestId = null;
   }
 
   get isClosed(): boolean {
@@ -205,32 +208,50 @@ export class BM25WorkerRuntime {
       const abort = (): void => {
         const pending = this.pending.get(id);
         if (!pending) return;
-        this.pending.delete(id);
-        window.clearTimeout(pending.timeoutId);
         pending.removeAbortListener();
         pending.reject(new DOMException('BM25 worker request cancelled.', 'AbortError'));
+        if (this.activeRequestId === id) {
+          // 실행 중인 WASM은 중단할 수 없어 응답 또는 시간 제한까지 순서를 유지합니다.
+          pending.resolve = () => {};
+          pending.reject = () => {};
+        } else {
+          this.pending.delete(id);
+        }
       };
       signal?.addEventListener('abort', abort, { once: true });
-      const timeoutId = window.setTimeout(() => {
-        const error = new Error('BM25 worker request timed out.');
-        this.close(error);
-      }, timeoutMs);
       this.pending.set(id, {
         resolve,
         reject,
-        timeoutId,
+        message: { id, ...request },
         timeoutMs,
         expectedDocuments,
         lastProcessedDocuments: 0,
         removeAbortListener: () => signal?.removeEventListener('abort', abort),
       });
-      this.worker.postMessage({ id, ...request });
+      this.dispatchNext();
     });
+  }
+
+  /** 작업자 실행 한 건에만 제한 시간을 적용하고 대기 요청은 순서대로 보냅니다. */
+  private dispatchNext(): void {
+    if (this.closed || this.activeRequestId !== null) return;
+    const next = this.pending.entries().next().value;
+    if (!next) return;
+    const [id, request] = next;
+    this.activeRequestId = id;
+    request.timeoutId = window.setTimeout(() => {
+      this.close(new Error('BM25 worker request timed out.'));
+    }, request.timeoutMs);
+    try {
+      this.worker.postMessage(request.message);
+    } catch (error) {
+      this.close(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   private handleMessage(response: BM25WorkerResponse): void {
     const request = this.pending.get(response.id);
-    if (!request) return;
+    if (!request || response.id !== this.activeRequestId) return;
     const processedDocuments = response.progress?.processedDocuments;
     if (processedDocuments !== undefined) {
       if (
@@ -253,11 +274,13 @@ export class BM25WorkerRuntime {
     this.pending.delete(response.id);
     window.clearTimeout(request.timeoutId);
     request.removeAbortListener();
+    this.activeRequestId = null;
     if (response.error) {
       request.reject(new Error(response.error));
-      return;
+    } else {
+      request.resolve(response);
     }
-    request.resolve(response);
+    this.dispatchNext();
   }
 }
 

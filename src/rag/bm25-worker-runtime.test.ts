@@ -181,6 +181,86 @@ describe('BM25 worker runtime', () => {
     expect(fixture.dispose).toHaveBeenCalledOnce();
   });
 
+  it('앞선 복원 대기 시간은 다음 검색의 실행 제한에서 제외한다', async () => {
+    vi.useFakeTimers();
+    const fixture = createFakeWorker();
+    const runtime = new BM25WorkerRuntime(fixture.create, 100);
+    const initialization = runtime.initialize('queued-test-db', '');
+    const search = runtime.searchTop('independent query', 10);
+    const results = Promise.allSettled([initialization, search]);
+
+    await vi.advanceTimersByTimeAsync(450);
+    expect(fixture.terminate).not.toHaveBeenCalled();
+    expect(fixture.postMessage).toHaveBeenCalledTimes(1);
+    fixture.respond({ id: 1, ready: true, tokenizerCurrent: true, totalDocs: 1 });
+    expect(fixture.postMessage).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(90);
+    fixture.respond({ id: 2, hits: [{ docId: 'result', sourcePath: 'result.md', score: 1 }] });
+
+    expect((await results).map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+    expect(fixture.terminate).not.toHaveBeenCalled();
+    runtime.close();
+  });
+
+  it('대기 중 취소한 요청은 작업자에게 보내지 않는다', async () => {
+    const fixture = createFakeWorker();
+    const runtime = new BM25WorkerRuntime(fixture.create);
+    const first = runtime.searchTop('first query', 10);
+    const controller = new AbortController();
+    const cancelled = runtime.aggregate('cancelled query', 10, controller.signal);
+    const cancellation = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    const next = runtime.searchTop('next query', 10);
+    controller.abort();
+    await cancellation;
+
+    expect(fixture.postMessage).toHaveBeenCalledTimes(1);
+    fixture.respond({ id: 1, hits: [] });
+    await first;
+    expect(fixture.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 3, operation: 'search-top' }),
+    );
+    fixture.respond({ id: 3, hits: [] });
+    await expect(next).resolves.toEqual([]);
+    runtime.close();
+  });
+
+  it('실행 중 취소는 즉시 알리되 늦은 응답 전에는 다음 요청을 실행하지 않는다', async () => {
+    vi.useFakeTimers();
+    const fixture = createFakeWorker();
+    const runtime = new BM25WorkerRuntime(fixture.create, 100);
+    const controller = new AbortController();
+    const cancelled = runtime.searchTop('first query', 10, controller.signal);
+    const cancellation = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    const next = runtime.searchTop('next query', 10);
+    controller.abort();
+    await cancellation;
+
+    await vi.advanceTimersByTimeAsync(90);
+    expect(fixture.postMessage).toHaveBeenCalledTimes(1);
+    fixture.respond({ id: 1, hits: [] });
+    await vi.advanceTimersByTimeAsync(90);
+    fixture.respond({ id: 2, hits: [] });
+    await expect(next).resolves.toEqual([]);
+    expect(fixture.terminate).not.toHaveBeenCalled();
+    runtime.close();
+  });
+
+  it('실행 중 요청이 멈추면 대기 요청도 거부하고 작업자를 종료한다', async () => {
+    vi.useFakeTimers();
+    const fixture = createFakeWorker();
+    const runtime = new BM25WorkerRuntime(fixture.create, 100);
+    const first = runtime.searchTop('first query', 10);
+    const next = runtime.aggregate('next query', 10);
+    const results = Promise.allSettled([first, next]);
+
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect((await results).map((result) => result.status)).toEqual(['rejected', 'rejected']);
+    expect(fixture.postMessage).toHaveBeenCalledTimes(1);
+    expect(fixture.terminate).toHaveBeenCalledOnce();
+    expect(fixture.dispose).toHaveBeenCalledOnce();
+  });
+
   it('문서 hydration 진행 신호가 오면 무응답 제한을 다시 계산한다', async () => {
     vi.useFakeTimers();
     const fixture = createFakeWorker();
@@ -232,12 +312,14 @@ function createFakeWorker(): {
   respond(response: BM25WorkerResponse): void;
   terminate: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
+  postMessage: ReturnType<typeof vi.fn>;
 } {
   let onMessage: ((event: MessageEvent<BM25WorkerResponse>) => void) | null = null;
   const terminate = vi.fn();
   const dispose = vi.fn();
+  const postMessage = vi.fn();
   const worker: BM25WorkerAdapter = {
-    postMessage: vi.fn(),
+    postMessage,
     terminate,
     setOnMessage: (handler) => {
       onMessage = handler;
@@ -251,6 +333,7 @@ function createFakeWorker(): {
     },
     terminate,
     dispose,
+    postMessage,
   };
 }
 
