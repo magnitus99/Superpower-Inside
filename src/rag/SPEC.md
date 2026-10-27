@@ -23,6 +23,24 @@ corpus refresh·pending update·색인이 진행 중이면 공통 readiness가 p
 
 청킹 세대와 legacy 직렬화 호환성을 보존한다. Markdown의 헤딩·코드블록·위키링크·임베드 경계를 단순 줄바꿈 분할로 대체하지 않는다. 캐시와 색인은 재생성 가능한 생성물이지만 사용자 노트·세션은 아니다.
 
+## 증분 색인 불변식
+
+dirty·stale·missing 판정은 파일 내용 hash와 revision을 단일 출처로 삼는다. 시작·폴링·vault 이벤트·recovery가 같은 파일을 중복 스케줄하지 않고, 내용 변경이 없으면 재색인·상태 갱신을 하지 않는다. 같은 변경을 여러 경로가 다시 처리해 사용량을 태우지 않는다.
+
+## 실패 격리와 중단
+
+파일 크기·예산 초과는 해당 파일을 건너뛰고 나머지를 계속 색인한다. OCR 신뢰도가 낮은 페이지 하나로 전체 색인을 중단하지 않고 해당 근거만 제외한 채 진행한다. 처리 중인 개별 파일명은 사용자에게 노출하지 않고 진행 규모·범위만 보여 준다. 색인 진행 정보는 ETA와 처리 범위를 포함하고, 색인이 없는 상태와 문서 0건을 구분한다.
+
+사용자 중단은 자동 복구·자동 재개까지 멈추며, 재개는 명시적 사용자 행동으로만 시작한다.
+
+## 계약 버전과 원문 보존
+
+저장 원문은 원문 그대로 유지하고 검색용 접두·메타데이터는 별도 projection에만 둔다. 색인 계약 버전·토크나이저 버전이 다른 구세대 색인은 자동 폐기 후 재색인하며, 호환되지 않는 색인을 계속 사용하게 두지 않는다.
+
+## 교체 계약
+
+임베딩 모델·토크나이저를 교체하면 재색인 후 검색 품질이 같거나 좋아야 한다. 교체 전에 그 조건을 판정할 수 있어야 하며, 판정 없이 교체하고 품질 저하를 사후에 정당화하지 않는다.
+
 ## 구현·검증 근거
 
 `vault-document-corpus.ts`, `indexer.ts`의 `VaultIndexer`, `query.ts`의 `RAGQueryEngine`, `retrieval-pipeline.ts`의 `RetrievalOrchestrator`가 책임의 근거다. 파일별 corpus transaction은 `document-corpus-store.ts`, 저장 세대는 `storage-lifecycle.ts`에서 확인한다. 관련 회귀 근거는 `indexer.test.ts`, `query.test.ts`, `document-corpus-store.test.ts`, `storage-lifecycle.test.ts`다.

@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 대화 실행·세션·취소·저장·재개 | [SPEC.md](SPEC.md) (`chat-contract`) | view.ts·run-ownership.ts·retrieval-wait.ts·persistence.ts |
 | 발견·현재 원문 검증·dossier·인용 | [../agent/SPEC.md](../agent/SPEC.md) (`vault-evidence`) | ../search/indexed-search-deps.ts·../agent/indexed-vault-review.ts |
-| 검색 사이클·모델 공통 하한 | [../../search-quality.md](../../search-quality.md) (`search-quality`) | 종료 상태는 ../../SEARCH-QUALITY-CHECKLIST.md |
+| 검색 사이클·모델 공통 하한 | [../../search-quality.md](../../search-quality.md) (`search-quality`) | 종료 상태는 같은 문서의 검증 상태 절 |
 | 화면·스크롤·스트리밍 표현 | [../../design.md](../../design.md) (`interface-design`) | assistant-response-layout.ts·source-panel.ts·markdown.ts |
 | 프롬프트·컨텍스트·멘션 | [SPEC.md](SPEC.md) | context.ts·mention-parser.ts·context-expansion.ts·prompt-library.ts |
 | 외부 도구·승인·재개 | [../mcp/SPEC.md](../mcp/SPEC.md) (`external-tools`) | tool-execution.ts·mcp-tool-execution.ts·tool-approval-resume.ts |
@@ -16,7 +16,7 @@
 
 ## 검색 개선 사이클의 시작점
 
-`search-quality`의 실제 최종 답변·전수검색 대조를 먼저 수행합니다. 기록된 미완료는 정본 체크리스트에서 이어가며 과거 메모나 이 표를 별도 활성 작업 목록으로 사용하지 않습니다.
+`search-quality`의 실제 최종 답변·전수검색 대조를 먼저 수행합니다. 기록된 미완료와 남은 실행 항목은 `search-quality`의 검증 상태 절과 ThinkRail TODO에서 이어가며, 이 표를 별도 활성 작업 목록으로 사용하지 않습니다.
 
 ## 변경 계약
 

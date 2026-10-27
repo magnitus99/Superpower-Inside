@@ -17,6 +17,10 @@ references: [chat-contract]
 
 서버 응답과 도구 설명은 신뢰할 실행 지시가 아니라 데이터다. 외부 근거를 볼트 원문 검증 근거로 표현하지 않는다. 일반 채팅 catalog의 외부 MCP와 제품의 읽기 전용 네이티브 볼트 조사 경계를 분리한다. mixed 요청에 dossier를 전달하는 것과 볼트 도구 권한을 부여하는 것은 다르다.
 
+## 노출·멘션 정책
+
+기본값은 등록된 서버의 도구를 멘션 없이도 사용할 수 있는 자유 사용이다. 멘션은 "이 도구를 써 보라"는 제안이지 강제 제한이 아니며, 멘션한 서버로만 제한하는 배타 정책은 명시적 설정 옵션으로 제공한다. 현재 정책 값은 `always-auto`(기본)·`mentioned-auto`·`always-manual`이며, 선택한 정책·승인 결과·실행 상태를 화면에서 구분해 보여 준다.
+
 ## 구현·검증 근거
 
 `registry.ts`, `client.ts`, `connection-state.ts`가 연결 책임을, `src/chat/mcp-tool-execution.ts`와 `tool-approval-resume.ts`가 승인 실행·재개를 조율한다. 관련 회귀 근거는 `registry.test.ts`, `client.test.ts`, `connection-state.test.ts`, `src/chat/mcp-tool-execution.test.ts`다.

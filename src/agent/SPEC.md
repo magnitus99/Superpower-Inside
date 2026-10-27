@@ -33,6 +33,10 @@ quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검�
 
 단서 기반 읽기 전용 search/read/list/links/related와 전체 열거에도 현재 접근·제외·필터·revision·원문 검증·취소를 적용한다. 후속 근거가 없으면 원래 제한 상태를 유지하며 추가 조사 허용이 교정 한도를 없애거나 검증 실패 답변을 게시할 권한은 아니다. 실제 최종 답변의 의미 충실도는 형식 검증과 별개다.
 
+발견·검증·판정의 기본 주체는 결정적 검색 엔진이다. LLM은 엔진이 확보한 근거를 해석·종합하며 후보 선별자나 근거 검증자로 대체되지 않는다. 도구 호출은 엔진의 기본 결과가 부족할 때 조사를 깊게 하는 수단이며 기본 발견·검증을 대신하는 경로가 아니다.
+
+확신도가 낮은 후보를 잘라 버리지 않는다. 확신도와 대안 해석을 함께 제시하고 확신이 높은 근거를 먼저 보여 주며, 확인한 범위와 의도한 자료가 다를 수 있음을 사용자가 확인할 수 있게 한다. 맥락이 다르다는 이유로 전부 제외하는 것과 확인을 요청하는 것은 다른 결과다.
+
 ## 현재 구현과 목표의 차이
 
 - `src/search/indexed-search-deps.ts`는 exhaustive lexical 후보와 discovery 단서를 보유하면서 원문 심사 경로를 최대 96개로 선택한다. 따라서 전체 lexical 평가를 전체 현재 원문 검토 완료로 해석할 수 없다. `indexed-vault-review.ts`의 `exhaustiveReview` coverage 표현 역시 이 두 의미가 분리돼 있음을 보장하지 못한다.
@@ -40,4 +44,4 @@ quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검�
 - 채팅 검증은 현재 본문을 사용하지만 정상 경로에서 색인 파일 content hash와 현재 hash를 직접 비교하는 게이트는 확인되지 않았다. 이 명세의 hash 확인 요구를 이미 충족했다고 간주하지 않는다. 검색 화면은 `verifyCurrentSource: false`이므로 같은 검증 보장이 아니다.
 - 기본 발견·집계·주소를 엔진 한 번·색인 한 순회에서 얻는 것이 목표다. 현재는 facet별 검색·집계와 배치별 WASM 계획이 있으며, `src/chat/query-variants.ts`의 제공자 호출은 로컬 질의 계획만 허용한 기존 계약과 다르다. 이번 편입에서 동작이나 정책을 변경하지 않는다.
 
-구현 중심은 `indexed-vault-review.ts`의 `searchIndexedVault`·`reviewIndexedVault`다. `research-agent.ts`의 존재를 현재 주 실행 경로의 증거로 쓰지 않는다. 회귀 근거는 `indexed-vault-review.test.ts`, `indexed-vault-search.test.ts`, `indexed-vault-followup.test.ts`, `src/search/indexed-search-deps.test.ts`, `src/search/engine-adapter.test.ts`다. 로컬 회귀 계약과 실제 답변·전체 recall 검증은 별개이며, 이번 편입에서는 실제 답변·전체 recall을 재측정하지 않았다. 달성 상태는 [검색 품질 체크리스트](../../SEARCH-QUALITY-CHECKLIST.md)가 소유한다.
+구현 중심은 `indexed-vault-review.ts`의 `searchIndexedVault`·`reviewIndexedVault`다. `research-agent.ts`의 존재를 현재 주 실행 경로의 증거로 쓰지 않는다. 회귀 근거는 `indexed-vault-review.test.ts`, `indexed-vault-search.test.ts`, `indexed-vault-followup.test.ts`, `src/search/indexed-search-deps.test.ts`, `src/search/engine-adapter.test.ts`다. 로컬 회귀 계약과 실제 답변·전체 recall 검증은 별개이며, 이번 편입에서는 실제 답변·전체 recall을 재측정하지 않았다. 달성 상태와 종료 판정은 [검색 품질 스펙](../../search-quality.md)의 검증 상태 절이 소유한다.

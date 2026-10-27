@@ -26,6 +26,12 @@ Markdown 청킹의 헤딩·코드블록 경계와 위키링크·임베드 의미
 - 로그는 src/utils/logger.ts와 점 표기 source를 사용한다. trace=반복 상세, debug=전환, info=시작, notice=성공, warn=복구 가능, error=실패, fatal=핵심 중단이다. 429·재시도·backoff·취소·대체·skip 이유를 기록하되 키·토큰·쿠키·credential을 기록하지 않고 console을 추가하지 않는다.
 - 네이티브 볼트 도구는 읽기 전용이고 MCP 신뢰·승인·취소 경계를 보존한다. 데스크톱 전용을 전제로 한다. 의존성 변경은 package-lock.json도 함께 맞춘다.
 
+## 의존성·측정 규약
+
+외부 라이브러리는 개념을 참고해 자체 구현하는 쪽을 우선한다. 동작을 보증할 수 없는 직렬 의존 체인을 만들지 않고, 구현 이득이 없는 구간에서만 생략·단순화한다.
+
+검색·성능 비교는 질의 파싱을 포함한 같은 측정 경계와 동등한 내구성 설정에서 수행하고 build·persist 시간을 분리해 기록한다. capped hit을 recall로 부르지 않고, 측정 환경을 Obsidian 실제 사용으로 일반화하지 않으며, 외부 README의 속도 수치를 자사 성능 근거로 쓰지 않는다.
+
 ## 프롬프트 작성
 
 프롬프트는 목표·관련 근거·필요한 출력·실제 경계를 명확히 하고 과도한 단계 강제나 사고 과정 출력을 요구하지 않는다. 사용자 선택 모델·추론을 문서 최적화에 끼워 바꾸지 않는다. [ChatGPT 공식 프롬프팅 가이드](https://learn.chatgpt.com/docs/prompting)를 기준으로 삼고, GPT-6.1 Sol 대상이면 [모델 문서](https://developers.openai.com/api/docs/models/gpt-6.1-sol)·[프롬프팅 지침](https://developers.openai.com/api/docs/guides/latest-model#prompting-best-practices)도 실제 작업에서 확인한다. 이 링크 편입은 이번 작업에서 외부 문서 최신성을 재검증했다는 뜻이 아니며 모델별 권고가 provider·도구·저장 계약보다 우선하지 않는다.
@@ -52,4 +58,4 @@ UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 구조 테스트�
 
 브라우저 preview는 npm run preview:prepare로 설치된 Obsidian CSS·자산·합성 Markdown을 준비하고 npm run preview로 실행한다. 제품 코드 변경 뒤 preview:build로 갱신하고 ?check 또는 제품 계약 검사로 기본 스타일·호스트·저장 계약을 확인한다. 기본 테마를 수제 CSS로 대체하지 않으며 자산은 Git 제외 simulations/obsidian-preview에만 보관한다. 브라우저는 연결된 도구 → Chrome → 최후 Playwright 순서로 사용하고 화면 확인은 커밋 전에 수행한다. 촬영 불가는 미완료로 명시한다.
 
-검색의 실제품질 합격은 `search-quality`, 배포·문구 검사는 `release-contract`가 소유한다. 완료 보고는 실제 명령·종료 상태·한계를 기록하며 같은 변경을 커밋·푸시만을 이유로 반복 검사하지 않는다. 절차와 권한은 루트 AGENTS에서 확인한다.
+검색의 실제품질 합격은 `search-quality`, 배포·문구 검사는 `release-contract`가 소유한다. 완료 보고는 실제 명령·종료 상태·한계를 기록하며 같은 변경을 커밋·푸시만을 이유로 반복 검사하지 않는다. 커밋 요청은 커밋만 수행하고 푸시는 별도 요청이 있을 때만 한다. 절차와 권한은 루트 AGENTS에서 확인한다.

@@ -10,7 +10,7 @@ Obsidian 데스크톱 플러그인. 제품 의도·경계·품질 요구의 정�
 
 ## 검색 개선 이정표
 
-검색 개선의 기준은 [search-quality.md](search-quality.md)(`search-quality`)로 이전했습니다. 새 사이클·루틴 전에 해당 스펙을 적용합니다. 근거 자격은 [src/agent/SPEC.md](src/agent/SPEC.md), 이번 브랜치의 상태·할 일·완료 근거는 [SEARCH-QUALITY-CHECKLIST.md](SEARCH-QUALITY-CHECKLIST.md)가 정본입니다. 과거 메모를 새 활성 할 일로 재실행하거나 문서 마이그레이션을 제품 품질 완료로 보고하지 않습니다.
+검색 개선의 기준은 [search-quality.md](search-quality.md)(`search-quality`)로 이전했습니다. 새 사이클·루틴 전에 해당 스펙을 적용합니다. 근거 자격은 [src/agent/SPEC.md](src/agent/SPEC.md), 이번 브랜치의 검증 상태·종료 판정은 `search-quality`의 상태 절이, 남은 실행 항목은 ThinkRail TODO가 소유합니다. 과거 메모를 새 활성 할 일로 재실행하거나 문서 마이그레이션을 제품 품질 완료로 보고하지 않습니다.
 
 ## 작업 계약
 

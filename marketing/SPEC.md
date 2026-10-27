@@ -31,6 +31,10 @@ references: [superpower-goals, interface-design, release-contract, product-philo
 
 Google ABCD 등 외부 조사는 방향의 근거이며 이 제품의 최적 길이·서체·전환율을 입증하지 않는다. 출처·당시 확인일·한계와 제작 이력은 [video-plan.md](video-plan.md), 합성 장면·촬영 한계는 [scenario.md](scenario.md)에 보존한다. 조회·완주·클릭·다운로드·설치를 구분해 측정한 범위만 보고한다.
 
+## 커뮤니티 목록
+
+커뮤니티 목록 문구는 기능 설명보다 검색 발견을 겨냥해 쓴다. 핵심 단서를 짧은 설명에 배치하고 후보를 제시한 뒤 실제 반영은 사용자가 판단한다. 한국어 전용 이미지를 따로 만들지 않고 필요하면 영어 화면 옆·아래에 병기한다. 게시·편집·저장은 별도 요청 범위다.
+
 ## 배포와 제작 권한
 
 설치 행동은 [Obsidian 설치 페이지](https://obsidian.md/plugins?id=superpower-inside) 또는 [최신 릴리스](https://github.com/magnitus99/Superpower-Inside/releases/latest)로 연결한다. 커뮤니티의 영상 임베드는 기존 MP4를 유지하고 필요하면 재생 버튼이 있는 정적 PNG에 원본 영상 링크를 연결한다. GIF로 변환하지 않는다.
