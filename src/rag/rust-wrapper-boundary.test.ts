@@ -17,7 +17,11 @@ const runtimeRoots = [
   'src/chat/persistence.ts',
   'src/utils/vault.ts',
 ];
-const contractFiles = ['AGENTS.md'];
+const contractFiles = [
+  'AGENTS.md',
+  'architecture.md',
+  'engineering-contract.md',
+];
 
 function listTypeScriptFiles(path: string): string[] {
   const absolutePath = resolve(repositoryRoot, path);

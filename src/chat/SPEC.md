@@ -4,7 +4,7 @@ type: module-design
 status: draft
 title: 대화 실행과 세션 계약
 parent: superpower-architecture
-references: [superpower-goals, vault-evidence, interface-design, external-tools]
+references: [superpower-goals, vault-evidence, interface-design, external-tools, search-quality, engineering-contract]
 ---
 
 # 대화 실행과 세션 계약
@@ -19,9 +19,17 @@ references: [superpower-goals, vault-evidence, interface-design, external-tools]
 
 실행 token과 AbortController 소유권을 확인한 작업만 현재 대화의 표시·정리를 수행한다. 준비 중에는 부분 색인을 정상 근거로 사용하지 않고 실제 준비 상태를 기다리며, 세션·모델·설정 변경·중단·degraded·timeout을 구분한다. 입력·이미 확보한 결과를 실패 때문에 임의 초기화하지 않는다.
 
-일반 채팅·검색 비활성·볼트 요청·명시적 외부 MCP 요청을 구분하는 것이 의도된 경계다. mixed 요청에서는 검증 dossier와 출처를 외부 도구 조율에 전달하되 네이티브 볼트 도구 실행 권한까지 주지 않는다. 외부 도구 승인·재개는 고정된 호출 binding과 현재 정책을 다시 확인한다.
+일반 채팅·검색 비활성·볼트 요청·명시적 외부 MCP 요청을 구분하는 것이 의도된 경계다. mixed 요청에서는 검증 dossier와 출처를 외부 도구 조율에 전달하되 네이티브 볼트 도구 실행 권한까지 주지 않는다. 명시적 외부 MCP를 포함하는 mixed 요청에서만 deferAnswer를 사용한다. 외부 도구 승인·재개는 고정된 호출 binding과 현재 정책으로 근거를 다시 확인하고, 저장된 별도 후보 범위가 없으면 기본 all 검토를 사용한다.
 
 저장된 메시지·출처 주소는 현재 원문 검증을 대신하지 않는다. legacy 세션 load와 최신 형식 round-trip을 보존하고, 중간 승인·질문 대기 상태의 재개가 다른 실행을 중복 소유하지 않도록 한다.
+
+## 프롬프트·준비·응답 표현
+
+현재 요청의 목표·언어·형식·분량을 우선하며 시스템 프롬프트는 가이드다. 볼트 색인 요약은 대표 샘플이지 전체 볼트 사실·실행 지시가 아니다. 기본값·빠른 프리셋·생성 프롬프트의 한영 계약을 함께 유지하고 도구 형식·JSON 스키마·출처 ID·재개 경계를 보존한다. 질의 계획은 로컬 결정적 계산만 사용하고 번역용 제공자 호출을 하지 않는 것이 요구 계약이며 현행 차이는 `vault-evidence`에 남긴다.
+
+설정·입력·검색 화면은 공통 readiness snapshot을 사용하고 corpus refresh·pending update·indexing 중에는 부분 색인으로 답하지 않는다. 준비 중 질문의 범위·참조·선택 모델을 보존해 같은 실행이 ready 후 한 번 이어가며, 취소·세션/설정/모델 변경·실패·timeout이면 늦은 재개를 막는다. 검색 화면도 준비 중 pending을 유지한다.
+
+답변 전에 실제 검색·검증·추가 조사·생성·교정의 진행과 제공된 reasoning 요약을 전달한다. 구조화 답변의 미검증 JSON·주장을 확정 답변으로 노출하지 않고 검증·허용된 한 번의 교정 뒤 게시한다. 중요한 incomplete·실패 한계는 본문에, 정상 상세는 펼쳐 확인할 수 있는 영역에 보존한다. 제공되지 않은 진행·추론을 만들지 않으며 구체 화면 계약은 `interface-design`을 따른다.
 
 ## 현재 차이와 검증 범위
 

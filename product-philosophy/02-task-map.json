@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "paths_relative_to": "repository_root",
+  "criterion_source": "product-philosophy.md",
+  "decision_source": "product-philosophy/decisions/status.json",
+  "approval_conditions_source": "product-philosophy/decisions/approved.md",
+  "source_catalog": "product-philosophy/sources/catalog.json",
+  "manual_review_template": "product-philosophy/review/manual-review.md",
+  "review_activation": "사용자가 명시적으로 요청할 때만 수동 실행",
+  "rule_ids_are_focus_not_scope_limits": true,
+  "tasks": [
+    {
+      "id": "typescript_ui",
+      "title": "화면·시선 흐름·상태 표현",
+      "focus_rules": [
+        "K01",
+        "P04",
+        "P09",
+        "P02"
+      ],
+      "questions": [
+        "필요한 정보와 다음 행동을 찾는 부담이 줄어드는가?",
+        "읽는 위치·목적·자료 범위를 다시 파악하게 하는가?",
+        "정돈됨과 세심함이 실제 사용 흐름과 연결되는가?"
+      ],
+      "source_ids": [
+        "CD02",
+        "AP06",
+        "SW10"
+      ],
+      "context_files": [
+        "AGENTS.md",
+        "design.md",
+        "src/chat/AGENTS.md"
+      ],
+      "evidence_documents": [
+        "product-philosophy/synthesis/evidence-perspectives.md",
+        "product-philosophy/comparisons/braun-vitsoe.md"
+      ]
+    },
+    {
+      "id": "button_behavior",
+      "title": "버튼·행동·상태 전환",
+      "focus_rules": [
+        "P01",
+        "P02",
+        "P04"
+      ],
+      "questions": [
+        "이 행동이 필요한 이유와 다음 단계에 전달할 것은 무엇인가?",
+        "이름·실제 효과·부작용·중단 범위가 일치하는가?",
+        "준비·실패·복구 때문에 사용자가 기존 작업을 반복해야 하는가?"
+      ],
+      "source_ids": [
+        "RR01",
+        "RR02",
+        "RS01"
+      ],
+      "context_files": [
+        "AGENTS.md",
+        "design.md",
+        "src/chat/AGENTS.md"
+      ],
+      "evidence_documents": [
+        "product-philosophy/cases/automotive/rolls-royce.md",
+        "product-philosophy/synthesis/value-to-behavior.md"
+      ]
+    },
+    {
+      "id": "user_copy",
+      "title": "사용자 표시 문구",
+      "focus_rules": [
+        "P04",
+        "P02",
+        "P09"
+      ],
+      "questions": [
+        "어떤 상태에서 어떤 판단·행동을 돕기 위해 보여 주는가?",
+        "실제 처리 범위와 약속·한계가 같은가?",
+        "같은 동작의 명칭과 한국어·영어의 의미가 일치하는가?"
+      ],
+      "source_ids": [
+        "AP06",
+        "CD02",
+        "RS01"
+      ],
+      "context_files": [
+        "AGENTS.md",
+        "design.md",
+        "src/i18n.ts"
+      ],
+      "evidence_documents": [
+        "product-philosophy/cases/apple/apple-2007-2011.md"
+      ]
+    },
+    {
+      "id": "readme",
+      "title": "README·제품 설명",
+      "focus_rules": [
+        "P01",
+        "P02",
+        "P04",
+        "P09"
+      ],
+      "questions": [
+        "대상 사용자가 어떤 작업과 연결된 흐름을 이해하게 하는가?",
+        "각 단어의 필요성과 실제 적용 조건을 설명할 수 있는가?",
+        "자동·무료·로컬·지원의 범위와 예외가 사실에 맞는가?"
+      ],
+      "source_ids": [
+        "AP01",
+        "AP05",
+        "CD02"
+      ],
+      "context_files": [
+        "AGENTS.md",
+        "README.md"
+      ],
+      "evidence_documents": [
+        "product-philosophy/cases/apple/apple-2007-2011.md",
+        "product-philosophy/synthesis/value-to-behavior.md"
+      ],
+      "activation": "읽기 전용 검토 또는 사용자가 명시적으로 지시한 전체 재작성만; 자동 후속 갱신 금지"
+    },
+    {
+      "id": "rust_wasm",
+      "title": "Rust/WASM·자료 처리·검색 연결",
+      "focus_rules": [
+        "P01",
+        "P02",
+        "P05"
+      ],
+      "questions": [
+        "입출력이 다음 단계에 필요한 본문·출처·확인 상태를 보존하는가?",
+        "제한된 경로나 결과를 충분한 처리로 표현하는가?",
+        "같은 목적에서 전후 관여·재작업·결과 활용이 어떻게 달라지는가?"
+      ],
+      "source_ids": [
+        "RR01",
+        "AP05",
+        "SW02"
+      ],
+      "context_files": [
+        "AGENTS.md"
+      ],
+      "evidence_documents": [
+        "product-philosophy/synthesis/evidence-perspectives.md",
+        "product-philosophy/synthesis/value-to-behavior.md"
+      ]
+    },
+    {
+      "id": "video_marketing",
+      "title": "영상·마케팅",
+      "focus_rules": [
+        "P01",
+        "P02",
+        "P04",
+        "P09"
+      ],
+      "questions": [
+        "장면·문구가 전달하는 편안함이 실제 가능한 경험인가?",
+        "앞뒤 단계의 연결과 생략된 조건을 사실에 맞게 설명하는가?",
+        "기술의 수고보다 사용자가 얻는 결과와 사용 경험이 전면에 오는가?"
+      ],
+      "source_ids": [
+        "AP01",
+        "AP05",
+        "CD02"
+      ],
+      "context_files": [
+        "AGENTS.md",
+        "README.md"
+      ],
+      "evidence_documents": [
+        "product-philosophy/cases/apple/apple-2007-2011.md"
+      ]
+    },
+    {
+      "id": "feature_priorities",
+      "title": "새 기능·기존 개선·기술 변화",
+      "focus_rules": [
+        "P05",
+        "P01",
+        "P02",
+        "P09"
+      ],
+      "questions": [
+        "같은 목적에서 전체 흐름의 부담을 더 줄이는 쪽은 무엇인가?",
+        "늘어나는 관리·판단 부담과 기존 흐름에 미치는 영향은 무엇인가?",
+        "새로움이나 기존 완성도만을 이유로 우선순위를 고정하는가?"
+      ],
+      "source_ids": [
+        "RR03",
+        "AP05",
+        "CD02"
+      ],
+      "context_files": [
+        "AGENTS.md"
+      ],
+      "evidence_documents": [
+        "product-philosophy/cases/automotive/rolls-royce.md",
+        "product-philosophy/synthesis/evidence-perspectives.md"
+      ]
+    },
+    {
+      "id": "document_grounded_answers",
+      "title": "문서 기반 답변·조사·판단·인용",
+      "focus_rules": [
+        "P16",
+        "P01",
+        "P02",
+        "P04"
+      ],
+      "questions": [
+        "전체 lexical 발견·후보 보존·현재 원문 검증·전달·후속 탐색·최종 답변을 같은 조건의 Ctrl+F 기준과 대조했는가?",
+        "검토 후 제외와 미검토·실패를 구분했는가?",
+        "문서에 근거한 사실·추론과 외부 근거의 경계를 유지했는가?",
+        "절차 검사와 실제 해석 품질의 효과를 구분했는가?"
+      ],
+      "source_ids": [],
+      "evidence_basis": "사용자 직접 지시와 현재 구현·합성 테스트; 외부 브랜드 사례는 승인 근거가 아님",
+      "context_files": [
+        "AGENTS.md",
+        "src/chat/AGENTS.md",
+        "search-quality.md",
+        "src/agent/SPEC.md",
+        "src/chat/SPEC.md",
+        "src/agent/indexed-vault-review.ts",
+        "src/agent/indexed-vault-review.test.ts",
+        "crates/rag-wasm/src/indexed_review.rs"
+      ],
+      "evidence_documents": [
+        "product-philosophy.md",
+        "product-philosophy/decisions/approved.md",
+        "product-philosophy/decisions/status.json"
+      ]
+    }
+  ]
+}

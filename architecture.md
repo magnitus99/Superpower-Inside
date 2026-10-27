@@ -5,7 +5,7 @@ status: draft
 title: 제품 아키텍처와 실행 경계
 parent: superpower-goals
 tags: [architecture]
-references: [interface-design, chat-contract, vault-evidence, retrieval-index, provider-boundary, external-tools, artifact-storage, deterministic-core]
+references: [interface-design, chat-contract, vault-evidence, retrieval-index, provider-boundary, external-tools, artifact-storage, deterministic-core, engineering-contract, release-contract, documentation-contract]
 ---
 
 # 제품 아키텍처와 실행 경계
@@ -34,6 +34,8 @@ TypeScript는 Obsidian DOM·vault I/O·네트워크·MCP 프로세스·IndexedDB
 비동기 작업은 실행 소유권과 최신 revision/snapshot을 확인한 뒤 상태를 게시한다. 런타임 재초기화 실패는 이전 런타임 복원을 시도하며, 늦은 결과가 새 대화·새 설정을 덮어쓰지 않도록 한다. 원격 요청의 실제 취소 능력은 제공자별 계약과 구분한다.
 
 키 원문은 보안 저장소에만 영속화한다. 문서·모델·도구 결과는 데이터이며 실행 권한을 부여하지 않는다. 외부 근거를 볼트 근거로 승격하지 않는다. 현재 검색 품질을 설명할 때 발견, 현재 원문 검증, LLM 전달, 최종 답변을 별도로 판단한다.
+
+사람용 구현·데이터·검증 계약은 `engineering-contract`, 배포는 `release-contract`, 문서별 정본과 근거/이력 분류는 `documentation-contract`로 연결한다. 이들은 런타임 모듈이나 새 자동화 파이프라인이 아니다.
 
 ## 구현 근거와 확인 한계
 

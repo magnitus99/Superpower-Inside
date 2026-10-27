@@ -1,0 +1,421 @@
+{
+  "version": 1,
+  "candidates": [
+    {
+      "id": "P01",
+      "title": "최소한의 관여로 목적을 이룬다",
+      "status": "approved",
+      "statement": "제품은 사용자의 의도와 기존 맥락·설정·권한을 바탕으로 자동화할 수 있는 판단과 작업을 최대한 맡아, 최소한의 관여로 목적을 이루게 한다. 목적 표현·자료 선택·결과 검토도 고정된 수작업으로 남기지 않는다. 제품이 처리할 근거가 부족하거나 사용자의 결정이 반드시 필요한 지점에서만 관여를 요청한다. 준비부터 결과 활용까지 맥락과 근거를 연결하고 실패 시 기존 작업을 보존한다.",
+      "supporting_sources": [
+        "RR01",
+        "RR02",
+        "CA03",
+        "AP05"
+      ],
+      "counter_sources": [
+        "RR08"
+      ],
+      "question": "사용자 역할도 자동화 대상으로 포함하고, 최소한의 관여로 목적을 이루게 하는 범위를 채택할 것인가?",
+      "pass_example": "기존 의도·맥락·설정으로 처리할 수 있는 자료 선택과 준비를 제품이 맡고, 필요한 선택이 남았을 때만 이유와 함께 요청한다.",
+      "fail_example": "모든 사용자에게 색인 방식·검색 엔진·추출 옵션 선택을 완료하도록 요구하거나 동의하지 않은 외부 전송을 실행한다.",
+      "observable_evidence": "사용자 역할 중 자동화 검토 없이 남겨둔 수작업, 관여 요청의 필요성, 단계 간 맥락·근거 보존과 기존 권한 유지",
+      "behavior_reference": "value-to-behavior.md",
+      "revision_requested": false,
+      "conditions": [
+        "사용자의 역할을 목적 입력·자료 선택·결과 검토의 고정 수작업으로 정의하지 않는다. 기존 의도·맥락·설정·권한으로 처리 가능한 부분은 최대한 자동화한다.",
+        "사용자의 의도나 필요한 결정의 근거가 부족하면 관여를 요청하되 제품이 먼저 확인·처리할 수 있는 일을 떠넘기지 않는다. 기존 권한·자료 보존 계약은 유지한다.",
+        "손가락 하나만 움직이는 수준은 최소한의 관여를 설명하는 사용자 지정 지향점이다. 실제 차량 성능의 주장이나 자동화 기능의 확정 명세가 아니다.",
+        "이번 범위는 철학 문장과 책임 범위의 수정·기록이다. idealisation과 구체적인 자동화 기능 구상·구현은 포함하지 않는다."
+      ]
+    },
+    {
+      "id": "P02",
+      "title": "사용자 수고를 줄이되 결과의 충실도를 희생하지 않는다",
+      "status": "approved",
+      "statement": "제품은 사용자의 수고를 줄이되, 그 대가로 결과의 충실도를 낮추지 않는다. 충분히 처리하지 못한 부분은 완료한 것처럼 제시하지 않는다.",
+      "supporting_sources": [
+        "RS01"
+      ],
+      "counter_sources": [
+        "SW13"
+      ],
+      "question": "사용자 수고를 줄이되 결과의 충실도를 낮추지 않는 기본 품질 조건을 채택할 것인가?",
+      "pass_example": "처리한 범위와 부족한 범위를 구분하고, 제한된 결과를 전체 검토 완료처럼 제시하지 않는다.",
+      "fail_example": "빠르게 답하려고 확보하지 못한 근거까지 확인한 것처럼 답한다.",
+      "observable_evidence": "요청한 범위·확보한 근거·완료 표시의 일치",
+      "behavior_reference": "value-to-behavior.md",
+      "classification": "baseline_quality",
+      "conditions": [
+        "사용자는 이 항목을 모든 소프트웨어가 갖춰야 할 기본 자질로 해석했다. 제품의 차별적 철학이 아니라 기본 품질 조건으로 분류한다.",
+        "BM25 전용 정책이나 구체적인 검색·대기·자동화 기능의 승인으로 확대하지 않는다."
+      ],
+      "revision_requested": false
+    },
+    {
+      "id": "P03",
+      "title": "유지보수를 사용자의 일상 업무로 만들지 않는다",
+      "status": "covered_by_existing",
+      "statement": "안전하게 자동 처리할 수 있는 준비·증분 갱신·일시적 실패의 복구를 맡는다. 사람이 결정할 문제가 남으면 영향과 다음 행동을 설명한다.",
+      "supporting_sources": [
+        "RR06",
+        "SW06"
+      ],
+      "counter_sources": [
+        "MB03",
+        "SW15"
+      ],
+      "question": "사용자가 매번 시스템 준비 상태를 관리해야만 결과를 얻는가?",
+      "pass_example": "지원되는 준비를 재사용하고 복구가 필요한 위치에 이유와 관련 행동을 보여 준다.",
+      "fail_example": "같은 정상 작업마다 전체 초기화·재색인을 요구하거나 실패를 반복 감춘다.",
+      "observable_evidence": "일상 완료에 필요한 관리 단계, 복구 범위, 입력·자료 손실 여부",
+      "behavior_reference": "value-to-behavior.md",
+      "review_disposition": "covered_by_P01_no_new_condition",
+      "coverage": {
+        "targets": [
+          "P01"
+        ],
+        "angle": "반복 유지관리",
+        "reason": "가능한 반복 업무를 맡는 승인 범위",
+        "evidence": "기존 준비·설정 재사용과 복구 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P04",
+      "title": "제품의 노력보다 사용자의 작업과 결과가 전면에 온다",
+      "status": "approved",
+      "statement": "제품은 내부의 수고를 과시하지 않는다. 사용자의 주의는 목적과 결과에 머물게 하고, 판단에 필요한 정보는 필요한 순간에 명확하게 제공한다.",
+      "supporting_sources": [
+        "RR12",
+        "AP06",
+        "RS01"
+      ],
+      "counter_sources": [
+        "MB07"
+      ],
+      "question": "지금 보이는 정보가 실제로 사용자의 판단에 필요한가?",
+      "pass_example": "정상 배경 작업은 방해하지 않고, 실패하면 원인·영향·가능한 행동을 현재 작업에서 확인한다.",
+      "fail_example": "정상 상태 팝업을 반복하거나 조용한 인상을 위해 실패와 외부 전송 조건을 숨긴다.",
+      "observable_evidence": "작업 중 불필요한 방해 횟수, 중요한 상태·조건을 찾을 수 있는지",
+      "behavior_reference": "value-to-behavior.md",
+      "conditions": [
+        "정상적인 내부 처리는 반복적으로 주의를 요구하지 않는다. 판단·선택·문제 대응에 필요한 정보는 명확하게 제공한다.",
+        "자세한 과정은 사용자가 원할 때 확인할 수 있어야 한다. 조용한 경험을 이유로 실패와 중요한 제약을 숨기지 않는다."
+      ],
+      "classification": "product_philosophy"
+    },
+    {
+      "id": "P05",
+      "title": "새 기능과 기존 개선을 전체 흐름의 편안함으로 판단한다",
+      "status": "approved",
+      "statement": "새 기능과 기존 개선을 모두 편안함을 높이는 수단으로 본다. 전체 사용 흐름에서 사용자의 부담을 더 줄이는 쪽을 선택한다. 새 기능이 더 큰 편안함을 만들면 도입하고, 그 과정에서 늘어나는 관리·판단 부담도 함께 평가한다.",
+      "supporting_sources": [
+        "CW01",
+        "CD02",
+        "RR03",
+        "AP05"
+      ],
+      "counter_sources": [
+        "CW06",
+        "AP08"
+      ],
+      "question": "새 기능과 기존 개선 중 전체 사용 흐름의 부담을 더 줄이는 쪽을 선택하는 기준을 채택할 것인가?",
+      "pass_example": "새 기능이 더 큰 편안함을 만들면 도입하고, 기존 개선이 더 큰 효과를 내면 그 개선을 앞세운다.",
+      "fail_example": "기존 기능 완성도를 이유로 새 기능을 일괄 보류하거나 새로움을 이유로 늘어난 부담을 무시한다.",
+      "observable_evidence": "같은 사용자 목적에서 전후 관여·반복 입력·관리·판단 부담과 결과 활용, 기본 품질 유지",
+      "behavior_reference": "value-to-behavior.md",
+      "review_focus": "기능 수의 억제가 아닌 전체 경험의 개선, AI 제품의 발전 가능성 유지",
+      "revision_history": [
+        {
+          "date": "2026-10-13",
+          "statement": "새 기능의 수를 늘리는 것보다 사용자가 반복해서 경험하는 핵심 동작의 완성도를 우선한다. 자주 쓰는 흐름에서 누적되는 작은 불편을 핵심 제품 문제로 다룬다.",
+          "reason": "새 기능과 기존 개선을 고정 우선순위로 나누면 편안함과 자동화 방향을 제약할 수 있다는 사용자 의견"
+        }
+      ],
+      "revision_requested": false,
+      "reference_scope": "몽블랑은 엘레강스함과 사용성의 참조이며 개발 우선순위의 근거로 쓰지 않는다.",
+      "conditions": [
+        "편안함을 높이는 새 기능을 적극적으로 추가할 수 있다. 기존 기능이 완벽해질 때까지 기다려야 한다는 조건을 두지 않는다.",
+        "몽블랑의 참조 의미는 엘레강스함과 사용성이다. 기능의 안정성이나 개발 우선순위를 브랜드 예시에서 사용자 의도로 도출하지 않는다."
+      ],
+      "classification": "product_philosophy"
+    },
+    {
+      "id": "P06",
+      "title": "이전 단계의 가치를 다음 단계가 이어받는다",
+      "status": "covered_by_existing",
+      "statement": "자료→검색→답변→근거 확인→활용에서 목적·범위·출처와 사용자 선택을 필요한 만큼 유지한다. 결과를 옮길 때 그 의미를 다시 조립하게 하지 않는다.",
+      "supporting_sources": [
+        "AP02",
+        "AP05",
+        "SW02",
+        "SW10"
+      ],
+      "counter_sources": [
+        "AP08",
+        "SW09"
+      ],
+      "question": "단계를 옮긴 뒤 같은 자료를 다시 찾거나 근거를 다시 붙여야 하는가?",
+      "pass_example": "비교 답변에서 근거를 열고 결과를 활용해도 확인에 필요한 출처와 맥락이 남는다.",
+      "fail_example": "검색·답변·저장은 각각 성공하지만 저장된 결과에서 근거를 찾을 수 없어 사용자가 다시 검색한다.",
+      "observable_evidence": "같은 정보의 재입력·수동 전달 횟수, 출처 연결의 보존, 재개 시 맥락 손실",
+      "behavior_reference": "value-to-behavior.md",
+      "review_disposition": "covered_by_P01_no_new_condition",
+      "coverage": {
+        "targets": [
+          "P01"
+        ],
+        "angle": "작업 단계 사이의 연결",
+        "reason": "준비부터 활용까지 맥락·근거 연결의 승인 범위",
+        "evidence": "기존 기능 간 시너지·출처 연결 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P07",
+      "title": "사용자가 제품에 맞추기보다 제품이 사용자의 작업 방식에 맞춘다",
+      "status": "excluded_as_duplicate",
+      "statement": "제품은 사용자의 언어·자료·작업 방식에 맞춰 자연스럽게 작동한다. 개인화를 사용자가 설정을 관리하는 일로 만들지 않고, 결과에 필요한 차이를 제품이 흡수한다. 기존 의도와 맥락으로 처리 가능한 부분은 맡고 사용자의 결정이 필요한 경우에만 선택을 요청한다.",
+      "supporting_sources": [
+        "RR05"
+      ],
+      "counter_sources": [
+        "CW03"
+      ],
+      "question": "설정 부담 없이 사용자의 언어·자료·작업 방식에 맞는 경험을 제공하는 고객 가치를 채택할 것인가?",
+      "pass_example": "자료 범위·언어·승인 수준처럼 결과에 중요한 선택은 유지하고 불필요한 엔진 설정은 일반 흐름에 강제하지 않는다.",
+      "fail_example": "선택이 많다는 이유로 개인화가 됐다고 보고, 어떤 값이 필요한지 사용자가 실험하게 한다.",
+      "observable_evidence": "선택의 결과를 설명할 수 있는지, 서로 다른 자료·사용자에서 기본 경로가 성립하는지",
+      "behavior_reference": "p07-review.md",
+      "reference_scope": "RR05는 취향·개인의 의미를 주문 결과로 구현한 사례다. AI의 자동 작업 적합성은 그 원문에서 직접 도출된 사실이 아니라 조사자의 추론이다. 몽블랑 참조 의도를 개인화 철학으로 확장하지 않는다.",
+      "revision_requested": false,
+      "review_focus": "출처의 직접 의미와 조사자의 추론을 구분하고, P01과 별개로 추가되는 가치가 있는지 판단",
+      "review_disposition": "독립 철학 항목에서 제외; 개인 맞춤은 기존 임베딩·프롬프트 설정의 역할로 유지"
+    },
+    {
+      "id": "P08",
+      "title": "시간이 지나도 맡길 수 있는 도구로 만든다",
+      "status": "covered_by_existing",
+      "statement": "사용자의 자료와 작업을 오래 활용할 수 있도록 저장 의미·호환성·복구를 보존한다. 새 기능이나 갱신 때문에 축적한 일을 다시 하게 만들지 않는다.",
+      "supporting_sources": [
+        "CD01",
+        "SW01",
+        "RS02"
+      ],
+      "counter_sources": [
+        "RR08",
+        "SW05"
+      ],
+      "question": "제품이 바뀌어도 기존 자료와 결과를 다시 활용할 수 있는가?",
+      "pass_example": "저장한 작업이 호환되는 형태로 열리고 원문 변경 시 오래된 근거를 구분해 확인할 수 있다.",
+      "fail_example": "설명 없이 저장 의미가 바뀌거나 새 버전에서 기존 자료를 잃는다.",
+      "observable_evidence": "기존 저장 자료의 재개·왕복 보존, 갱신 후 의미 변화, 복구 가능성",
+      "behavior_reference": "value-to-behavior.md",
+      "review_disposition": "covered_by_existing_contract",
+      "coverage": {
+        "targets": [
+          "P01",
+          "기존 저장·자료 보존 계약"
+        ],
+        "angle": "시간에 따른 재사용",
+        "reason": "작업 보존과 legacy load·round-trip의 현행 계약",
+        "evidence": "SW01 Durable·RS02는 보존을 장기 재작업 감소 관점에서 설명하는 보조 근거로 연결"
+      }
+    },
+    {
+      "id": "P09",
+      "title": "쓰는 과정 자체의 만족을 고객 가치로 고려한다",
+      "status": "approved",
+      "statement": "제품을 쓰는 과정 자체에서 정돈됨과 세심함을 느끼게 한다. 유용한 결과와 편안한 흐름이 사용의 만족으로 이어져 다시 찾고 싶은 도구가 되게 한다.",
+      "supporting_sources": [
+        "CW05",
+        "CD02"
+      ],
+      "counter_sources": [
+        "MB06"
+      ],
+      "question": "작업의 유용함과 편안함에 더해 쓰는 과정 자체의 만족을 고객 가치로 채택할 것인가?",
+      "pass_example": "사용자가 자신의 근거 있는 결과와 진행을 확인하며 다시 쓰고 싶어지는 경험을 제공한다.",
+      "fail_example": "가치 없는 의식을 강제하거나 명품 표현·희소성만으로 실제 품질을 대신한다.",
+      "observable_evidence": "사용자가 다시 사용하고 싶은 이유, 결과를 자기 작업으로 느끼는지; 행동 관찰과 인터뷰 필요",
+      "behavior_reference": "value-to-behavior.md",
+      "reference_scope": "Namiki 사용자가 보고한 촉감·균형·필기감의 만족과 Vitsœ/Rams의 미적·심리적 필요를 참고한다. 몽블랑의 사용자 지정 의미를 애착·소유 철학으로 확대하지 않는다.",
+      "review_focus": "일반적인 성공·오류 없는 동작과 구분해, 도구를 사용하며 느끼는 만족과 애착을 추가 가치로 삼을지 검토",
+      "conditions": [
+        "유용한 결과와 편안한 흐름이 정돈됨·세심함을 느끼는 사용 만족으로 이어지는 것을 고객 가치로 삼는다.",
+        "구체적인 장식·모션·새 기능의 승인으로 확대하지 않으며 기존 디자인 기준과 승인 조건을 유지한다."
+      ],
+      "classification": "product_philosophy"
+    },
+    {
+      "id": "P10",
+      "title": "기능·흐름·문구의 약속이 실제 범위와 맞아야 한다",
+      "status": "covered_by_existing",
+      "statement": "“자동·로컬·지원·연결·검증”의 적용 범위를 실제 경로로 설명한다. 보기 좋은 흐름과 출처 링크를 무오류·전량 처리의 약속으로 확대하지 않는다.",
+      "supporting_sources": [
+        "CD02",
+        "RS01",
+        "SW14"
+      ],
+      "counter_sources": [
+        "AP07",
+        "AP08"
+      ],
+      "question": "제품 설명과 실제 동작이 같은 조건·범위를 가리키는가?",
+      "pass_example": "소개한 단계의 실제 동작과 조건을 확인하고 자료 부족·누락·외부 처리·중단 한계를 정확히 표현한다.",
+      "fail_example": "출처가 보인다는 이유로 답변이 정확하다고 하거나 준비·중간 작업을 생략한 영상을 무조건 즉시 완료로 설명한다.",
+      "observable_evidence": "표현별 구현 근거, 시연의 생략 조건, 지원과 정확성의 구분",
+      "behavior_reference": "value-to-behavior.md",
+      "coverage": {
+        "targets": [
+          "P02",
+          "기존 README·Patina 계약"
+        ],
+        "angle": "약속과 실제 범위",
+        "reason": "불충분한 결과의 완료 표시 금지와 구현에 맞는 설명의 기존 계약",
+        "evidence": "CD02·RS01과 README의 적용 범위 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P11",
+      "title": "준비부터 실패 후 복구까지 하나의 경험으로 책임진다",
+      "status": "covered_by_existing",
+      "statement": "성공한 기능뿐 아니라 시작·준비·실패·재시도·재개까지 연결한다. 사용자가 문제를 진단하기 위해 작업을 처음부터 재구성하게 하지 않는다.",
+      "supporting_sources": [
+        "RR06",
+        "CA05",
+        "RS01"
+      ],
+      "counter_sources": [
+        "MB07",
+        "SW07"
+      ],
+      "question": "실패한 순간에 무엇을 잃었고 어떻게 이어 갈지 알 수 있는가?",
+      "pass_example": "입력과 결과를 보존하고 실패한 범위와 가능한 복구 행동을 설명한다.",
+      "fail_example": "실패하면 막연한 오류만 보여 주고 모든 설정·자료를 지우거나 외부 커뮤니티에서 절차를 찾게 한다.",
+      "observable_evidence": "복구 시 반복 작업·손실, 실패 영향의 이해, 남은 단계 확인",
+      "behavior_reference": "value-to-behavior.md",
+      "coverage": {
+        "targets": [
+          "P01",
+          "P04"
+        ],
+        "angle": "실패 후 이어가기",
+        "reason": "기존 작업 보존과 문제·선택을 명확히 알리는 승인 범위",
+        "evidence": "기존 중단·오류·재시도 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P12",
+      "title": "기능 수가 아니라 완성하는 목적을 명료하게 한다",
+      "status": "covered_by_existing",
+      "statement": "기능은 현재 작업에 필요한 이유와 다음 행동으로 드러낸다. 여러 독립 도구의 관리 화면을 사용하는 느낌을 줄이고, 필요한 깊이는 접근 가능하게 남긴다.",
+      "supporting_sources": [
+        "AP01",
+        "CD01",
+        "CD02"
+      ],
+      "counter_sources": [
+        "SW07"
+      ],
+      "question": "사용자가 내부 기능 분류를 몰라도 자신의 다음 작업을 시작할 수 있는가?",
+      "pass_example": "질문·자료·결과의 작업 언어로 진입하고 필요할 때 세부 제어로 들어간다.",
+      "fail_example": "기술 탭을 모두 이해해야 기본 작업이 되거나, 단순함을 위해 필요한 제어를 제거한다.",
+      "observable_evidence": "다음 행동을 찾는 성공·실패, 기술 지식 없이 기본 목적 완료 가능성",
+      "behavior_reference": "value-to-behavior.md",
+      "coverage": {
+        "targets": [
+          "K01",
+          "P01",
+          "P04"
+        ],
+        "angle": "목적에 맞는 진입과 주의 배분",
+        "reason": "최소한의 관여와 목적·결과 중심의 승인 범위",
+        "evidence": "이번 사용자의 시선 흐름 최적화 요청을 관찰 질문으로 연결; 구체 배치 규칙은 design.md 유지"
+      }
+    },
+    {
+      "id": "P13",
+      "title": "편리한 통합이 자료의 소유와 통제를 빼앗지 않는다",
+      "status": "covered_by_existing",
+      "statement": "연결된 흐름 안에서도 사용자의 자료·원문·설정·승인 경계를 보존한다. 처리 위치와 전송 경로를 선택·설명할 수 있어야 한다.",
+      "supporting_sources": [
+        "SW01",
+        "SW14",
+        "RS02"
+      ],
+      "counter_sources": [
+        "SW13"
+      ],
+      "question": "통합 과정이 끝나도 자료와 결정권이 사용자에게 남는가?",
+      "pass_example": "이미 정한 제공자·승인·보존 계약을 유지하고 로컬 처리와 원격 처리를 구분한다.",
+      "fail_example": "편안함을 이유로 승인 범위를 확대하거나 결과를 특정 서비스에서만 확인하게 만든다.",
+      "observable_evidence": "데이터 경로·보존·내보내기·승인 범위; 기존 보안 계약을 느슨하게 하지 않음",
+      "behavior_reference": "value-to-behavior.md",
+      "coverage": {
+        "targets": [
+          "P01",
+          "기존 자료 소유·전송·승인 계약"
+        ],
+        "angle": "사용자 통제",
+        "reason": "기존 의도·설정·권한 안에서 처리하는 승인 범위",
+        "evidence": "SW01·RS02와 기존 데이터 경계 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P14",
+      "title": "편안함과 숙련 사용자의 적극적인 활용을 함께 인정한다",
+      "status": "covered_by_existing",
+      "statement": "기본 흐름은 차분하고 수월하게 만들되 더 깊이 비교·탐색·제어하려는 사용자의 가치를 제거하지 않는다. 필요한 제어를 기본 작업의 필수 단계로 만들지는 않는다.",
+      "supporting_sources": [
+        "RR01",
+        "RR10",
+        "CA01"
+      ],
+      "counter_sources": [
+        "CA04"
+      ],
+      "question": "직접 더 깊게 다루는 즐거움도 우리 고객 가치에 포함할 것인가?",
+      "pass_example": "일상 경로가 완결되고 필요한 세부 탐색으로 넘어가도 맥락이 유지된다.",
+      "fail_example": "차분함을 이유로 필요한 탐색을 금지하거나 모두에게 숙련 설정을 요구한다.",
+      "observable_evidence": "일상·숙련 두 경로의 완결성, 선택 제어가 일상에 미치는 부담",
+      "behavior_reference": "value-to-behavior.md",
+      "coverage": {
+        "targets": [
+          "P01",
+          "P09",
+          "기존 사용자·가치 설명"
+        ],
+        "angle": "기본 사용과 자발적인 깊은 사용",
+        "reason": "자동화 가능한 업무를 강제하지 않으면서 결정권 보존, 사용 과정 만족",
+        "evidence": "숙련 제어 제공은 기존 문서에 있고 사용 만족은 P09로 승인; 추가하지 않음"
+      }
+    },
+    {
+      "id": "P15",
+      "title": "기술 교체는 같은 고객 가치를 더 잘 완성하기 위해 한다",
+      "status": "covered_by_existing",
+      "statement": "새 모델·엔진·백엔드는 기존 목적·자료·결과의 의미를 강화해야 한다. 신기술의 이름이나 내부 구조 변화만으로 제품 개선을 판단하지 않는다.",
+      "supporting_sources": [
+        "RR03",
+        "RR13",
+        "AP04"
+      ],
+      "counter_sources": [
+        "AP07"
+      ],
+      "question": "기술을 바꾼 뒤 사용자의 어떤 경험이 더 좋아졌는가?",
+      "pass_example": "동작 계약을 유지하면서 준비·관련성·연결·복구의 개선을 실제로 확인한다.",
+      "fail_example": "기술 이름만 바꾸고 사용자의 입력·출처·저장 의미가 달라져도 개선이라고 홍보한다.",
+      "observable_evidence": "같은 목적의 전후 행동 비교, 결과 계약과 호환성, 개선의 실제 근거",
+      "behavior_reference": "value-to-behavior.md",
+      "coverage": {
+        "targets": [
+          "P05",
+          "P02"
+        ],
+        "angle": "기술 변화",
+        "reason": "기능 추가·기존 개선을 전체 편안함으로 평가하고 충실도 유지",
+        "evidence": "RR03은 P05의 근거에 이미 포함되어 중복 추가하지 않음"
+      }
+    }
+  ]
+}

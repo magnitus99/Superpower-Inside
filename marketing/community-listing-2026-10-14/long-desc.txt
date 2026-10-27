@@ -1,0 +1,7 @@
+Return to a project without remembering every filename. Ask AI about the notes and PDFs you keep in Obsidian, and let Superpower Inside search your vault for relevant passages.
+
+Compare sources or summarize a difficult document. Follow citations to the original notes and PDF pages when a claim needs checking. Keep going in the same conversation: turn a comparison into an outline, then copy it or save it to a note.
+
+Keyword and semantic search (RAG) work with Markdown and supported documents such as PDF, EPUB, and Word files. Connect ChatGPT, Claude, OpenAI, OpenRouter, or local models with Ollama. Local MCP servers can bring in outside information.
+
+Free and open source. Desktop only. AI provider fees and usage limits are separate. Local search and PDF OCR run on your device; cloud chat and remote embeddings can send material to your provider. AI can miss evidence or make mistakes.

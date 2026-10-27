@@ -1,0 +1,455 @@
+{
+  "version": 1,
+  "current_item": null,
+  "approved_count": 6,
+  "items": [
+    {
+      "id": "P01",
+      "title": "최소한의 관여로 목적을 이룬다",
+      "status": "approved",
+      "approved_statement": "제품은 사용자의 의도와 기존 맥락·설정·권한을 바탕으로 자동화할 수 있는 판단과 작업을 최대한 맡아, 최소한의 관여로 목적을 이루게 한다. 목적 표현·자료 선택·결과 검토도 고정된 수작업으로 남기지 않는다. 제품이 처리할 근거가 부족하거나 사용자의 결정이 반드시 필요한 지점에서만 관여를 요청한다. 준비부터 결과 활용까지 맥락과 근거를 연결하고 실패 시 기존 작업을 보존한다.",
+      "conditions": [
+        "사용자의 역할을 목적 입력·자료 선택·결과 검토의 고정 수작업으로 정의하지 않는다. 기존 의도·맥락·설정·권한으로 처리 가능한 부분은 최대한 자동화한다.",
+        "사용자의 의도나 필요한 결정의 근거가 부족하면 관여를 요청하되 제품이 먼저 확인·처리할 수 있는 일을 떠넘기지 않는다. 기존 권한·자료 보존 계약은 유지한다.",
+        "손가락 하나만 움직이는 수준은 최소한의 관여를 설명하는 사용자 지정 지향점이다. 실제 차량 성능의 주장이나 자동화 기능의 확정 명세가 아니다.",
+        "이번 범위는 철학 문장과 책임 범위의 수정·기록이다. idealisation과 구체적인 자동화 기능 구상·구현은 포함하지 않는다."
+      ],
+      "user_evidence": "다 좋아. 다 좋은데 우리는 아무래도 ai와 매우 밀접한 디지털 제품이야. 사용자가 맡는 일의 경우 최대한 자동화가 가능한 부분은 자동화 시켜야 해. 말 그대로 롤스로이스 핸들을 손가락 하나만 움직여도 되는 수준이면 좋겠지. 이걸로 idealisation 하면 좋겠지만 그 범위는 여기에 포함되지 않아.",
+      "decided_on": "2026-10-13",
+      "revision_requested": false,
+      "feedback": "그것도 좋지만 중간 과정이 필요해. \"우린 비싸고 다 알아서 해주는 제품이에요\" - 중간 - 실제 제품 예시 / 이 중간을 채워주는게 니 역할이라고 생각해. p0 p1 다 좋아. 다 좋은데, 그래서 뭐 어쩌라고 라고 물어본다면 막상 답 없는거잖아?",
+      "feedback_on": "2026-10-13",
+      "review_document": "synthesis/value-to-behavior.md",
+      "decision_type": "approved_with_conditions",
+      "feedback_history": [
+        {
+          "date": "2026-10-13",
+          "message": "그것도 좋지만 중간 과정이 필요해. \"우린 비싸고 다 알아서 해주는 제품이에요\" - 중간 - 실제 제품 예시 / 이 중간을 채워주는게 니 역할이라고 생각해. p0 p1 다 좋아. 다 좋은데, 그래서 뭐 어쩌라고 라고 물어본다면 막상 답 없는거잖아?"
+        },
+        {
+          "date": "2026-10-13",
+          "message": "다 좋아. 다 좋은데 우리는 아무래도 ai와 매우 밀접한 디지털 제품이야. 사용자가 맡는 일의 경우 최대한 자동화가 가능한 부분은 자동화 시켜야 해. 말 그대로 롤스로이스 핸들을 손가락 하나만 움직여도 되는 수준이면 좋겠지. 이걸로 idealisation 하면 좋겠지만 그 범위는 여기에 포함되지 않아."
+        }
+      ],
+      "historical_title": "사용자는 목적을 정하고, 제품은 처리를 조율한다"
+    },
+    {
+      "id": "P02",
+      "title": "사용자 수고를 줄이되 결과의 충실도를 희생하지 않는다",
+      "status": "approved",
+      "approved_statement": "제품은 사용자의 수고를 줄이되, 그 대가로 결과의 충실도를 낮추지 않는다. 충분히 처리하지 못한 부분은 완료한 것처럼 제시하지 않는다.",
+      "conditions": [
+        "사용자는 이 항목을 모든 소프트웨어가 갖춰야 할 기본 자질로 해석했다. 제품의 차별적 철학이 아니라 기본 품질 조건으로 분류한다.",
+        "BM25 전용 정책이나 구체적인 검색·대기·자동화 기능의 승인으로 확대하지 않는다."
+      ],
+      "user_evidence": "어 그래야지 (근데 이건 모든 소프트웨어가 갖춰야 할 기본 자질 아닌가?) 아무튼 그렇게 해줘.",
+      "decided_on": "2026-10-13",
+      "revision_requested": false,
+      "feedback": "우리 제품에서 준비랄게 뭐가있지? 그래봤자 임베딩 밖에 없지 않아? 이걸 채택하면 뭐 어떡하겠다는거야 ㅋㅋ 그럼 bm25에만 의존할 수 있는건가?",
+      "feedback_on": "2026-10-13",
+      "review_document": "synthesis/p02-review.md",
+      "proposed_disposition": "독립적인 기본 품질 조건으로 승인; 기존 P01 문장은 변경하지 않음",
+      "feedback_history": [
+        {
+          "date": "2026-10-13",
+          "message": "우리 제품에서 준비랄게 뭐가있지? 그래봤자 임베딩 밖에 없지 않아? 이걸 채택하면 뭐 어떡하겠다는거야 ㅋㅋ 그럼 bm25에만 의존할 수 있는건가?"
+        }
+      ],
+      "classification": "baseline_quality"
+    },
+    {
+      "id": "P03",
+      "title": "유지보수를 사용자의 일상 업무로 만들지 않는다",
+      "status": "covered_by_existing",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": null,
+      "decided_on": null,
+      "review_disposition": "covered_by_P01_no_new_condition",
+      "review_note": "기존 의도·권한 안에서 가능한 반복 업무를 제품이 맡는 P01의 세부 적용이다. 새로운 방향·조건을 추가하지 않으므로 중복 승인 질문을 생략한다. P03 자체의 별도 사용자 승인은 기록하지 않는다.",
+      "coverage": {
+        "targets": [
+          "P01"
+        ],
+        "angle": "반복 유지관리",
+        "reason": "가능한 반복 업무를 맡는 승인 범위",
+        "evidence": "기존 준비·설정 재사용과 복구 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P04",
+      "title": "제품의 노력보다 사용자의 작업과 결과가 전면에 온다",
+      "status": "approved",
+      "approved_statement": "제품은 내부의 수고를 과시하지 않는다. 사용자의 주의는 목적과 결과에 머물게 하고, 판단에 필요한 정보는 필요한 순간에 명확하게 제공한다.",
+      "conditions": [
+        "정상적인 내부 처리는 반복적으로 주의를 요구하지 않는다. 판단·선택·문제 대응에 필요한 정보는 명확하게 제공한다.",
+        "자세한 과정은 사용자가 원할 때 확인할 수 있어야 한다. 조용한 경험을 이유로 실패와 중요한 제약을 숨기지 않는다."
+      ],
+      "user_evidence": "음 그래. 아주 좋아.",
+      "decided_on": "2026-10-13",
+      "classification": "product_philosophy"
+    },
+    {
+      "id": "P05",
+      "title": "새 기능과 기존 개선을 전체 흐름의 편안함으로 판단한다",
+      "status": "approved",
+      "approved_statement": "새 기능과 기존 개선을 모두 편안함을 높이는 수단으로 본다. 전체 사용 흐름에서 사용자의 부담을 더 줄이는 쪽을 선택한다. 새 기능이 더 큰 편안함을 만들면 도입하고, 그 과정에서 늘어나는 관리·판단 부담도 함께 평가한다.",
+      "conditions": [
+        "편안함을 높이는 새 기능을 적극적으로 추가할 수 있다. 기존 기능이 완벽해질 때까지 기다려야 한다는 조건을 두지 않는다.",
+        "몽블랑의 참조 의미는 엘레강스함과 사용성이다. 기능의 안정성이나 개발 우선순위를 브랜드 예시에서 사용자 의도로 도출하지 않는다."
+      ],
+      "user_evidence": "오케이. 다음으로.",
+      "decided_on": "2026-10-13",
+      "revision_requested": false,
+      "feedback": "사실 내가 말한 몽블랑 예시는 엘레강스함과 그 사용성이였지 거기서 더 딥다이브해서 뉘앙스를 겨눈건 아니였어.",
+      "feedback_on": "2026-10-13",
+      "proposed_statement": "새 기능과 기존 기능의 개선을 모두 편안함을 높이는 수단으로 본다. 개발 우선순위는 전체 사용 흐름에서 사용자의 관여와 반복 부담을 얼마나 줄이고 목적 달성을 얼마나 돕는지로 정한다. 새 기능이 더 큰 개선을 만들면 적극적으로 도입하고, 추가된 관리·판단 부담이나 기존 흐름의 손상도 함께 평가한다.",
+      "revision_scope": "미승인 P05의 우선순위 수정; 승인된 P01·P02·P04의 문장과 조건은 변경하지 않음",
+      "feedback_history": [
+        {
+          "date": "2026-10-13",
+          "message": "이 경우에 앞선 결정에 모순돼 보일 수 있어. 우리의 모토는 편안함이라면서 그를 위한 새 기능수를 늘리면 이 결정에 반하게 되는거야. 만년필의 경우 50년전 제품이나 지금이나 거의 차이가 없으니깐 그걸 가정하고 제품을 만들 수 있지만 우린 그렇지 않잖아. 좀 타협을 해보자."
+        },
+        {
+          "date": "2026-10-13",
+          "message": "사실 내가 말한 몽블랑 예시는 엘레강스함과 그 사용성이였지 거기서 더 딥다이브해서 뉘앙스를 겨눈건 아니였어."
+        }
+      ],
+      "reference_clarification": "몽블랑은 엘레강스함과 사용성의 참조다. 관리·소유·기술 변화·개발 우선순위까지 사용자 의도로 확대하지 않는다.",
+      "classification": "product_philosophy"
+    },
+    {
+      "id": "P06",
+      "title": "이전 단계의 가치를 다음 단계가 이어받는다",
+      "status": "covered_by_existing",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": null,
+      "decided_on": null,
+      "review_disposition": "covered_by_P01_no_new_condition",
+      "review_note": "준비부터 결과 활용까지 맥락·근거를 연결한다는 승인된 P01의 세부 적용이다. 별도 승인 질문을 생략하며 새로운 승인으로 세지 않는다.",
+      "coverage": {
+        "targets": [
+          "P01"
+        ],
+        "angle": "작업 단계 사이의 연결",
+        "reason": "준비부터 활용까지 맥락·근거 연결의 승인 범위",
+        "evidence": "기존 기능 간 시너지·출처 연결 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P07",
+      "title": "개인 적합성은 의미 있는 선택으로 제공한다",
+      "status": "excluded_as_duplicate",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": "관련 응답 발췌: “아냐 그 비스포크는 임베딩이나 프롬프트 세팅으로 충분해.” / “그거는 그거대로 쓰고 중복됐으면 뭐 굳이 쓸 필요 있을까?”",
+      "decided_on": "2026-10-13",
+      "revision_requested": false,
+      "feedback": "이게 어느 제품에서 나온건지 잘 모르겠어. 그리고 이 철학을 우리 제품에 대입 시킨다면 어떻게 수정이 될것 같아? 난 도저히 감이 안오는데.",
+      "feedback_on": "2026-10-13",
+      "review_document": "synthesis/p07-review.md",
+      "proposed_disposition": "출처에서 자동 작업 적합성으로 옮긴 추론의 한계 명시; 현재 내용은 P01 적용 설명으로 정리 제안",
+      "review_disposition": "독립 철학 항목에서 제외; 개인 맞춤은 기존 임베딩·프롬프트 설정의 역할로 유지",
+      "evidence_reinforcement": {
+        "targets": [
+          "P01"
+        ],
+        "angle": "사용자별 기존 설정을 한 작업에 연결",
+        "sources": [
+          "SW01"
+        ],
+        "implementation": "src/chat/prompt-library.ts:getEffectiveSystemPrompt",
+        "reason": "개인 맞춤은 기존 임베딩·프롬프트 설정의 역할로 유지하며 자동화 철학을 새로 추가하지 않음"
+      }
+    },
+    {
+      "id": "P08",
+      "title": "시간이 지나도 맡길 수 있는 도구로 만든다",
+      "status": "covered_by_existing",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": null,
+      "decided_on": null,
+      "review_disposition": "covered_by_existing_contract",
+      "review_note": "자료·설정·저장 세션 보존, legacy load·round-trip은 사용자가 제공한 루트·채팅 AGENTS.md의 현행 계약이다. 새로운 철학 조건을 추가하지 않고 별도 승인 질문을 생략한다. 독립 승인으로 세지 않는다.",
+      "coverage": {
+        "targets": [
+          "P01",
+          "기존 저장·자료 보존 계약"
+        ],
+        "angle": "시간에 따른 재사용",
+        "reason": "작업 보존과 legacy load·round-trip의 현행 계약",
+        "evidence": "SW01 Durable·RS02는 보존을 장기 재작업 감소 관점에서 설명하는 보조 근거로 연결"
+      }
+    },
+    {
+      "id": "P09",
+      "title": "쓰는 과정 자체의 만족을 고객 가치로 고려한다",
+      "status": "approved",
+      "approved_statement": "제품을 쓰는 과정 자체에서 정돈됨과 세심함을 느끼게 한다. 유용한 결과와 편안한 흐름이 사용의 만족으로 이어져 다시 찾고 싶은 도구가 되게 한다.",
+      "conditions": [
+        "유용한 결과와 편안한 흐름이 정돈됨·세심함을 느끼는 사용 만족으로 이어지는 것을 고객 가치로 삼는다.",
+        "구체적인 장식·모션·새 기능의 승인으로 확대하지 않으며 기존 디자인 기준과 승인 조건을 유지한다."
+      ],
+      "user_evidence": "9의 경우는 아주 좋아. 이건 정말 실용적인 가치야.",
+      "decided_on": "2026-10-13",
+      "classification": "product_philosophy"
+    },
+    {
+      "id": "P10",
+      "title": "기능·흐름·문구의 약속이 실제 범위와 맞아야 한다",
+      "status": "covered_by_existing",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": null,
+      "decided_on": null,
+      "coverage": {
+        "targets": [
+          "P02",
+          "기존 README·Patina 계약"
+        ],
+        "angle": "약속과 실제 범위",
+        "reason": "불충분한 결과의 완료 표시 금지와 구현에 맞는 설명의 기존 계약",
+        "evidence": "CD02·RS01과 README의 적용 범위 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P11",
+      "title": "준비부터 실패 후 복구까지 하나의 경험으로 책임진다",
+      "status": "covered_by_existing",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": null,
+      "decided_on": null,
+      "coverage": {
+        "targets": [
+          "P01",
+          "P04"
+        ],
+        "angle": "실패 후 이어가기",
+        "reason": "기존 작업 보존과 문제·선택을 명확히 알리는 승인 범위",
+        "evidence": "기존 중단·오류·재시도 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P12",
+      "title": "기능 수가 아니라 완성하는 목적을 명료하게 한다",
+      "status": "covered_by_existing",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": null,
+      "decided_on": null,
+      "coverage": {
+        "targets": [
+          "K01",
+          "P01",
+          "P04"
+        ],
+        "angle": "목적에 맞는 진입과 주의 배분",
+        "reason": "최소한의 관여와 목적·결과 중심의 승인 범위",
+        "evidence": "이번 사용자의 시선 흐름 최적화 요청을 관찰 질문으로 연결; 구체 배치 규칙은 design.md 유지"
+      }
+    },
+    {
+      "id": "P13",
+      "title": "편리한 통합이 자료의 소유와 통제를 빼앗지 않는다",
+      "status": "covered_by_existing",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": null,
+      "decided_on": null,
+      "coverage": {
+        "targets": [
+          "P01",
+          "기존 자료 소유·전송·승인 계약"
+        ],
+        "angle": "사용자 통제",
+        "reason": "기존 의도·설정·권한 안에서 처리하는 승인 범위",
+        "evidence": "SW01·RS02와 기존 데이터 경계 설명에 이미 포함되어 추가하지 않음"
+      }
+    },
+    {
+      "id": "P14",
+      "title": "편안함과 숙련 사용자의 적극적인 활용을 함께 인정한다",
+      "status": "covered_by_existing",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": null,
+      "decided_on": null,
+      "coverage": {
+        "targets": [
+          "P01",
+          "P09",
+          "기존 사용자·가치 설명"
+        ],
+        "angle": "기본 사용과 자발적인 깊은 사용",
+        "reason": "자동화 가능한 업무를 강제하지 않으면서 결정권 보존, 사용 과정 만족",
+        "evidence": "숙련 제어 제공은 기존 문서에 있고 사용 만족은 P09로 승인; 추가하지 않음"
+      }
+    },
+    {
+      "id": "P15",
+      "title": "기술 교체는 같은 고객 가치를 더 잘 완성하기 위해 한다",
+      "status": "covered_by_existing",
+      "approved_statement": null,
+      "conditions": [],
+      "user_evidence": null,
+      "decided_on": null,
+      "coverage": {
+        "targets": [
+          "P05",
+          "P02"
+        ],
+        "angle": "기술 변화",
+        "reason": "기능 추가·기존 개선을 전체 편안함으로 평가하고 충실도 유지",
+        "evidence": "RR03은 P05의 근거에 이미 포함되어 중복 추가하지 않음"
+      }
+    },
+    {
+      "id": "P16",
+      "title": "조사와 근거의 기본 수준은 제품이 책임진다",
+      "status": "approved",
+      "approved_statement": "선택한 모델이 달라도 필요한 자료의 조사, 원문과 맥락 확인, 주장과 근거 연결의 기본 수준은 Superpower Inside가 책임진다. 토큰을 더 사용하더라도 정확하고 정교한 답변을 완성하며 의미 없는 반복에는 종료 조건을 둔다.",
+      "conditions": [
+        "시스템 프롬프트는 가이드이며 임베딩·BM25·RAG·원문 읽기·도구 호출을 제품이 조율한다.",
+        "상위 모델의 해석·종합 능력은 활용하되 저렴한 모델에서도 필요한 조사와 근거 제시를 생략하지 않는다.",
+        "모델·추론 설정·권한을 유지하고 새 근거가 없는 반복·실패·예산에 종료 조건을 둔다.",
+        "코드와 계약 검사 통과를 실제 답변 품질 향상이나 모델 간 동등성의 증거로 대신하지 않는다."
+      ],
+      "user_evidence": "루나와 같은 모델에서도 조사와 근거 제시 수준은 비슷해야 한다고 보고 있어. … 우리는 `토큰을 좀 더 쓰더라도 정확하고 정교한 답변을 완성하자` 는 주의야. 하지만 의미 없는 무한루프에 빠지지 않게 조심히 다시 시스템 아키텍처를 디자인해줘. … 우선 이게 제품 철학 문서에 없다면 이것부터 갱신해줘. 그 다음에 알아서 개선해줘.",
+      "decided_on": "2026-10-16",
+      "classification": "product_philosophy",
+      "refinement_history": [
+        {
+          "recorded_on": "2026-10-17",
+          "source_thread": {
+            "description": "사용자 직접 지시; 비공개 대화 식별자는 공개본에서 제외"
+          },
+          "user_evidence": [
+            "우리의 미션은 모델의 지능에 너무 휘둘리지 않는, 옵시디언 문서에 최우선으로 근거하는 답변을 제공하는 툴을 만드는거야.",
+            "찾고, 주변 맥락 보고, 판단하고, 인용 하라고 이게 그렇게 어려운거냐고? bm25 든 rag 든 좀 쓰게 하라고!!!!!!!!!!!",
+            "임베딩한 문서 대상으로 매우매우매우매우매우매우매우 적극적으로 모든 자료를 검토 하게 강제해줘. 이건 필수야 제발. 판단을 해보고 아닌것 같은데? 하고서 반려 하는거랑 그냥 자기 아는거 답변하는거랑은 달라."
+          ],
+          "scope_selection": "볼트 답변에 엄격 적용 (Recommended)",
+          "implementation_authorization": "PLEASE IMPLEMENT THIS PLAN",
+          "disposition": "기존 P16 구체화; 최초 승인 이력과 승인 건수 유지",
+          "conditions": [
+            "볼트 검색 활성화 또는 전체 볼트 조사 요청에서는 사용자 지정 범위와 접근·제외 설정 안의 색인 문서 전체를 검토한다. 검색 상위 결과·대표 샘플로 대체하지 않고 제외·미색인 파일은 검토했다고 표현하지 않는다.",
+            "제품은 검색·원문 읽기·도구 호출을 조율하고 주변 맥락·조건·예외·상충 근거를 판단해 주장과 문서 간 관계에 인용을 연결한다. 특정 검색 방식이나 호출 횟수를 고정하지 않는다.",
+            "직접 확인한 사실과 문서 전제를 연결한 추론을 구분하고 전제·출처를 추적할 수 있게 한다. 근거 없는 빈칸을 사전지식으로 채우지 않는다.",
+            "검토 후 채택·제외와 미검토·읽기 실패를 구분한다. 전체 검토 후 근거 없음과 검토 미완료를 구분해 알린다.",
+            "정확성을 우선하며 비용·속도를 이유로 필수 검토를 생략하지 않는다. 실패·취소·예산 제한의 종료를 완료로 포장하지 않는다.",
+            "Luna급 모델에서도 조사·근거 확인 절차를 생략하지 않으며, 전체 읽기·판단·인용 일치를 해석 정확성이나 모델 간 동등한 품질의 보증으로 삼지 않는다.",
+            "검색을 끈 대화와 명시적 외부 MCP 사용은 유지하되 외부 근거를 볼트 근거처럼 표현하지 않는다."
+          ],
+          "execution_scope": "문서 수정만 수행; 제품 코드·모델·추론 설정·권한은 변경하지 않음",
+          "readme_override": {
+            "user_evidence": "리드미 문서는 너가 업데이트 하는게 아니라 수동으로 지시 후 전체 재작성이니 워크플로우 상에서 자동으로 트리거 되는걸 없애줘. 그리고 agents.md 에도 업데이트 해줘. 나머지는 너 하던대로 해줘.",
+            "application": "이번 README 수정 제외; 명시적 전체 재작성 요청에서만 변경하고 자동 후속 갱신 금지. 읽기 전용 검사 유지."
+          }
+        },
+        {
+          "recorded_on": "2026-10-18",
+          "source": "philosophy_reviewer 1차 검토에 대한 사용자 재검토 승인·확정 정의 전달",
+          "user_evidence": [
+            "핵심 목표는 병목 제거 — 최대한 빠르게 답변해야 한다.",
+            "볼트의 모든 문서를 대상으로 충분히 검토하되, 그 수단은 RAG embedding + BM25 + 지금 구현할 스크리닝 코드(결정적 로컬 계산)다.",
+            "전수 검토·판단의 실질 의미 = 품질 하한 보장: 답변이 특정 키워드로 검색해 나온 아무 문서를 읽고 답한 것보다 절대 나쁘면 안 된다.",
+            "이 정의를 철학 승인 기록·계약 문서에 반영한다."
+          ],
+          "disposition": "2026-10-17 구체화의 전체 검토·판단 해석을 재승인하고 수단과 품질 하한을 확정; 최초 승인 이력·승인 건수는 유지",
+          "conditions": [
+            "하한: 검색(임베딩+BM25+구조 그래프)이 지목한 세그먼트는 점수와 무관하게 전부 LLM 판정 대상에 강제 포함한다.",
+            "확장: 결정적 스크리닝이 검색이 놓친 대상을 상위부터 추가 판정한다. 전 문서는 스크리닝 점수를 받고 검수 완료로 기록된다.",
+            "속도: 전 문서 LLM 판정을 제거한다. LLM은 후보 상위만 2단계(경량 screen 대배치 → extract 통과분만)로 수행한다.",
+            "실패: 스크리닝·screen·extract 실패는 전부 미판정·미완료 고지로 수렴한다(제외로 접지 않는다).",
+            "표기: 색인 N개 스크리닝 완료 · 검색 하한 포함 · 기계 제외 X(모델 판단 없음) · LLM 채택 A/제외 R · 미판정 U · 읽기 실패 F로 분리한다."
+          ],
+          "execution_scope": "철학 문서 갱신까지 수행; 제품 코드·계약 문서 반영과 품질 하한의 실제 검증은 별도 단계",
+          "review_result": "philosophy_reviewer 1차 검토 blocker 3건(판단 해석·커버리지 표기·실패 처리) 해소"
+        }
+      ]
+    }
+  ],
+  "confirmed_direction_count": 3,
+  "confirmed_directions": [
+    {
+      "id": "K01",
+      "title": "매우 심플함",
+      "status": "confirmed",
+      "user_evidence": "핵심 단어는 아래와 같아. - 매우 심플함",
+      "instruction": "이걸 제품 철학 문서에 반영해줘.",
+      "confirmed_on": "2026-10-13",
+      "scope": "사용자 지정 핵심 방향; 세부 후보 전체 승인 아님"
+    },
+    {
+      "id": "K02",
+      "title": "보이지 않는 노력 (영국 귀족)",
+      "status": "confirmed",
+      "user_evidence": "- 보이지 않는 노력 (영국 귀족)",
+      "instruction": "이걸 제품 철학 문서에 반영해줘.",
+      "confirmed_on": "2026-10-13",
+      "scope": "사용자 지정 핵심 방향; 문화적 비유의 역사적 입증이나 세부 후보 전체 승인 아님"
+    },
+    {
+      "id": "K03",
+      "title": "신경쓰지 않아도 \"알아서\"",
+      "status": "confirmed",
+      "user_evidence": "- 신경쓰지 않아도 \"알아서\"",
+      "instruction": "이걸 제품 철학 문서에 반영해줘.",
+      "confirmed_on": "2026-10-13",
+      "scope": "사용자 지정 핵심 방향; 기존 권한을 넘는 자동화나 세부 후보 전체 승인 아님"
+    }
+  ],
+  "review_contract": {
+    "recorded_on": "2026-10-13",
+    "user_evidence": "난 세부적인건 안봐. 니가 해야 할 일이지. 내가 이미 승인한건 넘어가고 조건이 바꼈으면 그렇다고 말하고 다시 승인 받아야지.",
+    "agent_responsibility": "세부 구현·검색 전략·검증 방법의 조사와 판단",
+    "user_decision_scope": "제품 철학의 방향과 조건",
+    "reapproval_trigger": "승인된 방향·조건 변경 또는 새 조건 추가",
+    "approved_items": "재질문하지 않음",
+    "pending_items": "절차 의견으로 승인 처리하지 않음"
+  },
+  "reference_intents": {
+    "montblanc": {
+      "user_intent": [
+        "엘레강스함",
+        "사용성"
+      ],
+      "user_evidence": "사실 내가 말한 몽블랑 예시는 엘레강스함과 그 사용성이였지 거기서 더 딥다이브해서 뉘앙스를 겨눈건 아니였어.",
+      "recorded_on": "2026-10-13",
+      "scope": "브랜드 참조 의도의 명확화; P05나 다른 조사 후보의 승인이 아님"
+    }
+  },
+  "covered_count": 9,
+  "excluded_count": 1,
+  "review_stage": "initial_15_candidates_consolidated",
+  "scope_notes": [
+    "15개 조사 후보를 사용자 승인·기존 범위·중복 제외로 정리했다. 중복을 별도 사용자 승인으로 세지 않는다.",
+    "새 비교 제품의 특성 전체나 미검토 기능 구상·구현의 승인은 아니다."
+  ],
+  "last_refinement_request": {
+    "date": "2026-10-13",
+    "user_evidence": "7, 8이 중복됐다면 중복된 선행 문구에 그 근거를 보강해줘. 그것도 중복됐으면 하지 말고. 다만 다양한 각도에서 바라보게 해줄 수는 있지 않을까 싶어. 디자인 하나라도, 사용자 시선 흐름 하나라도 줄여주고 최적화 해주는게 지금 이 세션의 역할이니깐.",
+    "application": "새 원칙을 늘리지 않고 근거·관찰 관점을 보강하며 반복된 조건은 추가하지 않음"
+  },
+  "documentation_preparation": {
+    "completed_on": "2026-10-13",
+    "user_evidence": "딱 이거 직전까지만 해줘. 이건 다른 세션 파서 내가 따로 할거야.",
+    "included": [
+      "핵심 기준 압축",
+      "작업별 근거 탐색 최적화",
+      "수동 검토 양식 준비"
+    ],
+    "excluded": [
+      "현재 제품 흐름의 실제 검토",
+      "화면·시선 흐름의 실제 관찰",
+      "구체적인 제품 수정안 작성·구현",
+      "철학 게이트 실행"
+    ],
+    "criterion_document": "product-philosophy.md",
+    "task_map": "product-philosophy/02-task-map.json",
+    "manual_template": "product-philosophy/review/manual-review.md"
+  }
+}

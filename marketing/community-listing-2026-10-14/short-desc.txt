@@ -1,0 +1,1 @@
+Chat with your notes and PDFs using AI. Find answers in your vault with semantic search (RAG), compare sources, and draft with citations. Use ChatGPT, Claude, or local models with Ollama.
