@@ -2322,7 +2322,7 @@ fn select_evidence_indices(
         }
         let chars = draft_chars(draft);
         if used_chars.saturating_add(chars) > max_chars {
-            break;
+            continue;
         }
         used_chars = used_chars.saturating_add(chars);
         selected.insert(index);
@@ -5336,6 +5336,36 @@ mod tests {
             1 + super::EXTRA_CANDIDATE_DRAFTS_PER_DOCUMENT,
             "primary plus capped extras"
         );
+    }
+
+    #[test]
+    fn selection_skips_oversized_duplicate_and_keeps_later_passage() {
+        let draft = |quote: &str| super::PassageDraft {
+            path: "shared.md".to_owned(),
+            revision: None,
+            start_line: 1,
+            end_line: 1,
+            quote: quote.to_owned(),
+            context_before: String::new(),
+            context_after: String::new(),
+            score: 1.0,
+            signal: String::new(),
+            phrase_matches: 0,
+            negated_nearby: false,
+            exact: BTreeSet::new(),
+            highlights: Vec::new(),
+            field_score: 0.0,
+            field_matches: BTreeSet::new(),
+            body_terms: BTreeSet::new(),
+            matched: true,
+            candidate_rank: usize::MAX,
+            query_indexes: BTreeSet::new(),
+            preferred_query_indexes: BTreeSet::new(),
+        };
+        let drafts = [draft("abc"), draft("too long"), draft("def")];
+        let (selected, used_chars) = super::select_evidence_indices(&drafts, 3, 3, 6);
+        assert_eq!(selected, BTreeSet::from([0, 2]));
+        assert_eq!(used_chars, 6);
     }
 
     #[test]
