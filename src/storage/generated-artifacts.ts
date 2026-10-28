@@ -1,5 +1,6 @@
 import Dexie from 'dexie';
 import { updateGeneratedArtifactRegistryRust } from '../rag/rust-core';
+import { appLogger } from '../utils/logger';
 
 export interface GeneratedArtifactRecord {
   kind: 'file' | 'database';
@@ -133,8 +134,16 @@ export class GeneratedArtifactDatabase extends Dexie {
     this.on(
       'ready',
       () => {
-        ownership?.register('database', name, this.verno);
-        release ??= ownership?.acquire('database', name);
+        // 손상된 registry가 DB open 자체를 막지 않도록 소유권 등록은 best-effort로 격리합니다.
+        try {
+          ownership?.register('database', name, this.verno);
+          release ??= ownership?.acquire('database', name);
+        } catch (error) {
+          appLogger.warn('Generated artifact ownership registration failed.', {
+            source: 'storage.generated-artifacts',
+            error,
+          });
+        }
       },
       true,
     );

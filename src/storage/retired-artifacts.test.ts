@@ -177,3 +177,30 @@ describe('IndexedDB 용량과 삭제 I/O', () => {
     expect(completed).toBe(true);
   });
 });
+
+describe('폐기 DB 삭제의 유한 대기', () => {
+  it('blocked 상태가 풀리지 않으면 유한 시간 뒤 실패해 정리 상태를 고착시키지 않는다', async () => {
+    vi.useFakeTimers();
+    const request = {
+      onsuccess: null as ((event: Event) => void) | null,
+      onerror: null as ((event: Event) => void) | null,
+      onblocked: null as ((event: Event) => void) | null,
+    };
+    const spy = vi.spyOn(indexedDB, 'deleteDatabase').mockImplementation(() => {
+      queueMicrotask(() => request.onblocked?.(new Event('blocked')));
+      return request as unknown as IDBOpenDBRequest;
+    });
+    try {
+      const host = createRetiredArtifactHost({} as DataAdapter, () =>
+        Promise.resolve(fixture().context),
+      );
+      const deletion = host.deleteDatabase(`blocked-${crypto.randomUUID()}`);
+      const assertion = expect(deletion).rejects.toThrow('blocked');
+      await vi.advanceTimersByTimeAsync(60_000);
+      await assertion;
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});

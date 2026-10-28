@@ -582,11 +582,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   /** 채팅 입력부에 보여 줄 검색 준비 상태입니다. 준비되지 않아도 질문은 보낼 수 있습니다. */
   getRetrievalReadiness(): ChatRetrievalReadiness {
+    const keywordIndex = this.getKeywordIndexState();
+    const vectorReady = this.ragEngine?.getCandidateReadiness?.() === 'ready';
     return resolveChatRetrievalReadiness({
       initializing: this.ragEngine === null || (this.ragRuntimeInitRunner?.isRunning() ?? false),
       failed: Boolean(this.lastRagRuntimeInitError || this.lastRagRuntimeInitSkippedReason),
-      keywordIndex: this.getKeywordIndexState(),
+      keywordIndex,
       indexing: this.isRagSearching(),
+      searchBackendReady: keywordIndex === 'ready' || vectorReady,
     });
   }
 
@@ -1807,8 +1810,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
         storageLayout.active.corpus,
         this.generatedArtifacts.forFeature('rag-corpus'),
       );
-      for (const name of Object.values(storageLayout.active))
-        (this.activeArtifactDatabaseNames ??= new Set<string>()).add(name);
+      // 임베딩·인덱스 네임스페이스가 바뀌면 이전 세대 DB를 영구 보호하지 않도록
+      // 활성 이름을 현재 레이아웃으로 매번 재설정합니다.
+      this.activeArtifactDatabaseNames = new Set(Object.values(storageLayout.active));
       this.vaultDocumentCorpus = new VaultDocumentCorpus(
         this.app.vault,
         this.documentCorpus,

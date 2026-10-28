@@ -293,3 +293,31 @@ describe('생성물의 자동 추적과 미래 지원 종료', () => {
     expect(values.get('fixture-plugin:generated-artifacts:v1')).toEqual({ broken: true });
   });
 });
+
+describe('생성물 소유권 등록 실패 격리', () => {
+  it('registry 저장소가 손상돼도 DB open과 데이터 접근을 막지 않는다', async () => {
+    const throwing = new GeneratedArtifactRegistry(
+      {
+        loadLocalStorage: () => {
+          throw new Error('synthetic registry failure');
+        },
+        saveLocalStorage: () => {
+          throw new Error('synthetic registry failure');
+        },
+      },
+      'fixture-plugin',
+      ['.private-artifacts'],
+    );
+    const db = new GeneratedArtifactDatabase(
+      `corrupt-registry-${crypto.randomUUID()}`,
+      throwing.forFeature('future-feature'),
+    );
+    db.version(1).stores({ rows: 'id' });
+
+    await db.open();
+    await db.table('rows').put({ id: 'synthetic' });
+
+    expect(await db.table('rows').count()).toBe(1);
+    db.close();
+  });
+});

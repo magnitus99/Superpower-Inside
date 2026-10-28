@@ -11,6 +11,9 @@ export const RETIRED_PLUGIN_FILE_NAMES: readonly string[] = [
   'agent-diagnostics-safe-mode.json',
 ];
 
+/** 다른 연결이 닫히기를 기다리는 삭제의 유한 상한입니다. */
+const RETIRED_DATABASE_DELETE_TIMEOUT_MS = 60_000;
+
 export interface RetiredArtifactContext {
   pluginId: string;
   vaultPrefixes: readonly string[];
@@ -196,9 +199,27 @@ export function createRetiredArtifactHost(
     deleteDatabase: (name) =>
       new Promise<void>((resolve, reject) => {
         const request = indexedDB.deleteDatabase(name);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(new Error('Retired database deletion failed'));
-        // blocked 요청은 취소할 수 없습니다. 완료까지 기다려 뒤늦은 삭제를 실패로 오인하지 않습니다.
+        let timer: number | undefined;
+        const clear = (): void => {
+          if (timer !== undefined) window.clearTimeout(timer);
+        };
+        request.onsuccess = () => {
+          clear();
+          resolve();
+        };
+        request.onerror = () => {
+          clear();
+          reject(new Error('Retired database deletion failed'));
+        };
+        // 다른 연결이 닫히면 실제 삭제가 이어질 수 있으므로 기다리되,
+        // 영구 고착으로 정리 상태가 멈추지 않도록 유한 시간 뒤 실패로 보고합니다.
+        request.onblocked = () => {
+          if (timer !== undefined) return;
+          timer = window.setTimeout(
+            () => reject(new Error('Retired database deletion blocked')),
+            RETIRED_DATABASE_DELETE_TIMEOUT_MS,
+          );
+        };
       }),
   };
 }
