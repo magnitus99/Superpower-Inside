@@ -37,6 +37,15 @@ export class Bm25RuntimeIndex {
      */
     aggregate_scoped_json(query: string, limit: number, paths_json: string): string;
     /**
+     * 여러 facet 질의의 검색·집계를 한 번의 bridge 호출로 반환합니다.
+     *
+     * 입력은 `{"queries":[{"query":"…","limit":N}],
+     * "aggregates":[{"query":"…","limit":N,"allowedPaths":[…]?}]}`이며,
+     * 출력은 `{"queries":[{"hits":[…] }],"aggregates":[…]}`입니다.
+     * 검색은 source path별 첫 hit만 남기고 rank는 전체 score 목록의 1 기반 순위입니다.
+     */
+    batch_search_and_aggregate_json(input_json: string): string;
+    /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
      */
     static from_json(payload: string, fallback_tokenizer_version: number): Bm25RuntimeIndex;
@@ -1213,6 +1222,7 @@ export interface InitOutput {
     readonly bm25runtimeindex_add_new_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly bm25runtimeindex_aggregate_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly bm25runtimeindex_aggregate_scoped_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly bm25runtimeindex_batch_search_and_aggregate_json: (a: number, b: number, c: number) => [number, number];
     readonly bm25runtimeindex_from_json: (a: number, b: number, c: number) => number;
     readonly bm25runtimeindex_is_ready: (a: number) => number;
     readonly bm25runtimeindex_is_tokenizer_current: (a: number, b: number) => number;

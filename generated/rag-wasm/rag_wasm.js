@@ -136,6 +136,30 @@ export class Bm25RuntimeIndex {
         }
     }
     /**
+     * 여러 facet 질의의 검색·집계를 한 번의 bridge 호출로 반환합니다.
+     *
+     * 입력은 `{"queries":[{"query":"…","limit":N}],
+     * "aggregates":[{"query":"…","limit":N,"allowedPaths":[…]?}]}`이며,
+     * 출력은 `{"queries":[{"hits":[…] }],"aggregates":[…]}`입니다.
+     * 검색은 source path별 첫 hit만 남기고 rank는 전체 score 목록의 1 기반 순위입니다.
+     * @param {string} input_json
+     * @returns {string}
+     */
+    batch_search_and_aggregate_json(input_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.bm25runtimeindex_batch_search_and_aggregate_json(this.__wbg_ptr, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
      * @param {string} payload
      * @param {number} fallback_tokenizer_version

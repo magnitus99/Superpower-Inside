@@ -4645,6 +4645,58 @@ impl Bm25RuntimeIndex {
         serialize_bm25_match_aggregate_json(&self.index, &matches, limit)
     }
 
+    /// 여러 facet 질의의 검색·집계를 한 번의 bridge 호출로 반환합니다.
+    ///
+    /// 입력은 `{"queries":[{"query":"…","limit":N}],
+    /// "aggregates":[{"query":"…","limit":N,"allowedPaths":[…]?}]}`이며,
+    /// 출력은 `{"queries":[{"hits":[…] }],"aggregates":[…]}`입니다.
+    /// 검색은 source path별 첫 hit만 남기고 rank는 전체 score 목록의 1 기반 순위입니다.
+    #[must_use]
+    pub fn batch_search_and_aggregate_json(&self, input_json: &str) -> String {
+        if input_json.len() > 2 * 1024 * 1024 {
+            return String::new();
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(input_json) else {
+            return String::new();
+        };
+        let Some(queries) = value.get("queries").and_then(serde_json::Value::as_array) else {
+            return String::new();
+        };
+        let Some(aggregates) = value
+            .get("aggregates")
+            .and_then(serde_json::Value::as_array)
+        else {
+            return String::new();
+        };
+        if queries.len() > 8 || aggregates.len() > 16 {
+            return String::new();
+        }
+        let mut query_results = Vec::with_capacity(queries.len());
+        for item in queries {
+            let Some(query) = item.get("query").and_then(serde_json::Value::as_str) else {
+                return String::new();
+            };
+            let Some(limit) = item.get("limit").and_then(serde_json::Value::as_u64) else {
+                return String::new();
+            };
+            query_results.push(serde_json::json!({
+                "hits": bm25_batch_query_hits(&self.index, query, limit),
+            }));
+        }
+        let mut aggregate_results = Vec::with_capacity(aggregates.len());
+        for item in aggregates {
+            let Some(parsed) = bm25_batch_aggregate_result(&self.index, item) else {
+                return String::new();
+            };
+            aggregate_results.push(parsed);
+        }
+        serde_json::json!({
+            "queries": query_results,
+            "aggregates": aggregate_results,
+        })
+        .to_string()
+    }
+
     /// compact v3 JSON payload로 직렬화한다.
     #[must_use]
     pub fn to_json(&self) -> String {
@@ -12442,6 +12494,71 @@ fn serialize_string_string_map_json(values: &BTreeMap<String, String>) -> String
     format!("{{{body}}}")
 }
 
+/// batch 검색 한 질의의 source path별 첫 hit을 만듭니다.
+fn bm25_batch_query_hits(index: &Bm25IndexData, query: &str, limit: u64) -> Vec<serde_json::Value> {
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX).min(10_000);
+    let mut seen_paths = BTreeSet::new();
+    let mut hits = Vec::new();
+    for (index_in_scores, score) in bm25_query::search_index(index, query)
+        .into_iter()
+        .enumerate()
+    {
+        if hits.len() >= limit {
+            break;
+        }
+        let source_path = index
+            .doc_sources
+            .get(&score.doc_id)
+            .cloned()
+            .unwrap_or_else(|| score.doc_id.clone());
+        if !seen_paths.insert(source_path.clone()) {
+            continue;
+        }
+        hits.push(serde_json::json!({
+            "docId": score.doc_id,
+            "sourcePath": source_path,
+            "score": score.score,
+            "rank": index_in_scores + 1,
+        }));
+    }
+    hits
+}
+
+/// batch 집계 한 항목을 검증하고 개별 집계와 같은 JSON으로 만듭니다.
+fn bm25_batch_aggregate_result(
+    index: &Bm25IndexData,
+    item: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let query = item.get("query")?.as_str()?;
+    let limit = usize::try_from(item.get("limit")?.as_u64()?)
+        .unwrap_or(usize::MAX)
+        .min(10_000);
+    let allowed_paths = match item.get("allowedPaths") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Array(values)) => {
+            let mut paths = BTreeSet::new();
+            for value in values {
+                paths.insert(value.as_str()?.to_owned());
+            }
+            Some(paths)
+        }
+        Some(_) => return None,
+    };
+    let matches = bm25_query::aggregate_matches(index, query)
+        .into_iter()
+        .filter(|entry| {
+            allowed_paths.as_ref().is_none_or(|paths| {
+                let path = index
+                    .doc_sources
+                    .get(&entry.doc_id)
+                    .unwrap_or(&entry.doc_id);
+                paths.contains(path)
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::from_str(&serialize_bm25_match_aggregate_json(index, &matches, limit)).ok()
+}
+
 /// BM25 search score list를 JSON 문자열로 serialize한다.
 fn serialize_bm25_search_scores_json(scores: &[Bm25SearchScore]) -> String {
     let body = scores
@@ -15764,6 +15881,94 @@ mod tests {
             limited.get("totalDocuments").and_then(JsonValue::as_u64),
             Some(2),
             "경로를 제한해도 총계는 전체 기준을 유지해야 한다",
+        );
+    }
+
+    /// batch API는 개별 검색·집계와 같은 점수·순위·총계를 반환해야 한다.
+    #[test]
+    fn bm25_batch_search_and_aggregate_matches_individual_calls() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        index.add_new_document("a.md::0", "alpha beta alpha", "a.md", 2);
+        index.add_new_document("a.md::1", "alpha gamma", "a.md", 2);
+        index.add_new_document("b.md::0", "alpha alpha alpha", "b.md", 2);
+        index.add_new_document("c.md::0", "gamma", "c.md", 2);
+
+        let input = serde_json::json!({
+            "queries": [
+                {"query": "alpha", "limit": 10},
+                {"query": "gamma", "limit": 1},
+            ],
+            "aggregates": [
+                {"query": "alpha", "limit": 10},
+                {"query": "alpha", "limit": 10, "allowedPaths": ["b.md"]},
+            ],
+        })
+        .to_string();
+        let batch =
+            serde_json::from_str::<JsonValue>(&index.batch_search_and_aggregate_json(&input))
+                .unwrap_or(JsonValue::Null);
+        let hits = batch
+            .get("queries")
+            .and_then(JsonValue::as_array)
+            .and_then(|queries| queries.first())
+            .and_then(|query| query.get("hits"))
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        // 한 파일의 여러 chunk는 한 경로로 합치고 rank는 전체 score 순위를 유지한다.
+        assert_eq!(hits.len(), 2);
+        let mut paths = hits
+            .iter()
+            .filter_map(|hit| hit.get("sourcePath").and_then(JsonValue::as_str))
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        assert_eq!(paths, ["a.md", "b.md"]);
+        assert_eq!(
+            hits.first()
+                .and_then(|hit| hit.get("rank"))
+                .and_then(JsonValue::as_u64),
+            Some(1)
+        );
+        let second_rank = hits
+            .get(1)
+            .and_then(|hit| hit.get("rank"))
+            .and_then(JsonValue::as_u64);
+        assert!(second_rank.is_some_and(|rank| rank > 1));
+
+        let aggregates = batch
+            .get("aggregates")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let individual = serde_json::from_str::<JsonValue>(&index.aggregate_json("alpha", 10))
+            .unwrap_or(JsonValue::Null);
+        assert_eq!(
+            aggregates
+                .first()
+                .and_then(|value| value.get("totalOccurrences")),
+            individual.get("totalOccurrences")
+        );
+        assert_eq!(
+            aggregates
+                .get(1)
+                .and_then(|value| value.get("totalDocuments"))
+                .and_then(JsonValue::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            aggregates
+                .get(1)
+                .and_then(|value| value.get("totalOccurrences"))
+                .and_then(JsonValue::as_u64),
+            Some(3)
+        );
+        assert!(index.batch_search_and_aggregate_json("{}").is_empty());
+        assert!(
+            index
+                .batch_search_and_aggregate_json(
+                    r#"{"queries":[{"query":"alpha"}],"aggregates":[]}"#
+                )
+                .is_empty()
         );
     }
 

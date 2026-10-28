@@ -62,6 +62,20 @@ describe('BM25 worker runtime', () => {
           hits: [expect.objectContaining({ docId: 'alpha::0', sourcePath: 'alpha.md' })],
         }),
       );
+
+      const batched = waitForNodeWorkerResponse(worker, 3);
+      worker.postMessage({
+        id: 3,
+        operation: 'batch',
+        queries: [{ query: 'lexical', limit: 5 }],
+        aggregates: [{ query: 'lexical', limit: 5, allowedPaths: ['alpha.md'] }],
+      });
+      const batchResponse = await batched;
+      expect(batchResponse).toEqual(expect.objectContaining({ id: 3 }));
+      expect(JSON.parse(batchResponse.batchJson ?? '{}')).toMatchObject({
+        queries: [{ hits: [expect.objectContaining({ sourcePath: 'alpha.md', rank: 1 })] }],
+        aggregates: [expect.objectContaining({ totalDocuments: 1, totalOccurrences: 1 })],
+      });
     } finally {
       await worker.terminate();
     }
@@ -344,6 +358,7 @@ interface NodeWorkerResponse {
   snapshot?: string;
   snapshotRejected?: boolean;
   hits?: Array<{ docId: string; sourcePath: string; score: number }>;
+  batchJson?: string;
   progress?: { processedDocuments: number };
   error?: string;
 }

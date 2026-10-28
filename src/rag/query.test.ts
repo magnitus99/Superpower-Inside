@@ -75,6 +75,74 @@ describe('RAGQueryEngine', () => {
     expect(aggregateMatches).toHaveBeenLastCalledWith('synthetic', 0, controller.signal, ['Synthetic/Alpha.md']);
   });
 
+  it('facet 검색·집계를 한 batch로 실행하고 문서 주소를 한 번에 읽는다', async () => {
+    const bm25 = await createBm25([
+      ['Synthetic/Alpha.md', 'alpha alpha'],
+      ['Synthetic/Beta.md', 'beta'],
+    ]);
+    const aggregate = {
+      totalDocuments: 1,
+      totalChunks: 1,
+      totalOccurrences: 2,
+      documents: [
+        {
+          sourcePath: 'Synthetic/Alpha.md',
+          occurrences: 2,
+          chunks: [{ docId: 'Synthetic/Alpha.md::0', occurrences: 2 }],
+        },
+      ],
+    };
+    const batch = vi.spyOn(bm25, 'batchSearchAndAggregate').mockResolvedValue({
+      queries: [
+        {
+          hits: [
+            {
+              docId: 'Synthetic/Alpha.md::0',
+              sourcePath: 'Synthetic/Alpha.md',
+              score: 1,
+              rank: 1,
+            },
+          ],
+        },
+      ],
+      aggregates: [aggregate],
+    });
+    const documents = vi.spyOn(bm25, 'getCorpusDocumentsByIds').mockResolvedValue([
+      {
+        id: 'Synthetic/Alpha.md::0',
+        text: 'alpha alpha',
+        sourcePath: 'Synthetic/Alpha.md',
+        startLine: 2,
+        endLine: 4,
+      },
+    ]);
+    const engine = new RAGQueryEngine(null, null, bm25);
+
+    const result = await engine.queryBm25Batch(
+      [{ query: 'alpha', limit: 2 }],
+      [{ query: 'alpha', limit: 4 }],
+    );
+
+    expect(batch).toHaveBeenCalledOnce();
+    expect(batch).toHaveBeenCalledWith(
+      [{ query: 'alpha', limit: 2 }],
+      [{ query: 'alpha', limit: 4 }],
+      undefined,
+    );
+    expect(documents).toHaveBeenCalledOnce();
+    expect(documents).toHaveBeenCalledWith(['Synthetic/Alpha.md::0']);
+    expect(result?.matches[0]).toEqual([
+      {
+        path: 'Synthetic/Alpha.md',
+        startLine: 2,
+        endLine: 4,
+        score: 1,
+        rank: 1,
+      },
+    ]);
+    expect(result?.inventories[0]).toEqual(aggregate);
+  });
+
   it('준비된 exhaustive BM25의 0개 hit는 null이 아닌 빈 배열이다', async () => {
     const bm25 = await createBm25([]);
     vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(true);

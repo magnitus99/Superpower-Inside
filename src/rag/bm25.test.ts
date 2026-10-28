@@ -198,6 +198,46 @@ describe('IndexedDbBM25Index', () => {
       bm25.close();
     }
   });
+  it('여러 facet 검색·집계를 한 batch 호출에서 같은 값으로 돌려준다', async () => {
+    const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
+    await bm25.load();
+    try {
+      bm25.addDocument('a::0', 'alpha beta alpha', 'a.md');
+      bm25.addDocument('a::1', 'alpha gamma', 'a.md');
+      bm25.addDocument('b::0', 'alpha alpha alpha', 'b.md');
+
+      const batch = await bm25.batchSearchAndAggregate(
+        [
+          { query: 'alpha', limit: 10 },
+          { query: 'gamma', limit: 1 },
+        ],
+        [
+          { query: 'alpha', limit: 10 },
+          { query: 'alpha', limit: 10, allowedPaths: ['b.md'] },
+        ],
+      );
+
+      expect(batch?.queries).toHaveLength(2);
+      expect(new Set(batch?.queries[0]?.hits.map((hit) => hit.sourcePath))).toEqual(
+        new Set(['a.md', 'b.md']),
+      );
+      expect(batch?.queries[0]?.hits[0]?.rank).toBe(1);
+      expect(batch?.queries[0]?.hits[1]?.rank).toBeGreaterThan(1);
+      expect(batch?.queries[1]?.hits.map((hit) => hit.sourcePath)).toEqual(['a.md']);
+      expect(batch?.aggregates[0]).toMatchObject({
+        totalDocuments: 2,
+        totalChunks: 3,
+        totalOccurrences: 6,
+      });
+      expect(batch?.aggregates[1]).toMatchObject({
+        totalDocuments: 1,
+        totalOccurrences: 3,
+      });
+    } finally {
+      bm25.close();
+    }
+  });
+
   it('허용 경로는 목록 상한을 적용하기 전에 집계 전체에 적용한다', async () => {
     const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
     await bm25.load();

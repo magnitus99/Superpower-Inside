@@ -583,6 +583,15 @@ export class RustBm25RuntimeIndex {
     }
   }
 
+  /** 여러 질의의 검색·집계를 한 번의 WASM bridge 호출로 반환합니다. */
+  batchSearchAndAggregateJson(payload: string): string {
+    try {
+      return this.inner.batch_search_and_aggregate_json(payload);
+    } catch {
+      return '';
+    }
+  }
+
   aggregate(query: string, limit: number, allowedPaths?: readonly string[]): RustBm25MatchAggregate | null {
     try {
       return parseBm25MatchAggregateJson(allowedPaths === undefined

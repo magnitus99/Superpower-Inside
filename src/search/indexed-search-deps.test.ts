@@ -318,6 +318,74 @@ describe('검색 의존성 factory', () => {
         .every((item) => (item.queryIndexes ?? []).every((index) => index === 0))).toBe(true);
     },
   );
+  it('facet 검색과 term 집계를 한 batch 호출로 공유한다', async () => {
+    planIndexedSearchQueries.mockReturnValue({
+      mode: 'comparison',
+      facets: [
+        { id: 'subject-0', kind: 'subject', query: 'alpha query', queryIndex: 1, terms: ['alpha', 'beta'] },
+        { id: 'subject-1', kind: 'subject', query: 'gamma query', queryIndex: 2, terms: ['gamma'] },
+      ],
+    } satisfies IndexedSearchPlan);
+    const aggregate = (term: string) => ({
+      totalDocuments: 1,
+      totalChunks: 1,
+      totalOccurrences: term === 'alpha' ? 2 : 1,
+      documents: [
+        {
+          sourcePath: `Synthetic/${term}.md`,
+          occurrences: 1,
+          chunks: [{ docId: term, occurrences: 1 }],
+        },
+      ],
+    });
+    const queryBm25Batch = vi.fn(() =>
+      Promise.resolve({
+        matches: [
+          [{ path: 'Synthetic/Alpha.md', score: 2, rank: 1 }],
+          [{ path: 'Synthetic/Beta.md', score: 1, rank: 1 }],
+        ],
+        inventories: [aggregate('alpha'), aggregate('beta'), aggregate('gamma')],
+      }),
+    );
+    const queryBm25Exhaustive = vi.fn(() => Promise.resolve([]));
+    const queryMatchInventory = vi.fn();
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: {
+          query: () => Promise.resolve([]),
+          queryBm25Exhaustive,
+          queryBm25Batch,
+          queryMatchInventory,
+        } as unknown as RAGQueryEngine,
+        documentCorpus: corpus(),
+      },
+      '합성 질의',
+    );
+
+    expect(queryBm25Batch).toHaveBeenCalledOnce();
+    expect(queryBm25Batch).toHaveBeenCalledWith(
+      [{ query: 'alpha query' }, { query: 'gamma query' }],
+      [
+        { query: 'alpha', limit: 2, allowedPaths: ['Synthetic/Alpha.md', 'Synthetic/Beta.md'] },
+        { query: 'beta', limit: 2, allowedPaths: ['Synthetic/Alpha.md', 'Synthetic/Beta.md'] },
+        { query: 'gamma', limit: 2, allowedPaths: ['Synthetic/Alpha.md', 'Synthetic/Beta.md'] },
+      ],
+      undefined,
+    );
+    expect(queryBm25Exhaustive).not.toHaveBeenCalled();
+    expect(queryMatchInventory).not.toHaveBeenCalled();
+    expect(source?.matchInventory?.map((item) => item.query)).toEqual([
+      'alpha',
+      'beta',
+      'gamma',
+    ]);
+    expect(source?.candidates?.map((item) => item.path)).toEqual([
+      'Synthetic/Alpha.md',
+      'Synthetic/Beta.md',
+    ]);
+  });
+
   it('facet 핵심어별 색인 전체 일치 집계를 중복·상한 없이 모은다', async () => {
     planIndexedSearchQueries.mockReturnValue({
       mode: 'single',

@@ -36,6 +36,18 @@ export interface BM25CorpusDocument extends BM25DocumentInput {
   sourcePath: string;
 }
 
+export interface BM25BatchSearchHit {
+  docId: string;
+  sourcePath: string;
+  score: number;
+  rank: number;
+}
+
+export interface BM25BatchResult {
+  queries: readonly { hits: readonly BM25BatchSearchHit[] }[];
+  aggregates: readonly RustBm25MatchAggregate[];
+}
+
 /** frontmatter 별칭은 문자열 또는 문자열 배열로 올 수 있습니다. */
 function frontmatterAliases(value: unknown): string[] {
   const raw = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
@@ -71,6 +83,54 @@ export function getBM25DocumentFields(
 export function tokenize(text: string): string[] {
   const rustTokens = tokenizeRust(text);
   return rustTokens ?? [];
+}
+
+/** worker batch 응답의 wire 형식을 검증하고 실패하면 null을 돌려줍니다. */
+function parseBm25BatchJson(raw: string): BM25BatchResult | null {
+  if (!raw) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (!Array.isArray(record.queries) || !Array.isArray(record.aggregates)) return null;
+    const queries: { hits: BM25BatchSearchHit[] }[] = [];
+    for (const item of record.queries) {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
+      const hits = (item as Record<string, unknown>).hits;
+      if (!Array.isArray(hits)) return null;
+      const parsedHits: BM25BatchSearchHit[] = [];
+      for (const hit of hits) {
+        if (typeof hit !== 'object' || hit === null || Array.isArray(hit)) return null;
+        const row = hit as Record<string, unknown>;
+        if (
+          typeof row.docId !== 'string' ||
+          typeof row.sourcePath !== 'string' ||
+          typeof row.score !== 'number' ||
+          !Number.isFinite(row.score) ||
+          !Number.isSafeInteger(row.rank) ||
+          (row.rank as number) <= 0
+        ) {
+          return null;
+        }
+        parsedHits.push({
+          docId: row.docId,
+          sourcePath: row.sourcePath,
+          score: row.score,
+          rank: row.rank as number,
+        });
+      }
+      queries.push({ hits: parsedHits });
+    }
+    const aggregates: RustBm25MatchAggregate[] = [];
+    for (const item of record.aggregates) {
+      const aggregate = parseBm25MatchAggregateJson(JSON.stringify(item));
+      if (!aggregate) return null;
+      aggregates.push(aggregate);
+    }
+    return { queries, aggregates };
+  } catch {
+    return null;
+  }
 }
 
 const BM25_SNAPSHOT_KEY = 'bm25-runtime-snapshot:v1';
@@ -643,6 +703,33 @@ export class IndexedDbBM25Index {
       return parseBm25MatchAggregateJson(await worker.aggregate(query, normalizedLimit, signal, allowedPaths));
     }
     return this.ensureRuntime().aggregate(query, normalizedLimit, allowedPaths);
+  }
+
+  /**
+   * 여러 facet 검색과 집계를 한 작업자 요청으로 실행합니다.
+   * 검색 후보·집계는 개별 호출과 같은 wire 값을 유지합니다.
+   */
+  async batchSearchAndAggregate(
+    queries: readonly { query: string; limit: number }[],
+    aggregates: readonly { query: string; limit: number; allowedPaths?: readonly string[] }[],
+    signal?: AbortSignal,
+  ): Promise<BM25BatchResult | null> {
+    signal?.throwIfAborted();
+    if (queries.length === 0 && aggregates.length === 0) {
+      return { queries: [], aggregates: [] };
+    }
+    const worker = this.workerRuntime;
+    if (worker) {
+      if (!this.loaded) return null;
+      const generation = this.workerGeneration;
+      await awaitBm25SearchQueue(this.workerQueue, signal);
+      signal?.throwIfAborted();
+      if (this.workerFailure || worker.isClosed || generation !== this.workerGeneration) return null;
+      return parseBm25BatchJson(await worker.batch(queries, aggregates, signal));
+    }
+    return parseBm25BatchJson(
+      this.ensureRuntime().batchSearchAndAggregateJson(JSON.stringify({ queries, aggregates })),
+    );
   }
 
   /** 이번 세션 런타임이 스냅샷+델타로 복구됐는지, 원문 전량 재구성인지 알려줍니다. */

@@ -273,6 +273,63 @@ export class RAGQueryEngine {
   }
 
   /**
+   * 여러 facet 검색과 집계를 한 worker 요청으로 실행하고,
+   * 선택된 chunk의 원문 주소는 코퍼스에서 한 번만 읽습니다.
+   */
+  async queryBm25Batch(
+    queries: readonly { query: string; limit?: number }[],
+    aggregates: readonly {
+      query: string;
+      limit?: number;
+      allowedPaths?: readonly string[];
+    }[],
+    signal?: AbortSignal,
+  ): Promise<{
+    matches: (readonly RAGExhaustiveBm25Match[])[];
+    inventories: (RustBm25MatchAggregate | null)[];
+  } | null> {
+    if (!this.bm25Index?.isReady) return null;
+    const totalDocs = this.bm25Index.totalDocs;
+    const normalizedQueries = queries.map(({ query, limit }) => ({
+      query,
+      limit:
+        limit === undefined
+          ? totalDocs
+          : Math.max(0, Math.min(totalDocs, Math.floor(Number.isFinite(limit) ? limit : 0))),
+    }));
+    const normalizedAggregates = aggregates.map(({ query, limit, allowedPaths }) => ({
+      query,
+      limit: Math.max(0, Math.floor(Number.isFinite(limit) ? (limit ?? MATCH_INVENTORY_PATH_LIMIT) : 0)),
+      ...(allowedPaths !== undefined ? { allowedPaths } : {}),
+    }));
+    const batch = await this.bm25Index.batchSearchAndAggregate(
+      normalizedQueries,
+      normalizedAggregates,
+      signal,
+    );
+    if (!batch) return null;
+    const docIds = [...new Set(batch.queries.flatMap(({ hits }) => hits.map((hit) => hit.docId)))];
+    const documents =
+      docIds.length > 0 ? await this.bm25Index.getCorpusDocumentsByIds(docIds) : [];
+    const documentById = new Map(documents.map((document) => [document.id, document]));
+    return {
+      matches: batch.queries.map(({ hits }) =>
+        hits.map((hit) => {
+          const document = documentById.get(hit.docId);
+          return {
+            path: hit.sourcePath,
+            ...(document?.startLine !== undefined ? { startLine: document.startLine } : {}),
+            ...(document?.endLine !== undefined ? { endLine: document.endLine } : {}),
+            score: hit.score,
+            rank: hit.rank,
+          };
+        }),
+      ),
+      inventories: batch.aggregates.map((aggregate) => aggregate),
+    };
+  }
+
+  /**
    * 색인 전체에서 질의와 정확히 일치한 문서·구간·발생 횟수를 셉니다.
    * 점수·순위가 아니라 답변이 집계로 인용할 인벤토리이며, 색인이 준비되지 않았으면 null입니다.
    */

@@ -6,7 +6,7 @@ import type {
   IndexedMatchCount,
   IndexedVaultCorpus,
 } from '../agent/indexed-vault-review';
-import type { QueryResult, RAGQueryEngine } from '../rag/query';
+import type { QueryResult, RAGExhaustiveBm25Match, RAGQueryEngine } from '../rag/query';
 import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
 import { planIndexedSearchQueriesRust, planNativeVaultFilteredIndicesRust, scopeIndexedDiscoveryRust, type IndexedSearchPlan, type RustIndexedEvidenceFilters } from '../rag/rust-core';
 import { readSourceText } from '../rag/source-access';
@@ -176,6 +176,12 @@ export async function collectIndexedSearchSource(
       sourceReader,
     };
   }
+  // facet 검색과 term 집계를 한 batch로 가져와 후보·인벤토리가 같은 색인 호출을 공유합니다.
+  // batch가 실패하면 후보는 기존 개별 경로로, 집계는 기존 term 루프로 되돌아갑니다.
+  const bm25Batch =
+    searchPlan && indexedPaths.length > 0 && host.isIndexing?.() !== true
+      ? await collectBm25Batch(host.ragEngine, searchPlan, signal, indexedPaths)
+      : null;
   const candidateStartedAt = performance.now();
   let candidateResolution: HybridCandidateResolution =
     indexedPaths.length === 0
@@ -192,7 +198,13 @@ export async function collectIndexedSearchSource(
             failedFacetIds: [],
             exhaustiveReview: false,
           }
-        : await collectHybridCandidates(host.ragEngine, searchPlan, signal, semanticTimeoutMs);
+        : await collectHybridCandidates(
+            host.ragEngine,
+            searchPlan,
+            signal,
+            semanticTimeoutMs,
+            bm25Batch?.matches,
+          );
   // 원래 질의가 0건이어도 언어 변형으로 첫 후보를 발견할 수 있습니다.
   const queryVariants =
     host.ragEngine && indexedPaths.length > 0 && host.isIndexing?.() !== true
@@ -220,7 +232,10 @@ export async function collectIndexedSearchSource(
     : undefined;
   const reviewPathSet = new Set(reviewPaths ?? []);
   const matchStartedAt = performance.now();
-  const matchInventory = await collectMatchInventory(host.ragEngine, searchPlan, signal, indexedPaths);
+  const matchInventory =
+    bm25Batch && bm25Batch.inventories.length > 0
+      ? bm25Batch.inventories
+      : await collectMatchInventory(host.ragEngine, searchPlan, signal, indexedPaths);
   const matchMs = performance.now() - matchStartedAt;
   appLogger.debug('Indexed search source collected.', {
     source: 'search.source',
@@ -254,6 +269,83 @@ export async function collectIndexedSearchSource(
     revisionReader: createVaultRevisionReader(host.app),
     sourceReader,
   };
+}
+
+/** facet 계획에서 중복 없는 집계 term을 만듭니다. */
+function planTerms(plan: IndexedSearchPlan): string[] {
+  const terms: string[] = [];
+  for (const facet of plan.facets) {
+    for (const term of facet.terms) {
+      const normalized = term.trim();
+      if (normalized.length === 0 || terms.includes(normalized)) continue;
+      terms.push(normalized);
+    }
+  }
+  return terms;
+}
+
+/** Rust batch 집계를 dossier 인벤토리 행으로 옮깁니다. */
+function toMatchInventory(
+  term: string,
+  aggregate: NonNullable<
+    Awaited<ReturnType<RAGQueryEngine['queryMatchInventory']>>
+  >,
+): IndexedMatchCount {
+  return {
+    query: term,
+    totalDocuments: aggregate.totalDocuments,
+    totalChunks: aggregate.totalChunks,
+    totalOccurrences: aggregate.totalOccurrences,
+    documents: aggregate.documents.map(({ sourcePath, occurrences }) => ({
+      sourcePath,
+      occurrences,
+    })),
+  };
+}
+
+/**
+ * facet 검색과 term 집계를 한 worker 요청으로 가져옵니다.
+ * 실패하면 호출자가 기존 개별 경로로 되돌아가도록 null을 돌려줍니다.
+ */
+async function collectBm25Batch(
+  engine: RAGQueryEngine | null,
+  plan: IndexedSearchPlan,
+  signal: AbortSignal | undefined,
+  allowedPaths: readonly string[],
+): Promise<{
+  matches: readonly (readonly RAGExhaustiveBm25Match[])[];
+  inventories: readonly IndexedMatchCount[];
+} | null> {
+  if (!engine) return null;
+  const facets = plan.facets.slice(0, MAX_HYBRID_FACETS);
+  if (facets.length === 0) return { matches: [], inventories: [] };
+  const terms = planTerms(plan);
+  try {
+    const result = await engine.queryBm25Batch(
+      facets.map((facet) => ({ query: facet.query })),
+      terms.map((term) => ({
+        query: term,
+        limit: Math.max(1, allowedPaths.length || 40),
+        allowedPaths,
+      })),
+      signal,
+    );
+    if (!result) return null;
+    return {
+      matches: result.matches,
+      inventories: terms.flatMap((term, index) => {
+        const aggregate = result.inventories[index];
+        return aggregate ? [toMatchInventory(term, aggregate)] : [];
+      }),
+    };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    appLogger.warn('BM25 facet batch unavailable; falling back to individual facets.', {
+      source: 'search.candidates',
+      error,
+    });
+    return null;
+  }
 }
 
 /**
@@ -495,6 +587,7 @@ async function collectHybridCandidates(
   plan: IndexedSearchPlan,
   signal?: AbortSignal,
   semanticTimeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
+  bm25ByFacet?: readonly (readonly RAGExhaustiveBm25Match[])[],
 ): Promise<HybridCandidateResolution> {
   if (!engine) {
     return {
@@ -507,11 +600,13 @@ async function collectHybridCandidates(
   signal?.throwIfAborted();
   const facets = plan.facets.slice(0, MAX_HYBRID_FACETS);
   const outcomes = await Promise.all(
-    facets.map(async (facet) => {
+    facets.map(async (facet, facetIndex) => {
       const semanticStartedAt = performance.now();
       let semanticDurationMs = 0;
       const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
-        Promise.resolve().then(() => engine.queryBm25Exhaustive(facet.query, undefined, signal)),
+        bm25ByFacet
+          ? Promise.resolve(bm25ByFacet[facetIndex] ?? [])
+          : Promise.resolve().then(() => engine.queryBm25Exhaustive(facet.query, undefined, signal)),
         querySemanticCandidates(engine, facet, signal, semanticTimeoutMs).finally(() => {
           semanticDurationMs = performance.now() - semanticStartedAt;
         }),

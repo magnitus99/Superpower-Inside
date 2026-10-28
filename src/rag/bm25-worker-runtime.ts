@@ -17,6 +17,17 @@ export interface BM25WorkerHit {
   score: number;
 }
 
+export interface BM25WorkerSearchQuery {
+  query: string;
+  limit: number;
+}
+
+export interface BM25WorkerAggregateQuery {
+  query: string;
+  limit: number;
+  allowedPaths?: readonly string[];
+}
+
 export interface BM25WorkerRequest {
   id: number;
   operation:
@@ -28,7 +39,8 @@ export interface BM25WorkerRequest {
     | 'clear'
     | 'serialize'
     | 'search-top'
-    | 'aggregate';
+    | 'aggregate'
+    | 'batch';
   wasmBase64?: string;
   dbName?: string;
   snapshot?: string;
@@ -40,6 +52,8 @@ export interface BM25WorkerRequest {
   query?: string;
   limit?: number;
   allowedPaths?: readonly string[];
+  queries?: readonly BM25WorkerSearchQuery[];
+  aggregates?: readonly BM25WorkerAggregateQuery[];
 }
 
 export interface BM25WorkerResponse {
@@ -52,6 +66,8 @@ export interface BM25WorkerResponse {
   hits?: BM25WorkerHit[];
   /** 점수 없이 센 질의 일치 인벤토리입니다. TS가 형식을 검증합니다. */
   aggregateJson?: string;
+  /** 여러 질의의 검색·집계를 담은 JSON입니다. TS가 형식을 검증합니다. */
+  batchJson?: string;
   progress?: {
     processedDocuments: number;
   };
@@ -168,6 +184,16 @@ export class BM25WorkerRuntime {
   async aggregate(query: string, limit: number, signal?: AbortSignal, allowedPaths?: readonly string[]): Promise<string> {
     const response = await this.request({ operation: 'aggregate', query, limit, allowedPaths }, signal);
     return response.aggregateJson ?? '';
+  }
+
+  /** 여러 facet 검색과 집계를 한 작업자 요청으로 실행합니다. */
+  async batch(
+    queries: readonly BM25WorkerSearchQuery[],
+    aggregates: readonly BM25WorkerAggregateQuery[],
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const response = await this.request({ operation: 'batch', queries, aggregates }, signal);
+    return response.batchJson ?? '';
   }
 
   close(reason = new Error('BM25 worker was closed.')): void {

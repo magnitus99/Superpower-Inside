@@ -14,7 +14,8 @@ export interface BM25WorkerRequest {
     | 'clear'
     | 'serialize'
     | 'search-top'
-    | 'aggregate';
+    | 'aggregate'
+    | 'batch';
   wasmBase64?: string;
   dbName?: string;
   snapshot?: string;
@@ -26,6 +27,8 @@ export interface BM25WorkerRequest {
   query?: string;
   limit?: number;
   allowedPaths?: readonly string[];
+  queries?: readonly { query: string; limit: number }[];
+  aggregates?: readonly { query: string; limit: number; allowedPaths?: readonly string[] }[];
 }
 
 interface BM25WorkerHit {
@@ -44,6 +47,8 @@ export interface BM25WorkerResponse {
   hits?: BM25WorkerHit[];
   /** 점수 없이 센 질의 일치 인벤토리입니다. TS가 형식을 검증합니다. */
   aggregateJson?: string;
+  /** 여러 질의의 검색·집계를 담은 JSON입니다. TS가 형식을 검증합니다. */
+  batchJson?: string;
   progress?: {
     processedDocuments: number;
   };
@@ -168,6 +173,14 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
       aggregateJson: request.allowedPaths === undefined
         ? active.aggregate_json(request.query ?? '', Math.max(0, Math.floor(request.limit ?? 0)))
         : active.aggregate_scoped_json(request.query ?? '', Math.max(0, Math.floor(request.limit ?? 0)), JSON.stringify(request.allowedPaths)),
+    };
+  } else if (request.operation === 'batch') {
+    return {
+      ...runtimeState(),
+      batchJson: active.batch_search_and_aggregate_json(JSON.stringify({
+        queries: request.queries ?? [],
+        aggregates: request.aggregates ?? [],
+      })),
     };
   }
   return runtimeState();
