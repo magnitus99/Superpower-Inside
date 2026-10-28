@@ -97,6 +97,8 @@ function getDefaultProviderCapability(
   switch (providerKey) {
     case 'openai':
     case 'openAIChatGPT':
+    case 'opencode':
+    case 'gemini':
       return {
         providerKey,
         model,

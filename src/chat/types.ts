@@ -7,6 +7,8 @@ export interface ToolCallRecord {
   id: string;
   name: string;
   arguments: string;
+  /** Gemini 사고 모델의 도구 호출 재주입 서명입니다. */
+  thoughtSignature?: string;
   result?: string;
   /** 사용자 표시와 compact 저장에 사용하는 제한된 결과 요약 */
   resultSummary?: string;

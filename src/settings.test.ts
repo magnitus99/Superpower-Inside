@@ -1,5 +1,7 @@
 import { connectTestChatGPT } from './test/chatgpt';
 import { chatGPTOAuth } from './llm/chatgpt-oauth';
+import { googleGeminiOAuth } from './llm/google-gemini-oauth';
+import { connectTestGemini } from './test/gemini';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const modalPromptMocks = vi.hoisted(() => ({
@@ -53,6 +55,7 @@ import {
   resetProviderProfileVerification,
   resolveProviderProfileTone,
   resolveProviderProfileState,
+  getChatProviderStrategies,
   getProviderStrategyLabels,
   resolveUsableProviderModelRef,
   SuperpowerInsideSettingTab,
@@ -258,11 +261,69 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(resolveProviderProfileTone(profile)).toBe('ready');
     chatGPTOAuth.disconnect(profile.id);
     expect(resolveProviderProfileTone(profile)).toBe('needs-key');
-    expect(getProviderStrategyLabels().openai).toBe('OpenAI API');
+    expect(getProviderStrategyLabels().openai).toBe('OpenAI API (레거시)');
     expect(getProviderStrategyLabels().openAIChatGPT).toContain('OAuth');
     setLanguage('en');
-    expect(getProviderStrategyLabels().openAIChatGPT).toBe('OpenAI ChatGPT (OAuth)');
+    expect(getProviderStrategyLabels().openAIChatGPT).toBe('ChatGPT — browser OAuth');
+    expect(getProviderStrategyLabels().openai).toBe('OpenAI API (legacy)');
   });
+  it('기본 제공 순서는 ChatGPT OAuth와 OpenCode를 앞에 두고 OpenAI API를 레거시로 표시한다', () => {
+    const order = getChatProviderStrategies();
+    expect(order.slice(0, 4)).toEqual(['openAIChatGPT', 'gemini', 'opencode', 'claude']);
+    expect(order).toContain('ollama');
+    expect(order).not.toContain('ollamaCloud');
+    expect(order.at(-1)).toBe('openAICompatible');
+    expect(getProviderStrategyLabels().openai).toContain('레거시');
+    expect(getProviderStrategyLabels().openAIChatGPT).toContain('OAuth');
+    expect(getProviderStrategyLabels().opencode).toBe('OpenCode');
+    expect(getProviderStrategyLabels().gemini).toBe('Google Gemini');
+  });
+
+  it('Google Gemini OAuth는 연결 상태로 준비 상태를 판정하고 API 키 모드를 기본값으로 둔다', () => {
+    connectTestGemini('gemini');
+    const settings = migrateLegacyProviderProfiles({
+      ...structuredClone(DEFAULT_SETTINGS),
+      providerProfiles: [
+        {
+          id: 'gemini',
+          name: 'Gemini',
+          strategy: 'gemini',
+          geminiAuthMode: 'oauth',
+          apiKey: '',
+          enabled: true,
+          models: [
+            {
+              id: 'gemini-test',
+              kind: 'general',
+              verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
+            },
+          ],
+        },
+      ],
+    });
+    const profile = settings.providerProfiles.find((item) => item.id === 'gemini');
+    if (!profile) throw new Error('Gemini 프로필이 없습니다');
+    expect(profile.geminiAuthMode).toBe('oauth');
+    expect(resolveProviderProfileTone(profile)).toBe('ready');
+    googleGeminiOAuth.disconnect(profile.id);
+    expect(resolveProviderProfileTone(profile)).toBe('needs-key');
+    expect(
+      migrateLegacyProviderProfiles({
+        ...structuredClone(DEFAULT_SETTINGS),
+        providerProfiles: [
+          {
+            id: 'gemini-key',
+            name: 'Gemini API',
+            strategy: 'gemini',
+            apiKey: 'gemini-key',
+            enabled: true,
+            models: [],
+          },
+        ],
+      }).providerProfiles.find((item) => item.id === 'gemini-key')?.geminiAuthMode,
+    ).toBe('apiKey');
+  });
+
   it('provider profile model refs preserve provider id and colon-containing model ids', () => {
     const value = buildProviderModelRef('local-ollama', 'qwen3:8b-q8_0');
 
@@ -607,6 +668,37 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(migrated.rag.embeddingModelRef).toBe('profile:ternlight:ternlight-base');
   });
 
+  it('Ollama Cloud 프로필은 Ollama와 cloud base URL로 통합한다', () => {
+    const migrated = migrateLegacyProviderProfiles({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [
+        {
+          id: 'legacy-cloud',
+          name: 'Legacy Cloud',
+          strategy: 'ollamaCloud',
+          apiKey: 'cloud-key',
+          baseUrl: '',
+          enabled: true,
+          models: [
+            {
+              id: 'cloud-model',
+              kind: 'general',
+              verification: { chatStatus: 'unknown', embeddingStatus: 'unknown' },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(migrated.providerProfiles.find((profile) => profile.id === 'legacy-cloud')).toMatchObject(
+      {
+        strategy: 'ollama',
+        baseUrl: 'https://ollama.com',
+        apiKey: 'cloud-key',
+      },
+    );
+  });
+
   it('기존 Ternlight 프로필의 채팅 모델은 마이그레이션에서 제거한다', () => {
     const migrated = migrateLegacyProviderProfiles({
       ...DEFAULT_SETTINGS,
@@ -838,12 +930,15 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(getChatFolderExcludeDescription('')).toContain('현재 제외 대상: 미설정');
   });
 
-  it('Ollama Local만 API Key 입력을 숨긴다', () => {
-    expect(shouldShowProviderApiKey('ollama')).toBe(false);
+  it('Ollama는 base URL에 따라 API Key 입력을 표시하고 요구한다', () => {
+    expect(shouldShowProviderApiKey('ollama')).toBe(true);
     expect(shouldShowProviderApiKey('ollamaCloud')).toBe(true);
     expect(shouldShowProviderApiKey('openai')).toBe(true);
     expect(shouldShowProviderApiKey('customOpenAI')).toBe(true);
+    expect(shouldRequireProviderApiKey('ollama', 'http://localhost:11434')).toBe(false);
+    expect(shouldRequireProviderApiKey('ollama', 'https://ollama.com')).toBe(true);
     expect(shouldRequireProviderApiKey('customOpenAI')).toBe(false);
+    expect(shouldRequireProviderApiKey('openAICompatible', 'https://example.com/v1')).toBe(false);
   });
 
   it('Provider readiness는 API 키보다 실제 검증 성공을 우선한다', () => {

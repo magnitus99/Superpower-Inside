@@ -9,6 +9,8 @@ describe('provider 도구 라운드 안전 한도', () => {
   it.each([
     'openai',
     'openAIChatGPT',
+    'opencode',
+    'gemini',
     'claude',
     'ollama',
     'ollamaCloud',

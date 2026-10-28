@@ -3,6 +3,8 @@ import { chatGPTOAuth } from './llm/chatgpt-oauth';
 import { buildRetiredArtifactSettings } from './storage/retired-artifacts-settings';
 import type { RetiredArtifactService } from './storage/retired-artifacts';
 import { buildChatGPTLoginSettings } from './llm/chatgpt-login-ui';
+import { buildGeminiLoginSettings } from './llm/gemini-login-ui';
+import { googleGeminiOAuth } from './llm/google-gemini-oauth';
 import { DEFAULT_CHUNK_CONTRACT, DEFAULT_SEARCH_QUALITY } from './rag/search-defaults';
 import { providerKeyState, type ProviderSecretConfig } from './secrets/provider-secrets';
 import {
@@ -20,6 +22,7 @@ import {
   type Events,
 } from 'obsidian';
 import { McpServerDraftModal } from './settings-mcp-modal';
+import { ProviderPickerModal, type ProviderPickerOption } from './provider-picker-modal';
 import { validateMcpJson } from './utils/mcp-json';
 import type { MCPRegistry } from './mcp/registry';
 import {
@@ -97,6 +100,15 @@ import {
 } from './utils/document-exclusion-hotkeys';
 import { isLocalizedValue, setLanguage, type Language, t } from './i18n';
 import {
+  getDefaultProviderApiFormat,
+  normalizeProviderApiFormat,
+  OPENCODE_DEFAULT_BASE_URL,
+  PROVIDER_API_FORMATS,
+  providerStrategyUsesEditableBaseUrl,
+  resolveProviderModelApiFormat,
+  supportsProviderApiFormatSelection,
+} from './llm/provider-api-format';
+import {
   MAX_PROVIDER_TOOL_ROUNDS,
   normalizeProviderCapabilityOverrides,
   type ProviderCapabilityOverrides,
@@ -161,10 +173,13 @@ export function standardToInternal(standard: StandardMcpConfig): MCPServerConfig
   return result;
 }
 export interface ProviderConfig {
+  id?: string;
   apiKey: string;
   apiKeySecret?: string;
   relayApiKey?: string;
   baseUrl?: string;
+  apiFormat?: ProviderApiFormat;
+  geminiAuthMode?: GeminiAuthMode;
   models: string[];
   enabled: boolean;
 }
@@ -185,7 +200,26 @@ export const PROVIDER_LABELS: Record<(typeof PROVIDER_KEYS)[number], string> = {
   openRouter: 'OpenRouter',
 };
 export type ProviderKey = (typeof PROVIDER_KEYS)[number];
-export type ProviderStrategyKey = ProviderKey | 'openAICompatible' | 'openAIChatGPT' | 'ternlight';
+export type ProviderApiFormat = 'responses' | 'chat' | 'messages' | 'gemini';
+export type GeminiAuthMode = 'apiKey' | 'oauth';
+export type ProviderStrategyKey =
+  | ProviderKey
+  | 'openAICompatible'
+  | 'openAIChatGPT'
+  | 'opencode'
+  | 'gemini'
+  | 'ternlight';
+/** 새 연결 선택과 종류 드롭다운에 표시하는 기본 제공 순서입니다. */
+export const CHAT_PROVIDER_STRATEGY_ORDER = [
+  'openAIChatGPT',
+  'gemini',
+  'opencode',
+  'claude',
+  'ollama',
+  'openRouter',
+  'openai',
+  'openAICompatible',
+] as const satisfies readonly ProviderStrategyKey[];
 export type ProviderModelKind = 'general' | 'embedding';
 export interface ProviderModelVerification {
   chatStatus: ModelCapabilityStatus;
@@ -199,6 +233,10 @@ export interface ProviderModelConfig {
   maxOutputTokens?: number;
   id: string;
   kind: ProviderModelKind;
+  /** 이 모델만 사용할 wire 형식입니다. 없으면 프로필 기본값을 따릅니다. */
+  apiFormat?: ProviderApiFormat;
+  /** 모델 목록이 선언한 지원 형식입니다. 프로필 형식이 포함되면 그대로 사용합니다. */
+  supportedApiFormats?: ProviderApiFormat[];
   verification: ProviderModelVerification;
 }
 export interface ProviderProfileConfig {
@@ -209,6 +247,10 @@ export interface ProviderProfileConfig {
   apiKeySecret?: string;
   relayApiKey?: string;
   baseUrl?: string;
+  /** OpenCode·Custom endpoint에서 사용할 기본 wire 형식입니다. */
+  apiFormat?: ProviderApiFormat;
+  /** Gemini 내장 프로바이더의 인증 방식입니다. */
+  geminiAuthMode?: GeminiAuthMode;
   enabled: boolean;
   models: ProviderModelConfig[];
   useRequestUrl?: boolean;
@@ -264,7 +306,14 @@ function toRustProviderProfileState(profile: ProviderProfileConfig): RustProvide
     apiKeyConfigured:
       profile.strategy === 'openAIChatGPT'
         ? chatGPTOAuth.isConnected(profile.id)
-        : profile.apiKey.trim().length > 0,
+        : profile.strategy === 'gemini' && profile.geminiAuthMode === 'oauth'
+          ? googleGeminiOAuth.isConnected(profile.id)
+          : profile.apiKey.trim().length > 0,
+    apiKeyRequired:
+      profile.strategy === 'openAIChatGPT' ||
+      (profile.strategy === 'gemini' && profile.geminiAuthMode === 'oauth')
+        ? true
+        : shouldRequireProviderApiKey(profile.strategy, profile.baseUrl),
     baseUrlConfigured: (profile.baseUrl?.trim().length ?? 0) > 0,
     models: profile.models
       .filter((model) => model.id.trim().length > 0)
@@ -353,6 +402,16 @@ export function upsertProviderProfileModel(
       : existing?.maxOutputTokens !== undefined
         ? { maxOutputTokens: existing.maxOutputTokens }
         : {}),
+    ...(candidate.apiFormat
+      ? { apiFormat: candidate.apiFormat }
+      : existing?.apiFormat
+        ? { apiFormat: existing.apiFormat }
+        : {}),
+    ...(candidate.supportedApiFormats && candidate.supportedApiFormats.length > 0
+      ? { supportedApiFormats: [...candidate.supportedApiFormats] }
+      : existing?.supportedApiFormats && existing.supportedApiFormats.length > 0
+        ? { supportedApiFormats: [...existing.supportedApiFormats] }
+        : {}),
     verification: {
       chatStatus:
         candidate.verification.chatStatus ?? existing?.verification.chatStatus ?? 'unknown',
@@ -396,12 +455,64 @@ function createProviderModel(
 
 export function getProviderStrategyLabels(): Record<ProviderStrategyKey, string> {
   return {
-    ...PROVIDER_LABELS,
-    openai: 'OpenAI API',
+    openai: t('providerOpenAIApiLegacy'),
+    claude: 'Claude',
+    ollama: 'Ollama',
+    ollamaCloud: t('providerOllamaCloudLegacy'),
+    openRouter: 'OpenRouter',
+    opencode: 'OpenCode',
+    gemini: t('providerGeminiLabel'),
     openAIChatGPT: t('providerChatGPTLabel'),
-    openAICompatible: 'OpenAI-Compatible',
+    openAICompatible: t('providerCustomEndpointLabel'),
     ternlight: t('localEmbeddingProvider'),
   };
+}
+
+/** 카탈로그 순서를 그대로 유지하면서 드롭다운에 표시할 항목을 반환합니다. */
+export function getChatProviderStrategies(): readonly ProviderStrategyKey[] {
+  return CHAT_PROVIDER_STRATEGY_ORDER;
+}
+
+export function getProviderStrategyDescription(strategy: ProviderStrategyKey): string {
+  switch (strategy) {
+    case 'openAIChatGPT':
+      return t('providerStrategyChatGPTDesc');
+    case 'opencode':
+      return t('providerStrategyOpenCodeDesc');
+    case 'gemini':
+      return t('providerStrategyGeminiDesc');
+    case 'claude':
+      return t('providerStrategyClaudeDesc');
+    case 'ollama':
+      return t('providerStrategyOllamaDesc');
+    case 'openRouter':
+      return t('providerStrategyOpenRouterDesc');
+    case 'openai':
+      return t('providerStrategyOpenAIDesc');
+    case 'openAICompatible':
+      return t('providerStrategyCustomDesc');
+    case 'ollamaCloud':
+      return t('providerStrategyOllamaCloudDesc');
+    case 'ternlight':
+      return t('providerStrategyTernlightDesc');
+    default:
+      return '';
+  }
+}
+
+export function getProviderApiFormatLabel(format: ProviderApiFormat): string {
+  switch (format) {
+    case 'responses':
+      return t('providerApiFormatResponses');
+    case 'messages':
+      return t('providerApiFormatMessages');
+    case 'gemini':
+      return t('providerApiFormatGemini');
+    case 'chat':
+      return t('providerApiFormatChat');
+    default:
+      return format;
+  }
 }
 
 const LEGACY_PROFILE_IDS: Record<ProviderKey, string> = {
@@ -732,11 +843,19 @@ function normalizeProviderProfileModel(value: unknown): ProviderModelConfig | nu
       },
     ],
   })?.[0];
+  const apiFormat = normalizeProviderApiFormat(source.apiFormat);
+  const supportedApiFormats = Array.isArray(source.supportedApiFormats)
+    ? [...new Set(source.supportedApiFormats.map(normalizeProviderApiFormat))].filter(
+        (format): format is ProviderApiFormat => format !== undefined,
+      )
+    : [];
   return {
     ...createProviderModel(id, kind, verificationSource),
     ...(details?.contextLength ? { contextLength: details.contextLength } : {}),
     ...(details?.maxInputTokens ? { maxInputTokens: details.maxInputTokens } : {}),
     ...(details?.maxOutputTokens ? { maxOutputTokens: details.maxOutputTokens } : {}),
+    ...(apiFormat ? { apiFormat } : {}),
+    ...(supportedApiFormats.length > 0 ? { supportedApiFormats } : {}),
   };
 }
 
@@ -750,13 +869,19 @@ function normalizeProviderProfile(
     typeof source.id === 'string' && source.id.trim()
       ? source.id.trim()
       : `profile-${fallbackIndex + 1}`;
-  const strategy = PROVIDER_KEYS.includes(source.strategy as ProviderKey)
-    ? (source.strategy as ProviderKey)
-    : source.strategy === 'openAICompatible' || source.strategy === 'openAIChatGPT'
-      ? source.strategy
-      : source.strategy === 'ternlight'
-        ? 'ternlight'
-        : null;
+  const strategy =
+    source.strategy === 'ollamaCloud'
+      ? 'ollama'
+      : PROVIDER_KEYS.includes(source.strategy as ProviderKey)
+        ? (source.strategy as ProviderKey)
+        : source.strategy === 'openAICompatible' ||
+            source.strategy === 'openAIChatGPT' ||
+            source.strategy === 'opencode' ||
+            source.strategy === 'gemini'
+          ? source.strategy
+          : source.strategy === 'ternlight'
+            ? 'ternlight'
+            : null;
   if (!strategy) return null;
   const rawModels = Array.isArray(source.models) ? source.models : [];
   const models = rawModels.reduce<ProviderModelConfig[]>((acc, model) => {
@@ -765,16 +890,37 @@ function normalizeProviderProfile(
   }, []);
   const capabilityOverrides = normalizeProviderCapabilityOverrides(source.capabilityOverrides);
   const rawName = typeof source.name === 'string' ? source.name.trim() : '';
+  const sourceBaseUrl = typeof source.baseUrl === 'string' ? source.baseUrl.trim() : '';
+  const baseUrl =
+    source.strategy === 'ollamaCloud' && !sourceBaseUrl
+      ? DEFAULT_SETTINGS.ollamaCloud.baseUrl
+      : sourceBaseUrl;
+  const apiFormat =
+    normalizeProviderApiFormat(source.apiFormat) ?? getDefaultProviderApiFormat(strategy);
+  const geminiAuthMode =
+    strategy === 'gemini'
+      ? source.geminiAuthMode === 'oauth'
+        ? 'oauth'
+        : 'apiKey'
+      : undefined;
+  const normalizedName =
+    source.strategy === 'ollamaCloud' && (!rawName || rawName === 'Ollama (Cloud)')
+      ? 'Ollama'
+      : rawName && !isLocalizedValue('providerNewName', rawName)
+        ? rawName
+        : '';
   return {
     id,
-    name: rawName && !isLocalizedValue('providerNewName', rawName) ? rawName : '',
+    name: normalizedName,
     strategy,
     apiKey: typeof source.apiKey === 'string' ? source.apiKey : '',
     ...(typeof source.apiKeySecret === 'string' && source.apiKeySecret
       ? { apiKeySecret: source.apiKeySecret }
       : {}),
     ...(typeof source.relayApiKey === 'string' ? { relayApiKey: source.relayApiKey } : {}),
-    baseUrl: typeof source.baseUrl === 'string' ? source.baseUrl.trim() : undefined,
+    baseUrl,
+    ...(apiFormat ? { apiFormat } : {}),
+    ...(geminiAuthMode ? { geminiAuthMode } : {}),
     enabled: typeof source.enabled === 'boolean' ? source.enabled : false,
     models,
     ...(typeof source.useRequestUrl === 'boolean' ? { useRequestUrl: source.useRequestUrl } : {}),
@@ -972,10 +1118,16 @@ export function migrateLegacyProviderProfiles(
       }
       profiles.push({
         id: profileId,
-        name: PROVIDER_LABELS[key],
-        strategy: key,
+        name: key === 'ollamaCloud' ? PROVIDER_LABELS.ollama : PROVIDER_LABELS[key],
+        strategy: key === 'ollamaCloud' ? 'ollama' : key,
         apiKey: config.apiKey,
-        baseUrl: config.baseUrl,
+        baseUrl:
+          key === 'ollamaCloud'
+            ? config.baseUrl?.trim() || DEFAULT_SETTINGS.ollamaCloud.baseUrl
+            : config.baseUrl,
+        ...(getDefaultProviderApiFormat(key === 'ollamaCloud' ? 'ollama' : key)
+          ? { apiFormat: getDefaultProviderApiFormat(key === 'ollamaCloud' ? 'ollama' : key) }
+          : {}),
         enabled: config.enabled,
         models,
       });
@@ -1009,6 +1161,7 @@ export function migrateLegacyProviderProfiles(
         strategy: 'openAICompatible',
         apiKey: provider.apiKey,
         baseUrl: provider.baseUrl,
+        apiFormat: 'chat',
         enabled: provider.enabled,
         models,
         useRequestUrl: provider.useRequestUrl ?? true,
@@ -1241,6 +1394,8 @@ interface ProviderModelImportCandidate {
   name?: string;
   contextLength?: number;
   maxOutputTokens?: number;
+  apiFormat?: ProviderApiFormat;
+  supportedApiFormats?: ProviderApiFormat[];
 }
 
 class ProviderModelImportModal extends Modal {
@@ -3928,7 +4083,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       const apiKeyVisibilityKey = isCustomOpenAIEmbeddingProviderKey(providerKey)
         ? 'customOpenAI'
         : providerKey;
-      if (shouldRequireProviderApiKey(apiKeyVisibilityKey) && !config.apiKey.trim()) {
+      if (shouldRequireProviderApiKey(apiKeyVisibilityKey, config.baseUrl) && !config.apiKey.trim()) {
         return t('settingsAuto159', { v0: String(label) });
       }
       if (rag.embeddingModel === '' || !rag.embeddingModel.trim()) {
@@ -5456,7 +5611,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       .addButton((button) => {
         button.setButtonText(t('settingsAuto268'));
         if (!firstAttention) button.setCta();
-        button.onClick(() => this.createProviderProfile());
+        button.onClick(() => this.openProviderPicker());
       });
   }
 
@@ -5513,7 +5668,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const icon = disclosure.button.querySelector('.superpower-inside-settings-disclosure-icon');
     const status = disclosure.button.createSpan({
       cls: `superpower-inside-provider-disclosure-status is-${tone}`,
-      text: this.getProviderProfileStatusLabel(tone, profile.strategy),
+      text: this.getProviderProfileStatusLabel(tone, profile),
     });
     status.dataset.providerTone = tone;
     status.setAttribute('aria-live', 'polite');
@@ -5540,7 +5695,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     const attention = disclosure.content.createDiv({
       cls: 'superpower-inside-provider-profile-attention',
     });
-    this.renderProviderProfileAttention(attention, tone, profile.strategy);
+    this.renderProviderProfileAttention(attention, tone, profile);
     this.buildProviderConnectionSettings(disclosure.content, profile, root);
     if (profileState.chatSupported) {
       this.buildProviderProfileModelSection(
@@ -5626,7 +5781,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       text:
         profile.strategy === 'openAIChatGPT'
           ? t('providerChatGPTSetup')
-          : t('settingsProviderSetupSteps'),
+          : profile.strategy === 'gemini'
+            ? t('providerGeminiSetup')
+            : t('settingsProviderSetupSteps'),
       tone: 'info',
       icon: 'list-checks',
     });
@@ -5643,21 +5800,73 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.notifyProviderModelsChanged();
         this.refreshProvidersTab(profile.id);
       });
+      new Setting(group)
+        .setName(t('providerBaseUrl'))
+        .setDesc(t('providerChatGPTEndpointFixed'));
       return;
+    }
+    if (profile.strategy === 'gemini') {
+      new Setting(group)
+        .setName(t('geminiAuthModeLabel'))
+        .setDesc(t('geminiAuthModeDesc'))
+        .addDropdown((dropdown) => {
+          dropdown.addOption('apiKey', t('geminiAuthModeApiKey'));
+          dropdown.addOption('oauth', t('geminiAuthModeOAuth'));
+          dropdown.selectEl.setAttribute('aria-label', t('geminiAuthModeLabel'));
+          dropdown.setValue(profile.geminiAuthMode ?? 'apiKey').onChange((value) => {
+            const mode = value === 'oauth' ? 'oauth' : 'apiKey';
+            if ((profile.geminiAuthMode ?? 'apiKey') === mode) return;
+            googleGeminiOAuth.cancelLogin(profile.id);
+            profile.geminiAuthMode = mode;
+            profile.baseUrl =
+              mode === 'apiKey' ? this.getProviderStrategyDefaultBaseUrl('gemini') : undefined;
+            this.invalidateProviderProfileVerification(profile);
+            this.debouncedProviderSave();
+            this.refreshProvidersTab(profile.id);
+          });
+        });
+      if (profile.geminiAuthMode === 'oauth') {
+        buildGeminiLoginSettings(group, profile.id, async () => {
+          if (
+            !this.plugin.settings.providerProfiles.includes(profile) ||
+            profile.strategy !== 'gemini' ||
+            profile.geminiAuthMode !== 'oauth'
+          )
+            return;
+          this.invalidateProviderProfileVerification(profile);
+          const saved = await this.plugin.saveSettings({ reinitRag: true, reinitMcp: false });
+          if (!saved.success) throw new Error(t('settingsApplyFailed'));
+          this.notifyProviderModelsChanged();
+          this.refreshProvidersTab(profile.id);
+        });
+        new Setting(group)
+          .setName(t('providerBaseUrl'))
+          .setDesc(t('providerGeminiEndpointFixed'));
+        return;
+      }
     }
     if (shouldShowProviderApiKey(this.getProfileApiKeyVisibilityKey(profile))) {
       const keyLabel = t('apiKey');
       let apiKeyInput: HTMLInputElement | null = null;
       let keyStateNotice: HTMLElement | null = null;
-      new Setting(group)
-        .setName(keyLabel)
+      const keySetting = new Setting(group).setName(keyLabel);
+      if (profile.strategy === 'ollama') {
+        keySetting.setDesc(t('providerOllamaApiKeyDesc'));
+      }
+      keySetting
         .addText((text) => {
           apiKeyInput = text.inputEl;
           text.inputEl.type = 'password';
           text.inputEl.autocomplete = 'off';
           text.inputEl.setAttribute('aria-label', keyLabel);
           text
-            .setPlaceholder('sk-...')
+            .setPlaceholder(
+              profile.strategy === 'gemini'
+                ? 'AIza...'
+                : profile.strategy === 'opencode'
+                  ? 'oc_sk_...'
+                  : 'sk-...',
+            )
             .setValue(profile.apiKey)
             .onChange((value) => {
               const nextApiKey = value.trim();
@@ -5684,30 +5893,57 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               .setTooltip(isVisible ? showLabel : hideLabel);
           });
         });
-      keyStateNotice = this.appendProviderKeyStateNotice(group, profile);
+      keyStateNotice =
+        profile.strategy === 'ollama' && !shouldRequireProviderApiKey('ollama', profile.baseUrl)
+          ? null
+          : this.appendProviderKeyStateNotice(group, profile);
     }
-    if (profile.strategy !== 'ternlight') {
-      new Setting(group).setName(t('providerBaseUrl')).addText((text) => {
-        text.inputEl.setAttribute('aria-label', t('providerBaseUrl'));
-        text
-          .setPlaceholder(this.getProviderStrategyDefaultBaseUrl(profile.strategy))
-          .setValue(profile.baseUrl ?? '')
-          .onChange((value) => {
-            const nextBaseUrl = value.trim();
-            if ((profile.baseUrl ?? '') === nextBaseUrl) return;
-            profile.baseUrl = nextBaseUrl;
-            this.invalidateProviderProfileVerification(profile);
-            this.debouncedProviderSave();
-            this.refreshProviderProfilePresentation(profile, disclosureRoot);
-          });
-      });
+    if (providerStrategyUsesEditableBaseUrl(profile.strategy)) {
+      new Setting(group)
+        .setName(t('providerBaseUrl'))
+        .setDesc(this.getProviderBaseUrlDescription(profile.strategy))
+        .addText((text) => {
+          text.inputEl.setAttribute('aria-label', t('providerBaseUrl'));
+          text
+            .setPlaceholder(this.getProviderStrategyDefaultBaseUrl(profile.strategy))
+            .setValue(profile.baseUrl ?? '')
+            .onChange((value) => {
+              const nextBaseUrl = value.trim();
+              if ((profile.baseUrl ?? '') === nextBaseUrl) return;
+              profile.baseUrl = nextBaseUrl;
+              this.invalidateProviderProfileVerification(profile);
+              this.debouncedProviderSave();
+              this.refreshProviderProfilePresentation(profile, disclosureRoot);
+            });
+        });
+    }
+  }
+
+  private getProviderBaseUrlDescription(strategy: ProviderStrategyKey): string {
+    switch (strategy) {
+      case 'opencode':
+        return t('providerOpenCodeBaseUrlDesc');
+      case 'ollama':
+        return t('providerOllamaBaseUrlDesc');
+      case 'openai':
+        return t('providerOpenAIBaseUrlDesc');
+      case 'claude':
+        return t('providerClaudeBaseUrlDesc');
+      case 'openRouter':
+        return t('providerOpenRouterBaseUrlDesc');
+      case 'gemini':
+        return t('providerGeminiBaseUrlDesc');
+      case 'openAICompatible':
+        return t('providerCustomBaseUrlDesc');
+      default:
+        return '';
     }
   }
 
   private renderProviderProfileAttention(
     containerEl: HTMLElement,
     tone: ProviderProfileTone,
-    strategy: ProviderStrategyKey,
+    profile: ProviderProfileConfig,
   ): void {
     containerEl.empty();
     containerEl.dataset.providerTone = tone;
@@ -5722,9 +5958,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.createSettingsNotice(containerEl, {
       text:
         tone === 'needs-key'
-          ? strategy === 'openAIChatGPT'
-            ? t('chatGPTOAuthRequired')
-            : t('providerSummaryNeedsKey')
+          ? this.getProviderAuthRequiredText(profile)
           : tone === 'needs-url'
             ? t('providerSummaryNeedsBaseUrl')
             : tone === 'failed'
@@ -5757,13 +5991,13 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (status && status.dataset.providerTone !== tone) {
       status.className = `superpower-inside-provider-disclosure-status is-${tone}`;
       status.dataset.providerTone = tone;
-      status.setText(this.getProviderProfileStatusLabel(tone, profile.strategy));
+      status.setText(this.getProviderProfileStatusLabel(tone, profile));
     }
     const attention = disclosureRoot.querySelector<HTMLElement>(
       '.superpower-inside-provider-profile-attention',
     );
     if (attention && attention.dataset.providerTone !== tone) {
-      this.renderProviderProfileAttention(attention, tone, profile.strategy);
+      this.renderProviderProfileAttention(attention, tone, profile);
     }
     disclosureRoot
       .querySelector<HTMLElement>(
@@ -5791,16 +6025,27 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
 
   private getProviderProfileStatusLabel(
     tone: ProviderProfileTone,
-    strategy: ProviderStrategyKey,
+    profile: ProviderProfileConfig,
   ): string {
     if (tone === 'ready') return t('providerStatusReady');
     if (tone === 'configured') return t('providerStatusConfigured');
     if (tone === 'needs-key')
-      return strategy === 'openAIChatGPT' ? t('chatGPTOAuthRequired') : t('providerStatusNeedsKey');
+      return profile.strategy === 'openAIChatGPT' ||
+        (profile.strategy === 'gemini' && profile.geminiAuthMode === 'oauth')
+        ? this.getProviderAuthRequiredText(profile)
+        : t('providerStatusNeedsKey');
     if (tone === 'needs-url') return t('providerStatusNeedsBaseUrl');
     if (tone === 'needs-models') return t('providerStatusNeedsModels');
     if (tone === 'failed') return t('providerStatusValidationFailed');
     return t('providerStatusOff');
+  }
+
+  private getProviderAuthRequiredText(profile: ProviderProfileConfig): string {
+    if (profile.strategy === 'openAIChatGPT') return t('chatGPTOAuthRequired');
+    if (profile.strategy === 'gemini' && profile.geminiAuthMode === 'oauth') {
+      return t('geminiOAuthRequired');
+    }
+    return t('providerSummaryNeedsKey');
   }
 
   private refreshProviderProfileDisclosures(containerEl: HTMLElement): void {
@@ -5822,17 +6067,44 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
   }
 
-  private createProviderProfile(): void {
+  private openProviderPicker(): void {
+    const icons: Partial<Record<ProviderStrategyKey, string>> = {
+      openAIChatGPT: 'sparkles',
+      opencode: 'terminal',
+      gemini: 'sparkle',
+      claude: 'brain',
+      ollama: 'hard-drive',
+      openRouter: 'route',
+      openai: 'key-round',
+      openAICompatible: 'plug',
+    };
+    const options: ProviderPickerOption[] = getChatProviderStrategies().map((strategy) => ({
+      strategy,
+      label: getProviderStrategyLabels()[strategy],
+      description: getProviderStrategyDescription(strategy),
+      icon: icons[strategy] ?? 'plug',
+      recommended: strategy === 'openAIChatGPT',
+      legacy: strategy === 'openai',
+    }));
+    new ProviderPickerModal(this.app, options, (strategy) => {
+      this.createProviderProfile(strategy);
+    }).open();
+  }
+
+  private createProviderProfile(strategy: ProviderStrategyKey = 'openAIChatGPT'): void {
     const id = this.createProviderProfileId();
+    const apiFormat = getDefaultProviderApiFormat(strategy);
     this.plugin.settings.providerProfiles.push({
       id,
-      name: '',
-      strategy: 'openAICompatible',
+      name: getProviderStrategyLabels()[strategy],
+      strategy,
       apiKey: '',
-      baseUrl: '',
+      baseUrl: this.getProviderStrategyDefaultBaseUrl(strategy) || undefined,
+      ...(apiFormat ? { apiFormat } : {}),
+      ...(strategy === 'gemini' ? { geminiAuthMode: 'apiKey' as const } : {}),
       enabled: true,
       models: [],
-      useRequestUrl: true,
+      ...(strategy === 'openAICompatible' ? { useRequestUrl: true } : {}),
     });
     this.expandedProviderProfileId = id;
     this.debouncedProviderSave();
@@ -5855,7 +6127,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       tone === 'needs-key'
         ? profile?.strategy === 'openAIChatGPT'
           ? t('chatGPTOAuthSignIn')
-          : t('apiKey')
+          : profile?.strategy === 'gemini' && profile.geminiAuthMode === 'oauth'
+            ? t('geminiOAuthSignIn')
+            : t('apiKey')
         : tone === 'needs-url'
           ? t('providerBaseUrl')
           : null;
@@ -5899,6 +6173,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           throw err;
         }
         chatGPTOAuth.disconnect(profile.id);
+        googleGeminiOAuth.disconnect(profile.id);
         this.notifyProviderModelsChanged();
         return { status: 'success', detail: t('providerRemoved', { provider: profileName }) };
       },
@@ -5910,34 +6185,63 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     containerEl: HTMLElement,
     profile: ProviderProfileConfig,
   ): void {
-    new Setting(containerEl)
+    const strategySetting = new Setting(containerEl)
       .setName(t('providerStrategyLabel'))
-      .setDesc(t('providerStrategyDesc'))
-      .addDropdown((dropdown) => {
-        for (const [value, label] of Object.entries(getProviderStrategyLabels())) {
-          if (value === 'ternlight') continue;
-          dropdown.addOption(value, label);
+      .setDesc(getProviderStrategyDescription(profile.strategy));
+    strategySetting.addDropdown((dropdown) => {
+      for (const strategy of getChatProviderStrategies()) {
+        dropdown.addOption(strategy, getProviderStrategyLabels()[strategy]);
+      }
+      dropdown.selectEl.setAttribute('aria-label', t('providerStrategyLabel'));
+      dropdown.setValue(profile.strategy).onChange((value) => {
+        const strategy = value as ProviderStrategyKey;
+        if (profile.strategy === strategy) return;
+        chatGPTOAuth.cancelLogin(profile.id);
+        googleGeminiOAuth.cancelLogin(profile.id);
+        const previousDefault = this.getProviderStrategyDefaultBaseUrl(profile.strategy);
+        const nextDefault = this.getProviderStrategyDefaultBaseUrl(strategy);
+        if (!providerStrategyUsesEditableBaseUrl(strategy)) {
+          profile.baseUrl = undefined;
+        } else if (!profile.baseUrl?.trim() || profile.baseUrl === previousDefault) {
+          profile.baseUrl = nextDefault || undefined;
         }
-        dropdown.selectEl.setAttribute('aria-label', t('providerStrategyLabel'));
-        dropdown.setValue(profile.strategy).onChange((value) => {
-          const strategy = value as ProviderStrategyKey;
-          if (profile.strategy === strategy) return;
-          chatGPTOAuth.cancelLogin(profile.id);
-          const previousDefault = this.getProviderStrategyDefaultBaseUrl(profile.strategy);
-          const nextDefault = this.getProviderStrategyDefaultBaseUrl(strategy);
-          if (!profile.baseUrl?.trim() || profile.baseUrl === previousDefault) {
-            profile.baseUrl = nextDefault;
-          }
-          const defaultName = getProviderStrategyLabels()[profile.strategy];
-          if (!profile.name || profile.name === defaultName)
-            profile.name = getProviderStrategyLabels()[strategy];
-          if (strategy === 'openAIChatGPT') profile.baseUrl = undefined;
-          profile.strategy = strategy;
-          this.invalidateProviderProfileVerification(profile);
-          this.debouncedProviderSave();
-          this.refreshProvidersTab(profile.id);
-        });
+        const defaultName = getProviderStrategyLabels()[profile.strategy];
+        if (!profile.name || profile.name === defaultName)
+          profile.name = getProviderStrategyLabels()[strategy];
+        profile.apiFormat = getDefaultProviderApiFormat(strategy);
+        if (strategy === 'gemini') {
+          profile.geminiAuthMode = profile.geminiAuthMode ?? 'apiKey';
+        } else {
+          delete profile.geminiAuthMode;
+        }
+        profile.strategy = strategy;
+        strategySetting.setDesc(getProviderStrategyDescription(strategy));
+        this.invalidateProviderProfileVerification(profile);
+        this.debouncedProviderSave();
+        this.refreshProvidersTab(profile.id);
       });
+    });
+    if (supportsProviderApiFormatSelection(profile.strategy)) {
+      new Setting(containerEl)
+        .setName(t('providerApiFormatLabel'))
+        .setDesc(t('providerApiFormatDesc'))
+        .addDropdown((dropdown) => {
+          for (const format of PROVIDER_API_FORMATS) {
+            dropdown.addOption(format, getProviderApiFormatLabel(format));
+          }
+          dropdown.selectEl.setAttribute('aria-label', t('providerApiFormatLabel'));
+          dropdown
+            .setValue(profile.apiFormat ?? getDefaultProviderApiFormat(profile.strategy) ?? 'chat')
+            .onChange((value) => {
+              const apiFormat = normalizeProviderApiFormat(value);
+              if (!apiFormat || profile.apiFormat === apiFormat) return;
+              profile.apiFormat = apiFormat;
+              this.invalidateProviderProfileVerification(profile);
+              this.debouncedProviderSave();
+              this.refreshProvidersTab(profile.id);
+            });
+        });
+    }
   }
 
   private buildProviderProfileModelSection(
@@ -6065,6 +6369,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     for (const model of models) {
       const item = list.createDiv({ cls: 'superpower-inside-settings-model-item' });
       item.createSpan({ cls: 'superpower-inside-provider-model-name', text: model.id });
+      if (kind === 'general' && supportsProviderApiFormatSelection(profile.strategy)) {
+        const format =
+          resolveProviderModelApiFormat(profile.apiFormat, model) ??
+          getDefaultProviderApiFormat(profile.strategy);
+        if (format) {
+          item.createSpan({
+            cls: 'superpower-inside-provider-model-format',
+            text: getProviderApiFormatLabel(format),
+          });
+        }
+      }
       const capabilityRow = item.createSpan({
         cls: 'superpower-inside-provider-model-capabilities',
       });
@@ -6219,7 +6534,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           statusEl.setText(detail);
           return { status: 'error', detail, notice: detail };
         }
-        const validationConfig = { ...profile, models: profile.models.map((model) => model.id) };
+        const validationConfig = {
+          ...profile,
+          apiFormat: resolveProviderModelApiFormat(
+            profile.apiFormat,
+            profile.models.find((model) => model.id === modelId),
+          ),
+          models: profile.models.map((model) => model.id),
+        };
         if (kind === 'embedding') {
           const { testEmbeddingGenerationForStrategy } = await import('./llm/validation');
           const result = await testEmbeddingGenerationForStrategy(
@@ -6282,20 +6604,27 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         provider: getProviderProfileDisplayName(profile),
       });
     }
-    if (tone === 'needs-key')
-      return profile.strategy === 'openAIChatGPT'
-        ? t('chatGPTOAuthRequired')
-        : t('providerSummaryNeedsKey');
+    if (tone === 'needs-key') return this.getProviderAuthRequiredText(profile);
     if (tone === 'needs-url') return t('providerSummaryNeedsBaseUrl');
     return null;
   }
 
   private getProfileApiKeyVisibilityKey(
     profile: ProviderProfileConfig,
-  ): 'ternlight' | 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter' | 'customOpenAI' {
-    return profile.strategy === 'openAICompatible' || profile.strategy === 'openAIChatGPT'
-      ? 'customOpenAI'
-      : profile.strategy;
+  ):
+    | 'ternlight'
+    | 'openai'
+    | 'claude'
+    | 'ollama'
+    | 'ollamaCloud'
+    | 'openRouter'
+    | 'opencode'
+    | 'gemini'
+    | 'customOpenAI' {
+    if (profile.strategy === 'openAICompatible' || profile.strategy === 'openAIChatGPT')
+      return 'customOpenAI';
+    if (profile.strategy === 'gemini' && profile.geminiAuthMode === 'oauth') return 'customOpenAI';
+    return profile.strategy;
   }
 
   private getTernlightRuntimeOptions(): TernlightRuntimeOptions {
@@ -6316,6 +6645,10 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         return 'http://localhost:11434';
       case 'ollamaCloud':
         return 'https://ollama.com';
+      case 'opencode':
+        return OPENCODE_DEFAULT_BASE_URL;
+      case 'gemini':
+        return 'https://generativelanguage.googleapis.com/v1beta';
       case 'openRouter':
         return 'https://openrouter.ai/api';
       case 'openAICompatible':
@@ -6438,7 +6771,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private getProviderVisualState(target: ProviderSettingsTarget): ProviderVisualState {
     const { config } = target;
     const apiKeyVisibilityKey = target.kind === 'custom' ? 'customOpenAI' : target.key;
-    const apiKeyRequired = shouldRequireProviderApiKey(apiKeyVisibilityKey);
+    const apiKeyRequired = shouldRequireProviderApiKey(apiKeyVisibilityKey, config.baseUrl);
     const hasApiKey = !apiKeyRequired || config.apiKey.trim().length > 0;
     const modelCount = config.models.length;
     const validation = this.getFreshProviderValidation(target.key, config);

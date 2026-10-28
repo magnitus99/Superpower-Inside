@@ -10,6 +10,111 @@ fn positive(value: Option<&Value>) -> Option<u64> {
         .filter(|number| *number > 0 && *number <= 9_007_199_254_740_991)
 }
 
+/// 모델 상세 레코드에 선언된 wire 형식 정보를 붙인다.
+fn apply_model_formats(detail: &mut Map<String, Value>, model: &Value) {
+    let supported_formats = model_api_formats(model);
+    if supported_formats.is_empty() {
+        return;
+    }
+    if supported_formats.len() == 1
+        && let Some(format) = supported_formats.first()
+    {
+        detail.insert("apiFormat".to_owned(), json!(*format));
+    }
+    detail.insert("supportedApiFormats".to_owned(), json!(supported_formats));
+}
+
+/// Gemini `models.list` 응답에서 표시·예산에 필요한 필드만 고른다.
+fn gemini_model_details(value: &Value) -> String {
+    let Some(models) = value.get("models").and_then(Value::as_array) else {
+        return String::new();
+    };
+    let mut details = Vec::new();
+    for model in models {
+        let Some(name) = model.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(methods) = model
+            .get("supportedGenerationMethods")
+            .and_then(Value::as_array)
+            && !methods
+                .iter()
+                .any(|method| method.as_str() == Some("generateContent"))
+        {
+            continue;
+        }
+        let id = name.strip_prefix("models/").unwrap_or(name).trim();
+        if id.is_empty() {
+            continue;
+        }
+        let mut detail = Map::from_iter([("id".to_owned(), json!(id))]);
+        if let Some(display) = model.get("displayName").and_then(Value::as_str) {
+            detail.insert("name".to_owned(), json!(display));
+        }
+        if let Some(context) = positive(model.get("inputTokenLimit")) {
+            detail.insert("contextLength".to_owned(), json!(context));
+        }
+        if let Some(output) = positive(model.get("outputTokenLimit")) {
+            detail.insert("maxOutputTokens".to_owned(), json!(output));
+        }
+        details.push(detail);
+    }
+    json!(details).to_string()
+}
+
+/// 모델이 선언한 endpoint 또는 API 이름을 wire 형식으로 바꾼다.
+fn api_format(value: &str) -> Option<&'static str> {
+    match value.trim() {
+        "/chat/completions" | "openai-completions" | "openai-chat" | "chat"
+        | "chat-completions" => Some("chat"),
+        "/responses" | "openai-responses" | "responses" => Some("responses"),
+        "/messages" | "anthropic-messages" | "messages" => Some("messages"),
+        "google-generative-ai" | "gemini" | "gemini-generative-ai" => Some("gemini"),
+        _ => None,
+    }
+}
+
+/// wire 형식의 표시·선택 순서를 정한다.
+fn api_format_rank(format: &str) -> u8 {
+    match format {
+        "responses" => 0,
+        "chat" => 1,
+        "messages" => 2,
+        "gemini" => 3,
+        _ => 4,
+    }
+}
+
+/// 모델 레코드가 선언한 형식 목록을 canonical 순서로 정리한다.
+fn model_api_formats(model: &Value) -> Vec<&'static str> {
+    let mut formats = Vec::new();
+    if let Some(endpoints) = model.get("supported_endpoints").and_then(Value::as_array) {
+        for endpoint in endpoints {
+            if let Some(format) = endpoint.as_str().and_then(api_format) {
+                formats.push(format);
+            }
+        }
+    }
+    if formats.is_empty()
+        && let Some(format) = model
+            .get("api")
+            .and_then(Value::as_str)
+            .and_then(api_format)
+    {
+        formats.push(format);
+    }
+    if let Some(values) = model.get("supported_api_formats").and_then(Value::as_array) {
+        for endpoint in values {
+            if let Some(format) = endpoint.as_str().and_then(api_format) {
+                formats.push(format);
+            }
+        }
+    }
+    formats.sort_by_key(|format| api_format_rank(format));
+    formats.dedup();
+    formats
+}
+
 /// 모델 이름으로 한도를 추측하지 않는다. 없는 정보는 호스트에 생략해서 반환한다.
 #[must_use]
 #[wasm_bindgen]
@@ -17,6 +122,9 @@ pub fn plan_provider_model_details_json(provider: &str, payload: &str) -> String
     let Ok(value) = serde_json::from_str::<Value>(payload) else {
         return String::new();
     };
+    if provider == "gemini" {
+        return gemini_model_details(&value);
+    }
     if provider == "ollama" {
         let Some(id) = value.get("id").and_then(Value::as_str) else {
             return String::new();
@@ -63,6 +171,7 @@ pub fn plan_provider_model_details_json(provider: &str, payload: &str) -> String
         {
             detail.insert("name".to_owned(), json!(name));
         }
+        apply_model_formats(detail, model);
         let context = match provider {
             "claude" => None,
             "openAIChatGPT" => positive(model.get("context_window"))
@@ -278,5 +387,38 @@ mod tests {
         ))
         .unwrap_or(Value::Null);
         assert!(value.pointer("/0/contextLength").is_none());
+    }
+
+    #[test]
+    fn gemini_models_use_gemini_limits_and_display_names() {
+        let raw = plan_provider_model_details_json(
+            "gemini",
+            r#"{"models":[{"name":"models/gemini-x","displayName":"Gemini X","inputTokenLimit":1000000,"outputTokenLimit":64000}]}"#,
+        );
+        let parsed: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+        assert_eq!(parsed.pointer("/0/id"), Some(&json!("gemini-x")));
+        assert_eq!(parsed.pointer("/0/name"), Some(&json!("Gemini X")));
+        assert_eq!(parsed.pointer("/0/contextLength"), Some(&json!(1_000_000)));
+        assert_eq!(parsed.pointer("/0/maxOutputTokens"), Some(&json!(64_000)));
+    }
+
+    #[test]
+    fn declared_endpoints_become_model_wire_formats() {
+        let raw = plan_provider_model_details_json(
+            "openai",
+            r#"{"data":[
+                {"id":"a-claude-only","supported_endpoints":["/messages"]},
+                {"id":"b-gpt-both","supported_endpoints":["/chat/completions","/responses"]},
+                {"id":"c-api-field","api":"anthropic-messages"}
+            ]}"#,
+        );
+        let parsed: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+        assert_eq!(parsed.pointer("/0/apiFormat"), Some(&json!("messages")));
+        assert_eq!(
+            parsed.pointer("/1/supportedApiFormats"),
+            Some(&json!(["responses", "chat"]))
+        );
+        assert!(parsed.pointer("/1/apiFormat").is_none());
+        assert_eq!(parsed.pointer("/2/apiFormat"), Some(&json!("messages")));
     }
 }

@@ -1,4 +1,5 @@
 import { t } from '../i18n';
+import { isLocalOllamaBaseUrl } from '../llm/provider-api-format';
 import type { PerformanceGuardMode } from './performance-guard';
 import type { ProviderStrategyKey } from '../settings';
 
@@ -10,6 +11,8 @@ export type ProviderApiKeyVisibilityKey =
   | 'ollama'
   | 'ollamaCloud'
   | 'openRouter'
+  | 'opencode'
+  | 'gemini'
   | 'customOpenAI';
 
 export interface EmbeddingModelPreset {
@@ -128,11 +131,17 @@ export function getChatFolderExcludeDescription(saveFolder: string): string {
 }
 
 export function shouldShowProviderApiKey(key: string): boolean {
-  return key !== 'ollama' && key !== 'ternlight';
+  return key !== 'ternlight';
 }
 
-export function shouldRequireProviderApiKey(key: string): boolean {
-  return shouldShowProviderApiKey(key) && key !== 'customOpenAI';
+export function shouldRequireProviderApiKey(key: string, baseUrl?: string): boolean {
+  if (!shouldShowProviderApiKey(key) || key === 'customOpenAI' || key === 'openAICompatible') {
+    return false;
+  }
+  if (key === 'ollama' || key === 'ollamaCloud') {
+    return !isLocalOllamaBaseUrl(baseUrl);
+  }
+  return true;
 }
 
 export function resolveProviderReadiness(input: ProviderReadinessInput): ProviderReadinessState {

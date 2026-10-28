@@ -3947,6 +3947,8 @@ export class ChatView extends ItemView {
       if (existing) {
         if (toolCallDelta.id) existing.id = toolCallDelta.id;
         if (toolCallDelta.function?.name) existing.name = toolCallDelta.function.name;
+        if (toolCallDelta.thoughtSignature)
+          existing.thoughtSignature = toolCallDelta.thoughtSignature;
         if (toolCallDelta.function?.arguments)
           existing.arguments += toolCallDelta.function.arguments;
       } else if (toolCallMap.size < MAX_TOOL_CALLS_PER_ROUND) {
@@ -3954,6 +3956,9 @@ export class ChatView extends ItemView {
           id: toolCallDelta.id || `local-tool-${++this.localToolCallSequence}`,
           name: toolCallDelta.function?.name ?? '',
           arguments: toolCallDelta.function?.arguments ?? '',
+          ...(toolCallDelta.thoughtSignature
+            ? { thoughtSignature: toolCallDelta.thoughtSignature }
+            : {}),
           status: 'running',
         });
       }

@@ -75,6 +75,8 @@ pub use chat_input::{
 /// 프로바이더 연결 상태와 채팅 모델 선택 정책.
 mod provider_state;
 pub use chatgpt::plan_chatgpt_json;
+mod gemini;
+pub use gemini::plan_gemini_json;
 pub use provider_state::{
     plan_chat_model_state_json, plan_provider_profile_state_json,
     plan_provider_verification_reset_json,
