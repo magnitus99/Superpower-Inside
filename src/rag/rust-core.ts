@@ -2154,9 +2154,7 @@ export function selectRelevantResultIndicesRust(
   if (candidates.length === 0) return [];
   if (!Number.isFinite(threshold)) return null;
   if (!candidates.every(isValidRelevantResultCandidate)) return null;
-  if (!ensureRustCore()) {
-    return selectRelevantResultIndicesFallback(candidates, threshold, hasBm25);
-  }
+  if (!ensureRustCore()) return null;
 
   const sourceOffsets = [0];
   const sourceCodes: number[] = [];
@@ -2184,33 +2182,8 @@ export function selectRelevantResultIndicesRust(
         resultValues,
       ),
       candidates.length,
-    ) ?? selectRelevantResultIndicesFallback(candidates, threshold, hasBm25)
+    ) ?? null
   );
-}
-
-function selectRelevantResultIndicesFallback(
-  candidates: readonly RustRelevantResultCandidate[],
-  threshold: number,
-  hasBm25: boolean,
-): number[] {
-  const scored = candidates.map((candidate, index) => {
-    const hasSignal = hasBm25 ? Number.isFinite(candidate.bm25Score) : true;
-    const qualifies = candidate.score >= threshold || candidate.vectorScore >= threshold;
-    return {
-      index,
-      qualifies,
-      score: Number.isFinite(candidate.score) ? candidate.score : candidate.vectorScore,
-      hasSignal,
-    };
-  });
-
-  return scored
-    .filter((item) => item.qualifies && item.hasSignal)
-    .sort((left, right) => {
-      if (left.score === right.score) return left.index - right.index;
-      return right.score - left.score;
-    })
-    .map((entry) => entry.index);
 }
 
 export function planMergedRetrievalCandidatesByEntryIdRust(
@@ -6684,7 +6657,7 @@ export function planDiverseResultIndicesRust(
   if (candidates.length === 0) return [];
   if (candidates.length <= topK) return candidates.map((_, index) => index);
   if (!candidates.every(isDiverseResultCandidate)) return null;
-  if (!ensureRustCore()) return planDiverseResultIndicesFallback(candidates, topK);
+  if (!ensureRustCore()) return null;
 
   try {
     const raw = plan_diverse_result_indices_json(
@@ -6696,7 +6669,7 @@ export function planDiverseResultIndicesRust(
     if (!isBoundedIndexArray(parsed, candidates.length)) return null;
     return parsed;
   } catch {
-    return planDiverseResultIndicesFallback(candidates, topK);
+    return null;
   }
 }
 
@@ -7119,33 +7092,6 @@ export function selectPluginContext7LibraryIdRust(
 ): string | null {
   if (!ensureRustCore()) return null;
   return select_plugin_context7_library_id(JSON.stringify(plugin), JSON.stringify(result)) || null;
-}
-
-function planDiverseResultIndicesFallback(
-  candidates: readonly RustDiverseResultCandidate[],
-  topK: number,
-): number[] {
-  const validCount = Math.max(0, Math.floor(topK));
-  if (validCount === 0 || candidates.length === 0) return [];
-
-  return candidates
-    .map((candidate, index) => ({
-      index,
-      score: candidate.score,
-      sourcePath: candidate.sourcePath,
-      heading: candidate.heading,
-    }))
-    .sort((left, right) => {
-      if (left.score === right.score) {
-        if (left.sourcePath !== right.sourcePath) {
-          return left.sourcePath.localeCompare(right.sourcePath);
-        }
-        return (left.heading ?? '').localeCompare(right.heading ?? '');
-      }
-      return right.score - left.score;
-    })
-    .slice(0, validCount)
-    .map((entry) => entry.index);
 }
 
 export function validateMcpJsonRust(jsonText: string): RustMcpJsonValidationResult | null {
