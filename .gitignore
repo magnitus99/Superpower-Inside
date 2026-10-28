@@ -56,3 +56,7 @@ simulations/
 /.pi
 /.pi/
 /.codex/
+
+# 프로젝트 로컬 스킬은 전역(~/.agents/skills)에서 관리
+/.agents/skills/
+/skills-lock.json
