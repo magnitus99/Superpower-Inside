@@ -28,7 +28,6 @@ import {
   plan_chat_evidence_json,
   plan_chat_request_json,
   plan_tool_result_summary_json,
-  plan_vault_query_expansion_json,
   plan_chat_unique_result_indices_json,
   plan_source_chunks_json,
   plan_source_chunk_import_indices_json,
@@ -77,11 +76,6 @@ import {
   plan_tag_mentions_json,
   plan_agentic_tool_turn_json,
   plan_evidence_collection_json,
-  plan_indexed_review_inventory_json,
-  plan_indexed_review_segments_json,
-  score_indexed_review_segments_json,
-  validate_indexed_review_json,
-  validate_indexed_review_screen_json,
   render_indexed_review_answer_json,
   plan_folder_lexical_evidence_indices_json,
   plan_implicit_folder_query_paths_json,
@@ -111,7 +105,6 @@ import {
   plan_context_sources_json,
   plan_diverse_result_indices_json,
   plan_index_pending_files_json,
-  plan_evidence_candidate_order_json,
   plan_empty_file_index_record_json,
   plan_file_index_records_json,
   plan_indexed_db_bounded_cleanup_json,
@@ -141,15 +134,12 @@ import {
   plan_rerank_messages_json,
   plan_rerank_response_json,
   plan_rerank_result_order_json,
-  plan_research_summary_batches_json,
   plan_tool_result_source_references_json,
   plan_research_citation_indices_json,
-  plan_research_request_failure_json,
   plan_research_candidate_selection_json,
   plan_research_provider_ledger_transition_json,
   plan_research_provider_request_budget_json,
   derive_native_tool_coverage_receipt_json,
-  derive_research_coverage_receipt_json,
   plan_research_answer_contract_json,
   plan_repeated_tool_call_indices_json,
   format_mcp_json,
@@ -783,11 +773,6 @@ export class RustIvfRuntimeIndex {
     );
     return decodeBoundedIndexScorePairs(pairs, this.rowCount);
   }
-}
-
-export interface RustEvidenceScore {
-  evidenceId: string;
-  score: number;
 }
 
 export interface RustFileIndexEntryInput {
@@ -1548,29 +1533,6 @@ export function planToolResultSummaryRust(
   }
 }
 
-export function planVaultQueryExpansionRust(
-  question: string,
-  response = '',
-): { needsTranslation: boolean; query: string; variants: string[] } | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const plan: unknown = JSON.parse(plan_vault_query_expansion_json(question, response));
-    if (
-      !isStringRecordValueMap(plan) ||
-      typeof plan.needsTranslation !== 'boolean' ||
-      typeof plan.query !== 'string'
-    )
-      return null;
-    return {
-      needsTranslation: plan.needsTranslation,
-      query: plan.query,
-      variants: plan.variants as string[],
-    };
-  } catch {
-    return null;
-  }
-}
-
 /** 원문 구간 선택과 전송 예산 계산은 Rust의 결정적 계약을 사용합니다. */
 export function planChatEvidenceRust(input: {
   question: string;
@@ -2299,27 +2261,6 @@ export function planBm25CandidateResolutionRust(
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed) || !parsed.every(isBm25CandidatePlan)) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-export function planEvidenceCandidateOrderRust(
-  scores: readonly RustEvidenceScore[],
-  availableEvidenceIds: readonly string[],
-): RustEvidenceScore[] | null {
-  if (!scores.every(isEvidenceScore) || !availableEvidenceIds.every(isStringValue)) return null;
-  if (!ensureRustCore()) return null;
-
-  try {
-    const raw = plan_evidence_candidate_order_json(
-      JSON.stringify(scores),
-      JSON.stringify(availableEvidenceIds),
-    );
-    if (raw.length === 0) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || !parsed.every(isEvidenceScore)) return null;
     return parsed;
   } catch {
     return null;
@@ -3933,41 +3874,6 @@ export interface RustResearchCandidateSelectionPlan {
   planFingerprint: string;
 }
 
-export interface RustResearchInventorySnapshotInput {
-  paths: readonly string[];
-  total: number;
-}
-
-export interface RustResearchInventoryPageInput {
-  cursor: number;
-  paths: readonly string[];
-  total: number;
-  nextCursor: number | null;
-}
-
-export interface RustResearchLocalScreenInput {
-  screenedIndices: readonly number[];
-  selectedIndices: readonly number[];
-  matchedCandidateCount: number;
-  unreadableIndices: readonly number[];
-  omittedIndices: readonly number[];
-}
-
-export interface RustResearchProviderTransferInput {
-  transferredIndices: readonly number[];
-  analyzedIndices: readonly number[];
-  omittedIndices: readonly number[];
-  failedIndices: readonly number[];
-  omittedCandidateCount: number;
-}
-
-export interface RustResearchCoverageInput {
-  inventory: RustResearchInventorySnapshotInput;
-  pages: readonly RustResearchInventoryPageInput[];
-  localScreen: RustResearchLocalScreenInput;
-  providerTransfer: RustResearchProviderTransferInput;
-}
-
 export type RustResearchCoverageReasonCode =
   | 'invalid-inventory-path'
   | 'duplicate-inventory-path'
@@ -4075,20 +3981,6 @@ export function planResearchProviderLedgerTransitionRust(
       plan_research_provider_ledger_transition_json(JSON.stringify(input)),
     );
     return isResearchProviderLedgerTransitionPlan(parsed, input) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-export function deriveResearchCoverageReceiptRust(
-  input: RustResearchCoverageInput,
-): RustResearchCoverageReceipt | null {
-  if (!isResearchCoverageInput(input) || !ensureRustCore()) return null;
-  try {
-    const parsed: unknown = JSON.parse(
-      derive_research_coverage_receipt_json(JSON.stringify(input)),
-    );
-    return isResearchCoverageReceipt(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -4302,61 +4194,6 @@ function isResearchFacet(value: unknown): value is RustResearchFacet {
   );
 }
 
-function isResearchCoverageInput(input: RustResearchCoverageInput): boolean {
-  return (
-    isResearchInventorySnapshotInput(input.inventory) &&
-    input.pages.every(isResearchInventoryPageInput) &&
-    isResearchLocalScreenInput(input.localScreen) &&
-    isResearchProviderTransferInput(input.providerTransfer)
-  );
-}
-
-function isResearchInventorySnapshotInput(
-  value: unknown,
-): value is RustResearchInventorySnapshotInput {
-  return (
-    isStringRecordValueMap(value) &&
-    Array.isArray(value.paths) &&
-    value.paths.every(isStringValue) &&
-    isNonNegativeSafeInteger(value.total)
-  );
-}
-
-function isResearchInventoryPageInput(value: unknown): value is RustResearchInventoryPageInput {
-  return (
-    isStringRecordValueMap(value) &&
-    isNonNegativeSafeInteger(value.cursor) &&
-    Array.isArray(value.paths) &&
-    value.paths.every(isStringValue) &&
-    isNonNegativeSafeInteger(value.total) &&
-    (value.nextCursor === null || isNonNegativeSafeInteger(value.nextCursor))
-  );
-}
-
-function isResearchLocalScreenInput(value: unknown): value is RustResearchLocalScreenInput {
-  return (
-    isStringRecordValueMap(value) &&
-    isResearchIndexArray(value.screenedIndices) &&
-    isResearchIndexArray(value.selectedIndices) &&
-    isNonNegativeSafeInteger(value.matchedCandidateCount) &&
-    isResearchIndexArray(value.unreadableIndices) &&
-    isResearchIndexArray(value.omittedIndices)
-  );
-}
-
-function isResearchProviderTransferInput(
-  value: unknown,
-): value is RustResearchProviderTransferInput {
-  return (
-    isStringRecordValueMap(value) &&
-    isResearchIndexArray(value.transferredIndices) &&
-    isResearchIndexArray(value.analyzedIndices) &&
-    isResearchIndexArray(value.omittedIndices) &&
-    isResearchIndexArray(value.failedIndices) &&
-    isNonNegativeSafeInteger(value.omittedCandidateCount)
-  );
-}
-
 function isResearchCoverageReceipt(value: unknown): value is RustResearchCoverageReceipt {
   if (!isStringRecordValueMap(value)) return false;
   const reasonCodes = value.reasonCodes;
@@ -4460,10 +4297,6 @@ function isResearchAnswerViolationCode(value: unknown): value is RustResearchAns
   );
 }
 
-function isResearchIndexArray(value: unknown): value is number[] {
-  return Array.isArray(value) && value.every(isNonNegativeSafeInteger);
-}
-
 function isUniqueBoundedIndexArray(value: unknown, maxExclusive: number): value is number[] {
   return isBoundedIndexArray(value, maxExclusive) && new Set(value).size === value.length;
 }
@@ -4488,32 +4321,6 @@ export function hasVaultInventoryIntentRust(question: string): boolean {
     return has_vault_inventory_intent(question);
   } catch {
     return false;
-  }
-}
-
-export function planResearchSummaryBatchesRust(
-  itemSizes: readonly number[],
-  maxItems: number,
-  maxChars: number,
-): number[][] | null {
-  if (
-    !itemSizes.every(isNonNegativeSafeInteger) ||
-    !isNonNegativeSafeInteger(maxItems) ||
-    !isNonNegativeSafeInteger(maxChars) ||
-    !ensureRustCore()
-  ) {
-    return null;
-  }
-  try {
-    const parsed: unknown = JSON.parse(
-      plan_research_summary_batches_json(JSON.stringify(itemSizes), maxItems, maxChars),
-    );
-    return Array.isArray(parsed) &&
-      parsed.every((batch) => Array.isArray(batch) && batch.every(isNonNegativeSafeInteger))
-      ? parsed
-      : null;
-  } catch {
-    return null;
   }
 }
 
@@ -4546,12 +4353,6 @@ export function planResearchCitationIndicesRust(
   } catch {
     return null;
   }
-}
-
-export interface RustResearchRequestFailurePlan {
-  code: string;
-  retryable: boolean;
-  retryDelayMs: number;
 }
 
 export interface RustToolCallSignatureInput {
@@ -4608,36 +4409,6 @@ export interface RustEvidenceCollectionPlan {
   unresolved: string[];
 }
 
-export interface IndexedReviewSegment {
-  id: string;
-  path: string;
-  startLine: number;
-  endLine: number;
-  text: string;
-}
-
-export interface IndexedReviewRetrievalSignal {
-  path: string;
-  startLine?: number;
-  endLine?: number;
-  rank: number;
-}
-
-export interface IndexedReviewScreenDecision {
-  id: string;
-  relevant: boolean;
-  reason: string;
-}
-
-export interface IndexedReviewFinding {
-  path: string;
-  startLine: number;
-  endLine: number;
-  sourceId: string;
-  claim: string;
-  quote: string;
-}
-
 export function renderIndexedReviewAnswerRust(
   sourceIds: readonly string[],
   response: string,
@@ -4648,96 +4419,6 @@ export function renderIndexedReviewAnswerRust(
       render_indexed_review_answer_json(JSON.stringify(sourceIds), response),
     );
     return isStringRecordValueMap(value) && isStringValue(value.content) ? value.content : null;
-  } catch {
-    return null;
-  }
-}
-
-export function planIndexedReviewInventoryRust(input: {
-  indexedPaths: readonly string[];
-  visiblePaths: readonly string[];
-  priorityPaths: readonly string[];
-  scopes: readonly string[];
-}): string[] | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const value: unknown = JSON.parse(plan_indexed_review_inventory_json(JSON.stringify(input)));
-    return isStringRecordValueMap(value) &&
-      Array.isArray(value.paths) &&
-      value.paths.every(isStringValue)
-      ? value.paths
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function isIndexedReviewRange(value: unknown): value is Record<string, unknown> & {
-  path: string;
-  startLine: number;
-  endLine: number;
-} {
-  return (
-    isStringRecordValueMap(value) &&
-    isStringValue(value.path) &&
-    isNonNegativeSafeInteger(value.startLine) &&
-    value.startLine > 0 &&
-    isNonNegativeSafeInteger(value.endLine) &&
-    value.endLine >= value.startLine
-  );
-}
-
-export function planIndexedReviewSegmentsRust(
-  payload: string,
-  maxChars: number,
-): IndexedReviewSegment[] | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const value: unknown = JSON.parse(plan_indexed_review_segments_json(payload, maxChars));
-    if (!isStringRecordValueMap(value) || !Array.isArray(value.segments)) return null;
-    const rows: IndexedReviewSegment[] = [];
-    for (const row of value.segments) {
-      if (!isIndexedReviewRange(row) || !isStringValue(row.id) || !isStringValue(row.text))
-        return null;
-      rows.push({
-        id: row.id,
-        path: row.path,
-        startLine: row.startLine,
-        endLine: row.endLine,
-        text: row.text,
-      });
-    }
-    return rows;
-  } catch {
-    return null;
-  }
-}
-
-export function scoreIndexedReviewSegmentsRust(
-  question: string,
-  segments: readonly IndexedReviewSegment[],
-  retrievalSignals: readonly IndexedReviewRetrievalSignal[] = [],
-): Map<string, number> | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const value: unknown = JSON.parse(
-      score_indexed_review_segments_json(JSON.stringify({ question, segments, retrievalSignals })),
-    );
-    if (!isStringRecordValueMap(value) || !Array.isArray(value.scores)) return null;
-    const scores = new Map<string, number>();
-    for (const row of value.scores) {
-      if (
-        !isStringRecordValueMap(row) ||
-        !isStringValue(row.id) ||
-        typeof row.score !== 'number' ||
-        !Number.isFinite(row.score) ||
-        row.score < 0 ||
-        row.score > 1
-      )
-        return null;
-      scores.set(row.id, row.score);
-    }
-    return scores;
   } catch {
     return null;
   }
@@ -5768,77 +5449,6 @@ export function mergeIndexedEvidencePlansRust(
   }
 }
 
-export function validateIndexedReviewScreenRust(
-  segments: readonly IndexedReviewSegment[],
-  response: string,
-): IndexedReviewScreenDecision[] | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const value: unknown = JSON.parse(
-      validate_indexed_review_screen_json(JSON.stringify({ segments }), response),
-    );
-    if (!isStringRecordValueMap(value) || !Array.isArray(value.decisions)) return null;
-    const decisions: IndexedReviewScreenDecision[] = [];
-    for (const row of value.decisions) {
-      if (
-        !isStringRecordValueMap(row) ||
-        !isStringValue(row.id) ||
-        typeof row.relevant !== 'boolean' ||
-        !isStringValue(row.reason)
-      )
-        return null;
-      decisions.push({ id: row.id, relevant: row.relevant, reason: row.reason });
-    }
-    return decisions;
-  } catch {
-    return null;
-  }
-}
-
-export function validateIndexedReviewRust(
-  segments: readonly IndexedReviewSegment[],
-  response: string,
-): { findings: IndexedReviewFinding[]; reviewedSegments: number; rejectedSegments: number } | null {
-  if (!ensureRustCore()) return null;
-  try {
-    const value: unknown = JSON.parse(
-      validate_indexed_review_json(JSON.stringify(segments), response),
-    );
-    if (
-      !isStringRecordValueMap(value) ||
-      !Array.isArray(value.findings) ||
-      !isNonNegativeSafeInteger(value.reviewedSegments) ||
-      !isNonNegativeSafeInteger(value.rejectedSegments)
-    )
-      return null;
-    const findings: IndexedReviewFinding[] = [];
-    for (const row of value.findings) {
-      if (
-        !isIndexedReviewRange(row) ||
-        !isStringValue(row.sourceId) ||
-        !isStringValue(row.claim) ||
-        !isStringValue(row.quote)
-      )
-        return null;
-      findings.push({
-        path: row.path,
-        startLine: row.startLine,
-        endLine: row.endLine,
-        sourceId: row.sourceId,
-        claim: row.claim,
-        quote: row.quote,
-      });
-    }
-    return {
-      findings,
-      reviewedSegments: value.reviewedSegments,
-      rejectedSegments: value.rejectedSegments,
-    };
-  } catch {
-    return null;
-  }
-}
-
 /** 호스트는 원문 수집 I/O만 수행하고 선택·진행·종료는 Rust가 계산합니다. */
 export function planEvidenceCollectionRust(input: {
   question: string;
@@ -6164,46 +5774,6 @@ function isRustToolCallBlock(value: unknown): value is RustToolCallBlock {
     isNonNegativeSafeInteger(value.candidateIndex) &&
     (value.reason === 'duplicate-tool-call' || value.reason === 'native-search-budget-exceeded')
   );
-}
-
-export function planResearchRequestFailureRust(input: {
-  message: string;
-  status?: number;
-  failedAttempt: number;
-  retryAfterMs?: number;
-}): RustResearchRequestFailurePlan | null {
-  if (
-    !isStringValue(input.message) ||
-    !isNonNegativeSafeInteger(input.failedAttempt) ||
-    !ensureRustCore()
-  ) {
-    return null;
-  }
-  try {
-    const parsed: unknown = JSON.parse(
-      plan_research_request_failure_json(
-        input.message,
-        input.status ?? 0,
-        input.failedAttempt,
-        input.retryAfterMs ?? Number.NaN,
-      ),
-    );
-    if (
-      !isStringRecordValueMap(parsed) ||
-      !isStringValue(parsed.code) ||
-      typeof parsed.retryable !== 'boolean' ||
-      !isNonNegativeSafeInteger(parsed.retryDelayMs)
-    ) {
-      return null;
-    }
-    return {
-      code: parsed.code,
-      retryable: parsed.retryable,
-      retryDelayMs: parsed.retryDelayMs,
-    };
-  } catch {
-    return null;
-  }
 }
 
 export function normalizeMcpToolResultRust(result: unknown): RustMcpToolNormalizedResult | null {
@@ -7607,12 +7177,6 @@ function isBm25MatchAggregate(value: unknown): value is RustBm25MatchAggregate {
     Array.isArray(aggregate.documents) &&
     aggregate.documents.every(isBm25MatchDocument)
   );
-}
-
-function isEvidenceScore(value: unknown): value is RustEvidenceScore {
-  if (!value || typeof value !== 'object') return false;
-  const score = value as Partial<RustEvidenceScore>;
-  return isStringValue(score.evidenceId) && Number.isFinite(score.score);
 }
 
 function isDiverseResultCandidate(value: unknown): value is RustDiverseResultCandidate {
