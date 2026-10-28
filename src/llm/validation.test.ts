@@ -703,6 +703,31 @@ describe('provider validation', () => {
     });
   });
 
+  it('OpenCode Go/Go Plus base URL은 Go 모델 목록과 생성 endpoint를 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { object: 'list', data: [{ id: 'go-model', object: 'model' }] },
+    });
+    const config = { ...baseConfig, baseUrl: 'https://opencode.ai/zen/go/v1' };
+    expect(await fetchProviderModelsForStrategy('opencode', config)).toMatchObject({
+      valid: true,
+      models: ['go-model'],
+    });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      url: 'https://opencode.ai/inference/go/v1/models',
+    });
+
+    requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
+    await testProviderGenerationForStrategy(
+      'opencode',
+      { ...config, apiFormat: 'responses' },
+      'go-model',
+    );
+    expect(requestUrlMock.mock.calls[1]?.[0]).toMatchObject({
+      url: 'https://opencode.ai/inference/go/openai/v1/responses',
+    });
+  });
+
   it('Custom endpoint는 선택한 Responses·Messages·Gemini 경로를 검증한다', async () => {
     const config = {
       ...baseConfig,

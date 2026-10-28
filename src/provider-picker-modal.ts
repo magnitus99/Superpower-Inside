@@ -9,6 +9,10 @@ export interface ProviderPickerOption {
   icon: string;
   recommended?: boolean;
   legacy?: boolean;
+  /** 선택 시 프로필에 저장할 base URL 프리셋입니다. */
+  baseUrl?: string;
+  /** 선택 시 프로필 이름 프리셋입니다. */
+  profileName?: string;
 }
 
 /**
@@ -19,7 +23,7 @@ export class ProviderPickerModal extends Modal {
   constructor(
     app: App,
     private readonly options: readonly ProviderPickerOption[],
-    private readonly onChoose: (strategy: ProviderStrategyKey) => void,
+    private readonly onChoose: (option: ProviderPickerOption) => void,
   ) {
     super(app);
   }
@@ -76,7 +80,7 @@ export class ProviderPickerModal extends Modal {
       });
       button.addEventListener('click', () => {
         this.close();
-        this.onChoose(option.strategy);
+        this.onChoose(option);
       });
       if (option.recommended) firstButton = button;
     }

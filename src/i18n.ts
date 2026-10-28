@@ -1320,6 +1320,8 @@ export interface I18nKeys {
   providerCustomEndpointLabel: string;
   providerStrategyChatGPTDesc: string;
   providerStrategyOpenCodeDesc: string;
+  providerStrategyOpenCodeGoLabel: string;
+  providerStrategyOpenCodeGoDesc: string;
   providerStrategyClaudeDesc: string;
   providerStrategyOllamaDesc: string;
   providerStrategyOpenRouterDesc: string;
@@ -3289,6 +3291,9 @@ const ko: I18nKeys = {
     '브라우저에서 ChatGPT 계정으로 로그인해 구독으로 GPT 모델을 사용합니다. 별도 API 키가 필요 없으며 기본 연결입니다.',
   providerStrategyOpenCodeDesc:
     'OpenCode Console의 OpenAI·Anthropic 호환 게이트웨이입니다. 한 프로필에서 모델별로 Responses·Chat·Messages 형식을 자동 선택합니다.',
+  providerStrategyOpenCodeGoLabel: 'OpenCode Go / Go Plus',
+  providerStrategyOpenCodeGoDesc:
+    'Go·Go Plus 구독 전용 게이트웨이입니다. Console 크레딧과 분리된 Go 사용량으로 모델을 테스트합니다.',
   providerStrategyClaudeDesc: 'Anthropic Claude API를 Messages 형식으로 연결합니다.',
   providerStrategyOllamaDesc:
     'Ollama의 네이티브 API를 사용합니다. base URL을 바꿔 로컬 서버와 Ollama Cloud를 함께 사용할 수 있습니다.',
@@ -3341,7 +3346,7 @@ const ko: I18nKeys = {
   providerPickerRecommended: '기본',
   providerPickerLegacy: '레거시',
   providerOpenCodeBaseUrlDesc:
-    '기본값은 https://opencode.ai/inference 입니다. Go 플랜은 https://opencode.ai/inference/go 를 사용하세요.',
+    '기본값은 https://opencode.ai/inference(Zen/Console)입니다. Go·Go Plus는 https://opencode.ai/inference/go 를 사용하세요.',
   providerOllamaBaseUrlDesc:
     '로컬은 http://localhost:11434, Ollama Cloud는 https://ollama.com 을 사용합니다. 원격 주소에는 API 키가 필요합니다.',
   providerOpenAIBaseUrlDesc:
@@ -5423,6 +5428,9 @@ const en: I18nKeys = {
     'Sign in with a ChatGPT account in the browser and use GPT models through the subscription. No API key is required; this is the default connection.',
   providerStrategyOpenCodeDesc:
     'OpenCode Console OpenAI and Anthropic-compatible gateway. One profile routes each model to Responses, Chat, or Messages automatically.',
+  providerStrategyOpenCodeGoLabel: 'OpenCode Go / Go Plus',
+  providerStrategyOpenCodeGoDesc:
+    'Gateway for Go and Go Plus subscriptions. Model tests use Go usage separate from Console credits.',
   providerStrategyClaudeDesc: 'Connect the Anthropic Claude API over Messages.',
   providerStrategyOllamaDesc:
     'Use the native Ollama API. Change the base URL to use a local server or Ollama Cloud in one profile.',
@@ -5479,7 +5487,7 @@ const en: I18nKeys = {
   providerPickerRecommended: 'Default',
   providerPickerLegacy: 'Legacy',
   providerOpenCodeBaseUrlDesc:
-    'The default is https://opencode.ai/inference. For the Go plan use https://opencode.ai/inference/go.',
+    'The default is https://opencode.ai/inference (Zen/Console). For Go or Go Plus use https://opencode.ai/inference/go.',
   providerOllamaBaseUrlDesc:
     'Use http://localhost:11434 locally or https://ollama.com for Ollama Cloud. Remote endpoints need an API key.',
   providerOpenAIBaseUrlDesc:

@@ -108,6 +108,7 @@ import {
   getDefaultProviderApiFormat,
   normalizeProviderApiFormat,
   OPENCODE_DEFAULT_BASE_URL,
+  OPENCODE_GO_BASE_URL,
   PROVIDER_API_FORMATS,
   providerStrategyUsesEditableBaseUrl,
   resolveProviderModelApiFormat,
@@ -6364,28 +6365,54 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       openai: 'key-round',
       openAICompatible: 'plug',
     };
-    const options: ProviderPickerOption[] = getChatProviderStrategies().map((strategy) => ({
-      strategy,
-      label: getProviderStrategyLabels()[strategy],
-      description: getProviderStrategyDescription(strategy),
-      icon: icons[strategy] ?? 'plug',
-      recommended: strategy === 'openAIChatGPT',
-      legacy: strategy === 'openai',
-    }));
-    new ProviderPickerModal(this.app, options, (strategy) => {
-      this.createProviderProfile(strategy);
+    const options: ProviderPickerOption[] = getChatProviderStrategies().flatMap((strategy) => {
+      const shared = {
+        strategy,
+        icon: icons[strategy] ?? 'plug',
+        recommended: strategy === 'openAIChatGPT',
+        legacy: strategy === 'openai',
+      };
+      if (strategy !== 'opencode') {
+        return [{
+          ...shared,
+          label: getProviderStrategyLabels()[strategy],
+          description: getProviderStrategyDescription(strategy),
+        }];
+      }
+      // Go/Go Plus 구독은 Console 크레딧과 다른 base URL을 사용합니다.
+      return [
+        {
+          ...shared,
+          label: getProviderStrategyLabels()[strategy],
+          description: getProviderStrategyDescription(strategy),
+        },
+        {
+          ...shared,
+          label: t('providerStrategyOpenCodeGoLabel'),
+          description: t('providerStrategyOpenCodeGoDesc'),
+          baseUrl: OPENCODE_GO_BASE_URL,
+          profileName: t('providerStrategyOpenCodeGoLabel'),
+        },
+      ];
+    });
+    new ProviderPickerModal(this.app, options, (option) => {
+      this.createProviderProfile(option.strategy, option.baseUrl, option.profileName);
     }).open();
   }
 
-  private createProviderProfile(strategy: ProviderStrategyKey = 'openAIChatGPT'): void {
+  private createProviderProfile(
+    strategy: ProviderStrategyKey = 'openAIChatGPT',
+    baseUrl?: string,
+    profileName?: string,
+  ): void {
     const id = this.createProviderProfileId();
     const apiFormat = getDefaultProviderApiFormat(strategy);
     this.plugin.settings.providerProfiles.push({
       id,
-      name: getProviderStrategyLabels()[strategy],
+      name: profileName?.trim() || getProviderStrategyLabels()[strategy],
       strategy,
       apiKey: '',
-      baseUrl: this.getProviderStrategyDefaultBaseUrl(strategy) || undefined,
+      baseUrl: baseUrl?.trim() || this.getProviderStrategyDefaultBaseUrl(strategy) || undefined,
       ...(apiFormat ? { apiFormat } : {}),
       ...(strategy === 'gemini' ? { geminiAuthMode: 'apiKey' as const } : {}),
       enabled: true,

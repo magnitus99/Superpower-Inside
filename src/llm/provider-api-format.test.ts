@@ -54,6 +54,19 @@ describe('provider API 형식과 endpoint 정규화', () => {
     expect(buildOpenCodeEndpoint('https://opencode.ai/inference/go', 'gemini', 'gemini-x')).toBe(
       'https://opencode.ai/inference/go/google/v1beta/models/gemini-x:generateContent',
     );
+    // Go/Go Plus keys also use the older Zen Go base from the OpenCode CLI.
+    expect(normalizeOpenCodeBaseUrl('https://opencode.ai/zen/go/v1')).toBe(
+      'https://opencode.ai/inference/go',
+    );
+    expect(normalizeOpenCodeBaseUrl('https://opencode.ai/inference/go/v1')).toBe(
+      'https://opencode.ai/inference/go',
+    );
+    expect(buildOpenCodeModelsUrl('https://opencode.ai/zen/go/v1')).toBe(
+      'https://opencode.ai/inference/go/v1/models',
+    );
+    expect(buildOpenCodeEndpoint('https://opencode.ai/zen/go/v1', 'chat')).toBe(
+      'https://opencode.ai/inference/go/openai/v1/chat/completions',
+    );
   });
 
   it('ChatGPT OAuth만 base URL을 고정하고 나머지는 편집할 수 있다', () => {

@@ -8,6 +8,7 @@ import type {
 export const PROVIDER_API_FORMATS = ['responses', 'chat', 'messages', 'gemini'] as const;
 
 export const OPENCODE_DEFAULT_BASE_URL = 'https://opencode.ai/inference';
+export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/inference/go';
 
 const DEFAULT_API_FORMATS: Partial<Record<ProviderStrategyKey, ProviderApiFormat>> = {
   openAIChatGPT: 'responses',
@@ -105,8 +106,15 @@ export function buildProviderApiEndpoint(
 export function normalizeOpenCodeBaseUrl(baseUrl?: string): string {
   let url = (baseUrl?.trim() || OPENCODE_DEFAULT_BASE_URL).replace(/\/+$/, '');
   if (!url) return OPENCODE_DEFAULT_BASE_URL;
+  // Zen pay-as-you-go and Go/Go Plus are different bases. Older Go clients use `/zen/go/v1`.
   if (url === 'https://opencode.ai/zen/v1' || url.startsWith('https://opencode.ai/zen/v1/')) {
     url = url.replace('https://opencode.ai/zen/v1', OPENCODE_DEFAULT_BASE_URL);
+  } else if (
+    url === 'https://opencode.ai/zen/go' ||
+    url === 'https://opencode.ai/zen/go/v1' ||
+    url.startsWith('https://opencode.ai/zen/go/')
+  ) {
+    url = url.replace(/^https:\/\/opencode\.ai\/zen\/go(?:\/v1)?/, OPENCODE_GO_BASE_URL);
   }
   const geminiRoute = url.indexOf('/google/v1beta');
   if (geminiRoute >= 0) url = url.slice(0, geminiRoute);
@@ -117,6 +125,7 @@ export function normalizeOpenCodeBaseUrl(baseUrl?: string): string {
     '/anthropic/v1/messages',
     '/anthropic/v1',
     '/v1/models',
+    '/models',
     '/v1',
   ]) {
     if (url.endsWith(suffix)) {
