@@ -23,6 +23,6 @@ references: [chat-contract]
 
 ## 구현·검증 근거
 
-`registry.ts`, `client.ts`, `connection-state.ts`가 연결 책임을, `src/chat/mcp-tool-execution.ts`와 `tool-approval-resume.ts`가 승인 실행·재개를 조율한다. 관련 회귀 근거는 `registry.test.ts`, `client.test.ts`, `connection-state.test.ts`, `src/chat/mcp-tool-execution.test.ts`다.
+`registry.ts`, `client.ts`, `connection-state.ts`가 연결 책임을, `src/chat/mcp-tool-execution.ts`와 `src/chat/tool-approval-resume.ts`가 승인 실행·재개를 조율한다. 관련 회귀 근거는 `registry.test.ts`, `client.test.ts`, `connection-state.test.ts`, `src/chat/mcp-tool-execution.test.ts`다.
 
 이 문서는 도구 권한의 의도와 현재 binding 보호를 기록한다. 실제 서버 연결·외부 부작용·온라인 취소는 이번 편입에서 미검증이다. 검색 비활성/server-only와 전체 볼트 의도의 중첩 한계는 `chat-contract`에 둔다.

@@ -22,4 +22,4 @@ API 키와 ChatGPT 자격증명의 영속화는 Obsidian SecretStorage에 한정
 
 ## 근거와 한계
 
-공통 계약은 `providers.ts`, 비밀정보 처리는 `src/secrets/provider-secrets.ts`와 `provider-secrets.test.ts`가 근거다. 제공자별 메시지·스트리밍·tool call 테스트는 로컬 계약 검증이며 실제 온라인 제공자 지원·로그인 성공을 대신하지 않는다. 이번 편입에서는 인증·설정·제공자 구현을 변경하거나 온라인 호출을 실행하지 않았다.
+공통 계약은 `providers.ts`, 비밀정보 처리는 `src/secrets/provider-secrets.ts`와 `src/secrets/provider-secrets.test.ts`가 근거다. 제공자별 메시지·스트리밍·tool call 테스트는 로컬 계약 검증이며 실제 온라인 제공자 지원·로그인 성공을 대신하지 않는다. 이번 편입에서는 인증·설정·제공자 구현을 변경하거나 온라인 호출을 실행하지 않았다.

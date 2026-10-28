@@ -46,9 +46,11 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 
 2026-10-28 기준. 상세 실행 서사는 남기지 않고 날짜·커밋·일반 계약·명령·종료 상태·반복 횟수·차단 사유만 기록한다. 원문·문서명·질의·답변·개인 설정은 스펙·기억에 복제하지 않는다.
 
-**코드 경계 보강(2026-10-28):** 검토 coverage를 원문 검증 범위로 분리하고, 채택 근거의 현재 revision·contentHash를 갱신하며, 목록·개수 의도를 결정적으로 감지해 열거하고, WASM 벡터 랭킹 실패를 TS 대체 없이 닫았다. 검색 없이·server-only 우선순위, 준비 중 부분 색인 context 차단, 대기 실패 뒤 전사 중복 방지, 진행 문구 작업 영역 분리, 생성물 DB·승인 경계도 보강했다. `npm run quality:local` exit 0(전체 Vitest·i18n·UX gate·leak check·lint·typecheck·Rust)과 `npm run rust:check` 통과(538 passed·2 ignored)를 확인했지만 실제 답변·전수 recall·모델별 3회·화면 검수는 여전히 미완료다.
+**현재 HEAD 재검증(2026-10-28):** `npx vitest run` 208개 파일·2,503개 테스트 통과(1 skipped), `npm run rust:check` 550 passed·2 ignored. 아래 날짜별 수치는 해당 실행 시점의 기록이며, 이번 재검증에도 실제 답변·전수 recall·모델별 3회·화면 검수는 포함하지 않았다.
 
-**검색 준비·결정적 코어 보강(2026-10-28):** 검색 화면은 `preparing`에서 부분 색인 검색을 막고 제출 질의를 대기로 보존해 ready에서 한 번 재개하며, 확인된 제한(`degraded`)에서만 색인 범위 검색을 허용한다. 채팅 readiness는 키워드·벡터 중 하나라도 실제 사용 가능하면 다른 백엔드의 준비 실패만으로 검색을 막지 않는다. 질의 변형은 제공자 번역 호출 없이 로컬 질문 분해만 쓴다. 검색 선택·다양성, 벡터 저장소 mutation·통계·lookup, RAG 상태, pending 파일 계획의 TypeScript 계산 fallback을 제거해 WASM 실패 시 null·빈 결과·쓰기 중단으로 닫았다. `npm run lint`·`npm run typecheck` exit 0, `npm run test` 통과(Vitest 2,433 passed·1 skipped, i18n·UX gate·quality eval 187 passed·vault leak), 선행 `npm run quality:local`에서 Rust 538 passed·2 ignored·review·diff check 통과. preview에서 실제 Enter→submit 대기 등록과 ready 재개도 확인했다. 검토 예산 밖 discovery 페이지는 후속 질의 뒤 `unreviewed` 경로를 최대 8개(최대 8페이지) 골라 같은 질문·질의 변형·원래 facet 귀속으로 다시 검토하고 엔진 검증 근거만 합치도록 연결했다. 현재 원문이 바뀐 근거의 복구도 discovery 후보를 유지하고 확장 예산으로 재병합하며, 병합 불가·제외는 진단과 미완료 고지에 반영한다. 검색 화면의 `preparing`·`degraded`·색인 없음·문서 0건 상태는 preview에서 확인했고, `degraded`에서 성공한 색인 범위 응답을 버리던 경로를 결과 표시로 고쳤다. 다만 facet별 검색·집계를 엔진 한 번·색인 한 순회로 통합하는 목표는 아직 미완료다.
+**코드 경계 보강(2026-10-28):** 검토 coverage를 원문 검증 범위로 분리하고, 채택 근거의 현재 revision·contentHash를 갱신하며, 목록·개수 의도를 결정적으로 감지해 열거하고, WASM 벡터 랭킹 실패를 TS 대체 없이 닫았다. 검색 없이·server-only 우선순위, 준비 중 부분 색인 context 차단, 대기 실패 뒤 전사 중복 방지, 진행 문구 작업 영역 분리, 생성물 DB·승인 경계도 보강했다. `npm run quality:local` exit 0(전체 Vitest·i18n·UX gate·leak check·lint·typecheck·Rust)과 `npm run rust:check` 통과(538 passed·2 ignored, 당시 실행)를 확인했지만 실제 답변·전수 recall·모델별 3회·화면 검수는 여전히 미완료다.
+
+**검색 준비·결정적 코어 보강(2026-10-28):** 검색 화면은 `preparing`에서 부분 색인 검색을 막고 제출 질의를 대기로 보존해 ready에서 한 번 재개하며, 확인된 제한(`degraded`)에서만 색인 범위 검색을 허용한다. 채팅 readiness는 키워드·벡터 중 하나라도 실제 사용 가능하면 다른 백엔드의 준비 실패만으로 검색을 막지 않는다. 질의 변형은 제공자 번역 호출 없이 로컬 질문 분해만 쓴다. 검색 선택·다양성, 벡터 저장소 mutation·통계·lookup, RAG 상태, pending 파일 계획의 TypeScript 계산 fallback을 제거해 WASM 실패 시 null·빈 결과·쓰기 중단으로 닫았다. `npm run lint`·`npm run typecheck` exit 0, `npm run test` 통과(Vitest 2,433 passed·1 skipped, i18n·UX gate·quality eval 187 passed·vault leak, 당시 실행), 선행 `npm run quality:local`에서 Rust 538 passed·2 ignored·review·diff check 통과(당시 실행). preview에서 실제 Enter→submit 대기 등록과 ready 재개도 확인했다. 검토 예산 밖 discovery 페이지는 후속 질의 뒤 `unreviewed` 경로를 최대 8개(최대 8페이지) 골라 같은 질문·질의 변형·원래 facet 귀속으로 다시 검토하고 엔진 검증 근거만 합치도록 연결했다. 현재 원문이 바뀐 근거의 복구도 discovery 후보를 유지하고 확장 예산으로 재병합하며, 병합 불가·제외는 진단과 미완료 고지에 반영한다. 검색 화면의 `preparing`·`degraded`·색인 없음·문서 0건 상태는 preview에서 확인했고, `degraded`에서 성공한 색인 범위 응답을 버리던 경로를 결과 표시로 고쳤다. 다만 facet별 검색·집계를 엔진 한 번·색인 한 순회로 통합하는 목표는 아직 미완료다.
 
 **검토 예산 밖 discovery 조사 연결(2026-10-28):** 후속 질의 뒤 `unreviewed` discovery 경로를 최대 8개(최대 8페이지) 골라 같은 질문·로컬 질의 변형·원래 후보의 facet 귀속으로 다시 검색하고, 현재 원문 검증을 통과한 근거만 기존 dossier에 Rust로 병합했다. 필터가 있으면 현재 정책 재조회가 있을 때만 실행하며, 재조회·추가 검색 실패·취소는 기존 검증 근거를 유지한다. 추가 검토가 넓힌 검토 범위는 total·완료 진행·안내에 반영한다. `npm run typecheck`·`npx eslint` exit 0, `npx vitest run src/agent/indexed-vault-review.test.ts` 74 passed, 관련 후속·검색 테스트 121 passed, `git diff --check` exit 0. 9번째 페이지 밖 단서와 실제 답변 품질·전체 recall은 이번 검증 범위가 아니다.
 
@@ -58,7 +60,7 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 
 **구현·합성 검증 통과:** 사용자 지정 범위와 집계 일치, 발견 원장·후속 조사·상위 k와 분리한 문서별 열거·100문서 합성 열거, 미완료·예산 제한·검토 완료 구분, 실제 진행·추론 요약·검증 후 게시·상세 접기, 준비 대기 질문 보존과 한 번 재개, 문서·구현 차이 판정.
 
-**수정한 확인 결함:** 문자 예산 초과 구절 뒤 짧은 구절 선택 중단(`f79fc1b`), 문서 예산을 고유 경로가 아닌 청크 수로 계산한 `candidate_depth`(`759ad03`), BM25 작업자 순차 처리에서 미전송 요청에 timeout이 흐르던 계약(`c737093`), 번역 질의의 원래 주제 손실과 전체 원장 입력 예산 초과로 답변 호출이 건너뛰어지던 문제.
+**수정한 확인 결함:** 문자 예산 초과 구절 뒤 짧은 구절 선택 중단(`f79fc1b`), 문서 예산을 고유 경로가 아닌 청크 수로 계산한 `candidate_depth`(`759ad03`), BM25 작업자 순차 처리에서 미전송 요청에 timeout이 흐르던 계약(`93f3a36`), 번역 질의의 원래 주제 손실과 전체 원장 입력 예산 초과로 답변 호출이 건너뛰어지던 문제.
 
 **남은 미완료(대기열 순서):**
 1. 전체 전수검색 기준 집합과 필수 시나리오·대상 모델 범위를 확정한다.
