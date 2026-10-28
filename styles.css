@@ -8443,6 +8443,7 @@ button.superpower-inside-prompt-danger-btn:disabled {
 
 .superpower-inside-search-filter-field > .superpower-inside-search-filter-label {
   color: var(--text-muted);
+}
 
 /* Provider picker and wire-format labels */
 .superpower-inside-provider-picker-desc {
