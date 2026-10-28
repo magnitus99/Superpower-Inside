@@ -166,6 +166,8 @@ function planDocument(
 }
 
 const EVIDENCE_PATH_BATCH = 256;
+/** 검토 예산 밖 discovery 페이지에서 추가로 원문 검토할 경로 상한입니다. */
+const MAX_DISCOVERY_INSPECTIONS = 8;
 
 /** 색인 경로 순서를 유지하면서 후보에 포함된 경로만 중복 없이 고릅니다. */
 function candidateScopedPaths(
@@ -313,6 +315,93 @@ function mergedEvidencePlan(
       maxChars: merged.budget.maxChars,
       usedChars: merged.budget.usedChars,
     },
+  };
+}
+
+/**
+ * 기본 검토와 추가 검토(후속 질의·미검토 단서)를 Rust 병합 계약으로 합칩니다.
+ * 경로 집계는 실제 I/O 작업의 합집합이며 근거 선택·중복 제거는 엔진이 담당합니다.
+ */
+function mergeIndexedVaultSearch(
+  base: IndexedVaultSearchResult,
+  extra: IndexedVaultSearchResult,
+): IndexedVaultSearchResult | null {
+  const merged = mergeIndexedEvidencePlansRust({
+    plans: [
+      { ...base.plan, evidence: base.evidence },
+      // 추가 질의의 번호는 원래 비교 facet의 번호가 아니므로 재사용하지 않습니다.
+      {
+        ...extra.plan,
+        evidence: extra.evidence.map((item) => ({
+          ...item,
+          queryIndexes: [],
+          preferredQueryIndexes: [],
+        })),
+      },
+    ],
+    budget: {
+      maxPassages: base.evidence.length + extra.evidence.length,
+      maxChars: base.plan.budget.maxChars + extra.plan.budget.maxChars,
+    },
+  });
+  if (!merged) return null;
+  const requestedPaths = [
+    ...new Set([...base.coverage.requestedPaths, ...extra.coverage.requestedPaths]),
+  ];
+  const plannedPaths = [
+    ...new Set([...base.coverage.plannedPaths, ...extra.coverage.plannedPaths]),
+  ];
+  // 같은 문서를 다시 계획에 넣은 사실만으로 앞선 부분 읽기 실패를 해소하지 않습니다.
+  const unreviewedPaths = [
+    ...new Set([...base.coverage.unreviewedPaths, ...extra.coverage.unreviewedPaths]),
+  ];
+  // 추가 검토가 성공해도 기본 검토에서 남은 미검토·미색인 수를 지우지 않습니다.
+  const unreviewedDocuments = Math.max(
+    base.coverage.unreviewedDocuments,
+    extra.coverage.unreviewedDocuments,
+    unreviewedPaths.length,
+    merged.coverage.unreviewedDocuments,
+  );
+  const notIndexedDocuments = Math.max(
+    base.coverage.notIndexedDocuments,
+    extra.coverage.notIndexedDocuments,
+    merged.coverage.notIndexedDocuments,
+  );
+  const coverage: IndexedVaultSearchCoverage = {
+    ...base.coverage,
+    status:
+      unreviewedDocuments > 0 ||
+      merged.coverage.status === 'incomplete' ||
+      (base.coverage.documentScope === 'all' && notIndexedDocuments > 0)
+        ? 'incomplete'
+        : merged.coverage.status,
+    requestedPaths,
+    plannedPaths,
+    unreviewedPaths,
+    reviewedDocuments: plannedPaths.filter((path) => !unreviewedPaths.includes(path)).length,
+    unreviewedDocuments,
+    notIndexedDocuments,
+  };
+  return {
+    ...base,
+    plan: {
+      ...base.plan,
+      evidence: merged.evidence,
+      order: merged.order,
+      budget: { ...base.plan.budget, ...merged.budget },
+      diagnostics: {
+        ...base.plan.diagnostics,
+        selectedDocuments: merged.diagnostics.selectedDocuments,
+        selectedChunks: merged.diagnostics.selectedChunks,
+        truncated:
+          base.plan.diagnostics.truncated ||
+          extra.plan.diagnostics.truncated ||
+          merged.diagnostics.truncated,
+      },
+    },
+    evidence: merged.evidence,
+    rejected: [...base.rejected, ...extra.rejected],
+    coverage,
   };
 }
 
@@ -605,6 +694,7 @@ export interface IndexedReviewDiagnostics {
     answerCorrectionRequests?: number;
     followupRequests?: number;
     followupDocuments?: number;
+    discoveryInspectedDocuments?: number;
   };
   /** 최종 리뷰 결과 종류입니다. 디버그 추적에서 답변이 왜 근거만 나왔는지 판단할 때 씁니다. */
   outcome?: IndexedReviewOutcome;
@@ -1035,68 +1125,87 @@ async function runIndexedVaultReview(
     ));
     check();
     if (followup.search) {
-      const extra = followup.search;
-      const merged = mergeIndexedEvidencePlansRust({
-        plans: [
-          { ...baseSearch.plan, evidence: baseSearch.evidence },
-          // 후속 질의의 번호는 원래 비교 facet의 번호가 아니므로 재사용하지 않습니다.
-          { ...extra.plan, evidence: extra.evidence.map((item) => ({ ...item, queryIndexes: [], preferredQueryIndexes: [] })) },
-        ],
-        budget: {
-          maxPassages: baseSearch.evidence.length + extra.evidence.length,
-          maxChars: baseSearch.plan.budget.maxChars + extra.plan.budget.maxChars,
-        },
-      });
-      if (merged) {
-        // 경로 집계는 실제 I/O 작업의 합집합이며, 근거 선택·중복 제거는 Rust가 담당합니다.
-        const requestedPaths = [...new Set([...baseSearch.coverage.requestedPaths, ...extra.coverage.requestedPaths])];
-        const plannedPaths = [...new Set([...baseSearch.coverage.plannedPaths, ...extra.coverage.plannedPaths])];
-        // 같은 문서를 다시 계획에 넣은 사실만으로 앞선 부분 읽기 실패를 해소하지 않습니다.
-        const unreviewedPaths = [...new Set([...baseSearch.coverage.unreviewedPaths, ...extra.coverage.unreviewedPaths])];
-        // 후속 검토가 성공해도 기본 검토에서 남은 미검토·미색인 수를 지우지 않습니다.
-        const unreviewedDocuments = Math.max(
-          baseSearch.coverage.unreviewedDocuments,
-          extra.coverage.unreviewedDocuments,
-          unreviewedPaths.length,
-          merged.coverage.unreviewedDocuments,
-        );
-        const notIndexedDocuments = Math.max(
-          baseSearch.coverage.notIndexedDocuments,
-          extra.coverage.notIndexedDocuments,
-          merged.coverage.notIndexedDocuments,
-        );
-        const coverage: IndexedVaultSearchCoverage = {
-          ...baseSearch.coverage,
-          status:
-            unreviewedDocuments > 0 ||
-            merged.coverage.status === 'incomplete' ||
-            (baseSearch.coverage.documentScope === 'all' && notIndexedDocuments > 0)
-              ? 'incomplete'
-              : merged.coverage.status,
-          requestedPaths, plannedPaths, unreviewedPaths,
-          reviewedDocuments: plannedPaths.filter((path) => !unreviewedPaths.includes(path)).length,
-          unreviewedDocuments,
-          notIndexedDocuments,
-        };
-        search = {
-          ...baseSearch,
-          plan: {
-            ...baseSearch.plan, evidence: merged.evidence, order: merged.order,
-            budget: { ...baseSearch.plan.budget, ...merged.budget },
-            diagnostics: {
-              ...baseSearch.plan.diagnostics,
-              selectedDocuments: merged.diagnostics.selectedDocuments,
-              selectedChunks: merged.diagnostics.selectedChunks,
-              truncated: baseSearch.plan.diagnostics.truncated || extra.plan.diagnostics.truncated || merged.diagnostics.truncated,
-            },
-          },
-          evidence: merged.evidence,
-          rejected: [...baseSearch.rejected, ...extra.rejected],
-          coverage,
-        };
-        diagnostics.counts.followupDocuments = extra.coverage.plannedPaths.length;
+      const mergedSearch = mergeIndexedVaultSearch(search, followup.search);
+      if (mergedSearch) {
+        search = mergedSearch;
+        diagnostics.counts.followupDocuments = followup.search.coverage.plannedPaths.length;
       } else {
         followup.status = 'failed';
+      }
+    }
+    // 검토 예산 밖 discovery 페이지의 미검토 경로를 결정적으로 골라 원문 검토에 넘깁니다.
+    // 후보 구절이나 미검증 단서는 답변 컨텍스트로 승격하지 않고, 엔진의 현재 원문 검증을 통과한 근거만 합칩니다.
+    const discoveryCorpus = options.corpus;
+    if (
+      discoveryCorpus &&
+      options.discoveryCandidates &&
+      options.discoveryPaths &&
+      (!options.filters || options.getFollowupPaths)
+    ) {
+      try {
+        const allowedPaths = options.getFollowupPaths
+          ? await options.getFollowupPaths()
+          : options.discoveryPaths;
+        check();
+        const discoveryPage =
+          allowedPaths.length > 0 && options.isCurrent?.() !== false
+            ? pageIndexedDiscoveryRust({
+                candidates: options.discoveryCandidates,
+                originalPaths: options.discoveryPaths,
+                originalScopes: options.scopes,
+                allowedPaths,
+                reviewedPaths: search.coverage.plannedPaths,
+                selectedPaths: search.evidence.map((item) => item.path),
+                failedPaths: search.coverage.unreviewedPaths,
+                scopes: options.scopes,
+                offset: 0,
+                limit: 96,
+              })
+            : null;
+        const inspectedPaths = discoveryPage
+          ? [
+              ...new Set(
+                discoveryPage.items
+                  .filter((item) => item.state === 'unreviewed')
+                  .map((item) => item.path),
+              ),
+            ].slice(0, MAX_DISCOVERY_INSPECTIONS)
+          : [];
+        if (inspectedPaths.length > 0) {
+          const inspected = await interruptible(
+            searchIndexedVault({
+              question: options.scoringQuestion ?? options.question,
+              indexedPaths: inspectedPaths,
+              scopes: options.scopes,
+              corpus: discoveryCorpus,
+              documentScope: 'all',
+              filters: options.filters,
+              budget: { maxPassages: 8, maxChars: 32_768 },
+              signal: options.signal,
+            }),
+          );
+          check();
+          const mergedSearch = inspected ? mergeIndexedVaultSearch(search, inspected) : null;
+          if (mergedSearch) {
+            search = mergedSearch;
+            diagnostics.counts.discoveryInspectedDocuments = inspectedPaths.length;
+          } else {
+            appLogger.warn(
+              'Discovery inspection could not be merged; retaining the reviewed evidence.',
+              {
+                source: 'chat.indexed-review',
+                data: { inspectedDocuments: inspectedPaths.length },
+              },
+            );
+          }
+        }
+      } catch (error) {
+        check();
+        if (error instanceof Error && error.name === 'AbortError') throw error;
+        appLogger.warn(
+          'Discovery inspection unavailable; retaining the reviewed evidence.',
+          { source: 'chat.indexed-review', error },
+        );
       }
     }
     diagnostics.counts.candidateSegments = search.plan.evidence.length;

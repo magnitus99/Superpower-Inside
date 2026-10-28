@@ -33,6 +33,7 @@ vi.mock('../rag/rust-core', async (importOriginal) => {
 
 const RELEVANT = 'Synthetic/Relevant.md';
 const OTHER = 'Synthetic/Other.md';
+const HIDDEN = 'Synthetic/Hidden.md';
 const SOURCE_ID = RELEVANT + '#L3-L4';
 const OTHER_SOURCE_ID = OTHER + '#L1-L1';
 
@@ -83,6 +84,36 @@ function corpusFixture(): IndexedVaultCorpus {
     getEntriesByFilePaths: (paths) =>
       Promise.resolve(entries.filter((entry) => paths.includes(entry.metadata.filePath))),
     getFileIndexRecords: () => Promise.resolve(records),
+  };
+}
+
+function corpusWithDiscoverableDocument(): IndexedVaultCorpus {
+  const base = corpusFixture();
+  const record = {
+    filePath: HIDDEN,
+    contentHash: 'hash-hidden',
+    sourceMtime: 1,
+    sourceSize: 10,
+    vectorCount: 1,
+    updated: 1,
+  };
+  const entry = {
+    id: 'chunk-hidden',
+    vector: [],
+    metadata: {
+      filePath: HIDDEN,
+      startLine: 1,
+      endLine: 1,
+      text: 'Quartz cooling cycles increase in winter.',
+      contentHash: 'hash-hidden',
+    },
+  };
+  return {
+    getEntriesByFilePaths: async (paths) => {
+      const entries = await base.getEntriesByFilePaths(paths.filter((path) => path !== HIDDEN));
+      return paths.includes(HIDDEN) ? [...entries, entry] : entries;
+    },
+    getFileIndexRecords: async () => [...(await base.getFileIndexRecords()), record],
   };
 }
 
@@ -618,6 +649,48 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.readDiscoveryPage?.({
       allowedPaths: [RELEVANT], scopes: [], offset: 0, limit: 32,
     })?.summary.discoveredDocuments).toBe(1);
+  });
+
+  it('검토 예산 밖 discovery 페이지의 미검토 경로를 현재 원문 검증 근거로 합류시킨다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const result = await reviewIndexedVault(reviewOptions({
+      corpus: corpusWithDiscoverableDocument(),
+      indexedPaths: [RELEVANT, OTHER],
+      deferAnswer: true,
+      discoveryCandidates: [
+        { path: RELEVANT, score: 2, source: 'bm25', rank: 1 },
+        { path: OTHER, score: 1, source: 'bm25', rank: 2 },
+        { path: HIDDEN, score: 0.5, source: 'bm25', rank: 97, startLine: 1, endLine: 1 },
+      ],
+      discoveryPaths: [RELEVANT, OTHER, HIDDEN],
+    }));
+    expect(result.diagnostics.counts.discoveryInspectedDocuments).toBe(1);
+    expect(result.coverage.plannedPaths).toContain(HIDDEN);
+    const evidence = result.evidence.find((item) => item.path === HIDDEN);
+    expect(evidence?.quote).toBe('Quartz cooling cycles increase in winter.');
+    expect(result.citations.find((citation) => citation.filePath === HIDDEN)?.status).toBe(
+      'verified',
+    );
+    expect(result.dossier.discoverySummary?.selectedSourceDocuments).toBeGreaterThanOrEqual(2);
+  });
+
+  it('discovery 허용 범위 밖 경로는 추가 검토로 승격하지 않는다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const result = await reviewIndexedVault(reviewOptions({
+      corpus: corpusWithDiscoverableDocument(),
+      indexedPaths: [RELEVANT, OTHER],
+      deferAnswer: true,
+      discoveryCandidates: [
+        { path: HIDDEN, score: 1, source: 'bm25', rank: 97, startLine: 1, endLine: 1 },
+      ],
+      discoveryPaths: [RELEVANT, OTHER],
+    }));
+    expect(result.diagnostics.counts.discoveryInspectedDocuments).toBeUndefined();
+    expect(result.evidence.some((item) => item.path === HIDDEN)).toBe(false);
   });
 
   it('현재 실행이 끝났거나 취소된 단서 조회는 중단하고 필터 경계를 우회하지 않는다', async () => {
