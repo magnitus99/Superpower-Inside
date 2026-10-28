@@ -21,7 +21,7 @@ TypeScript와의 경계는 `src/rag/rust-core.ts`의 입출력 매핑이며 WASM
 
 현재 차이: `rankTopKPairsRust`는 WASM 초기화 실패 시 TypeScript cosine·정렬로 대체하지 않고 null을 반환하며, `src/rag/store.ts`의 호출부는 이를 빈 결과로 처리한다(`src/rag/rust-core-unavailable.test.ts`). 이번 보강으로 검색 선택·다양성 계획, 벡터 저장소 add·replace·remove·stats·lookup 계획, RAG 상태 계산, pending 파일 계획의 TypeScript 계산 fallback도 제거했다. 각 계획은 WASM 실패 시 null을 반환하고, 저장소 쓰기 계획 실패는 쓰기를 중단하며 조회·통계는 빈 결과로 닫는다. `planNativeToolCompatibilityFallbackRust`·`planVaultLinkFallbackIndexRust`는 이름과 달리 Rust wire wrapper이며 TypeScript 계산 대체가 아니다. 이 명세가 나열하던 TS 계산 fallback은 제거됐다.
 
-다만 `src/utils/rag-exclude-validation.ts`의 제외 경로·확장자 검증·정규화와 `src/chat/mcp-tools.ts`의 MCP 도구 인자 파싱·결과 정규화는 Rust를 먼저 사용하면서 실패 시 TypeScript 계산으로 닫는 경로가 남아 있다. 이 두 경로는 위 실패 계약과 아직 일치하지 않으므로, WASM을 사용할 수 없을 때 설정 검증과 도구 실행이 TS 결과로 계속 동작한다. 제거 전까지 이 차이를 완료로 해석하지 않는다.
+다만 `src/utils/rag-exclude-validation.ts`의 제외 경로·확장자 검증·정규화와 `src/chat/mcp-tools.ts`의 MCP 도구 인자 파싱·결과 정규화·빈 결과 판정(`parseToolArguments`·`normalizeToolResult`·`isMcpToolResultEmpty`)은 Rust를 먼저 사용하면서 실패 시 TypeScript 계산으로 닫는 경로가 남아 있다. 이 두 경로는 위 실패 계약과 아직 일치하지 않으므로, WASM을 사용할 수 없을 때 설정 검증과 도구 실행이 TS 결과로 계속 동작한다. 제거 전까지 이 차이를 완료로 해석하지 않는다. 같은 파일의 `classifyMcpToolError`는 Rust 분류가 실패하면 원문을 그대로 반환할 뿐 분류 계산을 TS로 재구현하지 않으므로 이 목록에서 제외한다. 검색·agent 리팩터링으로 TS 호출자가 사라진 wire export 10개는 glue에 남아 있으나, 이들의 입출력 매핑·타입 검증은 현재 대상이 아니다.
 
 WASM glue·base64는 수동 편집하지 않고 `npm run wasm:build`로 같은 소스 상태에서 생성한다. build/dev의 선행 WASM 빌드와 저장 형식의 legacy load·round-trip을 유지한다. PDF worker의 추출·페이지 매핑 예외는 `superpower-architecture`를 따른다.
 

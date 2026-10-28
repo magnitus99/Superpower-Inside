@@ -44,39 +44,42 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 
 ## 검증 상태와 이력
 
-2026-10-28 기준. 상세 실행 서사는 남기지 않고 날짜·커밋·일반 계약·명령·종료 상태·반복 횟수·차단 사유만 기록한다. 원문·문서명·질의·답변·개인 설정은 스펙·기억에 복제하지 않는다.
+2026-10-28 기준. 상세 실행 서사는 남기지 않고 날짜·커밋(있으면)·확인 범위·명령·종료 상태·반복 횟수·차단·한계만 기록한다. 반복 측정한 검증은 횟수를 명령 열에 함께 적는다. 아래 표는 날짜별 실행 기록이고 현재 상태는 바로 다음 '현재 HEAD 재검증' 문단이 소유한다. 원문·문서명·질의·답변·개인 설정은 스펙·기억에 복제하지 않는다.
 
-**현재 HEAD 재검증(2026-10-28):** `npx vitest run` 208개 파일·2,503개 테스트 통과(1 skipped), `npm run rust:check` 550 passed·2 ignored. 아래 날짜별 수치는 해당 실행 시점의 기록이며, 이번 재검증에도 실제 답변·전수 recall·모델별 3회·화면 검수는 포함하지 않았다.
+**현재 HEAD 재검증(2026-10-28):** `npx vitest run` 208개 파일 통과·1개 skipped(총 209개), 2,482개 테스트 통과·1 skipped(총 2,483개). `npm run rust:check` 550 passed·2 ignored. `npm run test:contracts` i18n·채팅 UX gate 통과, quality eval 186 passed. 이번 재검증에도 실제 답변·전수 recall·모델별 3회·화면 검수는 포함하지 않았다.
 
-**코드 경계 보강(2026-10-28):** 검토 coverage를 원문 검증 범위로 분리하고, 채택 근거의 현재 revision·contentHash를 갱신하며, 목록·개수 의도를 결정적으로 감지해 열거하고, WASM 벡터 랭킹 실패를 TS 대체 없이 닫았다. 검색 없이·server-only 우선순위, 준비 중 부분 색인 context 차단, 대기 실패 뒤 전사 중복 방지, 진행 문구 작업 영역 분리, 생성물 DB·승인 경계도 보강했다. `npm run quality:local` exit 0(전체 Vitest·i18n·UX gate·leak check·lint·typecheck·Rust)과 `npm run rust:check` 통과(538 passed·2 ignored, 당시 실행)를 확인했지만 실제 답변·전수 recall·모델별 3회·화면 검수는 여전히 미완료다.
+| 날짜·커밋 | 확인 범위 | 명령·종료 상태·반복 횟수 | 차단·한계 |
+| --- | --- | --- | --- |
+| 2026-10-28 | 검토 coverage를 원문 검증 범위로 분리, 채택 근거 revision·contentHash 갱신, 결정적 열거, WASM 벡터 랭킹 실패의 TS 대체 폐쇄, 검색 없이·server-only 우선순위, 준비 중 부분 색인 context 차단, 대기 실패 뒤 전사 중복 방지, 진행 문구 작업 영역 분리, 생성물 DB·승인 경계 | `npm run quality:local` exit 0(전체 Vitest·lint·typecheck·Rust·review·leak), `rust:check` 538 passed·2 ignored(당시) | 실제 답변·전수 recall·모델별 3회·화면 검수 미완료 |
+| 2026-10-28 | 검색 화면 `preparing` 부분 색인 차단·`degraded` 한정 허용·ready에서 1회 재개, 채팅 readiness 백엔드 독립, 로컬 질의 분해, 검색 선택·벡터 저장소 mutation·통계·lookup·RAG 상태·pending 파일 계획의 TS 계산 fallback 제거 | `npm run lint`·`npm run typecheck` exit 0, `test` 통과(Vitest 2,433 passed·1 skipped, i18n·UX gate·quality eval 187 passed(당시)·vault leak), 선행 `quality:local` Rust 538 passed·2 ignored(당시), preview Enter→submit 대기 등록·ready 재개 | facet 검색·집계의 단일 순회 미완료 |
+| 2026-10-28 | 검토 예산 밖 `unreviewed` discovery 경로 최대 8개·8페이지 재검색, 현재 원문 검증 통과 근거만 Rust 병합, 필터는 정책 재조회가 있을 때만, 재조회·검색 실패·취소는 기존 근거 유지, 넓힌 검토 범위를 총계·진행·안내에 반영 | `npm run typecheck`·`npx eslint` exit 0(당시), `npx vitest run src/agent/indexed-vault-review.test.ts src/agent/indexed-vault-followup.test.ts src/agent/indexed-vault-search.test.ts` 125 passed(2026-10-28 재측정), `git diff --check` exit 0 | 9번째 페이지 밖 단서·실제 답변 품질·전체 recall |
+| 2026-10-28 | 색인 중단 상태를 런타임 재초기화·설정 저장·스냅샷 복구 뒤에도 유지, 명시적 재색인·재개에서만 재시작, 재개 버튼은 성능 보호 일시정지가 아니어도 활성, `?readiness=preparing\|degraded`·`?docs=0`·`?noindex=1` 표시, `degraded` 성공 응답을 버리던 경로 수정 | `vitest main.test.ts src/settings.test.ts src/search/view.test.ts` 통과, `preview:build` exit 0, 스크린샷 4장 확인 | 실제 Obsidian 앱·좁은 폭 전체 조합·다크 테마 |
+| 2026-10-28 | BM25 facet 검색·term 집계를 `batch_search_and_aggregate_json` 1회로 통합, 허용 경로 1회 전송·선택 chunk 주소 1회 읽기, 실패·상한 초과 시 기존 경로 fallback, vector 후보는 facet별 호출 유지 | batch 1회·개별 `queryBm25Exhaustive`·`queryMatchInventory` 0회 테스트 고정, 20-term·null fallback 회귀, batch·개별 점수·순위·집계 동등 회귀, 합성 2,000문서 개별 6회 median 14.05ms·batch 1회 15.25ms | worker bridge·제품 p95 미측정, 지연 개선 미입증, 실제 답변·전체 recall 미재측정 |
+| 2026-10-28 | README의 '허용 색인 전체 본문 전송' 설명을 엔진 선별·현재 원문 검증 dossier 경로로 정정 | 문서 변경(코드 검사 없음) | 전체 재작성 없이 전송 범위만 수정, 다른 제품 설명 보존 |
+| 2026-10-28 | 스펙·코드 정합성 점검: 15개 노드의 코드 참조·링크·식별자 확인, 검사기 경로 분류 서술 보정, 검증 상태 서사를 표로 압축, 스펙이 참조하지 않는 WASM wire wrapper 10개와 전용 타입 11개·검증기 8개·import 10줄 제거 | `npm run quality:local` exit 0(lint·typecheck·test:unit·rust:check·review·leak·diff), `npm run test:contracts` 별도 실행 통과, `npx eslint` exit 0 | 실제 답변·전수 recall·화면 검수 미포함, WASM glue의 대응 export는 남음 |
+| 2026-10-28 `3231a6b`·`f2d7a7e` | 사용하지 않는 vault research agent와 chat-quality case 제거. `research-agent.test.ts`의 `it(` 선언 22건이 사라지고 `it.each`는 유지됐으며, chat-quality `whole-vault-user-format` case 1건이 빠지고 `indexed-vault-review.test.ts`에 1건이 추가됐다 | 당시 전면 재실행 기록은 없다. 제거 22건·추가 1건(순 −21)이 관측 감소(2,503→2,482)와 일치하고 quality eval은 187→186이다 | 제거된 실행 에이전트의 회귀 근거는 남기지 않음(의도 분류·진행 라벨만 유지) |
 
-**검색 준비·결정적 코어 보강(2026-10-28):** 검색 화면은 `preparing`에서 부분 색인 검색을 막고 제출 질의를 대기로 보존해 ready에서 한 번 재개하며, 확인된 제한(`degraded`)에서만 색인 범위 검색을 허용한다. 채팅 readiness는 키워드·벡터 중 하나라도 실제 사용 가능하면 다른 백엔드의 준비 실패만으로 검색을 막지 않는다. 질의 변형은 제공자 번역 호출 없이 로컬 질문 분해만 쓴다. 검색 선택·다양성, 벡터 저장소 mutation·통계·lookup, RAG 상태, pending 파일 계획의 TypeScript 계산 fallback을 제거해 WASM 실패 시 null·빈 결과·쓰기 중단으로 닫았다. `npm run lint`·`npm run typecheck` exit 0, `npm run test` 통과(Vitest 2,433 passed·1 skipped, i18n·UX gate·quality eval 187 passed·vault leak, 당시 실행), 선행 `npm run quality:local`에서 Rust 538 passed·2 ignored·review·diff check 통과(당시 실행). preview에서 실제 Enter→submit 대기 등록과 ready 재개도 확인했다. 검색 화면의 `preparing`·`degraded`·색인 없음·문서 0건 상태는 preview에서 확인했고, `degraded`에서 성공한 색인 범위 응답을 버리던 경로를 결과 표시로 고쳤다. 다만 facet별 검색·집계를 엔진 한 번·색인 한 순회로 통합하는 목표는 아직 미완료다.
+표에서 커밋 해시가 없는 행은 당시 커밋 기록을 남기지 않았다.
 
-**검토 예산 밖 discovery 조사 연결(2026-10-28):** 후속 질의 뒤 `unreviewed` discovery 경로를 최대 8개(최대 8페이지) 골라 같은 질문·로컬 질의 변형·원래 후보의 facet 귀속으로 다시 검색하고, 현재 원문 검증을 통과한 근거만 기존 dossier에 Rust로 병합했다. 필터가 있으면 현재 정책 재조회가 있을 때만 실행하며, 재조회·추가 검색 실패·취소는 기존 검증 근거를 유지한다. 추가 검토가 넓힌 검토 범위는 total·완료 진행·안내에 반영한다. `npm run typecheck`·`npx eslint` exit 0, `npx vitest run src/agent/indexed-vault-review.test.ts` 74 passed, 관련 후속·검색 테스트 121 passed, `git diff --check` exit 0. 9번째 페이지 밖 단서와 실제 답변 품질·전체 recall은 이번 검증 범위가 아니다.
-
-**사용자 중단·검색 준비 화면 검수(2026-10-28):** 사용자가 색인을 중단하면 자동 복구 일시정지를 런타임 재초기화·설정 저장·스냅샷 복구 뒤에도 유지하고, 명시적 재색인·재개에서만 다시 시작한다. 설정 재개 버튼은 성능 보호 일시정지가 아니어도 사용자 중단 상태에서 활성화된다. 검색 화면은 preview `?readiness=preparing|degraded`·`?docs=0`·`?noindex=1`로 확인했고, `preparing`은 제출 질의를 대기로 유지했으며, `degraded`는 제한 라벨과 색인 범위 결과를 함께 표시했고, 색인 없음과 degraded·문서 0건은 검색을 비활성화했다. `degraded`에서 성공 응답을 사용 불가로 버리던 경로를 결과 표시로 수정했다. `npx vitest run main.test.ts src/settings.test.ts src/search/view.test.ts` 통과, `npm run preview:build` exit 0, 실제 스크린샷 4장 확인. 실제 Obsidian 앱·좁은 폭 전체 조합·다크 테마는 이번 캡처 범위가 아니다.
-
-**BM25 facet batch 통합(2026-10-28):** 한 검색 계획의 BM25 facet 검색과 term 집계를 term 128개·입력 상한 안에서 `Bm25RuntimeIndex.batch_search_and_aggregate_json` 한 번의 worker 호출로 합치고, 허용 경로 목록은 payload에 한 번만 실으며 선택된 chunk의 원문 주소는 코퍼스에서 한 번만 읽는다. batch 실패·상한 초과 시 기존 facet별 검색·term 집계 경로로 되돌아가며, batch와 개별 호출의 점수·순위·집계가 같은지 Rust·BM25·query·검색 의존성 회귀에서 확인했다. 비교 계획에서 batch 호출 1회, 개별 `queryBm25Exhaustive`·`queryMatchInventory` 0회를 테스트로 고정했고, 20-term 계획과 null fallback도 회귀에 포함했다. 2,000문서 합성 fallback 런타임에서 개별 6회 호출 median 14.05ms, batch 1회 median 15.25ms였으며 worker bridge·제품 p95는 미측정이다. 호출 수와 결과 동등성은 확인했지만 실제 지연 개선은 아직 입증하지 않았다. vector 후보 임베딩·검색은 facet별 호출이 남아 있고, 실제 답변·전체 recall도 이번 변경에서 재측정하지 않았다.
-
-**구현·합성 검증 통과:** 사용자 지정 범위와 집계 일치, 발견 원장·후속 조사·상위 k와 분리한 문서별 열거·100문서 합성 열거, 미완료·예산 제한·검토 완료 구분, 실제 진행·추론 요약·검증 후 게시·상세 접기, 준비 대기 질문 보존과 한 번 재개, 문서·구현 차이 판정.
+**합성·구현 검증 통과:** 사용자 지정 범위와 집계 일치, 발견 원장·후속 조사·상위 k와 분리한 문서별 열거·100문서 합성 열거, 미완료·예산 제한·검토 완료 구분, 실제 진행·추론 요약·검증 후 게시·상세 접기, 준비 대기 질문 보존과 한 번 재개, 문서·구현 차이 판정.
 
 **수정한 확인 결함:** 문자 예산 초과 구절 뒤 짧은 구절 선택 중단(`f79fc1b`), 문서 예산을 고유 경로가 아닌 청크 수로 계산한 `candidate_depth`(`759ad03`), BM25 작업자 순차 처리에서 미전송 요청에 timeout이 흐르던 계약(`93f3a36`), 번역 질의의 원래 주제 손실과 전체 원장 입력 예산 초과로 답변 호출이 건너뛰어지던 문제.
 
 **남은 미완료(대기열 순서):**
-1. 전체 전수검색 기준 집합과 필수 시나리오·대상 모델 범위를 확정한다.
+1. `## 필수 시나리오와 합격 항목`의 각 시나리오에 자료·질문·범위·설정과 대상 모델을 연결해 기준선으로 고정한다(시나리오 표는 그 절이 소유).
 2. 제한 범위와 실제 전체 열거의 최종 표시 답변을 대조한다.
-3. 미완료·예산 제한·읽기 실패와 준비 대기·재개의 실제 화면을 확인한다.
+3. 미완료·예산 제한·읽기 실패와 준비 대기·재개의 실제 화면을 실제 Obsidian 앱·좁은 폭·다크 테마 조합으로 확인한다.
 4. 원문→dossier 최초 손실 단계를 확정하고 최소 수정한다(독립 합성 RED 선행).
 5. 대상 모델별 동일 조건 실제 표시 답변 연속 3회 합격을 확인한다.
 6. 회귀·보존·최종 종료를 판정한다.
+
+**대기열 밖 잔여 한계:** vector 후보의 facet별 호출과 단일 순회 미완료(`vault-evidence`), worker bridge·제품 p95 미측정과 지연 개선 미입증(상태는 아래 보조 지표가, 목표는 `superpower-goals`가 소유), WASM glue에 남은 무소비 wire export 10개(이번 변경으로 TS 래퍼가 사라진 것이며 그 밖의 미소비 export는 이전부터 존재, `deterministic-core`).
 
 **확인된 손실:** 추적 원문 3개가 초안에는 생성되지만 선택·병합·현재 원문 검증을 거친 dossier에 도달하지 않았다(재생 순위 38·76·1,273). 최초 손실 단계는 미확정이며 문서 예산 수정으로 후보 깊이·선택 문서 수가 늘었어도 미도달은 남았다. 최신 실제 답변도 참조 답안의 관계·조건/예외 설명에 미달했고 선택 모델의 연속 3회 합격은 없다. 다른 대상 모델은 미실행이다.
 
 **전수 대조 범위:** 계획 용어 10개를 NFKC·Unicode 소문자·비중첩 부분 일치로 Markdown 현재 본문 10,605개와 대조해 1,711문서·9,269발생, 용어별 엔진 문서 집합의 누락·추가 0을 확인했다. 비Markdown 701개는 제외했고 제목·경로·중첩 청크·구간/발생 집계와 전체 시나리오·의미 확장은 이 대조의 범위가 아니다.
 
 **보조 지표:** 검색 요청 수신 → dossier 준비 p95는 미측정이다. 전체 응답 완료 시간은 품질 판정에 쓰지 않는다.
-
-**README 데이터 전송 문구 정정(2026-10-28):** README의 '허용 색인 전체 본문 전송' 설명을 현행 엔진 선별·현재 원문 검증 dossier 경로로 정정했다. 전체 재작성 없이 데이터 전송 범위만 고쳤으며 README의 다른 제품 설명은 보존한다.
 
 **작업 대기열:** 남은 실행 항목은 ThinkRail TODO에 둔다. 세션이 바뀌면 이 절을 기준으로 대기열을 다시 만들고 완료·미완료 판정도 이 절과 대조한다.
 
@@ -102,7 +105,7 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 2. 위 "남은 미완료(대기열 순서)"를 ThinkRail TODO 그룹으로 다시 만들고, 각 단계에 소유 절과 합격 항목을 연결한다.
 3. 로컬 검증 자료(`.test-vault`의 QA·참조 답안)는 사용자 로컬에서만 읽고 원문·문서명·질의·답변을 스펙·커밋·기억에 복제하지 않는다. 모델 선택이 없으면 사용자에게 확인하며 임의 교체하지 않는다.
 4. 작업·판정은 이 문서의 시나리오와 상태 절을 기준으로 하고, 새 draft 노드 승격·기준 완화·미검증 완료 처리를 하지 않는다.
-5. 종료 시 검증 상태 절에 날짜·커밋·명령·종료 상태·반복 횟수·남은 한계를 갱신하고 완료된 TODO 단계만 닫는다.
+5. 종료 시 검증 상태 절에 날짜·커밋(있으면)·확인 범위·명령·종료 상태·반복 횟수·차단·한계를 갱신하고 완료된 TODO 단계만 닫는다.
 
 ## 테스트 볼트와 평가 데이터
 
@@ -118,7 +121,7 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 
 기능·버그 수정·리팩터링은 회귀 테스트를 먼저 추가하거나 확장한다. lint 비활성·타입 검사 무시·as any·clippy allow·prettier-ignore로 실패를 우회하지 않는다. 설치된 의존성·생성물로 오프라인 검증하고 Rust는 --frozen을 사용한다. 의존성이 없으면 준비 필요로 실패하며 네트워크·모델 호출로 조용히 대체하지 않는다.
 
-quality:local은 HEAD 대비 스테이징·작업 파일·새 파일을 기준으로 필요한 검사를 고른다. CI는 --base로 실제 비교 커밋을 전달한다. TS는 lint → typecheck → `test:unit`을 실행하고, `src/chat/`·`src/search/`·`src/i18n.ts`·CSS·채팅 UX fixture 변경은 `test:contracts`(i18n·채팅 UX·오프라인 계약)를 추가한다. 스크립트/CSS/CI는 관련 계약, Rust/WASM 경계는 TS 및 Rust fmt·clippy·tests를 확인한다. 문서·설명·버전만 바꾸면 community review·볼트 유출·diff 및 링크·명령을 확인하고 변경 없는 Rust·성능·온라인 보안·Patina를 강제하지 않는다. 현재 검사기의 경로 분류가 명세 파일에도 넓은 검사를 선택할 수 있으며 게이트를 완화하지 않는다.
+quality:local은 HEAD 대비 스테이징·작업 파일·새 파일을 기준으로 필요한 검사를 고른다. CI는 --base로 실제 비교 커밋을 전달한다. TS는 lint → typecheck → `test:unit`을 실행하고, `src/chat/`·`src/search/`·`src/i18n.ts`·CSS·채팅 UX fixture 변경은 `test:contracts`(i18n·채팅 UX·오프라인 계약)를 추가한다. 스크립트/CSS/CI는 관련 계약, Rust/WASM 경계는 TS 및 Rust fmt·clippy·tests를 확인한다. 문서·설명·버전만 바꾸면 community review·볼트 유출·diff 및 링크·명령을 확인하고 변경 없는 Rust·성능·온라인 보안·Patina를 강제하지 않는다. `.md`만 바뀌면 community review·볼트 유출·diff check가 선택되고, `design.md`는 preview 검수 안내를, `crates/` 아래 명세는 TS·Rust 검사를, `tests/fixtures/`는 `test:unit`을(`chat-ux/`는 `test:contracts`도) 추가로 선택한다. 이 선택은 게이트를 완화하는 근거가 아니다.
 
 의존성·보안 정책 변경의 CI와 수동 검사는 security:full을 사용한다. dev로 가는 기능 PR은 변경 범위만 검사하고, main으로 가는 릴리스 PR은 security:full 전체 검사를 실행한다. 태그 릴리스 workflow는 dev→main squash merge·버전·자산을 검증한 뒤 초안 Release를 만들며 전체 테스트를 중복 실행하지 않는다. 문서만 바뀌면 도구 설치·코드 검사도 생략한다. 이전 PR 실행은 새 커밋에서 취소한다. security:full의 기존 순서·측정 데이터·임계값·제외 정책을 유지한다.
 
