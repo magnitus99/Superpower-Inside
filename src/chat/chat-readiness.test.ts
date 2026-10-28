@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createChatReadinessSnapshot, resolveChatRetrievalReadiness } from './chat-readiness';
+import {
+  createChatReadinessSnapshot,
+  resolveChatRetrievalReadiness,
+  selectRagContextEngine,
+} from './chat-readiness';
 
 describe('질문을 보내기 위한 준비 조건', () => {
   it('연결이 없으면 질문을 보존한 채 연결 설정만 안내한다', () => {
@@ -207,5 +211,38 @@ describe('검색 준비 상태 요약', () => {
         indexing: true,
       }),
     ).toBe('degraded');
+  });
+
+  it('한 검색 백엔드가 살아 있으면 다른 백엔드의 제한을 검색 불가로 낮추지 않는다', () => {
+    // 임베딩 초기화가 건너뛰어도 BM25 색인이 준비됐으면 lexical 검색은 가능합니다.
+    expect(
+      resolveChatRetrievalReadiness({
+        initializing: false,
+        failed: true,
+        keywordIndex: 'ready',
+        indexing: false,
+        searchBackendReady: true,
+      }),
+    ).toBe('ready');
+    // 키워드 작업자가 실패해도 벡터 색인이 준비됐으면 검색은 가능합니다.
+    expect(
+      resolveChatRetrievalReadiness({
+        initializing: false,
+        failed: true,
+        keywordIndex: 'unavailable',
+        indexing: false,
+        searchBackendReady: true,
+      }),
+    ).toBe('ready');
+  });
+});
+
+describe('검색 컨텍스트 엔진 경계', () => {
+  it('ready일 때만 색인 엔진을 컨텍스트 구성에 전달한다', () => {
+    const engine = { query: () => Promise.resolve([]) };
+    expect(selectRagContextEngine(engine, 'ready')).toBe(engine);
+    expect(selectRagContextEngine(engine, 'preparing')).toBeNull();
+    expect(selectRagContextEngine(engine, 'degraded')).toBeNull();
+    expect(selectRagContextEngine(null, 'ready')).toBeNull();
   });
 });

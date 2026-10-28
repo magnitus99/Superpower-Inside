@@ -17,7 +17,7 @@ references: [superpower-goals, vault-evidence, interface-design, external-tools,
 
 ## 실행·저장 경계
 
-실행 token과 AbortController 소유권을 확인한 작업만 현재 대화의 표시·정리를 수행한다. 준비 중에는 부분 색인을 정상 근거로 사용하지 않고 실제 준비 상태를 기다리며, 세션·모델·설정 변경·중단·degraded·timeout을 구분한다. 입력·이미 확보한 결과를 실패 때문에 임의 초기화하지 않는다.
+실행 token과 AbortController 소유권을 확인한 작업만 현재 대화의 표시·정리를 수행한다. 준비 중에는 부분 색인을 정상 근거로 사용하지 않고 실제 준비 상태를 기다리며, 세션·모델·설정 변경·중단·degraded·timeout을 구분한다. 입력·이미 확보한 결과를 실패 때문에 임의 초기화하지 않는다. 준비 대기·실패 뒤 질문은 이미 전사에 저장됐으므로 입력창에 다시 채우지 않고 오류 행동이나 직접 입력으로 재시도한다.
 
 일반 채팅·검색 비활성·볼트 요청·명시적 외부 MCP 요청을 구분하는 것이 의도된 경계다. mixed 요청에서는 검증 dossier와 출처를 외부 도구 조율에 전달하되 네이티브 볼트 도구 실행 권한까지 주지 않는다. 명시적 외부 MCP를 포함하는 mixed 요청에서만 deferAnswer를 사용한다. 외부 도구 승인·재개는 고정된 호출 binding과 현재 정책으로 근거를 다시 확인하고, 저장된 별도 후보 범위가 없으면 기본 all 검토를 사용한다.
 
@@ -41,6 +41,6 @@ references: [superpower-goals, vault-evidence, interface-design, external-tools,
 
 ## 현재 차이와 검증 범위
 
-`view.ts`의 whole-vault 연구 판정은 일반 context 구성보다 앞선다. 전체 볼트 의도와 `skipAutoRagOnce` 또는 server-only가 겹칠 때 검색 비활성 경계의 우선순위는 이번 읽기 조사로 보장하지 못했다. 정상 server-only 경로의 자동 RAG 생략 테스트만으로 이 조합까지 검증됐다고 쓰지 않는다.
+`view.ts`의 whole-vault 연구 판정은 일반 context 구성보다 앞서며, `skipAutoRagOnce`(검색 없이 보내기)와 멘션 전용 server-only 요청이 있으면 전체 볼트 연구와 dossier 주입을 끈다. 이 우선순위는 `message-action-draft.test.ts`에서 검증한다.
 
 현재 구현 근거는 `view.ts`의 `handleSend`, `run-ownership.ts`, `retrieval-wait.ts`, `persistence.ts`, `mcp-tool-execution.ts`다. 관련 회귀 근거는 `run-ownership.test.ts`, `retrieval-wait.test.ts`, `message-action-draft.test.ts`, `persistence.test.ts`이다. 이 로컬 회귀 계약의 통과가 실제 모델의 답변 충실도를 증명하지 않으며, 실제 답변의 미완료 상태는 별도로 유지한다.

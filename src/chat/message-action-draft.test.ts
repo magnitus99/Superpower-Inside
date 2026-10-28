@@ -92,6 +92,7 @@ function createReviewResult(
 
 interface ActionView {
   inputArea: { value: string };
+  skipAutoRagOnce?: boolean;
   handleSend(text?: string, sourceMessage?: ChatMessageWithMeta): Promise<void>;
   regenerateFromAssistant(messageId: string): Promise<void>;
   repairSourceWarning(warning: SourceValidationWarning, messageId: string): void;
@@ -462,7 +463,8 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
         expect(stream).not.toHaveBeenCalled();
         expect(chat).not.toHaveBeenCalled();
         expect(controls.summarizeCurrentSessionTitle).not.toHaveBeenCalled();
-        expect(view.inputArea.value).toBe(outcome === 'session' ? '' : originalText);
+        expect(view.inputArea.value).toBe(outcome === 'stop' ? originalText : '');
+        expect(storedMessages.filter((message) => message.content === originalText)).toHaveLength(1);
         if (outcome === 'degraded' || outcome === 'read-error') {
           expect(controls.updateMessage).toHaveBeenLastCalledWith(
             expect.any(String), expect.any(String), true, undefined, undefined,
@@ -721,6 +723,59 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       expect.objectContaining({ documentScope: 'all', deferAnswer: false }),
     );
     expect(stream).not.toHaveBeenCalled();
+  });
+
+  it('검색 없이 보내기는 전체 볼트 연구를 끄고 플래그를 이번 실행에서만 소비한다', async () => {
+    vi.mocked(reviewIndexedVault).mockClear();
+    const { view, context, stream } = createView(0);
+    Object.assign(view, {
+      plugin: {
+        settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        prepareRagForChat: vi.fn(),
+        ragEngine: null,
+      },
+      skipAutoRagOnce: true,
+    });
+    context.mockResolvedValue({
+      systemPrompt: null,
+      attachments: [],
+      citations: [],
+      warnings: [],
+      vaultSearchEnabled: false,
+    });
+
+    await view.handleSend('이 볼트 전체를 조사해서 요약해줘');
+
+    expect(context.mock.calls[0]?.[7]).toBe(true);
+    expect(view.skipAutoRagOnce).toBe(false);
+    expect(reviewIndexedVault).not.toHaveBeenCalled();
+    expect(stream).toHaveBeenCalled();
+  });
+
+  it('멘션 전용 서버 요청은 전체 볼트 연구와 dossier 주입을 끈다', async () => {
+    vi.mocked(reviewIndexedVault).mockClear();
+    const { view, context, stream } = createView(0);
+    Object.assign(view, {
+      plugin: {
+        settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        prepareRagForChat: vi.fn(),
+        ragEngine: null,
+      },
+      getMentionedServerNames: () => ['synthetic-server'],
+      getMentionOnlyServers: () => ['synthetic-server'],
+    });
+    context.mockResolvedValue({
+      systemPrompt: null,
+      attachments: [],
+      citations: [],
+      warnings: [],
+      vaultSearchEnabled: true,
+    });
+
+    await view.handleSend('이 볼트 전체를 조사해서 요약해줘');
+
+    expect(reviewIndexedVault).not.toHaveBeenCalled();
+    expect(stream).toHaveBeenCalled();
   });
 
   it('mixed MCP에는 표시 본문 대신 dossier와 검증 출처만 주입한다', async () => {

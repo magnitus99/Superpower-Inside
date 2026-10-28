@@ -4823,6 +4823,14 @@ button.superpower-inside-prompt-danger-btn:disabled {
   min-width: 0;
 }
 
+/* Work status */
+.superpower-inside-chat-work-status {
+  padding: 0 2px 6px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 /* Thinking Layer */
 .superpower-inside-chat-thinking {
   margin-bottom: 2px;

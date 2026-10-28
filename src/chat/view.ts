@@ -110,7 +110,11 @@ import {
   type ComposerDraftSnapshot,
 } from './chat-composer';
 import { evaluateToolTrace } from './quality-evaluation';
-import { createChatReadinessSnapshot, type ChatReadinessItem } from './chat-readiness';
+import {
+  createChatReadinessSnapshot,
+  selectRagContextEngine,
+  type ChatReadinessItem,
+} from './chat-readiness';
 import { waitForRetrievalReady } from './retrieval-wait';
 import {
   createChatMessageMetaItems,
@@ -233,6 +237,8 @@ interface MessageMetaInput {
   indexedReviewDiagnostics?: ChatMessageWithMeta['indexedReviewDiagnostics'];
   indexedReviewNotice?: string;
   indexedMatchInventory?: ChatMessageWithMeta['indexedMatchInventory'];
+  /** 작업 영역에만 표시하는 진행 문구입니다. 답변 본문에는 넣지 않습니다. */
+  progressText?: string;
   providerKey?: ChatMessageWithMeta['providerKey'];
   providerLabel?: string;
   model?: string;
@@ -306,6 +312,7 @@ export class ChatView extends ItemView {
     HTMLElement,
     AssistantResponseLayoutController
   >();
+  private readonly progressTextByMessage = new Map<string, string>();
   private retrievalObserver?: {
     run: ChatRunHandle<AbortController>;
     record: (record: import('./types').ChatRetrievalRecord) => void;
@@ -1278,6 +1285,7 @@ export class ChatView extends ItemView {
         msg.citations,
         msg.sourceWarnings,
         msg.assistantQuestion,
+        this.progressTextByMessage?.get(id),
       );
     } else if (role === 'tool') {
       const bubble = bubbleContainer.createDiv({
@@ -1311,6 +1319,16 @@ export class ChatView extends ItemView {
     if (!wrapper) return;
 
     const message = this.messages.find((m) => m.id === id);
+    // 진행·완료 갱신이 추론·도구 기록을 인자로 넘기지 않아도 이미 확보한 값을 지우지 않습니다.
+    // 명시적인 빈 문자열·빈 배열은 기존 값을 지우는 요청으로 유지합니다.
+    const effectiveReasoning = reasoning ?? message?.reasoning;
+    const effectiveToolCalls = toolCalls ?? message?.toolCalls;
+    if (metaInput?.progressText !== undefined) {
+      this.progressTextByMessage?.set(id, metaInput.progressText);
+    } else if (isDone || content.trim().length > 0) {
+      this.progressTextByMessage?.delete(id);
+    }
+    const effectiveProgressText = this.progressTextByMessage?.get(id);
     if (message) {
       message.indexedReviewDiagnostics =
         metaInput?.indexedReviewDiagnostics ?? message.indexedReviewDiagnostics;
@@ -1327,7 +1345,7 @@ export class ChatView extends ItemView {
         content = `${content}\n\n${message.indexedReviewNotice}`;
       }
       message.content = content;
-      message.reasoning = reasoning;
+      message.reasoning = effectiveReasoning;
       if (metaInput?.originalContent !== undefined) {
         message.originalContent = metaInput.originalContent;
       }
@@ -1372,11 +1390,12 @@ export class ChatView extends ItemView {
         wrapper,
         content,
         isDone,
-        reasoning,
-        toolCalls,
+        effectiveReasoning,
+        effectiveToolCalls,
         message?.citations,
         message?.sourceWarnings,
         message?.assistantQuestion,
+        effectiveProgressText,
       );
       if (message) {
         const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
@@ -1451,6 +1470,7 @@ export class ChatView extends ItemView {
     citations?: SourceCitation[],
     sourceWarnings?: SourceValidationWarning[],
     assistantQuestion?: AssistantQuestion,
+    progressText?: string,
   ): void {
     const shouldShowStreamingPlaceholders = this.isStreaming && !content;
     const calls = toolCalls ?? [];
@@ -1473,13 +1493,25 @@ export class ChatView extends ItemView {
       },
       state: {
         hasAnswer: Boolean(content.trim() || assistantQuestion),
-        hasWork: Boolean(reasoning?.trim() || calls.length || shouldShowStreamingPlaceholders),
+        hasWork: Boolean(
+          reasoning?.trim() ||
+            calls.length ||
+            shouldShowStreamingPlaceholders ||
+            progressText?.trim(),
+        ),
         sourceCount,
         isComplete: !this.isStreaming && Boolean(content.trim() || assistantQuestion),
       },
     });
     this.assistantResponseLayouts.set(bubbleContainer, layout);
     this.renderAssistantResponseCollapseControl(bubbleContainer, layout.root);
+
+    const workStatus = layout.panels.work.createDiv({
+      cls: 'superpower-inside-chat-work-status',
+      attr: { 'aria-live': 'polite' },
+    });
+    workStatus.setText(progressText ?? '');
+    setHidden(workStatus, !progressText?.trim());
 
     const thinking = layout.panels.work.createEl('details', {
       cls: 'superpower-inside-chat-thinking superpower-inside-chat-reasoning',
@@ -1549,6 +1581,7 @@ export class ChatView extends ItemView {
     citations?: SourceCitation[],
     sourceWarnings?: SourceValidationWarning[],
     assistantQuestion?: AssistantQuestion,
+    progressText?: string,
   ): void {
     const bubbleContainer = wrapper.querySelector('.superpower-inside-chat-bubble-container');
     if (!isDomInstance(bubbleContainer, HTMLElement)) return;
@@ -1563,6 +1596,7 @@ export class ChatView extends ItemView {
         citations,
         sourceWarnings,
         assistantQuestion,
+        progressText,
       );
       layout = this.assistantResponseLayouts.get(bubbleContainer);
       if (!layout) return;
@@ -1578,6 +1612,7 @@ export class ChatView extends ItemView {
         citations,
         sourceWarnings,
         assistantQuestion,
+        progressText,
       );
       layout = this.assistantResponseLayouts.get(bubbleContainer);
       if (!layout) return;
@@ -1604,6 +1639,12 @@ export class ChatView extends ItemView {
       } else if (!hasReasoning && isDone) {
         thinking.open = false;
       }
+    }
+
+    const workStatus = bubbleContainer.querySelector('.superpower-inside-chat-work-status');
+    if (isDomInstance(workStatus, HTMLElement)) {
+      workStatus.setText(progressText ?? '');
+      setHidden(workStatus, !progressText?.trim());
     }
 
     const toolCallsSection = bubbleContainer.querySelector('.superpower-inside-chat-tool-calls');
@@ -1659,7 +1700,7 @@ export class ChatView extends ItemView {
     );
     layout.update({
       hasAnswer: Boolean(content.trim() || assistantQuestion),
-      hasWork: Boolean(reasoning?.trim() || toolCalls?.length),
+      hasWork: Boolean(reasoning?.trim() || toolCalls?.length || progressText?.trim()),
       sourceCount: this.getAssistantResponseSourceCount({
         citations,
         sourceWarnings,
@@ -2485,6 +2526,7 @@ export class ChatView extends ItemView {
     this.activeVariantByRoot.clear();
     this.sessionSystemPrompt = null;
     this.session = { filePath: null, title: '', isDirty: false };
+    this.progressTextByMessage?.clear();
     this.clearAutoSaveTimer();
     this.updateSessionTitle();
     this.messageEls.clear();
@@ -2743,6 +2785,7 @@ export class ChatView extends ItemView {
         msg.citations,
         msg.sourceWarnings,
         msg.assistantQuestion,
+        this.progressTextByMessage?.get(msg.id),
       );
     } else if (msg.role === 'tool') {
       const bubble = bubbleContainer.createDiv({ cls: 'superpower-inside-chat-bubble tool' });
@@ -2825,6 +2868,10 @@ export class ChatView extends ItemView {
   ): Promise<void> {
     const text = (submittedText ?? this.inputArea?.value)?.trim();
     if (!text || this.isStreaming) return;
+    // "검색 없이 보내기"는 이번 실행 전체에 적용하고, 전체 볼트 연구 분기가
+    // buildPromptContext를 건너뛰어도 다음 요청으로 남지 않게 여기서 소비합니다.
+    const skipAutoRag = this.skipAutoRagOnce;
+    this.skipAutoRagOnce = false;
     const workspaceFiles = captureWorkspaceMentionFiles(this.app);
     const regeneration = this.pendingRegeneration;
     const previousUserQuestions = selectPreviousUserQuestions(
@@ -2942,7 +2989,13 @@ export class ChatView extends ItemView {
     const contextMentions = this.parseMentions(text);
     const mentionedFolders = contextMentions.filter((mention) => mention.type === 'folder');
     const researchScopePath = mentionedFolders.length === 1 ? mentionedFolders[0].name : undefined;
+    const explicitlyMentionedServers = this.getMentionedServerNames(text);
+    const mentionedServers = this.getEffectiveMcpServerNames(text, explicitlyMentionedServers);
+    const mentionOnlyServers = this.getMentionOnlyServers(explicitlyMentionedServers);
+    // 검색 없이 보내기와 멘션 전용(server-only) 요청은 전체 볼트 연구보다 앞섭니다.
     const wholeVaultResearch =
+      !skipAutoRag &&
+      mentionOnlyServers.length === 0 &&
       !(
         this.plugin.settings.pluginAwareEnabled &&
         planPluginAwareIndicesRust(text, previousUserQuestions, getActivePluginInfo(this.app))
@@ -2951,9 +3004,6 @@ export class ChatView extends ItemView {
       !contextMentions.some((mention) => mention.type === 'tag') &&
       (isWholeVaultResearchRequest(text) ||
         Boolean(researchScopePath && isScopedVaultResearchRequest(text)));
-    const explicitlyMentionedServers = this.getMentionedServerNames(text);
-    const mentionedServers = this.getEffectiveMcpServerNames(text, explicitlyMentionedServers);
-    const mentionOnlyServers = this.getMentionOnlyServers(explicitlyMentionedServers);
     let promptContext: ContextBuildResult;
     try {
       promptContext = wholeVaultResearch
@@ -2984,6 +3034,7 @@ export class ChatView extends ItemView {
             provider,
             abortController.signal,
             true,
+            skipAutoRag,
           );
     } catch (error) {
       if (isChatRunOwner(this.activeRun, run)) {
@@ -3134,6 +3185,7 @@ export class ChatView extends ItemView {
     await this.saveCurrentSession();
     if (!isChatRunActive(this.activeRun, run)) return;
     let restoreDraft = false;
+    let skipTitleSummary = false;
 
     try {
       if (requiresVaultSearch) {
@@ -3158,7 +3210,9 @@ export class ChatView extends ItemView {
             ),
           });
           setHidden(this.typingIndicator, true);
-          restoreDraft = true;
+          // 질문은 이미 전사에 저장됐으므로 입력창에 다시 채우지 않습니다.
+          // 같은 실행은 늦게 재개되지 않고, 사용자는 오류 행동이나 직접 입력으로 재시도합니다.
+          skipTitleSummary = true;
           return;
         }
         if (retrievalReadiness !== 'ready') {
@@ -3187,7 +3241,10 @@ export class ChatView extends ItemView {
         return;
       }
       const toolsEnabled = maxToolRounds > 0;
-      const indexedVaultReview = wholeVaultResearch || promptContext.vaultSearchEnabled === true;
+      const indexedVaultReview =
+        !skipAutoRag &&
+        mentionOnlyServers.length === 0 &&
+        (wholeVaultResearch || promptContext.vaultSearchEnabled === true);
       if (indexedVaultReview) {
         await this.plugin.prepareRagForChat();
         if (!isChatRunActive(this.activeRun, run)) return;
@@ -3294,11 +3351,12 @@ export class ChatView extends ItemView {
               completed: progress.completedFiles,
               total: progress.totalFiles,
             });
-            this.updateMessage(assistantId, progressText, false, undefined, undefined, {
+            this.updateMessage(assistantId, '', false, undefined, undefined, {
               providerKey: key,
               providerLabel,
               model: modelName,
               providerCapability,
+              progressText,
               ...toTurnMeta(),
               ...contextMeta,
               ...assistantVariantMeta,
@@ -4033,7 +4091,9 @@ export class ChatView extends ItemView {
           ...assistantVariantMeta,
         });
       }
-      restoreDraft = true;
+      // 질문은 이미 전사에 저장됐으므로 실패 뒤 입력창을 되돌리지 않고,
+      // 오류 행동이나 직접 입력으로 재시도하게 합니다.
+      skipTitleSummary = true;
     } finally {
       const finalization = planChatRunFinalization(this.activeRun, run, restoreDraft);
       if (finalization.restoreSubmittedDraft) {
@@ -4045,7 +4105,8 @@ export class ChatView extends ItemView {
       }
       if (finalization.saveSession) {
         await this.saveCurrentSession();
-        if (!restoreDraft) await this.summarizeCurrentSessionTitle(provider, run);
+        if (!restoreDraft && !skipTitleSummary)
+          await this.summarizeCurrentSessionTitle(provider, run);
         await this.saveCurrentSession();
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
@@ -5334,6 +5395,7 @@ export class ChatView extends ItemView {
     provider?: LLMProvider,
     signal?: AbortSignal,
     deferAutoRagToReview = false,
+    skipAutoRag = false,
   ): Promise<ContextBuildResult> {
     const retrievalObserver = this.retrievalObserver ?? null;
     const parts: string[] = [];
@@ -5362,14 +5424,18 @@ export class ChatView extends ItemView {
       };
     }
 
-    const skipAutoRag = this.skipAutoRagOnce;
-    this.skipAutoRagOnce = false;
     const ragEngine: RagQueryLike | null = await resolveChatRagEngine(
       skipAutoRag ||
         pluginDocumentation !== null ||
         this.parseMentions(lastUserText).some((mention) => mention.type === 'tag'),
       () => this.plugin.prepareRagForChat(),
       () => this.getChatQueryEngine(retrievalObserver),
+    );
+    // 준비 중에는 부분 색인을 근거로 컨텍스트를 만들지 않습니다. 호출부의
+    // readiness 대기가 ready 전환 뒤 같은 실행을 이어갑니다.
+    const ragContextEngine = selectRagContextEngine(
+      ragEngine,
+      this.plugin.getRetrievalReadiness?.() ?? 'ready',
     );
     const { getRagCandidateFiles, isExplicitRagReadAllowed } = await import('../utils/vault');
     const candidateFiles = await getRagCandidateFiles(
@@ -5388,7 +5454,7 @@ export class ChatView extends ItemView {
           this.plugin.settings.rag,
           this.plugin.settings.chat,
         ),
-      ragEngine,
+      ragEngine: ragContextEngine,
       mcpRegistry: this.plugin.mcpRegistry,
       ragMinScore: this.plugin.settings.rag.minScore,
       maxContextChars: provider?.contextBudget?.evidenceChars,

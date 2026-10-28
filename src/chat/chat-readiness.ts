@@ -46,6 +46,8 @@ export interface ChatRetrievalRuntimeState {
   failed: boolean;
   keywordIndex: ChatKeywordIndexState;
   indexing: boolean;
+  /** 키워드 또는 벡터 색인 중 하나라도 실제 검색에 쓸 수 있습니다. */
+  searchBackendReady?: boolean;
 }
 
 /**
@@ -57,7 +59,10 @@ export interface ChatRetrievalRuntimeState {
 export function resolveChatRetrievalReadiness(
   state: ChatRetrievalRuntimeState,
 ): ChatRetrievalReadiness {
-  if (state.failed || state.keywordIndex === 'unavailable') return 'degraded';
+  // 한 검색 백엔드라도 살아 있으면 다른 백엔드의 초기화 실패만으로 검색을 막지 않습니다.
+  if (!state.searchBackendReady && (state.failed || state.keywordIndex === 'unavailable')) {
+    return 'degraded';
+  }
   if (state.initializing || state.keywordIndex === 'loading' || state.indexing) return 'preparing';
   return 'ready';
 }
@@ -177,4 +182,17 @@ export function createChatReadinessSnapshot(input: ChatReadinessInput): ChatRead
           : t('chatReadinessDegraded'),
     items,
   };
+}
+
+/** 준비 중에는 부분 색인으로 컨텍스트를 만들지 않고 호출부의 readiness 대기로 넘깁니다. */
+export function canUseRagContext(readiness: ChatRetrievalReadiness): boolean {
+  return readiness === 'ready';
+}
+
+/** 준비되지 않은 색인 엔진은 컨텍스트 구성에서 제외하고 대기 경로로 넘깁니다. */
+export function selectRagContextEngine<T>(
+  engine: T | null,
+  readiness: ChatRetrievalReadiness,
+): T | null {
+  return engine !== null && canUseRagContext(readiness) ? engine : null;
 }

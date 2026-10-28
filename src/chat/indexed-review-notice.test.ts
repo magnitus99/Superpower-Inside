@@ -97,6 +97,7 @@ describe('엔진 검토 고지와 근거 전용 렌더링', () => {
         citations,
         undefined,
         undefined,
+        undefined,
       );
     },
   );
