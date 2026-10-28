@@ -36,6 +36,7 @@ const OTHER = 'Synthetic/Other.md';
 const HIDDEN = 'Synthetic/Hidden.md';
 const SOURCE_ID = RELEVANT + '#L3-L4';
 const OTHER_SOURCE_ID = OTHER + '#L1-L1';
+const HIDDEN_SOURCE_ID = HIDDEN + '#L1-L1';
 
 function corpusFixture(): IndexedVaultCorpus {
   const records = [
@@ -215,6 +216,28 @@ function twoDocumentPlan(): RustIndexedEvidencePlan {
       droppedDocuments: { budget: 0, belowThreshold: 0, filtered: 0 },
     },
     coverage: { ...fixture.coverage, reviewedDocuments: 2 },
+  };
+}
+
+function hiddenPlan(): RustIndexedEvidencePlan {
+  const plan = planFixture();
+  const first = plan.evidence[0];
+  if (!first) throw new Error('hidden fixture without a passage');
+  return {
+    ...plan,
+    order: [HIDDEN_SOURCE_ID],
+    evidence: [
+      {
+        ...first,
+        sourceId: HIDDEN_SOURCE_ID,
+        path: HIDDEN,
+        quote: 'Quartz cooling cycles increase in winter.',
+        startLine: 1,
+        endLine: 1,
+        queryIndexes: [2],
+      },
+    ],
+    coverage: { ...plan.coverage, reviewedDocuments: 1 },
   };
 }
 
@@ -674,6 +697,143 @@ describe('엔진 근거 기반 색인 검토', () => {
       'verified',
     );
     expect(result.dossier.discoverySummary?.selectedSourceDocuments).toBeGreaterThanOrEqual(2);
+  });
+
+  it('앞선 discovery 페이지가 모두 검토 상태여도 다음 페이지의 미검토 경로를 조사한다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const dead = Array.from({ length: 96 }, (_, index) => `Synthetic/Dead-${index}.md`);
+    const result = await reviewIndexedVault(reviewOptions({
+      corpus: corpusWithDiscoverableDocument(),
+      indexedPaths: [RELEVANT, OTHER, ...dead],
+      deferAnswer: true,
+      discoveryCandidates: [
+        ...dead.map((path, index) => ({
+          path,
+          score: 1,
+          source: 'bm25' as const,
+          rank: index + 1,
+        })),
+        { path: HIDDEN, score: 0.5, source: 'bm25', rank: 97, startLine: 1, endLine: 1 },
+      ],
+      discoveryPaths: [RELEVANT, OTHER, ...dead, HIDDEN],
+    }));
+    expect(result.diagnostics.counts.discoveryInspectedDocuments).toBe(1);
+    expect(result.evidence.some((item) => item.path === HIDDEN)).toBe(true);
+  });
+
+  it('추가 검토에도 로컬 질의 변형을 넘겨 변형으로만 일치한 discovery 경로를 검증한다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const result = await reviewIndexedVault(reviewOptions({
+      corpus: corpusWithDiscoverableDocument(),
+      question: '쿼츠 냉각 주기',
+      queryVariants: ['Quartz cooling cycles'],
+      indexedPaths: [RELEVANT, OTHER],
+      deferAnswer: true,
+      discoveryCandidates: [
+        { path: HIDDEN, score: 0.5, source: 'bm25', rank: 97, startLine: 1, endLine: 1 },
+      ],
+      discoveryPaths: [RELEVANT, OTHER, HIDDEN],
+    }));
+    expect(result.evidence.some((item) => item.path === HIDDEN)).toBe(true);
+  });
+
+  it('허용 경로 재조회가 끝나지 않아도 중단하면 추가 검토를 기다리지 않는다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const controller = new AbortController();
+    let calls = 0;
+    const run = reviewIndexedVault(reviewOptions({
+      corpus: corpusWithDiscoverableDocument(),
+      indexedPaths: [RELEVANT, OTHER],
+      deferAnswer: true,
+      signal: controller.signal,
+      provider: scriptedAnswerProvider(['{"queries":[],"enumerate":false}']).provider,
+      discoveryCandidates: [
+        { path: HIDDEN, score: 1, source: 'bm25', rank: 97, startLine: 1, endLine: 1 },
+      ],
+      discoveryPaths: [RELEVANT, OTHER, HIDDEN],
+      getFollowupPaths: () => {
+        calls += 1;
+        return calls === 1
+          ? Promise.resolve([RELEVANT, OTHER, HIDDEN])
+          : new Promise<readonly string[]>(() => {});
+      },
+    }));
+    await vi.waitFor(() => expect(calls).toBe(2));
+    controller.abort();
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('discovery 추가 검토에 원래 후보와 비교 facet 귀속을 함께 넘긴다', async () => {
+    vi.mocked(planIndexedEvidenceRust).mockImplementation((input) =>
+      input.documents.length > 0 && input.documents.every((document) => document.path === HIDDEN)
+        ? hiddenPlan()
+        : comparisonEvidencePlan(),
+    );
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    const hiddenCandidate = {
+      path: HIDDEN,
+      score: 0.5,
+      source: 'vector' as const,
+      rank: 97,
+      queryIndex: 2,
+      startLine: 1,
+      endLine: 1,
+    };
+    const result = await reviewIndexedVault(reviewOptions({
+      corpus: corpusWithDiscoverableDocument(),
+      indexedPaths: [RELEVANT, OTHER],
+      deferAnswer: true,
+      searchPlan: COMPARISON_SEARCH_PLAN,
+      candidates: [
+        { path: RELEVANT, score: 2, source: 'bm25', rank: 1, queryIndex: 1 },
+        { path: OTHER, score: 1, source: 'bm25', rank: 2, queryIndex: 2 },
+      ],
+      discoveryCandidates: [
+        { path: RELEVANT, score: 2, source: 'bm25', rank: 1, queryIndex: 1 },
+        { path: OTHER, score: 1, source: 'bm25', rank: 2, queryIndex: 2 },
+        hiddenCandidate,
+      ],
+      discoveryPaths: [RELEVANT, OTHER, HIDDEN],
+    }));
+    expect(result.evidence.find((item) => item.path === HIDDEN)?.queryIndexes).toEqual([2]);
+    const inspectionCall = vi
+      .mocked(planIndexedEvidenceRust)
+      .mock.calls.find(
+        ([input]) =>
+          input.documents.length > 0 &&
+          input.documents.every((document) => document.path === HIDDEN),
+      );
+    expect(inspectionCall?.[0].candidates).toEqual([
+      expect.objectContaining({ path: HIDDEN, queryIndex: 2 }),
+    ]);
+  });
+
+  it('discovery 추가 검토가 넓힌 범위를 total·완료 진행·안내에 반영한다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const progress: { phase: string; totalFiles: number }[] = [];
+    const result = await reviewIndexedVault(reviewOptions({
+      corpus: corpusWithDiscoverableDocument(),
+      indexedPaths: [RELEVANT],
+      exhaustiveReview: true,
+      deferAnswer: true,
+      onProgress: (item) => progress.push({ phase: item.phase, totalFiles: item.totalFiles }),
+      discoveryCandidates: [
+        { path: HIDDEN, score: 0.5, source: 'bm25', rank: 97, startLine: 1, endLine: 1 },
+      ],
+      discoveryPaths: [RELEVANT, OTHER, HIDDEN],
+    }));
+    expect(result.processedFiles).toBe(2);
+    expect(result.totalFiles).toBe(2);
+    expect(result.coverageNotice).toContain('검토 범위 문서 2개');
+    expect(progress.filter((item) => item.phase === 'complete').at(-1)?.totalFiles).toBe(2);
   });
 
   it('discovery 허용 범위 밖 경로는 추가 검토로 승격하지 않는다', async () => {

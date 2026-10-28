@@ -168,6 +168,8 @@ function planDocument(
 const EVIDENCE_PATH_BATCH = 256;
 /** 검토 예산 밖 discovery 페이지에서 추가로 원문 검토할 경로 상한입니다. */
 const MAX_DISCOVERY_INSPECTIONS = 8;
+/** 미검토 경로를 찾기 위해 넘길 discovery 페이지 상한입니다. */
+const MAX_DISCOVERY_INSPECTION_PAGES = 8;
 
 /** 색인 경로 순서를 유지하면서 후보에 포함된 경로만 중복 없이 고릅니다. */
 function candidateScopedPaths(
@@ -325,18 +327,22 @@ function mergedEvidencePlan(
 function mergeIndexedVaultSearch(
   base: IndexedVaultSearchResult,
   extra: IndexedVaultSearchResult,
+  options: { resetFacetAttribution: boolean },
 ): IndexedVaultSearchResult | null {
   const merged = mergeIndexedEvidencePlansRust({
     plans: [
       { ...base.plan, evidence: base.evidence },
-      // 추가 질의의 번호는 원래 비교 facet의 번호가 아니므로 재사용하지 않습니다.
+      // 후속 질의의 번호는 원래 비교 facet의 번호가 아니므로 재사용하지 않습니다.
+      // 같은 질문·변형으로 다시 검토한 discovery 근거는 원래 facet 귀속을 유지합니다.
       {
         ...extra.plan,
-        evidence: extra.evidence.map((item) => ({
-          ...item,
-          queryIndexes: [],
-          preferredQueryIndexes: [],
-        })),
+        evidence: options.resetFacetAttribution
+          ? extra.evidence.map((item) => ({
+              ...item,
+              queryIndexes: [],
+              preferredQueryIndexes: [],
+            }))
+          : extra.evidence,
       },
     ],
     budget: {
@@ -962,7 +968,7 @@ async function runIndexedVaultReview(
     options.onProgress?.({ phase: 'inventory', completedFiles: 0, totalFiles: 0 });
     emitDiagnostics();
     const documentScope = options.documentScope ?? 'all';
-    const total =
+    let total =
       documentScope === 'candidates'
         ? new Set(options.candidates?.map((candidate) => candidate.path) ?? []).size
         : options.exhaustiveReview === true
@@ -1125,7 +1131,9 @@ async function runIndexedVaultReview(
     ));
     check();
     if (followup.search) {
-      const mergedSearch = mergeIndexedVaultSearch(search, followup.search);
+      const mergedSearch = mergeIndexedVaultSearch(search, followup.search, {
+        resetFacetAttribution: true,
+      });
       if (mergedSearch) {
         search = mergedSearch;
         diagnostics.counts.followupDocuments = followup.search.coverage.plannedPaths.length;
@@ -1144,48 +1152,65 @@ async function runIndexedVaultReview(
     ) {
       try {
         const allowedPaths = options.getFollowupPaths
-          ? await options.getFollowupPaths()
+          ? await interruptible(options.getFollowupPaths())
           : options.discoveryPaths;
         check();
-        const discoveryPage =
-          allowedPaths.length > 0 && options.isCurrent?.() !== false
-            ? pageIndexedDiscoveryRust({
-                candidates: options.discoveryCandidates,
-                originalPaths: options.discoveryPaths,
-                originalScopes: options.scopes,
-                allowedPaths,
-                reviewedPaths: search.coverage.plannedPaths,
-                selectedPaths: search.evidence.map((item) => item.path),
-                failedPaths: search.coverage.unreviewedPaths,
-                scopes: options.scopes,
-                offset: 0,
-                limit: 96,
-              })
-            : null;
-        const inspectedPaths = discoveryPage
-          ? [
-              ...new Set(
-                discoveryPage.items
-                  .filter((item) => item.state === 'unreviewed')
-                  .map((item) => item.path),
-              ),
-            ].slice(0, MAX_DISCOVERY_INSPECTIONS)
-          : [];
+        const inspectedPaths: string[] = [];
+        const inspected = new Set<string>();
+        let offset = 0;
+        for (
+          let pageCount = 0;
+          pageCount < MAX_DISCOVERY_INSPECTION_PAGES &&
+          inspectedPaths.length < MAX_DISCOVERY_INSPECTIONS;
+          pageCount += 1
+        ) {
+          if (allowedPaths.length === 0 || options.isCurrent?.() === false) break;
+          const page = pageIndexedDiscoveryRust({
+            candidates: options.discoveryCandidates,
+            originalPaths: options.discoveryPaths,
+            originalScopes: options.scopes,
+            allowedPaths,
+            reviewedPaths: search.coverage.plannedPaths,
+            selectedPaths: search.evidence.map((item) => item.path),
+            failedPaths: search.coverage.unreviewedPaths,
+            scopes: options.scopes,
+            offset,
+            limit: 96,
+          });
+          if (!page) break;
+          for (const item of page.items) {
+            if (item.state !== 'unreviewed' || inspected.has(item.path)) continue;
+            inspected.add(item.path);
+            inspectedPaths.push(item.path);
+            if (inspectedPaths.length >= MAX_DISCOVERY_INSPECTIONS) break;
+          }
+          if (page.nextOffset === null || page.nextOffset <= offset) break;
+          offset = page.nextOffset;
+        }
         if (inspectedPaths.length > 0) {
-          const inspected = await interruptible(
+          const inspectedCandidates = options.discoveryCandidates.filter((candidate) =>
+            inspected.has(candidate.path),
+          );
+          const inspectedSearch = await interruptible(
             searchIndexedVault({
               question: options.scoringQuestion ?? options.question,
+              queryVariants: options.queryVariants,
               indexedPaths: inspectedPaths,
               scopes: options.scopes,
               corpus: discoveryCorpus,
               documentScope: 'all',
               filters: options.filters,
+              ...(inspectedCandidates.length > 0 ? { candidates: inspectedCandidates } : {}),
               budget: { maxPassages: 8, maxChars: 32_768 },
               signal: options.signal,
             }),
           );
           check();
-          const mergedSearch = inspected ? mergeIndexedVaultSearch(search, inspected) : null;
+          const mergedSearch = inspectedSearch
+            ? mergeIndexedVaultSearch(search, inspectedSearch, {
+                resetFacetAttribution: false,
+              })
+            : null;
           if (mergedSearch) {
             search = mergedSearch;
             diagnostics.counts.discoveryInspectedDocuments = inspectedPaths.length;
@@ -1208,6 +1233,8 @@ async function runIndexedVaultReview(
         );
       }
     }
+    // 후속·discovery 추가 검토가 기본 검토 범위를 넓히면 완료 진행과 안내의 총계도 같은 범위를 씁니다.
+    total = Math.max(total, search.coverage.plannedPaths.length);
     diagnostics.counts.candidateSegments = search.plan.evidence.length;
     diagnostics.counts.screenAcceptedSegments = search.evidence.length;
     diagnostics.counts.extractedSegments = search.evidence.length;
@@ -1563,6 +1590,12 @@ async function runIndexedVaultReview(
       unreviewedDocuments: search.coverage.unreviewedDocuments + newlyStale,
       unreviewedPaths,
     };
+    // 현재 원문 검증에서 제외된 문서와 열거가 바꾼 실제 검토 범위를 최종 총계에 반영합니다.
+    total = Math.max(
+      total,
+      effectiveCoverage.plannedPaths.length,
+      effectiveCoverage.reviewedDocuments,
+    );
     const reviewed = effectiveCoverage.reviewedDocuments;
     const noticeValues = {
       total,

@@ -50,6 +50,7 @@ quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검�
 ## 현재 구현과 목표의 차이
 
 - `src/search/indexed-search-deps.ts`는 exhaustive lexical 후보와 discovery 단서를 보유하면서 원문 심사 경로를 최대 96개로 선택한다. 따라서 전체 lexical 발견을 전체 현재 원문 검토 완료로 해석할 수 없다. `indexed-vault-review.ts`의 coverage는 이제 원문을 실제로 읽은 경로만 `reviewedDocuments`로 세고, 발견 범위는 discovery 단서·일치 인벤토리·후속 조회로 분리한다. 검토 예산 밖 경로를 미검토 실패로 부풀리지 않지만, 발견 범위와 원문 검증 범위가 다르다는 사실은 그대로다.
+- 검토 예산 밖 discovery 페이지는 후속 질의 뒤 `unreviewed` 상태의 고유 경로를 최대 8개(discovery 페이지 최대 8장) 골라 같은 질문·로컬 질의 변형·원래 후보의 facet 귀속으로 한 번 더 검색하고, Rust 현재 원문 검증을 통과한 근거만 dossier에 합칩니다. 필터가 있으면 현재 정책 재조회(`getFollowupPaths`)가 있을 때만 실행하며, 재조회·추가 검색 실패나 취소는 기존 검증 근거를 유지합니다. 이 자동 조사는 발견 전체를 다시 검토하는 장치가 아니며, 8경로·8페이지 밖의 단서와 실제 답변 품질·전체 recall은 이 경계의 검증 대상이 아닙니다.
 - 기본 생성에는 인벤토리 총계가 전달되고, 목록·개수 의도는 후속 모델 응답과 무관하게 Rust 결정적 감지로 `enumerate` 경로를 실행한다. 다만 일치 인벤토리가 상한으로 자른 문서는 `missing`으로 남으므로 전체 무누락은 인벤토리 범위에 한정된다. 관련 근거는 `indexed-vault-followup.ts`, `indexed-vault-enumeration.ts`와 `indexed-vault-review.test.ts`다.
 - 채팅 검증은 현재 본문을 읽고 구절·절대 행 주소를 Rust로 재검증하며, 현재 파일 content hash를 색인 hash와 비교해 다르면 현재 revision·hash로 갱신한다. 해시 일치만으로 색인 사본을 verified로 승격하지 않는다. 검색 화면은 `verifyCurrentSource: false`이므로 같은 검증 보장이 아니다.
 - 기본 발견·집계·주소를 엔진 한 번·색인 한 순회에서 얻는 것이 목표다. 현재는 facet별 검색·집계와 배치별 WASM 계획이 있으며, 질의 변형은 로컬 질문 분해만 사용한다. 엔진 한 번·색인 한 순회로의 통합은 아직 남은 차이다.
