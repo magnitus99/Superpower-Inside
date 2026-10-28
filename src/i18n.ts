@@ -1365,6 +1365,11 @@ export interface I18nKeys {
   providerPickerRecommended: string;
   providerPickerLegacy: string;
   providerOpenCodeBaseUrlDesc: string;
+  providerOpenCodePlanName: string;
+  providerOpenCodePlanDesc: string;
+  providerOpenCodePlanZen: string;
+  providerOpenCodePlanGo: string;
+  providerOpenCodePlanCustom: string;
   providerOllamaBaseUrlDesc: string;
   providerOpenAIBaseUrlDesc: string;
   providerClaudeBaseUrlDesc: string;
@@ -3347,6 +3352,12 @@ const ko: I18nKeys = {
   providerPickerLegacy: '레거시',
   providerOpenCodeBaseUrlDesc:
     '기본값은 https://opencode.ai/inference(Zen/Console)입니다. Go·Go Plus는 https://opencode.ai/inference/go 를 사용하세요.',
+  providerOpenCodePlanName: 'OpenCode 플랜',
+  providerOpenCodePlanDesc:
+    'Zen/Console 크레딧과 Go·Go Plus 구독은 base URL이 다릅니다. 플랜을 고르면 주소를 맞춰 설정합니다.',
+  providerOpenCodePlanZen: 'Zen / Console',
+  providerOpenCodePlanGo: 'Go / Go Plus',
+  providerOpenCodePlanCustom: '직접 입력',
   providerOllamaBaseUrlDesc:
     '로컬은 http://localhost:11434, Ollama Cloud는 https://ollama.com 을 사용합니다. 원격 주소에는 API 키가 필요합니다.',
   providerOpenAIBaseUrlDesc:
@@ -5488,6 +5499,12 @@ const en: I18nKeys = {
   providerPickerLegacy: 'Legacy',
   providerOpenCodeBaseUrlDesc:
     'The default is https://opencode.ai/inference (Zen/Console). For Go or Go Plus use https://opencode.ai/inference/go.',
+  providerOpenCodePlanName: 'OpenCode plan',
+  providerOpenCodePlanDesc:
+    'Zen/Console credits and Go/Go Plus subscriptions use different base URLs. Choosing a plan sets the address for you.',
+  providerOpenCodePlanZen: 'Zen / Console',
+  providerOpenCodePlanGo: 'Go / Go Plus',
+  providerOpenCodePlanCustom: 'Custom',
   providerOllamaBaseUrlDesc:
     'Use http://localhost:11434 locally or https://ollama.com for Ollama Cloud. Remote endpoints need an API key.',
   providerOpenAIBaseUrlDesc:

@@ -109,6 +109,7 @@ import {
   normalizeProviderApiFormat,
   OPENCODE_DEFAULT_BASE_URL,
   OPENCODE_GO_BASE_URL,
+  resolveOpenCodePlan,
   PROVIDER_API_FORMATS,
   providerStrategyUsesEditableBaseUrl,
   resolveProviderModelApiFormat,
@@ -6203,6 +6204,27 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               this.refreshProviderProfilePresentation(profile, disclosureRoot);
             });
         });
+      if (profile.strategy === 'opencode') {
+        new Setting(group)
+          .setName(t('providerOpenCodePlanName'))
+          .setDesc(t('providerOpenCodePlanDesc'))
+          .addDropdown((dropdown) => {
+            dropdown.addOption('zen', t('providerOpenCodePlanZen'));
+            dropdown.addOption('go', t('providerOpenCodePlanGo'));
+            dropdown.addOption('custom', t('providerOpenCodePlanCustom'));
+            dropdown.setValue(resolveOpenCodePlan(profile.baseUrl));
+            dropdown.onChange((value) => {
+              if (value !== 'zen' && value !== 'go') return;
+              const nextBaseUrl =
+                value === 'go' ? OPENCODE_GO_BASE_URL : OPENCODE_DEFAULT_BASE_URL;
+              if ((profile.baseUrl ?? '') === nextBaseUrl) return;
+              profile.baseUrl = nextBaseUrl;
+              this.invalidateProviderProfileVerification(profile);
+              this.debouncedProviderSave();
+              this.refreshProviderProfilePresentation(profile, disclosureRoot);
+            });
+          });
+      }
     }
   }
 

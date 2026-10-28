@@ -5,6 +5,7 @@ import {
   buildOpenCodeModelsUrl,
   buildProviderApiEndpoint,
   normalizeOpenCodeBaseUrl,
+  resolveOpenCodePlan,
   normalizeProviderApiRoot,
   providerStrategyUsesEditableBaseUrl,
   resolveProviderModelApiFormat,
@@ -67,6 +68,14 @@ describe('provider API 형식과 endpoint 정규화', () => {
     expect(buildOpenCodeEndpoint('https://opencode.ai/zen/go/v1', 'chat')).toBe(
       'https://opencode.ai/inference/go/openai/v1/chat/completions',
     );
+  });
+
+  it('OpenCode base URL을 Zen·Go·직접 입력 플랜으로 구분한다', () => {
+    expect(resolveOpenCodePlan(undefined)).toBe('zen');
+    expect(resolveOpenCodePlan('https://opencode.ai/inference')).toBe('zen');
+    expect(resolveOpenCodePlan('https://opencode.ai/inference/go')).toBe('go');
+    expect(resolveOpenCodePlan('https://opencode.ai/zen/go/v1')).toBe('go');
+    expect(resolveOpenCodePlan('https://proxy.example/v1')).toBe('custom');
   });
 
   it('ChatGPT OAuth만 base URL을 고정하고 나머지는 편집할 수 있다', () => {

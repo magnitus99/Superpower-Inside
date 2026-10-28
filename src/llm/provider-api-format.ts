@@ -136,6 +136,14 @@ export function normalizeOpenCodeBaseUrl(baseUrl?: string): string {
   return url || OPENCODE_DEFAULT_BASE_URL;
 }
 
+/** OpenCode base URL이 Zen/Console, Go/Go Plus, 직접 입력 중 무엇인지 구분합니다. */
+export function resolveOpenCodePlan(baseUrl?: string): 'zen' | 'go' | 'custom' {
+  const normalized = normalizeOpenCodeBaseUrl(baseUrl);
+  if (normalized === OPENCODE_DEFAULT_BASE_URL) return 'zen';
+  if (normalized === OPENCODE_GO_BASE_URL) return 'go';
+  return 'custom';
+}
+
 export function buildOpenCodeEndpoint(
   baseUrl: string | undefined,
   format: ProviderApiFormat,
