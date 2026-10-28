@@ -1329,8 +1329,6 @@ export interface I18nKeys {
   providerStrategyCustomDesc: string;
   providerStrategyOllamaCloudDesc: string;
   providerStrategyTernlightDesc: string;
-  providerApiFormatLabel: string;
-  providerApiFormatDesc: string;
   providerApiFormatResponses: string;
   providerApiFormatChat: string;
   providerApiFormatMessages: string;
@@ -1364,12 +1362,10 @@ export interface I18nKeys {
   geminiResponseInvalid: string;
   providerPickerRecommended: string;
   providerPickerLegacy: string;
-  providerOpenCodeBaseUrlDesc: string;
   providerOpenCodePlanName: string;
   providerOpenCodePlanDesc: string;
   providerOpenCodePlanZen: string;
   providerOpenCodePlanGo: string;
-  providerOpenCodePlanCustom: string;
   providerOllamaBaseUrlDesc: string;
   providerOpenAIBaseUrlDesc: string;
   providerClaudeBaseUrlDesc: string;
@@ -3295,7 +3291,7 @@ const ko: I18nKeys = {
   providerStrategyChatGPTDesc:
     '브라우저에서 ChatGPT 계정으로 로그인해 구독으로 GPT 모델을 사용합니다. 별도 API 키가 필요 없으며 기본 연결입니다.',
   providerStrategyOpenCodeDesc:
-    'OpenCode Console의 OpenAI·Anthropic 호환 게이트웨이입니다. 한 프로필에서 모델별로 Responses·Chat·Messages 형식을 자동 선택합니다.',
+    'OpenCode Console의 OpenAI·Anthropic 호환 게이트웨이입니다. API 형식과 세션 헤더를 자동으로 맞춰 연결합니다.',
   providerStrategyOpenCodeGoLabel: 'OpenCode Go / Go Plus',
   providerStrategyOpenCodeGoDesc:
     'Go·Go Plus 구독 전용 게이트웨이입니다. Console 크레딧과 분리된 Go 사용량으로 모델을 테스트합니다.',
@@ -3306,12 +3302,9 @@ const ko: I18nKeys = {
   providerStrategyOpenAIDesc:
     'OpenAI API 키로 Chat Completions를 호출하는 레거시 방식입니다. 새 연결에는 ChatGPT 브라우저 로그인을 권장합니다.',
   providerStrategyCustomDesc:
-    'OpenAI·Anthropic 호환이나 Responses API를 제공하는 서버를 직접 연결합니다. Command Code 같은 외부 게이트웨이도 여기서 사용합니다.',
+    'OpenAI·Anthropic 호환이나 Responses API를 제공하는 서버를 직접 연결합니다. 모델 목록이나 endpoint에 맞춰 API 형식을 자동 선택하며, Command Code 같은 외부 게이트웨이도 여기서 사용합니다.',
   providerStrategyOllamaCloudDesc: '이전 Ollama Cloud 연결입니다. Ollama로 통합되었습니다.',
   providerStrategyTernlightDesc: '로컬 임베딩 전용 프로바이더입니다.',
-  providerApiFormatLabel: '기본 API 형식',
-  providerApiFormatDesc:
-    '모델 목록이 지원 형식을 알려 주면 모델별 형식이 우선합니다. 알려 주지 않으면 이 프로필의 모든 모델에 이 형식을 사용합니다.',
   providerApiFormatResponses: 'Responses API',
   providerApiFormatChat: 'Chat Completions',
   providerApiFormatMessages: 'Anthropic Messages',
@@ -3350,14 +3343,11 @@ const ko: I18nKeys = {
   geminiResponseInvalid: 'Gemini 응답을 확인할 수 없습니다. 모델과 형식을 확인하세요.',
   providerPickerRecommended: '기본',
   providerPickerLegacy: '레거시',
-  providerOpenCodeBaseUrlDesc:
-    '기본값은 https://opencode.ai/inference(Zen/Console)입니다. Go·Go Plus는 https://opencode.ai/inference/go 를 사용하세요.',
   providerOpenCodePlanName: 'OpenCode 플랜',
   providerOpenCodePlanDesc:
-    'Zen/Console 크레딧과 Go·Go Plus 구독은 base URL이 다릅니다. 플랜을 고르면 주소를 맞춰 설정합니다.',
+    'Zen/Console 크레딧과 Go·Go Plus 구독 중 사용할 플랜을 고릅니다. 연결 주소는 플랜에 맞춰 자동으로 설정됩니다.',
   providerOpenCodePlanZen: 'Zen / Console',
   providerOpenCodePlanGo: 'Go / Go Plus',
-  providerOpenCodePlanCustom: '직접 입력',
   providerOllamaBaseUrlDesc:
     '로컬은 http://localhost:11434, Ollama Cloud는 https://ollama.com 을 사용합니다. 원격 주소에는 API 키가 필요합니다.',
   providerOpenAIBaseUrlDesc:
@@ -5438,7 +5428,7 @@ const en: I18nKeys = {
   providerStrategyChatGPTDesc:
     'Sign in with a ChatGPT account in the browser and use GPT models through the subscription. No API key is required; this is the default connection.',
   providerStrategyOpenCodeDesc:
-    'OpenCode Console OpenAI and Anthropic-compatible gateway. One profile routes each model to Responses, Chat, or Messages automatically.',
+    'OpenCode Console OpenAI and Anthropic-compatible gateway. API formats and session headers are handled automatically.',
   providerStrategyOpenCodeGoLabel: 'OpenCode Go / Go Plus',
   providerStrategyOpenCodeGoDesc:
     'Gateway for Go and Go Plus subscriptions. Model tests use Go usage separate from Console credits.',
@@ -5449,12 +5439,9 @@ const en: I18nKeys = {
   providerStrategyOpenAIDesc:
     'Legacy OpenAI API key access over Chat Completions. Prefer ChatGPT browser sign-in for new connections.',
   providerStrategyCustomDesc:
-    'Connect a server that speaks OpenAI, Anthropic, or the Responses API. External gateways such as Command Code work here.',
+    'Connect a server that speaks OpenAI, Anthropic, or the Responses API. The API format is chosen automatically from the model list or endpoint; external gateways such as Command Code work here.',
   providerStrategyOllamaCloudDesc: 'Legacy Ollama Cloud connection. It has been merged into Ollama.',
   providerStrategyTernlightDesc: 'Local embedding-only provider.',
-  providerApiFormatLabel: 'Default API format',
-  providerApiFormatDesc:
-    'A model-level format from the model list wins when available. Otherwise every model in this profile uses this format.',
   providerApiFormatResponses: 'Responses API',
   providerApiFormatChat: 'Chat Completions',
   providerApiFormatMessages: 'Anthropic Messages',
@@ -5497,14 +5484,11 @@ const en: I18nKeys = {
   geminiResponseInvalid: 'Could not validate the Gemini response. Check the model and format.',
   providerPickerRecommended: 'Default',
   providerPickerLegacy: 'Legacy',
-  providerOpenCodeBaseUrlDesc:
-    'The default is https://opencode.ai/inference (Zen/Console). For Go or Go Plus use https://opencode.ai/inference/go.',
   providerOpenCodePlanName: 'OpenCode plan',
   providerOpenCodePlanDesc:
-    'Zen/Console credits and Go/Go Plus subscriptions use different base URLs. Choosing a plan sets the address for you.',
+    'Choose Zen/Console or Go/Go Plus. The connection address is set automatically for the plan.',
   providerOpenCodePlanZen: 'Zen / Console',
   providerOpenCodePlanGo: 'Go / Go Plus',
-  providerOpenCodePlanCustom: 'Custom',
   providerOllamaBaseUrlDesc:
     'Use http://localhost:11434 locally or https://ollama.com for Ollama Cloud. Remote endpoints need an API key.',
   providerOpenAIBaseUrlDesc:

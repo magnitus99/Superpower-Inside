@@ -4,22 +4,14 @@ import type {
   ProviderStrategyKey,
 } from '../settings';
 
-/** 프로바이더가 실제로 보내는 wire 형식입니다. */
-export const PROVIDER_API_FORMATS = ['responses', 'chat', 'messages', 'gemini'] as const;
-
 export const OPENCODE_DEFAULT_BASE_URL = 'https://opencode.ai/inference';
 export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/inference/go';
 
-const DEFAULT_API_FORMATS: Partial<Record<ProviderStrategyKey, ProviderApiFormat>> = {
-  openAIChatGPT: 'responses',
-  gemini: 'gemini',
-  opencode: 'responses',
-  claude: 'messages',
-  openai: 'chat',
-  openRouter: 'chat',
-  openAICompatible: 'chat',
-  ollama: 'chat',
-  ollamaCloud: 'chat',
+const API_FORMAT_PRIORITY: Record<ProviderApiFormat, number> = {
+  responses: 0,
+  chat: 1,
+  messages: 2,
+  gemini: 3,
 };
 
 export function normalizeProviderApiFormat(value: unknown): ProviderApiFormat | undefined {
@@ -28,33 +20,62 @@ export function normalizeProviderApiFormat(value: unknown): ProviderApiFormat | 
     : undefined;
 }
 
-export function getDefaultProviderApiFormat(
-  strategy: ProviderStrategyKey,
-): ProviderApiFormat | undefined {
-  return DEFAULT_API_FORMATS[strategy];
+/** OpenCode는 보조 요청까지 안정적인 대화 세션 ID를 요구합니다. */
+export function buildOpenCodeSessionHeaders(profileId?: string): Record<string, string> {
+  const session =
+    (profileId ?? 'profile').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96) || 'profile';
+  return { 'x-opencode-session': `ses_${session}` };
 }
 
-/** 형식 선택 UI를 노출할 전략인지 확인합니다. */
-export function supportsProviderApiFormatSelection(strategy: ProviderStrategyKey): boolean {
+/** 모델 목록이 wire 형식을 알려 주는 provider에서만 형식 배지를 표시합니다. */
+export function showsProviderModelApiFormat(strategy: ProviderStrategyKey): boolean {
   return strategy === 'opencode' || strategy === 'openAICompatible';
 }
 
+/** 붙여 넣은 전체 endpoint의 경로에서 wire 형식을 추론합니다. */
+export function inferProviderApiFormatFromBaseUrl(
+  baseUrl?: string,
+): ProviderApiFormat | undefined {
+  const url = baseUrl?.trim().toLowerCase() ?? '';
+  if (!url) return undefined;
+  if (url.includes('/anthropic/') || url.endsWith('/messages')) return 'messages';
+  if (url.includes('/responses')) return 'responses';
+  if (url.includes('/google/') || url.includes('/v1beta')) return 'gemini';
+  if (url.includes('/chat/completions')) return 'chat';
+  return undefined;
+}
+
 /**
- * 프로필 기본 형식과 모델이 선언한 지원 형식을 함께 사용합니다.
- * 모델이 지원 목록을 제공하면 사용자가 고른 형식이 그 안에 있을 때만 유지합니다.
+ * 프로필에서 고른 값이 아니라 provider와 모델이 선언한 정보로 wire 형식을 정합니다.
+ * OpenCode 모델 목록에는 형식이 없지만 모든 텍스트 모델을 Responses로 변환합니다.
  */
-export function resolveProviderModelApiFormat(
-  profileFormat: ProviderApiFormat | undefined,
+export function resolveAutomaticProviderApiFormat(
+  strategy: ProviderStrategyKey,
+  baseUrl: string | undefined,
   model?: Pick<ProviderModelConfig, 'apiFormat' | 'supportedApiFormats'>,
 ): ProviderApiFormat | undefined {
+  if (
+    strategy === 'openRouter' ||
+    strategy === 'openai' ||
+    strategy === 'ollama' ||
+    strategy === 'ollamaCloud'
+  ) {
+    return 'chat';
+  }
+  if (strategy === 'claude') return 'messages';
+  if (strategy === 'gemini') return 'gemini';
   const supported = model?.supportedApiFormats?.filter(
     (format): format is ProviderApiFormat => normalizeProviderApiFormat(format) !== undefined,
   );
   if (supported && supported.length > 0) {
-    if (profileFormat && supported.includes(profileFormat)) return profileFormat;
-    return supported[0];
+    return [...supported].sort((a, b) => API_FORMAT_PRIORITY[a] - API_FORMAT_PRIORITY[b])[0];
   }
-  return model?.apiFormat ?? profileFormat;
+  if (model?.apiFormat) return model.apiFormat;
+  if (strategy === 'opencode') return 'responses';
+  if (strategy === 'openAICompatible') {
+    return inferProviderApiFormatFromBaseUrl(baseUrl) ?? 'chat';
+  }
+  return undefined;
 }
 
 /** 사용자가 붙여 넣은 전체 엔드포인트를 API 루트로 줄입니다. */
@@ -136,12 +157,9 @@ export function normalizeOpenCodeBaseUrl(baseUrl?: string): string {
   return url || OPENCODE_DEFAULT_BASE_URL;
 }
 
-/** OpenCode base URL이 Zen/Console, Go/Go Plus, 직접 입력 중 무엇인지 구분합니다. */
-export function resolveOpenCodePlan(baseUrl?: string): 'zen' | 'go' | 'custom' {
-  const normalized = normalizeOpenCodeBaseUrl(baseUrl);
-  if (normalized === OPENCODE_DEFAULT_BASE_URL) return 'zen';
-  if (normalized === OPENCODE_GO_BASE_URL) return 'go';
-  return 'custom';
+/** OpenCode base URL을 Zen/Console 또는 Go/Go Plus 두 플랜으로만 구분합니다. */
+export function resolveOpenCodePlan(baseUrl?: string): 'zen' | 'go' {
+  return normalizeOpenCodeBaseUrl(baseUrl) === OPENCODE_GO_BASE_URL ? 'go' : 'zen';
 }
 
 export function buildOpenCodeEndpoint(
@@ -164,7 +182,7 @@ export function buildOpenCodeModelsUrl(baseUrl?: string): string {
 }
 
 export function providerStrategyUsesEditableBaseUrl(strategy: ProviderStrategyKey): boolean {
-  return strategy !== 'openAIChatGPT' && strategy !== 'ternlight';
+  return strategy !== 'openAIChatGPT' && strategy !== 'ternlight' && strategy !== 'opencode';
 }
 
 export function isLocalOllamaBaseUrl(baseUrl: string | undefined): boolean {

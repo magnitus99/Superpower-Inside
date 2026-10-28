@@ -181,12 +181,11 @@ describe('채팅 provider 실행 연결', () => {
     });
   });
 
-  it('모델이 선언한 Messages 형식을 프로필 기본 Chat보다 우선한다', async () => {
+  it('모델이 선언한 Messages 형식을 자동으로 선택한다', async () => {
     const settings = createCanonicalSettings();
     const profile = settings.providerProfiles[0];
     if (!profile) throw new Error('테스트 프로필이 없습니다');
     profile.baseUrl = 'https://api.commandcode.ai/provider/v1';
-    profile.apiFormat = 'chat';
     profile.models[0].supportedApiFormats = ['messages'];
     vi.mocked(requestUrl).mockReset().mockResolvedValueOnce({
       status: 200,

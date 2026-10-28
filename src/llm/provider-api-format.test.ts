@@ -4,11 +4,13 @@ import {
   buildOpenCodeEndpoint,
   buildOpenCodeModelsUrl,
   buildProviderApiEndpoint,
+  inferProviderApiFormatFromBaseUrl,
   normalizeOpenCodeBaseUrl,
+  resolveAutomaticProviderApiFormat,
   resolveOpenCodePlan,
   normalizeProviderApiRoot,
   providerStrategyUsesEditableBaseUrl,
-  resolveProviderModelApiFormat,
+  showsProviderModelApiFormat,
 } from './provider-api-format';
 
 function model(overrides: Partial<ProviderModelConfig> = {}): ProviderModelConfig {
@@ -70,34 +72,69 @@ describe('provider API 형식과 endpoint 정규화', () => {
     );
   });
 
-  it('OpenCode base URL을 Zen·Go·직접 입력 플랜으로 구분한다', () => {
+  it('OpenCode base URL은 Zen·Go 두 플랜으로만 정규화한다', () => {
     expect(resolveOpenCodePlan(undefined)).toBe('zen');
     expect(resolveOpenCodePlan('https://opencode.ai/inference')).toBe('zen');
     expect(resolveOpenCodePlan('https://opencode.ai/inference/go')).toBe('go');
     expect(resolveOpenCodePlan('https://opencode.ai/zen/go/v1')).toBe('go');
-    expect(resolveOpenCodePlan('https://proxy.example/v1')).toBe('custom');
+    expect(resolveOpenCodePlan('https://proxy.example/v1')).toBe('zen');
   });
 
-  it('ChatGPT OAuth만 base URL을 고정하고 나머지는 편집할 수 있다', () => {
-    for (const strategy of ['gemini', 'opencode', 'claude', 'ollama', 'openRouter', 'openai', 'openAICompatible'] as const) {
+  it('ChatGPT OAuth와 OpenCode 플랜은 base URL을 직접 편집하지 않는다', () => {
+    for (const strategy of ['gemini', 'claude', 'ollama', 'openRouter', 'openai', 'openAICompatible'] as const) {
       expect(providerStrategyUsesEditableBaseUrl(strategy)).toBe(true);
     }
     expect(providerStrategyUsesEditableBaseUrl('openAIChatGPT')).toBe(false);
+    expect(providerStrategyUsesEditableBaseUrl('opencode')).toBe(false);
     expect(providerStrategyUsesEditableBaseUrl('ternlight')).toBe(false);
   });
 
-  it('모델이 지원하는 형식 안에서 프로필 기본값을 유지한다', () => {
+  it('provider와 모델 선언으로 API 형식을 자동 선택한다', () => {
     expect(
-      resolveProviderModelApiFormat('chat', model({ supportedApiFormats: ['messages', 'chat'] })),
+      resolveAutomaticProviderApiFormat(
+        'opencode',
+        'https://opencode.ai/inference',
+        model(),
+      ),
+    ).toBe('responses');
+    expect(
+      resolveAutomaticProviderApiFormat(
+        'openRouter',
+        undefined,
+        model({ supportedApiFormats: ['messages'] }),
+      ),
     ).toBe('chat');
     expect(
-      resolveProviderModelApiFormat('responses', model({ supportedApiFormats: ['messages'] })),
+      resolveAutomaticProviderApiFormat(
+        'openAICompatible',
+        'https://api.commandcode.ai/provider/v1',
+        model({ supportedApiFormats: ['chat', 'responses'] }),
+      ),
+    ).toBe('responses');
+    expect(
+      resolveAutomaticProviderApiFormat(
+        'openAICompatible',
+        'https://api.commandcode.ai/provider/v1',
+        model({ supportedApiFormats: ['messages'] }),
+      ),
     ).toBe('messages');
-    expect(resolveProviderModelApiFormat('responses', model({ apiFormat: 'messages' }))).toBe(
-      'messages',
+    expect(
+      resolveAutomaticProviderApiFormat(
+        'openAICompatible',
+        'https://api.commandcode.ai/provider/v1/messages',
+        model(),
+      ),
+    ).toBe('messages');
+    expect(
+      resolveAutomaticProviderApiFormat('openAICompatible', 'https://example.com/v1', model()),
+    ).toBe('chat');
+    expect(resolveAutomaticProviderApiFormat('claude', undefined, model())).toBe('messages');
+    expect(resolveAutomaticProviderApiFormat('gemini', undefined, model())).toBe('gemini');
+    expect(inferProviderApiFormatFromBaseUrl('https://example.com/v1/responses')).toBe(
+      'responses',
     );
-    expect(resolveProviderModelApiFormat('gemini', model({ supportedApiFormats: ['gemini'] }))).toBe(
-      'gemini',
-    );
+    expect(inferProviderApiFormatFromBaseUrl('https://example.com/v1beta')).toBe('gemini');
+    expect(showsProviderModelApiFormat('opencode')).toBe(true);
+    expect(showsProviderModelApiFormat('openRouter')).toBe(false);
   });
 });

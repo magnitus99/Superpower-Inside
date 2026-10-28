@@ -804,6 +804,7 @@ describe('OpenCode·다중 프로토콜 연결', () => {
     expect(call.headers).toMatchObject({
       authorization: 'Bearer oc_sk_test',
       'anthropic-version': '2023-06-01',
+      'x-opencode-session': 'ses_profile',
     });
     expect(chunks.join('')).toBe('claude');
   });

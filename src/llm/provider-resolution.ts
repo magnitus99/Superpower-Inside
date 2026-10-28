@@ -16,7 +16,7 @@ import {
   type LLMProvider,
 } from './providers';
 import { fetchModelContext, withModelContext } from './model-context';
-import { resolveProviderModelApiFormat } from './provider-api-format';
+import { resolveAutomaticProviderApiFormat } from './provider-api-format';
 
 /** 선택된 모델의 공급자 연결에서 한도를 새로 확인한 뒤 채팅·연구를 연결한다. */
 export async function prepareChatProviderForModel(
@@ -30,7 +30,11 @@ export async function prepareChatProviderForModel(
   const config = profile
     ? {
         ...profile.profile,
-        apiFormat: resolveProviderModelApiFormat(profile.profile.apiFormat, profile.model),
+        apiFormat: resolveAutomaticProviderApiFormat(
+          profile.profile.strategy,
+          profile.profile.baseUrl,
+          profile.model,
+        ),
         models: profile.profile.models.map((model) => model.id),
       }
     : parsed.kind === 'legacy-custom-openai'
@@ -74,7 +78,11 @@ export function createChatProviderForModel(
         profile.strategy,
         {
           ...profile,
-          apiFormat: resolveProviderModelApiFormat(profile.apiFormat, resolvedProfile.model),
+          apiFormat: resolveAutomaticProviderApiFormat(
+            profile.strategy,
+            profile.baseUrl,
+            resolvedProfile.model,
+          ),
           models: profile.models.map((model) => model.id),
         },
         modelId,

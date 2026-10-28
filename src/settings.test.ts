@@ -67,6 +67,7 @@ import { setLanguage, t } from './i18n';
 import { validateMcpJson } from './utils/mcp-json';
 import { resolveSettingsLoadData } from './settings-storage';
 import { migrateStoredMcpServersRust } from './rag/rust-core';
+import { OPENCODE_DEFAULT_BASE_URL, OPENCODE_GO_BASE_URL } from './llm/provider-api-format';
 
 describe('프로바이더 모델 제거', () => {
   const setup = () => {
@@ -184,6 +185,39 @@ it('모델 한도는 설정 마이그레이션과 검증 갱신에서 보존한�
       verification: { chatStatus: 'success', embeddingStatus: 'unknown' },
     })[0].contextLength,
   ).toBe(128000);
+});
+
+it('OpenCode 프로필 주소는 Zen/Console과 Go/Go Plus 두 플랜으로 정규화한다', () => {
+  const settings = migrateLegacyProviderProfiles({
+    ...structuredClone(DEFAULT_SETTINGS),
+    providerProfiles: [
+      {
+        id: 'zen',
+        name: 'Zen',
+        strategy: 'opencode',
+        enabled: true,
+        apiKey: '',
+        baseUrl: 'https://proxy.example/v1',
+        models: [],
+      },
+      {
+        id: 'go',
+        name: 'Go',
+        strategy: 'opencode',
+        enabled: true,
+        apiKey: '',
+        baseUrl: 'https://opencode.ai/zen/go/v1',
+        models: [],
+      },
+    ],
+  });
+
+  expect(settings.providerProfiles.find((item) => item.id === 'zen')?.baseUrl).toBe(
+    OPENCODE_DEFAULT_BASE_URL,
+  );
+  expect(settings.providerProfiles.find((item) => item.id === 'go')?.baseUrl).toBe(
+    OPENCODE_GO_BASE_URL,
+  );
 });
 
 afterEach(() => {

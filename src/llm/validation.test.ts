@@ -673,13 +673,21 @@ describe('provider validation', () => {
       status: 200,
       json: { object: 'list', data: [{ id: 'gpt-synthetic', object: 'model' }] },
     });
-    const config = { ...baseConfig, baseUrl: 'https://opencode.ai/inference' };
+    const config = {
+      ...baseConfig,
+      id: 'profile-a',
+      baseUrl: 'https://opencode.ai/inference',
+    };
     expect(await fetchProviderModelsForStrategy('opencode', config)).toMatchObject({
       valid: true,
       models: ['gpt-synthetic'],
     });
     expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
       url: 'https://opencode.ai/inference/v1/models',
+      headers: {
+        Authorization: 'Bearer stored-key',
+        'x-opencode-session': 'ses_profile-a',
+      },
     });
 
     requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
@@ -690,6 +698,10 @@ describe('provider validation', () => {
     );
     expect(requestUrlMock.mock.calls[1]?.[0]).toMatchObject({
       url: 'https://opencode.ai/inference/openai/v1/responses',
+      headers: {
+        Authorization: 'Bearer stored-key',
+        'x-opencode-session': 'ses_profile-a',
+      },
     });
 
     requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
@@ -700,6 +712,30 @@ describe('provider validation', () => {
     );
     expect(requestUrlMock.mock.calls[2]?.[0]).toMatchObject({
       url: 'https://opencode.ai/inference/anthropic/v1/messages',
+      headers: {
+        'x-api-key': 'stored-key',
+        'x-opencode-session': 'ses_profile-a',
+      },
+    });
+
+    requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
+    await testProviderGenerationForStrategy(
+      'opencode',
+      { ...config, apiFormat: 'gemini' },
+      'gemini-synthetic',
+    );
+    const geminiCall = requestUrlMock.mock.calls[3]?.[0] as
+      | { url?: string; headers?: Record<string, string>; body?: string }
+      | undefined;
+    expect(geminiCall).toMatchObject({
+      url: 'https://opencode.ai/inference/google/v1beta/models/gemini-synthetic:generateContent',
+      headers: {
+        Authorization: 'Bearer stored-key',
+        'x-opencode-session': 'ses_profile-a',
+      },
+    });
+    expect(JSON.parse(geminiCall?.body ?? '{}')).toMatchObject({
+      contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
     });
   });
 
@@ -708,13 +744,18 @@ describe('provider validation', () => {
       status: 200,
       json: { object: 'list', data: [{ id: 'go-model', object: 'model' }] },
     });
-    const config = { ...baseConfig, baseUrl: 'https://opencode.ai/zen/go/v1' };
+    const config = {
+      ...baseConfig,
+      id: 'profile-go',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+    };
     expect(await fetchProviderModelsForStrategy('opencode', config)).toMatchObject({
       valid: true,
       models: ['go-model'],
     });
     expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
       url: 'https://opencode.ai/inference/go/v1/models',
+      headers: { 'x-opencode-session': 'ses_profile-go' },
     });
 
     requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });

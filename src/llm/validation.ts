@@ -10,7 +10,9 @@ import type {
 import {
   buildOpenCodeEndpoint,
   buildOpenCodeModelsUrl,
+  buildOpenCodeSessionHeaders,
   buildProviderApiEndpoint,
+  inferProviderApiFormatFromBaseUrl,
   isLocalOllamaBaseUrl,
   normalizeGeminiApiRoot,
   normalizeOpenCodeBaseUrl,
@@ -210,6 +212,7 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
     private readonly isCustom = false,
     private readonly modelsUrl?: string,
     private readonly endpointBuilder?: (model: string) => string,
+    private readonly extraHeaders: Record<string, string> = {},
   ) {}
 
   private buildMessagesHeaders(): Record<string, string> {
@@ -220,6 +223,7 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
         ? { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey }
         : {}),
       'anthropic-version': '2023-06-01',
+      ...this.extraHeaders,
     };
   }
 
@@ -228,7 +232,7 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
       const res = await requestUrl({
         url: this.modelsUrl ?? `${this.baseUrl}/models`,
         method: 'GET',
-        headers: buildBearerHeaders(this.config.apiKey),
+        headers: { ...buildBearerHeaders(this.config.apiKey), ...this.extraHeaders },
         throw: false,
       });
       if (res.status >= 400) {
@@ -263,6 +267,7 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
           : {
               'Content-Type': 'application/json',
               ...buildBearerHeaders(this.config.apiKey),
+              ...this.extraHeaders,
             };
       const body =
         this.format === 'messages'
@@ -278,12 +283,17 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
                 max_output_tokens: 1,
                 stream: false,
               }
-            : {
-                model: modelId,
-                messages: [{ role: 'user', content: 'ping' }],
-                max_tokens: 1,
-                stream: false,
-              };
+            : this.format === 'gemini'
+              ? {
+                  contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+                  generationConfig: { maxOutputTokens: 1 },
+                }
+              : {
+                  model: modelId,
+                  messages: [{ role: 'user', content: 'ping' }],
+                  max_tokens: 1,
+                  stream: false,
+                };
       const res = await requestUrl({
         url: endpoint,
         method: 'POST',
@@ -748,6 +758,7 @@ function createProviderValidator(
       false,
       buildOpenCodeModelsUrl(config.baseUrl),
       (model) => buildOpenCodeEndpoint(config.baseUrl, format, model),
+      buildOpenCodeSessionHeaders(config.id),
     );
   }
   if (key === 'openRouter') {
@@ -762,7 +773,10 @@ function createProviderValidator(
     if (!config.baseUrl?.trim()) {
       return null;
     }
-    const format = normalizeProviderApiFormat(config.apiFormat) ?? 'chat';
+    const format =
+      normalizeProviderApiFormat(config.apiFormat) ??
+      inferProviderApiFormatFromBaseUrl(config.baseUrl) ??
+      'chat';
     return new OpenAICompatibleValidator(
       config,
       format === 'gemini' ? config.baseUrl : normalizeProviderApiRoot(config.baseUrl ?? ''),

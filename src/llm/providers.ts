@@ -16,7 +16,9 @@ import type {
 } from '../settings';
 import {
   buildOpenCodeEndpoint,
+  buildOpenCodeSessionHeaders,
   buildProviderApiEndpoint,
+  inferProviderApiFormatFromBaseUrl,
   isLocalOllamaBaseUrl,
   normalizeProviderApiFormat,
 } from './provider-api-format';
@@ -1029,11 +1031,6 @@ function buildCompatAnthropicHeaders(config: ProviderConfig): Record<string, str
   };
 }
 
-function buildOpenCodeSessionHeader(profileId: string): Record<string, string> {
-  const session = profileId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96) || 'profile';
-  return { 'x-opencode-session': `ses_${session}` };
-}
-
 function createOpenCodeProvider(
   config: ProviderConfig,
   modelOverride: string | undefined,
@@ -1042,7 +1039,7 @@ function createOpenCodeProvider(
   const format = normalizeProviderApiFormat(config.apiFormat) ?? 'responses';
   const model = modelOverride ?? config.models[0] ?? '';
   const capability = resolveProviderCapability({ providerKey: 'opencode', model });
-  const sessionHeaders = buildOpenCodeSessionHeader(profileId);
+  const sessionHeaders = buildOpenCodeSessionHeaders(profileId);
   if (format === 'messages') {
     return new AnthropicMessagesProvider(
       config,
@@ -1191,7 +1188,10 @@ export function createCustomOpenAIProvider(
   config: CustomOpenAIProviderConfig,
   modelOverride?: string,
 ): LLMProvider {
-  const format = normalizeProviderApiFormat(config.apiFormat) ?? 'chat';
+  const format =
+    normalizeProviderApiFormat(config.apiFormat) ??
+    inferProviderApiFormatFromBaseUrl(config.baseUrl) ??
+    'chat';
   return createCustomProviderWithFormat(config, format, modelOverride);
 }
 

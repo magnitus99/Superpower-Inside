@@ -105,15 +105,13 @@ import {
 } from './utils/document-exclusion-hotkeys';
 import { isLocalizedValue, setLanguage, type Language, t, formatNumber } from './i18n';
 import {
-  getDefaultProviderApiFormat,
   normalizeProviderApiFormat,
   OPENCODE_DEFAULT_BASE_URL,
   OPENCODE_GO_BASE_URL,
+  resolveAutomaticProviderApiFormat,
   resolveOpenCodePlan,
-  PROVIDER_API_FORMATS,
   providerStrategyUsesEditableBaseUrl,
-  resolveProviderModelApiFormat,
-  supportsProviderApiFormatSelection,
+  showsProviderModelApiFormat,
 } from './llm/provider-api-format';
 import {
   MAX_PROVIDER_TOOL_ROUNDS,
@@ -243,9 +241,9 @@ export interface ProviderModelConfig {
   maxOutputTokens?: number;
   id: string;
   kind: ProviderModelKind;
-  /** 이 모델만 사용할 wire 형식입니다. 없으면 프로필 기본값을 따릅니다. */
+  /** 이 모델만 사용할 wire 형식입니다. 없으면 provider와 endpoint가 자동 선택합니다. */
   apiFormat?: ProviderApiFormat;
-  /** 모델 목록이 선언한 지원 형식입니다. 프로필 형식이 포함되면 그대로 사용합니다. */
+  /** 모델 목록이 선언한 지원 형식입니다. 첫 지원 형식을 자동 선택합니다. */
   supportedApiFormats?: ProviderApiFormat[];
   verification: ProviderModelVerification;
 }
@@ -257,8 +255,6 @@ export interface ProviderProfileConfig {
   apiKeySecret?: string;
   relayApiKey?: string;
   baseUrl?: string;
-  /** OpenCode·Custom endpoint에서 사용할 기본 wire 형식입니다. */
-  apiFormat?: ProviderApiFormat;
   /** Gemini 내장 프로바이더의 인증 방식입니다. */
   geminiAuthMode?: GeminiAuthMode;
   enabled: boolean;
@@ -910,11 +906,13 @@ function normalizeProviderProfile(
   const rawName = typeof source.name === 'string' ? source.name.trim() : '';
   const sourceBaseUrl = typeof source.baseUrl === 'string' ? source.baseUrl.trim() : '';
   const baseUrl =
-    source.strategy === 'ollamaCloud' && !sourceBaseUrl
-      ? DEFAULT_SETTINGS.ollamaCloud.baseUrl
-      : sourceBaseUrl;
-  const apiFormat =
-    normalizeProviderApiFormat(source.apiFormat) ?? getDefaultProviderApiFormat(strategy);
+    strategy === 'opencode'
+      ? resolveOpenCodePlan(sourceBaseUrl) === 'go'
+        ? OPENCODE_GO_BASE_URL
+        : OPENCODE_DEFAULT_BASE_URL
+      : source.strategy === 'ollamaCloud' && !sourceBaseUrl
+        ? DEFAULT_SETTINGS.ollamaCloud.baseUrl
+        : sourceBaseUrl;
   const geminiAuthMode =
     strategy === 'gemini'
       ? source.geminiAuthMode === 'oauth'
@@ -937,7 +935,6 @@ function normalizeProviderProfile(
       : {}),
     ...(typeof source.relayApiKey === 'string' ? { relayApiKey: source.relayApiKey } : {}),
     baseUrl,
-    ...(apiFormat ? { apiFormat } : {}),
     ...(geminiAuthMode ? { geminiAuthMode } : {}),
     enabled: typeof source.enabled === 'boolean' ? source.enabled : false,
     models,
@@ -1143,9 +1140,6 @@ export function migrateLegacyProviderProfiles(
           key === 'ollamaCloud'
             ? config.baseUrl?.trim() || DEFAULT_SETTINGS.ollamaCloud.baseUrl
             : config.baseUrl,
-        ...(getDefaultProviderApiFormat(key === 'ollamaCloud' ? 'ollama' : key)
-          ? { apiFormat: getDefaultProviderApiFormat(key === 'ollamaCloud' ? 'ollama' : key) }
-          : {}),
         enabled: config.enabled,
         models,
       });
@@ -1179,7 +1173,6 @@ export function migrateLegacyProviderProfiles(
         strategy: 'openAICompatible',
         apiKey: provider.apiKey,
         baseUrl: provider.baseUrl,
-        apiFormat: 'chat',
         enabled: provider.enabled,
         models,
         useRequestUrl: provider.useRequestUrl ?? true,
@@ -6204,37 +6197,31 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               this.refreshProviderProfilePresentation(profile, disclosureRoot);
             });
         });
-      if (profile.strategy === 'opencode') {
-        new Setting(group)
-          .setName(t('providerOpenCodePlanName'))
-          .setDesc(t('providerOpenCodePlanDesc'))
-          .addDropdown((dropdown) => {
-            dropdown.addOption('zen', t('providerOpenCodePlanZen'));
-            dropdown.addOption('go', t('providerOpenCodePlanGo'));
-            dropdown.addOption('custom', t('providerOpenCodePlanCustom'));
-            dropdown.setValue(resolveOpenCodePlan(profile.baseUrl));
-            dropdown.onChange((value) => {
-              if (value !== 'zen' && value !== 'go') {
-                dropdown.setValue(resolveOpenCodePlan(profile.baseUrl));
-                return;
-              }
-              const nextBaseUrl =
-                value === 'go' ? OPENCODE_GO_BASE_URL : OPENCODE_DEFAULT_BASE_URL;
-              if ((profile.baseUrl ?? '') === nextBaseUrl) return;
-              profile.baseUrl = nextBaseUrl;
-              this.invalidateProviderProfileVerification(profile);
-              this.debouncedProviderSave();
-              this.refreshProvidersTab(profile.id);
-            });
+    }
+    if (profile.strategy === 'opencode') {
+      new Setting(group)
+        .setName(t('providerOpenCodePlanName'))
+        .setDesc(t('providerOpenCodePlanDesc'))
+        .addDropdown((dropdown) => {
+          dropdown.addOption('zen', t('providerOpenCodePlanZen'));
+          dropdown.addOption('go', t('providerOpenCodePlanGo'));
+          dropdown.setValue(resolveOpenCodePlan(profile.baseUrl) === 'go' ? 'go' : 'zen');
+          dropdown.onChange((value) => {
+            if (value !== 'zen' && value !== 'go') return;
+            const nextBaseUrl =
+              value === 'go' ? OPENCODE_GO_BASE_URL : OPENCODE_DEFAULT_BASE_URL;
+            if ((profile.baseUrl ?? '') === nextBaseUrl) return;
+            profile.baseUrl = nextBaseUrl;
+            this.invalidateProviderProfileVerification(profile);
+            this.debouncedProviderSave();
+            this.refreshProvidersTab(profile.id);
           });
-      }
+        });
     }
   }
 
   private getProviderBaseUrlDescription(strategy: ProviderStrategyKey): string {
     switch (strategy) {
-      case 'opencode':
-        return t('providerOpenCodeBaseUrlDesc');
       case 'ollama':
         return t('providerOllamaBaseUrlDesc');
       case 'openai':
@@ -6431,14 +6418,12 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     profileName?: string,
   ): void {
     const id = this.createProviderProfileId();
-    const apiFormat = getDefaultProviderApiFormat(strategy);
     this.plugin.settings.providerProfiles.push({
       id,
       name: profileName?.trim() || getProviderStrategyLabels()[strategy],
       strategy,
       apiKey: '',
       baseUrl: baseUrl?.trim() || this.getProviderStrategyDefaultBaseUrl(strategy) || undefined,
-      ...(apiFormat ? { apiFormat } : {}),
       ...(strategy === 'gemini' ? { geminiAuthMode: 'apiKey' as const } : {}),
       enabled: true,
       models: [],
@@ -6536,17 +6521,15 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         if (profile.strategy === strategy) return;
         chatGPTOAuth.cancelLogin(profile.id);
         googleGeminiOAuth.cancelLogin(profile.id);
-        const previousDefault = this.getProviderStrategyDefaultBaseUrl(profile.strategy);
         const nextDefault = this.getProviderStrategyDefaultBaseUrl(strategy);
-        if (!providerStrategyUsesEditableBaseUrl(strategy)) {
-          profile.baseUrl = undefined;
-        } else if (!profile.baseUrl?.trim() || profile.baseUrl === previousDefault) {
+        if (providerStrategyUsesEditableBaseUrl(strategy) || strategy === 'opencode') {
           profile.baseUrl = nextDefault || undefined;
+        } else {
+          profile.baseUrl = undefined;
         }
         const defaultName = getProviderStrategyLabels()[profile.strategy];
         if (!profile.name || profile.name === defaultName)
           profile.name = getProviderStrategyLabels()[strategy];
-        profile.apiFormat = getDefaultProviderApiFormat(strategy);
         if (strategy === 'gemini') {
           profile.geminiAuthMode = profile.geminiAuthMode ?? 'apiKey';
         } else {
@@ -6559,27 +6542,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         this.refreshProvidersTab(profile.id);
       });
     });
-    if (supportsProviderApiFormatSelection(profile.strategy)) {
-      new Setting(containerEl)
-        .setName(t('providerApiFormatLabel'))
-        .setDesc(t('providerApiFormatDesc'))
-        .addDropdown((dropdown) => {
-          for (const format of PROVIDER_API_FORMATS) {
-            dropdown.addOption(format, getProviderApiFormatLabel(format));
-          }
-          dropdown.selectEl.setAttribute('aria-label', t('providerApiFormatLabel'));
-          dropdown
-            .setValue(profile.apiFormat ?? getDefaultProviderApiFormat(profile.strategy) ?? 'chat')
-            .onChange((value) => {
-              const apiFormat = normalizeProviderApiFormat(value);
-              if (!apiFormat || profile.apiFormat === apiFormat) return;
-              profile.apiFormat = apiFormat;
-              this.invalidateProviderProfileVerification(profile);
-              this.debouncedProviderSave();
-              this.refreshProvidersTab(profile.id);
-            });
-        });
-    }
   }
 
   private buildProviderProfileModelSection(
@@ -6707,10 +6669,8 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     for (const model of models) {
       const item = list.createDiv({ cls: 'superpower-inside-settings-model-item' });
       item.createSpan({ cls: 'superpower-inside-provider-model-name', text: model.id });
-      if (kind === 'general' && supportsProviderApiFormatSelection(profile.strategy)) {
-        const format =
-          resolveProviderModelApiFormat(profile.apiFormat, model) ??
-          getDefaultProviderApiFormat(profile.strategy);
+      if (kind === 'general' && showsProviderModelApiFormat(profile.strategy)) {
+        const format = resolveAutomaticProviderApiFormat(profile.strategy, profile.baseUrl, model);
         if (format) {
           item.createSpan({
             cls: 'superpower-inside-provider-model-format',
@@ -6874,8 +6834,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }
         const validationConfig = {
           ...profile,
-          apiFormat: resolveProviderModelApiFormat(
-            profile.apiFormat,
+          apiFormat: resolveAutomaticProviderApiFormat(
+            profile.strategy,
+            profile.baseUrl,
             profile.models.find((model) => model.id === modelId),
           ),
           models: profile.models.map((model) => model.id),
