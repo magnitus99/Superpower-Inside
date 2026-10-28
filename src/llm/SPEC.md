@@ -12,6 +12,8 @@ parent: superpower-architecture
 
 제공자별 인증·메시지·스트림·도구 호출·임베딩 입출력을 공통 계약에 연결한다. 기본 메시지·ChatOptions 계약은 `providers.ts`가 소유한다. 제공자의 유창함이나 호출 성공이 볼트 출처의 자격 또는 답변 충실도를 증명하지 않는다.
 
+연결 경로는 API 키 외에 ChatGPT·Gemini 로그인(`chatgpt-oauth.ts`·`google-gemini-oauth.ts`), 프로파일·사용자 정의 OpenAI 호환 제공자(`provider-resolution.ts`)를 포함한다. 엔드포인트에서 wire 형식을 추론하는 경로(`provider-api-format.ts`), 제공자별 capability·도구 왕복 상한(`provider-capabilities.ts`), 로컬 임베딩 모델 파일의 준비·삭제(`local-embedding-models.ts`)도 이 경계가 소유하며, 모델 파일의 생성물 수명은 `artifact-storage`가 맡는다.
+
 사용자가 선택한 제공자·모델·추론 설정을 유지한다. 요청 실패나 근거 부족을 이유로 다른 모델·유료 경로로 조용히 전환하지 않는다. 재시도·기능 지원·buffered 응답·실제 abort 가능성은 제공자별로 구분하며 best-effort 취소를 원격 실행 중단 보장으로 표현하지 않는다.
 
 ## 보안 저장 경계
