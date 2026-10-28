@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 // Patina의 claude-cli 백엔드는 `claude -p --model <id>` 규약으로 호출하고
 // 프롬프트는 stdin, 응답은 stdout으로 주고받습니다. 이 shim은 같은 호출을
-// pi CLI 비대화형 실행으로 넘겨 Codex CLI 없이 Patina를 돌립니다.
+// pi CLI 비대화형 실행으로 넘깁니다. 모델과 추론 강도는 저장소에 고정하지 않고
+// 온라인 검사를 실행할 때 PATINA_PI_MODEL·PATINA_PI_THINKING으로 받습니다.
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 const prompt = readFileSync(0, 'utf8');
 const executable = process.env.PATINA_PI_EXECUTABLE || 'pi';
-const model = process.env.PATINA_PI_MODEL || 'openai/gpt-6.1-sol';
-const thinking = process.env.PATINA_PI_THINKING || 'high';
+const model = process.env.PATINA_PI_MODEL?.trim();
+const thinking = process.env.PATINA_PI_THINKING?.trim();
+
+if (!model || !thinking) {
+  process.stderr.write(
+    '온라인 Patina 검사에는 PATINA_PI_MODEL과 PATINA_PI_THINKING이 필요합니다.\n',
+  );
+  process.exit(1);
+}
 
 const result = spawnSync(
   executable,

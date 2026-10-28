@@ -116,12 +116,12 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 
 기능·버그 수정·리팩터링은 회귀 테스트를 먼저 추가하거나 확장한다. lint 비활성·타입 검사 무시·as any·clippy allow·prettier-ignore로 실패를 우회하지 않는다. 설치된 의존성·생성물로 오프라인 검증하고 Rust는 --frozen을 사용한다. 의존성이 없으면 준비 필요로 실패하며 네트워크·모델 호출로 조용히 대체하지 않는다.
 
-quality:local은 HEAD 대비 스테이징·작업 파일·새 파일을 기준으로 필요한 검사를 고른다. CI는 --base로 실제 비교 커밋을 전달한다. TS는 lint → typecheck → 전체 Vitest·i18n·채팅 UX·오프라인 계약, 스크립트/CSS/CI는 관련 계약, Rust/WASM 경계는 TS 및 Rust fmt·clippy·tests를 확인한다. 문서·설명·버전만 바꾸면 community review·diff 및 링크·명령을 확인하고 변경 없는 Rust·성능·온라인 보안·Patina를 강제하지 않는다. 현재 검사기의 경로 분류가 명세 파일에도 넓은 검사를 선택할 수 있으며 게이트를 완화하지 않는다.
+quality:local은 HEAD 대비 스테이징·작업 파일·새 파일을 기준으로 필요한 검사를 고른다. CI는 --base로 실제 비교 커밋을 전달한다. TS는 lint → typecheck → `test:unit`을 실행하고, `src/chat/`·`src/search/`·`src/i18n.ts`·CSS·채팅 UX fixture 변경은 `test:contracts`(i18n·채팅 UX·오프라인 계약)를 추가한다. 스크립트/CSS/CI는 관련 계약, Rust/WASM 경계는 TS 및 Rust fmt·clippy·tests를 확인한다. 문서·설명·버전만 바꾸면 community review·볼트 유출·diff 및 링크·명령을 확인하고 변경 없는 Rust·성능·온라인 보안·Patina를 강제하지 않는다. 현재 검사기의 경로 분류가 명세 파일에도 넓은 검사를 선택할 수 있으며 게이트를 완화하지 않는다.
 
-의존성·보안 정책 변경의 CI와 수동·릴리스 CI는 security:full을 사용한다. 일반 PR/main CI는 변경 범위만 검사하고 문서만 바뀌면 도구 설치·코드 검사도 생략한다. 이전 PR/main 실행은 새 커밋에서 취소한다. security:full의 기존 순서·측정 데이터·임계값·제외 정책을 유지하고 릴리스 게시가 전체 검사 성공을 기다리게 한다.
+의존성·보안 정책 변경의 CI와 수동 검사는 security:full을 사용한다. dev로 가는 기능 PR은 변경 범위만 검사하고, main으로 가는 릴리스 PR은 security:full 전체 검사를 실행한다. 태그 릴리스 workflow는 dev→main squash merge·버전·자산을 검증한 뒤 초안 Release를 만들며 전체 테스트를 중복 실행하지 않는다. 문서만 바뀌면 도구 설치·코드 검사도 생략한다. 이전 PR 실행은 새 커밋에서 취소한다. security:full의 기존 순서·측정 데이터·임계값·제외 정책을 유지한다.
 
-UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 구조 테스트와 community review 외에 실제 Obsidian 또는 충실한 시뮬레이션 스크린샷을 직접 확인한다. 정상·빈 상태·접기/펼치기·오류·disabled·진행·좁은 폭·테마·focus·대비를 포함한다. 네이티브 앱의 마우스·타이핑 자동화는 금지하며 CLI·코드·로그를 사용한다.
+UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 구조 테스트와 community review 외에 `npm run preview:verify`의 헤드리스 Chrome 고정 뷰포트 스크린샷과 DOM 계약을 직접 확인한다. 정상·빈 상태·접기/펼치기·오류·disabled·진행·좁은 폭·테마·focus·대비를 포함한다. 네이티브 앱의 마우스·타이핑 자동화는 금지하며 CLI·코드·로그를 사용한다.
 
-브라우저 preview는 npm run preview:prepare로 설치된 Obsidian CSS·자산·합성 Markdown을 준비하고 npm run preview로 실행한다. 제품 코드 변경 뒤 preview:build로 갱신하고 ?check 또는 제품 계약 검사로 기본 스타일·호스트·저장 계약을 확인한다. 기본 테마를 수제 CSS로 대체하지 않으며 자산은 Git 제외 simulations/obsidian-preview에만 보관한다. 브라우저는 연결된 도구 → Chrome → 최후 Playwright 순서로 사용하고 화면 확인은 커밋 전에 수행한다. 촬영 불가는 미완료로 명시한다.
+`npm run preview:verify`가 설치된 Obsidian CSS·자산·합성 Markdown을 기준으로 Chrome을 헤드리스 실행해 여러 상태·뷰포트의 DOM 계약과 PNG를 `simulations/obsidian-preview/screens/`에 남긴다. `npm run preview:prepare`는 기준 자산을 준비하고 `npm run preview`는 수동 확인 서버를 실행한다. 제품 코드 변경 뒤 `preview:build`로 갱신한다. 기본 테마를 수제 CSS로 대체하지 않으며 자산은 Git 제외 `simulations/obsidian-preview/`에만 보관한다. 상호작용이 필요할 때만 연결된 브라우저 도구나 Chrome을 사용하고 Playwright 자동화는 최후 수단으로 둔다. 촬영 불가는 미완료로 명시한다.
 
 검색의 실제품질 합격 기준은 `superpower-goals`의 품질 요구와 이 문서의 게이트·검증 상태 절이, 배포·문구 검사는 `release-contract`가 소유한다. 완료 보고는 실제 명령·종료 상태·한계를 기록하며 같은 변경을 커밋·푸시만을 이유로 반복 검사하지 않는다. 커밋 요청은 커밋만 수행하고 푸시는 별도 요청이 있을 때만 한다. 절차와 권한은 루트 AGENTS에서 확인한다.

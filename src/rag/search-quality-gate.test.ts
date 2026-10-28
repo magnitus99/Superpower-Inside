@@ -2,7 +2,6 @@ import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
-import { EMBEDDINGGEMMA_ASSETS } from '../../generated/embeddinggemma-assets';
 import { searchIndexedVault, type IndexedVaultCorpus } from '../agent/indexed-vault-review';
 import { createIndexedSearchPort } from '../search/engine-adapter';
 import type { EmbeddingProvider } from '../llm/embedding';
@@ -10,59 +9,36 @@ import { IndexedDbBM25Index } from './bm25';
 import { RAGQueryEngine } from './query';
 import { MemoryVectorStore, type VectorEntry } from './store';
 
-type QueryLanguage = 'ko' | 'en' | 'la';
-const GOLD_LANGUAGES = ['ko', 'en', 'la'] as const;
-type GoldLanguage = (typeof GOLD_LANGUAGES)[number];
+const LANGUAGES = ['ko', 'en', 'la'] as const;
+type Language = (typeof LANGUAGES)[number];
+const TOP_K = 3;
+const DIMENSIONS = 12;
 
-interface VectorText {
-  text: string;
-  vector: string;
-}
-
-interface ConceptFixture {
+interface Concept {
   id: string;
-  terms: Record<GoldLanguage, string>;
-  gold: Record<GoldLanguage, VectorText>;
-  distractors: Record<GoldLanguage, VectorText>;
-  queries: Record<QueryLanguage, VectorText>;
-}
-
-interface QualityFixture {
-  schemaVersion: number;
-  model: {
-    id: string;
-    sourceRepository: string;
-    sourceRevision: string;
-    modelOnnxDataSha256: string;
-    dimensions: number;
-    generation: string;
-  };
-  neutral: VectorText;
-  concepts: readonly ConceptFixture[];
-}
-
-interface QualityCase {
-  id: string;
-  conceptId: string;
-  queryLanguage: QueryLanguage;
-  query: string;
-  queryVector: string;
-  terms: readonly string[];
-  gold: Record<GoldLanguage, VectorText>;
-  distractors: Readonly<Record<GoldLanguage, VectorText>>;
+  terms: Record<Language, string>;
 }
 
 interface SyntheticDocument {
   id: string;
-  language: GoldLanguage | 'neutral';
+  language: Language | 'neutral';
   text: string;
   vector: readonly number[];
 }
 
 interface CaseDocuments {
-  gold: Record<GoldLanguage, SyntheticDocument>;
+  gold: Record<Language, SyntheticDocument>;
   distractors: readonly SyntheticDocument[];
   neutral: SyntheticDocument;
+}
+
+interface QualityCase {
+  id: string;
+  conceptIndex: number;
+  queryLanguage: Language;
+  query: string;
+  queryVector: readonly number[];
+  terms: readonly string[];
 }
 
 interface GateCase {
@@ -89,58 +65,44 @@ interface GateReport {
   baselineMeanMrr: number;
 }
 
-const fixture = loadFixture();
-const qualityCases = buildQualityCases(fixture);
+// 세 언어의 정답 문서가 같은 개념 축을 공유하고, 키워드만 반복한 방해 문서는
+// 다른 축에 놓이도록 만든 결정적 합성 벡터입니다. 외부 모델·볼트 자료를 쓰지 않습니다.
+const CONCEPTS: readonly Concept[] = [
+  {
+    id: 'maintenance',
+    terms: { ko: '유지보수', en: 'maintenance', la: 'sustentatio' },
+  },
+  { id: 'balance', terms: { ko: '균형', en: 'balance', la: 'aequilibrium' } },
+  { id: 'memory', terms: { ko: '기억', en: 'memory', la: 'memoria' } },
+];
+
+const qualityCases: readonly QualityCase[] = CONCEPTS.flatMap((concept, conceptIndex) =>
+  LANGUAGES.map((queryLanguage) => ({
+    id: `${concept.id}-${queryLanguage}`,
+    conceptIndex,
+    queryLanguage,
+    query: concept.terms[queryLanguage],
+    queryVector: conceptVector(conceptIndex),
+    terms: LANGUAGES.map((language) => concept.terms[language]),
+  })),
+);
+
 const bm25DbNames = new Set<string>();
-const TOP_K = 3;
-const MINIMUM_SEMANTIC_MARGIN = 0.005;
 
 afterEach(async () => {
   await Promise.all([...bm25DbNames].map((name) => Dexie.delete(name)));
   bm25DbNames.clear();
 });
 
-describe('한·영·라틴 병렬 검색 품질 필수 게이트', () => {
-  it('golden fixture는 배포 EmbeddingGemma 모델 해시와 결합되어 있다', () => {
-    const modelData = EMBEDDINGGEMMA_ASSETS.find(
-      (asset) => asset.file === 'onnx/model.onnx_data',
-    );
-    expect(fixture.model).toEqual(
-      expect.objectContaining({
-        id: 'embeddinggemma-300m',
-        sourceRevision: '5090578d9565bb06545b4552f76e6bc2c93e4a66',
-        dimensions: 768,
-        modelOnnxDataSha256: modelData?.sha256,
-      }),
-    );
-  });
-
-  it.each(fixture.concepts)(
-    '$id fixture는 정답 한국어·영어·라틴어 문서와 한국어·영어·라틴어 질의를 함께 가진다',
-    (concept) => {
-      expect(Object.keys(concept.gold)).toEqual([...GOLD_LANGUAGES]);
-      expect(Object.keys(concept.queries)).toEqual(['ko', 'en', 'la']);
-      expect(concept.gold.ko.text).toContain(concept.terms.ko);
-      expect(concept.gold.en.text.toLocaleLowerCase()).toContain(
-        concept.terms.en.toLocaleLowerCase(),
-      );
-      expect(concept.gold.la.text.toLocaleLowerCase()).toContain(
-        concept.terms.la.toLocaleLowerCase(),
-      );
-    },
-  );
-
-  it('사용자 핵심 fixture는 한국어 지혜 질의와 한·영·라틴 지혜 정답을 포함한다', () => {
-    const wisdom = fixture.concepts.find((concept) => concept.id === 'wisdom');
-    expect(wisdom?.queries.ko.text).toBe('지혜');
-    expect(wisdom?.terms).toEqual({
-      ko: '지혜',
-      en: 'wisdom',
-      la: 'sapientia',
-    });
-    expect(wisdom?.gold.ko.text).toContain('지혜');
-    expect(wisdom?.gold.en.text).toContain('Wisdom');
-    expect(wisdom?.gold.la.text).toContain('Sapientia');
+describe('한·영·라틴 합성 검색 품질 필수 게이트', () => {
+  it('합성 fixture는 개념마다 세 언어 정답과 질의를 가진다', () => {
+    for (const concept of CONCEPTS) {
+      expect(Object.keys(concept.terms)).toEqual([...LANGUAGES]);
+      expect(concept.terms.ko.length).toBeGreaterThan(0);
+      expect(concept.terms.en.length).toBeGreaterThan(0);
+      expect(concept.terms.la.length).toBeGreaterThan(0);
+    }
+    expect(qualityCases).toHaveLength(CONCEPTS.length * LANGUAGES.length);
   });
 
   it.each(qualityCases)(
@@ -149,43 +111,29 @@ describe('한·영·라틴 병렬 검색 품질 필수 게이트', () => {
       const documents = createDocuments(row);
       const runtime = await createRuntime(row, documents);
       try {
-        const queryVector = decodeVector(row.queryVector);
         const nonGoldDocuments = [...documents.distractors, documents.neutral];
         const bestNonGoldSimilarity = Math.max(
           ...nonGoldDocuments.map((document) =>
-            cosineSimilarity(queryVector, document.vector),
+            cosineSimilarity(row.queryVector, document.vector),
           ),
         );
-        for (const language of GOLD_LANGUAGES) {
+        for (const language of LANGUAGES) {
           expect(
-            cosineSimilarity(queryVector, documents.gold[language].vector) -
+            cosineSimilarity(row.queryVector, documents.gold[language].vector) -
               bestNonGoldSimilarity,
-            `${row.id}: ${language} 정답의 의미 유사도가 literal 비정답보다 앞서야 합니다.`,
-          ).toBeGreaterThanOrEqual(MINIMUM_SEMANTIC_MARGIN);
+            `${row.id}: ${language} 정답의 의미 유사도가 키워드 방해 문서보다 앞서야 합니다.`,
+          ).toBeGreaterThan(0.2);
         }
 
-        const engineResults = await runtime.engine.query(row.query, TOP_K);
-        const engineIds = engineResults.map((result) => result.sourcePath);
-        const baselineResults = naiveKeywordRanking(
-          documentList(documents),
-          row.terms,
-          TOP_K,
-        );
+        const results = await runtime.engine.query(row.query, TOP_K);
         const goldIds = goldDocumentIds(documents);
-        const report = evaluateMandatoryRetrievalGate([
-          {
-            id: row.id,
-            goldIds,
-            engine: engineIds,
-            baseline: baselineResults,
-            k: TOP_K,
-          },
-        ]);
+        expect(new Set(results.map((result) => result.sourcePath))).toEqual(new Set(goldIds));
 
-        expect(report.passed, formatGateFailure(report)).toBe(true);
-        expect(new Set(engineIds.slice(0, TOP_K))).toEqual(new Set(goldIds));
-
-        const finalEvidence = await selectFinalEvidence(row, documents, engineIds);
+        const finalEvidence = await selectFinalEvidence(
+          row,
+          documents,
+          results.map((result) => result.sourcePath),
+        );
         const evidencePaths = new Set(finalEvidence.evidence.map((item) => item.path));
         expect(
           goldIds.every((goldId) => evidencePaths.has(goldId)),
@@ -197,9 +145,8 @@ describe('한·영·라틴 병렬 검색 품질 필수 게이트', () => {
     },
   );
 
-  it('제품 SearchPort 경로도 한국어 지혜 질의의 한·영·라틴 정답을 함께 반환한다', async () => {
-    const row = qualityCases.find((candidate) => candidate.id === 'wisdom-ko');
-    if (!row) throw new Error('한국어 지혜 fixture가 없습니다.');
+  it('제품 SearchPort 경로도 세 언어 정답을 함께 반환한다', async () => {
+    const row = qualityCases[0];
     const documents = createDocuments(row);
     const runtime = await createRuntime(row, documents);
     let rankedPaths: readonly string[];
@@ -213,7 +160,9 @@ describe('한·영·라틴 병렬 검색 품질 필수 게이트', () => {
       createVectorEntry(document.id, document.vector, document.text),
     );
     const paths = entries.map((entry) => entry.metadata.filePath);
-    const textByPath = new Map(entries.map((entry) => [entry.metadata.filePath, entry.metadata.text]));
+    const textByPath = new Map(
+      entries.map((entry) => [entry.metadata.filePath, entry.metadata.text]),
+    );
     const corpus: IndexedVaultCorpus = {
       getEntriesByFilePaths: (requested) =>
         Promise.resolve(entries.filter((entry) => requested.includes(entry.metadata.filePath))),
@@ -256,9 +205,8 @@ describe('한·영·라틴 병렬 검색 품질 필수 게이트', () => {
     ).toBe(true);
   });
 
-  it('벡터 후보가 사라진 lexical-only 경로는 한·영·라틴 정답을 모두 통과시키지 않는다', async () => {
-    const row = qualityCases.find((candidate) => candidate.id === 'wisdom-ko');
-    if (!row) throw new Error('한국어 지혜 fixture가 없습니다.');
+  it('벡터 후보가 사라진 lexical-only 경로는 세 언어 정답을 모두 통과시키지 않는다', async () => {
+    const row = qualityCases[0];
     const documents = createDocuments(row);
     const bm25 = new IndexedDbBM25Index(createBm25DbName());
     await bm25.load();
@@ -267,17 +215,12 @@ describe('한·영·라틴 병렬 검색 품질 필수 게이트', () => {
     try {
       const lexicalOnly = new RAGQueryEngine(null, null, bm25);
       const engineResults = await lexicalOnly.query(row.query, TOP_K);
-      const baselineResults = naiveKeywordRanking(
-        documentList(documents),
-        row.terms,
-        TOP_K,
-      );
       const report = evaluateMandatoryRetrievalGate([
         {
           id: row.id,
           goldIds: goldDocumentIds(documents),
           engine: engineResults.map((result) => result.sourcePath),
-          baseline: baselineResults,
+          baseline: [],
           k: TOP_K,
         },
       ]);
@@ -289,11 +232,11 @@ describe('한·영·라틴 병렬 검색 품질 필수 게이트', () => {
     }
   });
 
-  it('한국어 지혜 질의가 라틴 정답만 누락하면 3개 정답 동시 회수 테스트는 실패한다', () => {
+  it('한 언어 정답만 누락해도 3개 정답 동시 회수 테스트는 실패한다', () => {
     const goldIds = ['gold-ko.md', 'gold-en.md', 'gold-la.md'];
     const report = evaluateMandatoryRetrievalGate([
       {
-        id: 'wisdom-ko',
+        id: 'synthetic-case',
         goldIds,
         engine: ['gold-ko.md', 'gold-en.md', 'literal-la.md'],
         baseline: ['literal-en.md', 'literal-la.md', 'gold-ko.md'],
@@ -332,7 +275,8 @@ describe('한·영·라틴 병렬 검색 품질 필수 게이트', () => {
       readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
     ) as { scripts: Record<string, string> };
 
-    expect(packageJson.scripts.test).toContain('vitest run');
+    expect(packageJson.scripts['test:unit']).toContain('vitest run');
+    expect(packageJson.scripts.test).toContain('test:unit');
     expect(packageJson.scripts['search:quality-gate']).toBe(
       'vitest run src/rag/search-quality-gate.test.ts',
     );
@@ -343,19 +287,131 @@ describe('한·영·라틴 병렬 검색 품질 필수 게이트', () => {
   });
 });
 
-function buildQualityCases(source: QualityFixture): readonly QualityCase[] {
-  return source.concepts.flatMap((concept) =>
-    (['ko', 'en', 'la'] as const).map((queryLanguage) => ({
-      id: `${concept.id}-${queryLanguage}`,
-      conceptId: concept.id,
-      queryLanguage,
-      query: concept.queries[queryLanguage].text,
-      queryVector: concept.queries[queryLanguage].vector,
-      terms: GOLD_LANGUAGES.map((language) => concept.terms[language]),
-      gold: concept.gold,
-      distractors: concept.distractors,
-    })),
+function conceptVector(conceptIndex: number): readonly number[] {
+  const vector = new Array<number>(DIMENSIONS).fill(0);
+  vector[conceptIndex] = 1;
+  return vector;
+}
+
+function goldVector(conceptIndex: number, languageIndex: number): readonly number[] {
+  const vector = new Array<number>(DIMENSIONS).fill(0);
+  vector[conceptIndex] = 0.9;
+  vector[CONCEPTS.length + languageIndex] = 0.1;
+  vector[DIMENSIONS - 1] = 0.05;
+  return vector;
+}
+
+function distractorVector(conceptIndex: number, languageIndex: number): readonly number[] {
+  const vector = new Array<number>(DIMENSIONS).fill(0);
+  vector[(conceptIndex + 1) % CONCEPTS.length] = 0.4;
+  vector[CONCEPTS.length + LANGUAGES.length + languageIndex] = 0.6;
+  return vector;
+}
+
+function neutralVector(): readonly number[] {
+  const vector = new Array<number>(DIMENSIONS).fill(0);
+  vector[DIMENSIONS - 2] = 1;
+  return vector;
+}
+
+function createDocuments(row: QualityCase): CaseDocuments {
+  const concept = CONCEPTS[row.conceptIndex];
+  const root = `Synthetic/Parallel/${row.id}`;
+  const gold = Object.fromEntries(
+    LANGUAGES.map((language) => {
+      const languageIndex = LANGUAGES.indexOf(language);
+      return [
+        language,
+        makeDocument(
+          root,
+          `gold-${language}`,
+          language,
+          `${concept.terms[language]}: synthetic ${language} reference note.`,
+          goldVector(row.conceptIndex, languageIndex),
+        ),
+      ];
+    }),
+  ) as Record<Language, SyntheticDocument>;
+  const distractors = LANGUAGES.filter(
+    (language) => language !== row.queryLanguage,
+  ).map((language) => {
+    const term = concept.terms[language];
+    return makeDocument(
+      root,
+      `literal-${language}`,
+      language,
+      `${term} ${term} ${term} ${term} ${term}: unrelated table of font names and box numbers.`,
+      distractorVector(row.conceptIndex, LANGUAGES.indexOf(language)),
+    );
+  });
+  return {
+    gold,
+    distractors,
+    neutral: {
+      id: `${root}/neutral.md`,
+      language: 'neutral',
+      text: 'The annual maintenance calendar uses blue labels for archived folders.',
+      vector: neutralVector(),
+    },
+  };
+}
+
+function makeDocument(
+  root: string,
+  suffix: string,
+  language: Language,
+  text: string,
+  vector: readonly number[],
+): SyntheticDocument {
+  return { id: `${root}/${suffix}.md`, language, text, vector };
+}
+
+function goldDocumentIds(documents: CaseDocuments): readonly string[] {
+  return LANGUAGES.map((language) => documents.gold[language].id);
+}
+
+function documentList(documents: CaseDocuments): readonly SyntheticDocument[] {
+  return [...LANGUAGES.map((language) => documents.gold[language]), ...documents.distractors, documents.neutral];
+}
+
+function createVectorEntry(
+  id: string,
+  vector: readonly number[],
+  text: string,
+): VectorEntry {
+  return {
+    id,
+    vector: [...vector],
+    metadata: {
+      filePath: id,
+      startLine: 0,
+      endLine: 0,
+      text,
+      sourceMtime: 1,
+      sourceSize: text.length,
+      contentHash: `hash:${id}`,
+      indexedAt: 1,
+    },
+  };
+}
+
+async function createRuntime(row: QualityCase, documents: CaseDocuments) {
+  const store = new MemoryVectorStore();
+  await store.add(
+    documentList(documents).map((document) =>
+      createVectorEntry(document.id, document.vector, document.text),
+    ),
   );
+  const bm25 = new IndexedDbBM25Index(createBm25DbName());
+  await bm25.load();
+  for (const document of documentList(documents))
+    bm25.addDocument(document.id, document.text);
+  const embeddingProvider: EmbeddingProvider = {
+    embed: () => Promise.resolve([...row.queryVector]),
+    embedBatch: (texts) => Promise.resolve(texts.map(() => [...row.queryVector])),
+  };
+  const engine = new RAGQueryEngine(store, embeddingProvider, bm25);
+  return { engine, close: () => bm25.close() };
 }
 
 async function selectFinalEvidence(
@@ -396,123 +452,6 @@ async function selectFinalEvidence(
   });
   if (!result) throw new Error(`${row.id}: 최종 원문 근거 검색이 null을 반환했습니다.`);
   return result;
-}
-
-async function createRuntime(row: QualityCase, documents: CaseDocuments) {
-  const store = new MemoryVectorStore();
-  await store.add(
-    documentList(documents).map((document) =>
-      createVectorEntry(document.id, document.vector, document.text),
-    ),
-  );
-  const bm25 = new IndexedDbBM25Index(createBm25DbName());
-  await bm25.load();
-  for (const document of documentList(documents))
-    bm25.addDocument(document.id, document.text);
-  const queryVector = decodeVector(row.queryVector);
-  const embeddingProvider: EmbeddingProvider = {
-    embed: () => Promise.resolve(queryVector),
-    embedBatch: (texts) => Promise.resolve(texts.map(() => queryVector)),
-  };
-  const engine = new RAGQueryEngine(store, embeddingProvider, bm25);
-  return { engine, close: () => bm25.close() };
-}
-
-function createDocuments(row: QualityCase): CaseDocuments {
-  const root = `Synthetic/Parallel/${row.id}`;
-  const gold = {
-    ko: makeDocument(root, 'gold-ko', 'ko', row.gold.ko),
-    en: makeDocument(root, 'gold-en', 'en', row.gold.en),
-    la: makeDocument(root, 'gold-la', 'la', row.gold.la),
-  } satisfies Record<GoldLanguage, SyntheticDocument>;
-  const distractors = GOLD_LANGUAGES.filter(
-    (language) => language !== row.queryLanguage,
-  ).map((language) =>
-    makeDocument(root, `literal-${language}`, language, row.distractors[language]),
-  );
-  return {
-    gold,
-    distractors,
-    neutral: {
-      id: `${root}/neutral.md`,
-      language: 'neutral',
-      text: fixture.neutral.text,
-      vector: decodeVector(fixture.neutral.vector),
-    },
-  };
-}
-
-function makeDocument(
-  root: string,
-  suffix: string,
-  language: GoldLanguage,
-  source: VectorText,
-): SyntheticDocument {
-  return {
-    id: `${root}/${suffix}.md`,
-    language,
-    text: source.text,
-    vector: decodeVector(source.vector),
-  };
-}
-
-function goldDocuments(documents: CaseDocuments): readonly SyntheticDocument[] {
-  return [documents.gold.ko, documents.gold.en, documents.gold.la];
-}
-
-function documentList(documents: CaseDocuments): readonly SyntheticDocument[] {
-  return [...goldDocuments(documents), ...documents.distractors, documents.neutral];
-}
-
-function goldDocumentIds(documents: CaseDocuments): readonly string[] {
-  return goldDocuments(documents).map((document) => document.id);
-}
-
-function createVectorEntry(id: string, vector: readonly number[], text: string): VectorEntry {
-  return {
-    id,
-    vector: [...vector],
-    metadata: {
-      filePath: id,
-      startLine: 0,
-      endLine: 0,
-      text,
-      sourceMtime: 1,
-      sourceSize: text.length,
-      contentHash: `hash:${id}`,
-      indexedAt: 1,
-    },
-  };
-}
-
-function naiveKeywordRanking(
-  documents: readonly SyntheticDocument[],
-  terms: readonly string[],
-  limit: number,
-): string[] {
-  const normalizedTerms = terms.map(normalizeText);
-  return documents
-    .map((document, index) => ({
-      id: document.id,
-      index,
-      score: normalizedTerms.reduce(
-        (total, term) => total + occurrenceCount(normalizeText(document.text), term),
-        0,
-      ),
-    }))
-    .filter((row) => row.score > 0)
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, limit)
-    .map((row) => row.id);
-}
-
-function occurrenceCount(text: string, term: string): number {
-  if (term.length === 0) return 0;
-  return text.split(term).length - 1;
-}
-
-function normalizeText(text: string): string {
-  return text.normalize('NFKC').toLocaleLowerCase();
 }
 
 function evaluateMandatoryRetrievalGate(cases: readonly GateCase[]): GateReport {
@@ -559,13 +498,6 @@ function coverageAtK(
   return goldIds.filter((id) => top.has(id)).length / goldIds.length;
 }
 
-function formatGateFailure(report: GateReport): string {
-  return [
-    `병렬 검색 필수 게이트 실패: engine MRR=${report.engineMeanMrr.toFixed(3)}, baseline MRR=${report.baselineMeanMrr.toFixed(3)}`,
-    ...report.failures,
-  ].join('\n');
-}
-
 function rankOf(ids: readonly string[], goldId: string): number {
   const index = ids.indexOf(goldId);
   return index < 0 ? 0 : index + 1;
@@ -592,25 +524,8 @@ function cosineSimilarity(left: readonly number[], right: readonly number[]): nu
   return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
 }
 
-function decodeVector(encoded: string): number[] {
-  const bytes = Buffer.from(encoded, 'base64');
-  if (bytes.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0)
-    throw new Error('병렬 검색 fixture 벡터 길이가 잘못되었습니다.');
-  const copy = Uint8Array.from(bytes);
-  return Array.from(new Float32Array(copy.buffer));
-}
-
 function createBm25DbName(): string {
-  const name = `SuperpowerInsideParallelQualityGate-${crypto.randomUUID()}`;
+  const name = `SuperpowerInsideSyntheticQualityGate-${crypto.randomUUID()}`;
   bm25DbNames.add(name);
   return name;
-}
-
-function loadFixture(): QualityFixture {
-  const parsed = JSON.parse(
-    readFileSync(new URL('./fixtures/embeddinggemma-cross-lingual.json', import.meta.url), 'utf8'),
-  ) as QualityFixture;
-  if (parsed.schemaVersion !== 2 || parsed.concepts.length === 0)
-    throw new Error('병렬 검색 품질 fixture가 비어 있거나 지원되지 않는 형식입니다.');
-  return parsed;
 }

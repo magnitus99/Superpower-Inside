@@ -532,6 +532,8 @@ async function start() {
     check(selected && !menu.element.isConnected, '메뉴 실행·닫기');
     trigger.remove();
     check(document.documentElement.scrollWidth <= window.innerWidth, '전체 가로 넘침 없음');
+    const leaf = document.getElementById('preview-leaf');
+    if (leaf) check(leaf.scrollWidth <= leaf.clientWidth + 1, '패널 가로 넘침 없음');
     const shell = document.querySelector('.superpower-inside-chat-messages-shell');
     const messages = document.querySelector('.superpower-inside-chat-messages');
     if (shell && messages) {
@@ -630,6 +632,16 @@ async function start() {
     return checks;
   }
 
+  function previewMetrics() {
+    const leaf = document.getElementById('preview-leaf');
+    return JSON.stringify({
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+      leafClient: leaf?.clientWidth ?? null,
+      leafScroll: leaf?.scrollWidth ?? null,
+    });
+  }
   async function checkAll() {
     const host = await checkHost();
     if (state === 'search') {
@@ -637,6 +649,7 @@ async function start() {
       window.preview.checks = [...host, ...search];
       const result = document.getElementById('preview-result');
       result.dataset.failed = 'false';
+      result.dataset.metrics = previewMetrics();
       result.textContent = `기본 스타일·호스트 ${host.length}개 / 검색 화면 ${search.length}개 통과 · Obsidian ${reference.version} · ${reference.cssSha256.slice(0, 12)}`;
       return;
     }
@@ -651,6 +664,7 @@ async function start() {
     window.preview.checks = [...host, ...product];
     const result = document.getElementById('preview-result');
     result.dataset.failed = 'false';
+    result.dataset.metrics = previewMetrics();
     result.textContent = `기본 스타일·호스트 ${host.length}개 / 실제 저장 계약 ${product.length}개 통과 · Obsidian ${reference.version} · ${reference.cssSha256.slice(0, 12)}`;
   }
   toolbar.createEl('button', { text: '제품 계약 검사' }).addEventListener('click', () => {

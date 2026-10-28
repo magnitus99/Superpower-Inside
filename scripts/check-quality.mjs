@@ -40,13 +40,25 @@ export function qualityPlan(
   const tests =
     typescript ||
     changed.some((file) =>
-      /^(src\/.*\.json$|scripts\/.*\.(mjs|fish)$|\.githooks\/|\.github\/workflows\/|esbuild\.config\.mjs$|styles\.css$|package\.json$)/.test(
+      /^(src\/.*\.json$|scripts\/.*\.(mjs|fish)$|\.githooks\/|esbuild\.config\.mjs$|styles\.css$|package\.json$|tests\/fixtures\/)/.test(
         file,
       ),
     );
+  const contracts = changed.some((file) =>
+    /^(src\/i18n\.ts$|src\/(chat|search)\/.*\.(ts|tsx|css)$|styles\.css$|tests\/fixtures\/chat-ux\/|scripts\/(check-i18n|check-chat-ux-fixtures|evaluate-chat-quality)\.mjs$)/.test(
+      file,
+    ),
+  );
+  const ui = changed.some((file) =>
+    /^(styles\.css$|src\/(chat|search)\/.*\.(ts|tsx|css)$|design\.md$|scripts\/obsidian-preview(\.mjs|\/))/.test(
+      file,
+    ),
+  );
   return {
     typescript,
     tests,
+    contracts,
+    ui,
     rust,
     review: files.length > 0,
     workflows: changed.some((file) => file.startsWith('.github/workflows/')),
@@ -121,12 +133,20 @@ function run() {
   }
   const commands = [];
   if (plan.typescript) commands.push(['npm', ['run', 'lint']], ['npm', ['run', 'typecheck']]);
-  if (plan.tests) commands.push(['npm', ['run', 'test']]);
+  if (plan.tests) commands.push(['npm', ['run', 'test:unit']]);
+  if (plan.contracts) commands.push(['npm', ['run', 'test:contracts']]);
   if (plan.rust) commands.push(['npm', ['run', 'rust:check']]);
   if (plan.review) commands.push(['npm', ['run', 'review']]);
+  commands.push(['npm', ['run', 'vault:leak-check']]);
   commands.push(['git', ['diff', '--check']], ['git', ['diff', '--cached', '--check']]);
-  if (!plan.tests && !plan.rust)
+  if (!plan.tests && !plan.contracts && !plan.rust)
     console.log('문서·메타데이터 변경: 코드·Rust·모델 검사를 생략합니다.');
+  if (plan.security)
+    console.log('의존성·보안 변경: CI 또는 릴리스 전에 `npm run security:full`을 실행합니다.');
+  if (plan.ui)
+    console.log(
+      'UI 변경: 커밋 전에 `npm run preview:verify`로 고정 뷰포트 스크린샷과 DOM 계약을 확인합니다.',
+    );
   for (const [program, commandArgs] of commands) {
     const result = spawnSync(program, commandArgs, { stdio: 'inherit' });
     if (result.error || result.status !== 0)

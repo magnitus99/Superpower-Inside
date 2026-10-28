@@ -14395,14 +14395,14 @@ mod tests {
     /// frontmatter는 chunk 본문에서 빠지고 원문 행 번호는 유지되어야 한다.
     #[test]
     fn chunk_markdown_excludes_frontmatter_and_keeps_line_numbers() {
-        let content = "---\ntags:\n  - 성경/구약/시편\naliases:\n  - 시편 51장\n---\n# 시편 51장\n1 다윗의 노래";
+        let content = "---\ntags:\n  - 기록/보고서\naliases:\n  - 보고서 51호\n---\n# 보고서 51호\n1 첫 번째 기록";
         let chunks = chunk_markdown(content, 200, 0);
 
         assert_eq!(chunks.len(), 1, "frontmatter 뒤 본문만 chunk가 되어야 한다");
         let Some(chunk) = chunks.first() else {
             return;
         };
-        assert_eq!(chunk.text, "# 시편 51장\n1 다윗의 노래");
+        assert_eq!(chunk.text, "# 보고서 51호\n1 첫 번째 기록");
         assert_eq!(
             chunk.metadata.start_line, 6,
             "본문 시작 행은 원문 기준이어야 한다"

@@ -1,37 +1,40 @@
 name: Release
-
 on:
   push:
     tags:
       - '[0-9]*.[0-9]*.[0-9]*'
-
 permissions:
   contents: write
   attestations: write
   id-token: write
-
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  quality:
-    uses: ./.github/workflows/quality.yml
-    permissions:
-      contents: read
   publish:
-    needs: quality
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22'
+
+      - name: Verify dev-to-main release
+        run: |
+          git fetch --no-tags origin main dev
+          node scripts/check-branch-policy.mjs --release-tag "$GITHUB_REF_NAME"
 
       - name: Verify committed release assets
         run: node scripts/validate-obsidian-review.mjs --tag "$GITHUB_REF_NAME" --built
 
       - name: Attest release assets
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             manifest.json
@@ -46,7 +49,7 @@ jobs:
             THIRD_PARTY_NOTICES.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           files: |

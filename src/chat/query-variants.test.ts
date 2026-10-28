@@ -3,8 +3,8 @@ import { planQueryVariants, splitLongQuestion } from './query-variants';
 
 describe('로컬 질의 변형', () => {
   it('짧은 질문은 변형 없이 원문 하나로 검색합니다', () => {
-    expect(planQueryVariants('시편 51장의 의미')).toEqual([]);
-    expect(splitLongQuestion('시편 51장의 의미')).toEqual(['시편 51장의 의미']);
+    expect(planQueryVariants('보고서 51호의 의미')).toEqual([]);
+    expect(splitLongQuestion('보고서 51호의 의미')).toEqual(['보고서 51호의 의미']);
   });
 
   it('긴 질문은 첫 조각을 질문으로, 나머지를 변형으로 넘깁니다', () => {

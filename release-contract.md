@@ -11,7 +11,7 @@ references: [superpower-goals]
 
 ## 버전과 배포
 
-SemVer MAJOR.MINOR.PATCH를 사용하며 기능 추가는 minor, 버그·호환성 수정은 patch, 비호환 변경은 major다. 게시한 버전·태그는 보존한다. main에서 준비하고 manifest.json·package.json·package-lock.json 및 versions.json의 새 키를 맞춘다. 태그는 v 접두어 없는 정확한 버전이다. 버전 스크립트·검증·훅도 같은 형식을 처리한다.
+SemVer MAJOR.MINOR.PATCH를 사용하며 기능 추가는 minor, 버그·호환성 수정은 patch, 비호환 변경은 major다. 게시한 버전·태그는 보존한다. 릴리스 준비는 dev에서 하고 manifest.json·package.json·package-lock.json 및 versions.json의 새 키를 맞춘다. main에는 dev에서 준비한 커밋만 squash merge하며 직접 커밋·push하지 않는다. 태그는 main의 squash merge 커밋에만 만들고 v 접두어 없는 정확한 버전이다. 버전 스크립트·검증·훅도 같은 형식을 처리한다.
 
 릴리스는 사용자 요청 범위에서만 진행한다. workflow와 수동 Release 생성을 경합시키지 않고 전체 검사·게시 완료 후 자산을 확인한다. 같은 버전 재게시·태그 이동도 별도 요청 범위에 한한다.
 
@@ -39,10 +39,10 @@ README는 공개 제품 소개·사용 안내이며 개발 명세나 작업 이�
 
 Patina는 등록된 최종 사용자 문구의 영어·한국어를 수동으로 검사한다. 현재 대상은 README.md 하나이며 다른 사용자 문서는 scripts/check-copy.mjs의 copyDocuments에 명시 등록해야 한다. 개발 규칙·명세·법적 고지·테스트 자료·marketing/copy/releases·package/manifest description은 대상이 아니다. 커밋·푸시·CI·릴리스 자동화에 연결하지 않는다.
 
-수동 호환 경로는 scripts/patina-bin/claude의 headless pi 실행이며 Codex CLI에 의존하지 않는다. 기본 모델은 openai/gpt-6.1-sol, 추론 high이며 PATINA_PI_MODEL·PATINA_PI_THINKING으로 명시 교체한다. 언어별 실제 모델 점수와 최종 점수가 모두 15 이하일 때만 통과한다. 최신 Patina 버전 확인 실패·인증 실패는 그대로 실패이며 오프라인 결과나 임의 제공자 전환으로 대체하지 않는다.
+수동 호환 경로는 scripts/patina-bin/claude의 headless pi 실행이다. 저장소에 기본 모델·추론을 고정하지 않으며, 온라인 검사는 실행 시점에 PATINA_PI_MODEL·PATINA_PI_THINKING을 입력받는다. 언어별 실제 모델 점수와 최종 점수가 모두 15 이하일 때만 통과한다. 최신 Patina 버전 확인 실패·인증 실패는 그대로 실패이며 오프라인 결과나 임의 제공자 전환으로 대체하지 않는다.
 
-npm run copy:check 및 copy:check:online은 등록 문구 전체를 검사한다. 동일 문구·최신 버전·스크립트·shim·정책에서 통과한 전체 온라인 결과만 Git 내부에 7일 보관하며 원문은 저장하지 않는다. 만료·손상·내용/정책 변경이면 재검사하고 --refresh는 강제 재검사다. --release-ref <커밋> --offline은 결정적 검사일 뿐 실제 모델 점수가 아니다.
+npm run copy:check는 오프라인 결정적 검사가 기본이다. npm run copy:check:online은 사용자가 명시적으로 요청한 경우에만 실행하며, 모델·추론 강도를 실행 시점에 입력받는다. 온라인 통과 기록을 재사용하지 않고 매 실행마다 검사한다. --release-ref <커밋> --offline은 결정적 검사일 뿐 실제 모델 점수가 아니다.
 
 copy:fix는 명시적인 재작성 요청에만 사용한다. README에는 전체 재작성 권한이 추가로 필요하며 언어별 보정도 그 범위 안에서만 한다. 의미 보존·충실도 95 이상과 한영 온라인 재검사를 통과한 결과만 작업 파일에 반영하고 인덱스·커밋을 수정하지 않는다. 검토 후 다시 스테이징한다.
 
-훅은 npm run hooks:install 또는 npm install로 설치한다. pre-commit은 스테이징 diff 형식만 검사하며 파일·인덱스를 재작성하지 않는다. 기존 게이트·품질 기준은 `engineering-contract`를 따른다. 이 명세는 자동 게시·모델 호출 권한을 부여하지 않는다.
+훅은 npm run hooks:install 또는 npm install로 설치한다. pre-commit은 스테이징 diff 형식과 스테이징 파일의 볼트 유출만 검사하고, pre-push는 원격 기준 변경 범위를 검사하며 main 직접 push를 차단한다. 파일·인덱스를 재작성하지 않는다. 기존 게이트·품질 기준은 engineering-contract를 따른다. 이 명세는 자동 게시·모델 호출 권한을 부여하지 않는다.

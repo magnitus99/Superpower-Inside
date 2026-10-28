@@ -48,11 +48,10 @@ simulations/
 !/marketing/videos/superpower-inside-promo/STORYBOARD.md
 !/marketing/videos/superpower-inside-promo/ko/BRIEF.md
 
-# 제품 철학은 검토한 텍스트·구조화 근거만 공유
-
 # CodeGraph 로컬 인덱스(기기 전용)
 .codegraph/
 
 # ThinkRail 개인별 엔진 설정·이력과 pi 호환 경로
 /.thinkrail/
-/.pi
+/.pi/
+/.codex/
