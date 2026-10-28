@@ -53,5 +53,6 @@ simulations/
 
 # ThinkRail 개인별 엔진 설정·이력과 pi 호환 경로
 /.thinkrail/
+/.pi
 /.pi/
 /.codex/
