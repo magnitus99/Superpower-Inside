@@ -14,7 +14,7 @@ references: [interface-design, chat-contract, vault-evidence, retrieval-index, p
 
 `main.ts`가 Obsidian 수명주기·설정·뷰·검색 런타임·외부 연결을 조립한다. 화면·I/O 조율은 TypeScript, 결정적 계산은 Rust/WASM이 담당한다. 호스트는 Obsidian 데스크톱이며 esbuild CJS 번들로 실행한다. 제품 목적과 품질 요구는 `superpower-goals`, 화면 계약은 기존 `design.md`를 편입한 `interface-design`이 소유한다.
 
-채팅 실행의 현재 중심은 `src/chat/view.ts`다. 별도 controller가 이미 분리됐다고 가정하지 않는다. 검색 화면과 채팅은 공통 색인 입력을 사용하지만 현재 원문 검증의 강도는 동일하지 않다. 검색 화면은 색인 인용·revision 경로를, 채팅의 채택 근거는 현재 본문 재읽기 경로를 사용한다.
+채팅 실행의 현재 중심은 `src/chat/view.ts`다. 별도 controller가 이미 분리됐다고 가정하지 않는다. 검색 화면과 채팅은 공통 색인 입력을 사용하지만 현재 원문 검증의 강도는 동일하지 않다. 검색 화면은 색인 인용과 현재 revision(mtime:size) 대조까지만 수행하고, 채팅의 채택 근거는 현재 본문 재읽기와 구절 재검증을 수행한다.
 
 ## 모듈과 의존 경계
 

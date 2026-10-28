@@ -47,7 +47,7 @@ export interface IndexedSearchSource {
   revisionReader?: (path: string) => Promise<string | null>;
   /** 답변 전에 채택 문서의 현재 원문을 다시 읽는 로컬 vault reader. */
   sourceReader?: (path: string, signal?: AbortSignal) => Promise<IndexedEvidenceSourceSnapshot>;
-  /** false면 현재 revision과 색인 quote를 검증하고 전체 원문 재추출은 생략합니다. */
+  /** false면 현재 vault revision(mtime:size)만 대조하고 색인 quote의 현재 원문 재검증은 생략합니다. 검색 화면이 이 경로를 사용합니다. */
   verifyCurrentSource?: boolean;
 }
 
