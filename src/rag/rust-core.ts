@@ -2072,9 +2072,9 @@ export function rankTopKPairsRust(
 
   if (compatibleRows.length === 0) return [];
 
-  if (!ensureRustCore()) {
-    return rankTopKPairsFallback(query, vectors, compatibleRows, fallbackLimit);
-  }
+  // WASM 초기화 실패를 TypeScript cosine 계산으로 대체하지 않습니다.
+  // 호출부는 null을 빈 결과로 처리하고, 실패 사실은 WASM 상태로 드러냅니다.
+  if (!ensureRustCore()) return null;
 
   const pairs = rank_top_k_pairs(
     new Float64Array(query),
@@ -2083,80 +2083,6 @@ export function rankTopKPairsRust(
     fallbackLimit,
   );
   return decodeRankPairs(pairs, compatibleRows);
-}
-
-function rankTopKPairsFallback(
-  query: readonly number[],
-  vectors: readonly (readonly number[])[],
-  compatibleRows: readonly number[],
-  topK: number,
-): RustVectorScore[] {
-  if (!Number.isFinite(topK) || topK <= 0) return [];
-
-  const queryNormSq = squaredNorm(query);
-  if (!Number.isFinite(queryNormSq) || queryNormSq <= 0) return [];
-
-  const scored: RustVectorScore[] = [];
-  for (const localIndex of compatibleRows) {
-    const vector = vectors[localIndex];
-    if (!vector) continue;
-    const score = cosineSimilarityFallback(query, vector, queryNormSq);
-    if (score === null) continue;
-    scored.push({ index: localIndex, score });
-  }
-
-  if (scored.length === 0) return [];
-
-  scored.sort((left, right) => {
-    if (left.score === right.score) {
-      return left.index - right.index;
-    }
-    return right.score - left.score;
-  });
-
-  if (scored.length <= topK) return scored;
-  scored.length = topK;
-  return scored;
-}
-
-function cosineSimilarityFallback(
-  left: readonly number[],
-  right: readonly number[],
-  leftNormSq: number,
-): number | null {
-  let dot = 0;
-  let rightNormSq = 0;
-
-  for (let index = 0; index < left.length; index++) {
-    const leftValue = left[index];
-    const rightValue = right[index];
-    if (!Number.isFinite(leftValue) || !Number.isFinite(rightValue)) {
-      return null;
-    }
-    dot += leftValue * rightValue;
-    rightNormSq += rightValue * rightValue;
-  }
-
-  if (!Number.isFinite(dot) || !Number.isFinite(rightNormSq) || rightNormSq <= 0) {
-    return null;
-  }
-
-  const denominator = Math.sqrt(leftNormSq * rightNormSq);
-  if (!Number.isFinite(denominator) || denominator === 0) {
-    return null;
-  }
-
-  const score = dot / denominator;
-  return Number.isFinite(score) ? score : null;
-}
-
-function squaredNorm(values: readonly number[]): number {
-  let total = 0;
-  for (const value of values) {
-    if (!Number.isFinite(value)) return Number.NaN;
-    total += value * value;
-  }
-  return total;
 }
 
 function isFiniteVector(values: readonly number[]): boolean {
