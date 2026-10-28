@@ -511,24 +511,6 @@ async function pauseAfterBatch(ms: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
-function buildPendingPlanFromUpdatePaths(
-  filePaths: readonly string[],
-  updatePaths: readonly string[],
-): { fileIndices: number[]; skipped: number } {
-  const updatePathSet = new Set(updatePaths);
-  const fileIndices: number[] = [];
-  for (let index = 0; index < filePaths.length; index++) {
-    const filePath = filePaths[index];
-    if (filePath !== undefined && updatePathSet.has(filePath)) {
-      fileIndices.push(index);
-    }
-  }
-  return {
-    fileIndices,
-    skipped: Math.max(filePaths.length - fileIndices.length, 0),
-  };
-}
-
 /** 볼트 인덱서 */
 export class VaultIndexer {
   private readonly failedFiles = new Map<string, { mtime: number; size: number }>();
@@ -1144,9 +1126,8 @@ export class VaultIndexer {
     throwIfIndexingCancelled(options.signal);
     const candidatePaths = files.map((file) => file.path);
     const requiredPaths = status.updateRequiredDocuments.map((document) => document.path);
-    const pendingPlan =
-      planIndexPendingFilesRust(candidatePaths, requiredPaths) ??
-      buildPendingPlanFromUpdatePaths(candidatePaths, requiredPaths);
+    const pendingPlan = planIndexPendingFilesRust(candidatePaths, requiredPaths);
+    if (!pendingPlan) throw new Error('Rust pending index file planning failed');
 
     const normalizedPendingPlanFileIndices = normalizeRustIndices(
       [...new Set(pendingPlan.fileIndices)],

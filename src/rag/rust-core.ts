@@ -2769,9 +2769,7 @@ export function planVectorStoreAddRust(
   incomingIds: readonly string[],
 ): RustVectorStoreMutationPlan | null {
   if (!existingIds.every(isStringValue) || !incomingIds.every(isStringValue)) return null;
-  if (!ensureRustCore()) {
-    return planVectorStoreAddFallback(existingIds, incomingIds);
-  }
+  if (!ensureRustCore()) return null;
 
   try {
     const raw = plan_vector_store_add_json(
@@ -2783,7 +2781,7 @@ export function planVectorStoreAddRust(
     if (!isVectorStoreMutationPlan(parsed)) return null;
     return parsed;
   } catch {
-    return planVectorStoreAddFallback(existingIds, incomingIds);
+    return null;
   }
 }
 
@@ -2800,9 +2798,7 @@ export function planVectorStoreReplaceFileRust(
   ) {
     return null;
   }
-  if (!ensureRustCore()) {
-    return planVectorStoreReplaceFileFallback(existingFilePaths, filePath, incomingCount);
-  }
+  if (!ensureRustCore()) return null;
 
   try {
     const raw = plan_vector_store_replace_file_json(
@@ -2815,7 +2811,7 @@ export function planVectorStoreReplaceFileRust(
     if (!isVectorStoreMutationPlan(parsed)) return null;
     return parsed;
   } catch {
-    return planVectorStoreReplaceFileFallback(existingFilePaths, filePath, incomingCount);
+    return null;
   }
 }
 
@@ -2824,9 +2820,7 @@ export function planVectorStoreRemoveFileRust(
   filePath: string,
 ): RustVectorStoreMutationPlan | null {
   if (!existingFilePaths.every(isStringValue) || !isStringValue(filePath)) return null;
-  if (!ensureRustCore()) {
-    return planVectorStoreRemoveFileFallback(existingFilePaths, filePath);
-  }
+  if (!ensureRustCore()) return null;
 
   try {
     const raw = plan_vector_store_remove_file_json(JSON.stringify(existingFilePaths), filePath);
@@ -2835,7 +2829,7 @@ export function planVectorStoreRemoveFileRust(
     if (!isVectorStoreMutationPlan(parsed)) return null;
     return parsed;
   } catch {
-    return planVectorStoreRemoveFileFallback(existingFilePaths, filePath);
+    return null;
   }
 }
 
@@ -2844,9 +2838,7 @@ export function planVectorStoreStatsRust(
   now: number,
 ): RustVectorStoreStatsPlan | null {
   if (!filePaths.every(isStringValue) || !Number.isFinite(now)) return null;
-  if (!ensureRustCore()) {
-    return planVectorStoreStatsFallback(filePaths, now);
-  }
+  if (!ensureRustCore()) return null;
 
   try {
     const raw = plan_vector_store_stats_json(JSON.stringify(filePaths), now);
@@ -2855,7 +2847,7 @@ export function planVectorStoreStatsRust(
     if (!isVectorStoreStatsPlan(parsed)) return null;
     return parsed;
   } catch {
-    return planVectorStoreStatsFallback(filePaths, now);
+    return null;
   }
 }
 
@@ -2864,9 +2856,7 @@ export function planVectorStoreLookupByFilePathsRust(
   requestedFilePaths: readonly string[],
 ): number[] | null {
   if (!entryFilePaths.every(isStringValue) || !requestedFilePaths.every(isStringValue)) return null;
-  if (!ensureRustCore()) {
-    return planVectorStoreLookupByFilePathsFallback(entryFilePaths, requestedFilePaths);
-  }
+  if (!ensureRustCore()) return null;
 
   try {
     const raw = plan_vector_store_lookup_by_file_paths_json(
@@ -2878,7 +2868,7 @@ export function planVectorStoreLookupByFilePathsRust(
     if (!isVectorStoreIndexPlan(parsed, entryFilePaths.length)) return null;
     return parsed;
   } catch {
-    return planVectorStoreLookupByFilePathsFallback(entryFilePaths, requestedFilePaths);
+    return null;
   }
 }
 
@@ -2887,9 +2877,7 @@ export function planVectorStoreLookupByIdsRust(
   requestedIds: readonly string[],
 ): number[] | null {
   if (!entryIds.every(isStringValue) || !requestedIds.every(isStringValue)) return null;
-  if (!ensureRustCore()) {
-    return planVectorStoreLookupByIdsFallback(entryIds, requestedIds);
-  }
+  if (!ensureRustCore()) return null;
 
   try {
     const raw = plan_vector_store_lookup_by_ids_json(
@@ -2901,294 +2889,8 @@ export function planVectorStoreLookupByIdsRust(
     if (!isVectorStoreIndexPlan(parsed, entryIds.length)) return null;
     return parsed;
   } catch {
-    return planVectorStoreLookupByIdsFallback(entryIds, requestedIds);
+    return null;
   }
-}
-
-function planVectorStoreAddFallback(
-  existingIds: readonly string[],
-  incomingIds: readonly string[],
-): RustVectorStoreMutationPlan {
-  const latestIncomingIndexById = new Map<string, number>();
-  for (let index = 0; index < incomingIds.length; index++) {
-    latestIncomingIndexById.set(incomingIds[index], index);
-  }
-
-  const existingIdSet = new Set(existingIds);
-  const usedIncomingIndices = new Set<number>();
-  const sources: RustVectorStoreSourcePlan[] = existingIds.map((_, index) => ({
-    source: 'existing',
-    index,
-  }));
-
-  for (let index = 0; index < existingIds.length; index++) {
-    const path = existingIds[index];
-    const incomingIndex = latestIncomingIndexById.get(path);
-    if (incomingIndex === undefined) continue;
-    usedIncomingIndices.add(incomingIndex);
-    sources[index] = {
-      source: 'incoming',
-      index: incomingIndex,
-    };
-  }
-
-  for (let index = 0; index < incomingIds.length; index++) {
-    const path = incomingIds[index];
-    const isLatestForId = latestIncomingIndexById.get(path) === index;
-    if (!isLatestForId || existingIdSet.has(path)) continue;
-    usedIncomingIndices.add(index);
-    sources.push({
-      source: 'incoming',
-      index,
-    });
-  }
-
-  return {
-    sources,
-    removedCount: 0,
-    changed: usedIncomingIndices.size > 0,
-  };
-}
-
-function planVectorStoreReplaceFileFallback(
-  existingFilePaths: readonly string[],
-  filePath: string,
-  incomingCount: number,
-): RustVectorStoreMutationPlan {
-  const sources: RustVectorStoreSourcePlan[] = [];
-  let incomingIndex = 0;
-  let removedCount = 0;
-
-  for (let index = 0; index < existingFilePaths.length; index++) {
-    const path = existingFilePaths[index];
-    if (path === filePath) {
-      removedCount += 1;
-      if (incomingIndex < incomingCount) {
-        sources.push({ source: 'incoming', index: incomingIndex++ });
-      }
-    } else {
-      sources.push({ source: 'existing', index });
-    }
-  }
-
-  while (incomingIndex < incomingCount) {
-    sources.push({ source: 'incoming', index: incomingIndex++ });
-  }
-
-  return {
-    sources,
-    removedCount,
-    changed: removedCount > 0 || incomingCount > 0,
-  };
-}
-
-function planVectorStoreRemoveFileFallback(
-  existingFilePaths: readonly string[],
-  filePath: string,
-): RustVectorStoreMutationPlan {
-  const sources: RustVectorStoreSourcePlan[] = [];
-  let removedCount = 0;
-
-  for (let index = 0; index < existingFilePaths.length; index++) {
-    const path = existingFilePaths[index];
-    if (path === filePath) {
-      removedCount += 1;
-    } else {
-      sources.push({ source: 'existing', index });
-    }
-  }
-
-  return {
-    sources,
-    removedCount,
-    changed: removedCount > 0,
-  };
-}
-
-function planVectorStoreLookupByFilePathsFallback(
-  entryFilePaths: readonly string[],
-  requestedFilePaths: readonly string[],
-): number[] {
-  const requested = new Set(requestedFilePaths);
-  const indexes: number[] = [];
-  for (let index = 0; index < entryFilePaths.length; index++) {
-    const path = entryFilePaths[index];
-    if (path !== undefined && requested.has(path)) {
-      indexes.push(index);
-    }
-  }
-  return indexes;
-}
-
-function planVectorStoreLookupByIdsFallback(
-  entryIds: readonly string[],
-  requestedIds: readonly string[],
-): number[] {
-  const locationById = new Map<string, number>();
-  for (let index = 0; index < entryIds.length; index++) {
-    const entryId = entryIds[index];
-    if (!locationById.has(entryId)) {
-      locationById.set(entryId, index);
-    }
-  }
-
-  const indexes: number[] = [];
-  for (const requestedId of requestedIds) {
-    const found = locationById.get(requestedId);
-    if (found !== undefined) {
-      indexes.push(found);
-    }
-  }
-
-  return indexes;
-}
-
-function planVectorStoreStatsFallback(
-  filePaths: readonly string[],
-  now: number,
-): RustVectorStoreStatsPlan {
-  const fileSet = new Set(filePaths);
-  const indexedFilePaths = [...fileSet];
-  indexedFilePaths.sort();
-
-  return {
-    totalEntries: filePaths.length,
-    totalFiles: fileSet.size,
-    totalVectors: filePaths.length,
-    averageVectorsPerFile: fileSet.size > 0 ? filePaths.length / fileSet.size : 0,
-    lastUpdated: fileSet.size > 0 ? now : null,
-    indexedFilePaths,
-  };
-}
-
-function isRagDocumentStatusOrder(status: RustRagDocumentStatus): number {
-  switch (status) {
-    case 'missing':
-      return 0;
-    case 'stale':
-      return 1;
-    case 'unknown':
-      return 2;
-    default:
-      return 3;
-  }
-}
-
-function isLegacyRagRecordFallback(record: RustRagStatusRecordInput): boolean {
-  return (
-    record.hasCompleteMetadata !== true ||
-    record.sourceMtime === undefined ||
-    record.sourceSize === undefined ||
-    record.contentHash === undefined ||
-    record.indexedAt === undefined ||
-    record.embeddingProvider === undefined ||
-    record.embeddingModel === undefined
-  );
-}
-
-function ragFileIndexStateFallback(
-  file: RustRagStatusFileInput,
-  record: RustRagStatusRecordInput | undefined,
-  reasons: RustRagStatusReasonLabels,
-  inputEmbeddingProvider: string,
-  inputEmbeddingModel: string,
-): { status: RustRagDocumentStatus; reason: string } {
-  if (!record) {
-    return { status: 'missing', reason: reasons.missing };
-  }
-  if (isLegacyRagRecordFallback(record)) {
-    return { status: 'unknown', reason: reasons.legacy };
-  }
-  if (record.sourceMtime !== file.mtime || record.sourceSize !== file.size) {
-    return { status: 'stale', reason: reasons.staleFile };
-  }
-  if (
-    record.embeddingProvider !== inputEmbeddingProvider ||
-    record.embeddingModel !== inputEmbeddingModel
-  ) {
-    return { status: 'stale', reason: reasons.embeddingChanged };
-  }
-
-  return { status: 'healthy', reason: '' };
-}
-
-export function planRagStatusFallback(input: RustRagStatusInput): RustRagStatusPlan {
-  const recordByPath = new Map<string, RustRagStatusRecordInput>();
-  for (const record of input.records) {
-    recordByPath.set(record.filePath, record);
-  }
-
-  let healthyDocuments = 0;
-  let missingDocuments = 0;
-  let staleDocuments = 0;
-  let unknownDocuments = 0;
-  let totalVectors = 0;
-  const updateRequiredDocuments: RustRagDocumentUpdatePlan[] = [];
-
-  for (const file of input.includedFiles) {
-    const record = recordByPath.get(file.path);
-    const { status, reason } = ragFileIndexStateFallback(
-      file,
-      record,
-      input.reasons,
-      input.embeddingProvider,
-      input.embeddingModel,
-    );
-    switch (status) {
-      case 'healthy':
-        healthyDocuments += 1;
-        totalVectors += record?.vectorCount ?? 0;
-        break;
-      case 'missing':
-        missingDocuments += 1;
-        updateRequiredDocuments.push({
-          path: file.path,
-          status,
-          reason,
-          mtime: file.mtime,
-          size: file.size,
-        });
-        break;
-      case 'stale':
-        staleDocuments += 1;
-        updateRequiredDocuments.push({
-          path: file.path,
-          status,
-          reason,
-          mtime: file.mtime,
-          size: file.size,
-        });
-        break;
-      case 'unknown':
-        unknownDocuments += 1;
-        updateRequiredDocuments.push({
-          path: file.path,
-          status,
-          reason,
-          mtime: file.mtime,
-          size: file.size,
-        });
-        break;
-    }
-  }
-
-  updateRequiredDocuments.sort((left, right) => {
-    const leftOrder = isRagDocumentStatusOrder(left.status);
-    const rightOrder = isRagDocumentStatusOrder(right.status);
-    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-    return left.path.localeCompare(right.path);
-  });
-
-  return {
-    totalDocuments: input.includedFiles.length,
-    healthyDocuments,
-    missingDocuments,
-    staleDocuments,
-    unknownDocuments,
-    excludedDocuments: input.totalVaultFiles - input.includedFiles.length,
-    totalVectors,
-    updateRequiredDocuments,
-  };
 }
 
 export function planRagStatusRust(input: RustRagStatusInput): RustRagStatusPlan | null {
@@ -3202,9 +2904,7 @@ export function planRagStatusRust(input: RustRagStatusInput): RustRagStatusPlan 
   ) {
     return null;
   }
-  if (!ensureRustCore()) {
-    return planRagStatusFallback(input);
-  }
+  if (!ensureRustCore()) return null;
 
   try {
     const raw = plan_rag_status_json(JSON.stringify(input));
@@ -3213,7 +2913,7 @@ export function planRagStatusRust(input: RustRagStatusInput): RustRagStatusPlan 
     if (!isRagStatusPlan(parsed)) return null;
     return parsed;
   } catch {
-    return planRagStatusFallback(input);
+    return null;
   }
 }
 
@@ -3222,9 +2922,7 @@ export function planIndexPendingFilesRust(
   updatePaths: readonly string[],
 ): RustIndexPendingPlan | null {
   if (!filePaths.every(isStringValue) || !updatePaths.every(isStringValue)) return null;
-  if (!ensureRustCore()) {
-    return planIndexPendingFilesFallback(filePaths, updatePaths);
-  }
+  if (!ensureRustCore()) return null;
 
   try {
     const raw = plan_index_pending_files_json(
@@ -3236,26 +2934,8 @@ export function planIndexPendingFilesRust(
     if (!isIndexPendingPlan(parsed, filePaths.length)) return null;
     return parsed;
   } catch {
-    return planIndexPendingFilesFallback(filePaths, updatePaths);
+    return null;
   }
-}
-
-export function planIndexPendingFilesFallback(
-  filePaths: readonly string[],
-  updatePaths: readonly string[],
-): RustIndexPendingPlan {
-  const updatePathSet = new Set(updatePaths);
-  const fileIndices: number[] = [];
-  for (let index = 0; index < filePaths.length; index++) {
-    const filePath = filePaths[index];
-    if (updatePathSet.has(filePath)) {
-      fileIndices.push(index);
-    }
-  }
-  return {
-    fileIndices,
-    skipped: Math.max(filePaths.length - fileIndices.length, 0),
-  };
 }
 
 export function planRagIndexingEtaRust(

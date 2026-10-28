@@ -1587,7 +1587,6 @@ export class MemoryVectorStore implements VectorStore {
         this.entries.map((entry) => entry.id),
         newEntries.map((entry) => entry.id),
       ),
-      { mode: 'add' },
     );
     this.invalidateRuntimeIndex();
     await this.persist();
@@ -1603,7 +1602,6 @@ export class MemoryVectorStore implements VectorStore {
         filePath,
         entries.length,
       ),
-      { mode: 'replace', filePath },
     );
     this.invalidateRuntimeIndex();
     return Promise.resolve();
@@ -1615,11 +1613,9 @@ export class MemoryVectorStore implements VectorStore {
       this.entries.map((entry) => entry.metadata.filePath),
       filePath,
     );
-    const removed = plan?.removedCount ?? countEntriesForFilePath(this.entries, filePath);
-    this.entries = applyVectorStoreMutationPlan(this.entries, [], plan, {
-      mode: 'remove',
-      filePath,
-    });
+    if (plan === null) throw new Error('Rust vector store mutation planning failed');
+    const removed = plan.removedCount;
+    this.entries = applyVectorStoreMutationPlan(this.entries, [], plan);
     this.invalidateRuntimeIndex();
     return Promise.resolve(removed);
   }
@@ -1838,10 +1834,9 @@ function applyVectorStoreMutationPlan(
   existingEntries: readonly VectorEntry[],
   incomingEntries: readonly VectorEntry[],
   plan: RustVectorStoreMutationPlan | null,
-  options?: { mode: VectorStoreMutationMode; filePath?: string },
 ): VectorEntry[] {
   if (plan === null) {
-    return applyVectorStoreMutationPlanFallback(existingEntries, incomingEntries, options);
+    throw new Error('Rust vector store mutation planning failed');
   }
 
   const nextEntries: VectorEntry[] = [];
@@ -1867,7 +1862,14 @@ function vectorStoreStatsFromRust(entries: readonly VectorEntry[]): VectorStoreS
     Date.now(),
   );
   if (plan === null) {
-    return vectorStoreStatsFallback(entries);
+    return {
+      totalEntries: 0,
+      totalFiles: 0,
+      totalVectors: 0,
+      averageVectorsPerFile: 0,
+      lastUpdated: null,
+      indexedFilePaths: [],
+    };
   }
   return plan;
 }
@@ -1881,10 +1883,7 @@ function vectorStoreLookupByFilePaths(
     filePaths,
   );
   if (plan === null) {
-    return vectorStoreLookupByFilePathsFallback(
-      entries.map((entry) => entry.metadata.filePath),
-      filePaths,
-    );
+    return [];
   }
   return plan;
 }
@@ -1895,10 +1894,7 @@ function vectorStoreLookupByIds(entries: readonly VectorEntry[], ids: readonly s
     ids,
   );
   if (plan === null) {
-    return vectorStoreLookupByIdsFallback(
-      entries.map((entry) => entry.id),
-      ids,
-    );
+    return [];
   }
   return plan;
 }
@@ -1908,186 +1904,6 @@ function selectEntriesByIndexPlan(
   indexes: readonly number[],
 ): VectorEntry[] {
   return selectByRustIndices(entries, indexes, { dedupe: true });
-}
-
-type VectorStoreMutationMode = 'add' | 'replace' | 'remove';
-
-function applyVectorStoreMutationPlanFallback(
-  existingEntries: readonly VectorEntry[],
-  incomingEntries: readonly VectorEntry[],
-  options?: { mode: VectorStoreMutationMode; filePath?: string },
-): VectorEntry[] {
-  if (!options) {
-    return addEntriesFallback(existingEntries, incomingEntries);
-  }
-
-  if (options.mode === 'replace') {
-    return replaceFileEntriesFallback(existingEntries, incomingEntries, options.filePath);
-  }
-  if (options.mode === 'remove') {
-    return removeFileEntriesFallback(existingEntries, options.filePath ?? '');
-  }
-  return addEntriesFallback(existingEntries, incomingEntries);
-}
-
-function addEntriesFallback(
-  existingEntries: readonly VectorEntry[],
-  incomingEntries: readonly VectorEntry[],
-): VectorEntry[] {
-  const latestIncomingIndexById = new Map<string, number>();
-  for (let index = 0; index < incomingEntries.length; index++) {
-    const incoming = incomingEntries[index];
-    if (incoming === undefined) {
-      continue;
-    }
-    latestIncomingIndexById.set(incoming.id, index);
-  }
-
-  const existingIdSet = new Set(existingEntries.map((entry) => entry.id));
-  const usedIncomingIndices = new Set<number>();
-  const nextEntries: VectorEntry[] = [];
-  for (let index = 0; index < existingEntries.length; index++) {
-    const existingEntry = existingEntries[index];
-    if (!existingEntry) {
-      continue;
-    }
-    const incomingIndex = latestIncomingIndexById.get(existingEntry.id);
-    if (incomingIndex === undefined) {
-      nextEntries.push(existingEntry);
-      continue;
-    }
-    const incomingEntry = incomingEntries[incomingIndex];
-    if (!incomingEntry) {
-      nextEntries.push(existingEntry);
-      continue;
-    }
-    usedIncomingIndices.add(incomingIndex);
-    nextEntries.push(incomingEntry);
-  }
-
-  for (let index = 0; index < incomingEntries.length; index++) {
-    const incomingEntry = incomingEntries[index];
-    if (!incomingEntry) {
-      continue;
-    }
-    const incomingId = incomingEntry.id;
-    const isLatestForId = latestIncomingIndexById.get(incomingId) === index;
-    if (!isLatestForId || existingIdSet.has(incomingId) || usedIncomingIndices.has(index)) {
-      continue;
-    }
-    usedIncomingIndices.add(index);
-    nextEntries.push(incomingEntry);
-  }
-  return copyEntries(nextEntries);
-}
-
-function replaceFileEntriesFallback(
-  existingEntries: readonly VectorEntry[],
-  incomingEntries: readonly VectorEntry[],
-  filePath?: string,
-): VectorEntry[] {
-  const fallbackFilePath = filePath ?? '';
-  const nextEntries: VectorEntry[] = [];
-  let incomingIndex = 0;
-  for (let index = 0; index < existingEntries.length; index++) {
-    const existingEntry = existingEntries[index];
-    if (!existingEntry) {
-      continue;
-    }
-    if (existingEntry.metadata.filePath === fallbackFilePath) {
-      if (incomingIndex < incomingEntries.length) {
-        const incomingEntry = incomingEntries[incomingIndex];
-        if (incomingEntry) {
-          nextEntries.push(incomingEntry);
-        }
-        incomingIndex += 1;
-      }
-    } else {
-      nextEntries.push(existingEntry);
-    }
-  }
-  while (incomingIndex < incomingEntries.length) {
-    const incomingEntry = incomingEntries[incomingIndex];
-    if (incomingEntry) {
-      nextEntries.push(incomingEntry);
-    }
-    incomingIndex += 1;
-  }
-  return copyEntries(nextEntries);
-}
-
-function removeFileEntriesFallback(
-  existingEntries: readonly VectorEntry[],
-  filePath: string,
-): VectorEntry[] {
-  return copyEntries(existingEntries.filter((entry) => entry.metadata.filePath !== filePath));
-}
-
-function countEntriesForFilePath(
-  existingEntries: readonly VectorEntry[],
-  filePath: string,
-): number {
-  let removedCount = 0;
-  for (let index = 0; index < existingEntries.length; index++) {
-    const entry = existingEntries[index];
-    if (entry.metadata.filePath === filePath) {
-      removedCount++;
-    }
-  }
-  return removedCount;
-}
-
-function vectorStoreStatsFallback(entries: readonly VectorEntry[]): VectorStoreStats & {
-  indexedFilePaths: string[];
-} {
-  const filePaths = entries.map((entry) => entry.metadata.filePath);
-  const indexedFilePaths = [...new Set(filePaths)].sort();
-  return {
-    totalEntries: filePaths.length,
-    totalFiles: indexedFilePaths.length,
-    totalVectors: filePaths.length,
-    averageVectorsPerFile:
-      indexedFilePaths.length > 0 ? filePaths.length / indexedFilePaths.length : 0,
-    lastUpdated: indexedFilePaths.length > 0 ? Date.now() : null,
-    indexedFilePaths,
-  };
-}
-
-function vectorStoreLookupByFilePathsFallback(
-  entryFilePaths: readonly string[],
-  requestedFilePaths: readonly string[],
-): number[] {
-  const requested = new Set(requestedFilePaths);
-  const indexes: number[] = [];
-  for (let index = 0; index < entryFilePaths.length; index++) {
-    const entryPath = entryFilePaths[index];
-    if (entryPath !== undefined && requested.has(entryPath)) {
-      indexes.push(index);
-    }
-  }
-  return indexes;
-}
-
-function vectorStoreLookupByIdsFallback(
-  entryIds: readonly string[],
-  requestedIds: readonly string[],
-): number[] {
-  const locationById = new Map<string, number>();
-  for (let index = 0; index < entryIds.length; index++) {
-    const entryId = entryIds[index];
-    if (!locationById.has(entryId)) {
-      locationById.set(entryId, index);
-    }
-  }
-
-  const indexes: number[] = [];
-  for (const requestedId of requestedIds) {
-    const found = locationById.get(requestedId);
-    if (found !== undefined) {
-      indexes.push(found);
-    }
-  }
-  return indexes;
 }
 
 function copyEntries(entries: readonly VectorEntry[]): VectorEntry[] {

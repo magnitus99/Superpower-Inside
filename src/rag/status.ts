@@ -3,7 +3,6 @@ import { t } from '../i18n';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { getRagCandidateFiles } from '../utils/vault';
 import {
-  planRagStatusFallback,
   planRagStatusRust,
   type RustRagStatusFileInput,
   type RustRagStatusRecordInput,
@@ -68,7 +67,8 @@ export async function calculateRagStatus(
       embeddingChanged: t('ragStatusEmbeddingChangedReason'),
     },
   };
-  const plan = planRagStatusRust(input) ?? planRagStatusFallback(input);
+  const plan = planRagStatusRust(input);
+  if (!plan) throw new Error('Rust RAG status planning failed');
 
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 

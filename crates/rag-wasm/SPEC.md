@@ -19,7 +19,7 @@ TypeScript와의 경계는 `src/rag/rust-core.ts`의 입출력 매핑이며 WASM
 
 요구 계약은 WASM 초기화·wire 실패를 TypeScript 계산으로 대신하지 않고 기존 오류·빈 결과·비활성 상태로 드러내는 것이다. indexed-evidence wrapper는 실패 시 null을 반환한다.
 
-현재 차이: `rankTopKPairsRust`는 WASM 초기화 실패 시 TypeScript cosine·정렬로 대체하지 않고 null을 반환하며, `src/rag/store.ts`의 호출부는 이를 빈 결과로 처리한다(`src/rag/rust-core-unavailable.test.ts`). 다만 다음 TS fallback이 남아 있어 WASM 실패 시 결정적 계산을 TypeScript로 대체하는 경로가 있다: `selectRelevantResultIndicesFallback`, vector store add·replace·remove·stats·lookup fallback, `planRagStatusFallback`, `planIndexPendingFilesFallback`, `planDiverseResultIndicesFallback`, `planNativeToolCompatibilityFallbackRust`(view.ts), `planVaultLinkFallbackIndexRust`(context-expansion.ts), legacy record fallback. 제거는 호출부의 fail-closed 동작과 저장 형식 호환을 함께 검증한 뒤 별도로 진행하며, 새 계산을 TS fallback으로 추가하는 근거가 아니다.
+현재 차이: `rankTopKPairsRust`는 WASM 초기화 실패 시 TypeScript cosine·정렬로 대체하지 않고 null을 반환하며, `src/rag/store.ts`의 호출부는 이를 빈 결과로 처리한다(`src/rag/rust-core-unavailable.test.ts`). 이번 보강으로 검색 선택·다양성 계획, 벡터 저장소 add·replace·remove·stats·lookup 계획, RAG 상태 계산, pending 파일 계획의 TypeScript 계산 fallback도 제거했다. 각 계획은 WASM 실패 시 null을 반환하고, 저장소 쓰기 계획 실패는 쓰기를 중단하며 조회·통계는 빈 결과로 닫는다. `planNativeToolCompatibilityFallbackRust`·`planVaultLinkFallbackIndexRust`는 이름과 달리 Rust wire wrapper이며 TypeScript 계산 대체가 아니다. 이 명세가 나열하던 TS 계산 fallback은 제거됐다.
 
 WASM glue·base64는 수동 편집하지 않고 `npm run wasm:build`로 같은 소스 상태에서 생성한다. build/dev의 선행 WASM 빌드와 저장 형식의 legacy load·round-trip을 유지한다. PDF worker의 추출·페이지 매핑 예외는 `superpower-architecture`를 따른다.
 
