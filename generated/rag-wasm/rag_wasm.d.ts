@@ -40,9 +40,12 @@ export class Bm25RuntimeIndex {
      * 여러 facet 질의의 검색·집계를 한 번의 bridge 호출로 반환합니다.
      *
      * 입력은 `{"queries":[{"query":"…","limit":N}],
-     * "aggregates":[{"query":"…","limit":N,"allowedPaths":[…]?}]}`이며,
+     * "aggregates":[{"query":"…","limit":N}],"allowedPaths":[…]?}`이며,
      * 출력은 `{"queries":[{"hits":[…] }],"aggregates":[…]}`입니다.
-     * 검색은 source path별 첫 hit만 남기고 rank는 전체 score 목록의 1 기반 순위입니다.
+     * `allowedPaths`는 batch 전체에 한 번만 적용합니다. aggregate 항목 안의
+     * `allowedPaths`는 조용히 무시하지 않고 입력 오류로 처리합니다.
+     * 검색은 점수 내림차순으로 정렬한 뒤 source path별 첫 hit만 남기고
+     * rank는 전체 score 목록의 1 기반 순위입니다.
      */
     batch_search_and_aggregate_json(input_json: string): string;
     /**
