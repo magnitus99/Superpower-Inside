@@ -86,6 +86,7 @@ import {
   planStructuralLinkedPathsRust,
   planVaultLinkFallbackIndexRust,
   planVaultLinkCandidatesRust,
+  hasVaultInventoryIntentRust,
   RustIvfRuntimeIndex,
   rankTopKPairsRust,
   classifyMcpToolErrorRust,
@@ -2701,5 +2702,24 @@ describe('RustBm25RuntimeIndex field bridge', () => {
     } finally {
       index.dispose();
     }
+  });
+});
+
+describe('hasVaultInventoryIntentRust', () => {
+  it('파일·문서 목록이나 개수 질문을 모델 응답 없이 감지한다', () => {
+    for (const question of [
+      '볼트의 모든 문서를 나열해줘',
+      '이 폴더의 파일 개수를 알려줘',
+      '어떤 노트들이 있는지 전부 나열해줘',
+      'list all documents in the vault',
+      'how many notes are there in this folder?',
+    ]) {
+      expect(hasVaultInventoryIntentRust(question)).toBe(true);
+    }
+  });
+
+  it('설명형 질문을 목록 의도로 오인하지 않는다', () => {
+    expect(hasVaultInventoryIntentRust('쿼츠 재시작 조건을 설명해줘')).toBe(false);
+    expect(hasVaultInventoryIntentRust('explain the cooling protocol')).toBe(false);
   });
 });

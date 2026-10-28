@@ -8,6 +8,9 @@ export async function enumerateIndexedDocuments(
   options: IndexedVaultReviewOptions,
   review: (options: IndexedVaultReviewOptions) => Promise<IndexedVaultReviewResult>,
 ): Promise<{ content: string; citations: SourceCitation[]; incomplete: boolean }> {
+  // Rust 검색 계획은 질의 변형을 최대 3개까지만 받아들입니다. 4개 이상을 넘기면
+  // 열거 계획 자체가 거부되어 확인된 문서가 실패로 집계됩니다.
+  const MAX_QUERY_VARIANTS = 3;
   const documents = new Map<string, string[]>();
   let missing = 0;
   for (const match of options.matchInventory ?? []) {
@@ -33,7 +36,8 @@ export async function enumerateIndexedDocuments(
     if (!allowed) { failed += 1; continue; }
     if (!allowed.includes(path)) continue;
     const result = await review({
-      ...options, question: queries[0] ?? options.question, queryVariants: queries.slice(1),
+      ...options, question: queries[0] ?? options.question,
+      queryVariants: queries.slice(1, 1 + MAX_QUERY_VARIANTS),
       indexedPaths: [path], documentScope: 'all', candidates: undefined,
       discoveryCandidates: undefined, discoveryPaths: undefined, getFollowupPaths: undefined,
       matchInventory: undefined, inventory: undefined, searchPlan: undefined,

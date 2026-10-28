@@ -1090,6 +1090,18 @@ export function get_mcp_connection_state_rust(total_count, connected_count, fail
 }
 
 /**
+ * 파일·문서 목록이나 개수를 요구하는 질문을 결정적으로 감지합니다.
+ * @param {string} question
+ * @returns {boolean}
+ */
+export function has_vault_inventory_intent(question) {
+    const ptr0 = passStringToWasm0(question, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.has_vault_inventory_intent(ptr0, len0);
+    return ret !== 0;
+}
+
+/**
  * 파일 경로 확장자가 제외 대상 목록에 있으면 `true`를 반환한다.
  * @param {string} file_path
  * @param {string} extension_keys_json

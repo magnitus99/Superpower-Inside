@@ -2,6 +2,7 @@ import { t } from '../i18n';
 import type { ChatMessage, LLMProvider, TokenUsage } from '../llm/providers';
 import { prepareProviderRequest } from '../llm/request-budget';
 import {
+  hasVaultInventoryIntentRust,
   mergeIndexedEvidencePlansRust,
   pageIndexedDiscoveryRust,
   planIndexedEvidenceRust,
@@ -528,14 +529,20 @@ export async function searchIndexedVault(
     }
   }
   const finalInventory = inventoryFor();
-  const unreviewedDocuments = Math.max(
+  // 발견 범위(전체 lexical 후보·색인 수)와 현재 원문 검토 범위는 다릅니다.
+  // exhaustive 발견이어도 실제 원문을 읽은 경로만 검토 완료로 세고, 검토 예산 밖 경로를
+  // "미검토"로 부풀리지 않습니다. documentScope all의 비-exhaustive 호출은 전체 범위를
+  // 요청했으므로 요청 밖 색인 경로를 미검토 실패로 유지합니다.
+  const reviewFailures = Math.max(
     finalInventory.unreviewedCount,
     plan.coverage.unreviewedDocuments,
-    unreviewedPaths.size +
-      (documentScope === 'all' && !exhaustiveReview
-        ? scopeCount - requestedPaths.length
-        : 0),
+    unreviewedPaths.size,
   );
+  const unreviewedDocuments =
+    reviewFailures +
+    (documentScope === 'all' && !exhaustiveReview
+      ? Math.max(0, scopeCount - requestedPaths.length)
+      : 0);
   const notIndexedDocuments = Math.max(
     finalInventory.notIndexedCount,
     plan.coverage.notIndexedDocuments,
@@ -547,7 +554,7 @@ export async function searchIndexedVault(
         : plan.coverage.status === 'budget-exhausted'
           ? 'budget-exhausted'
           : 'supported',
-    reviewedDocuments: Math.max(0, scopeCount - unreviewedDocuments),
+    reviewedDocuments: Math.max(0, requestedPaths.length - reviewFailures),
     unreviewedDocuments,
     notIndexedDocuments,
   };
@@ -868,7 +875,9 @@ async function runIndexedVaultReview(
     const total =
       documentScope === 'candidates'
         ? new Set(options.candidates?.map((candidate) => candidate.path) ?? []).size
-        : Math.max(options.indexedPaths.length, options.inventory?.indexedCount ?? 0);
+        : options.exhaustiveReview === true
+          ? options.indexedPaths.length
+          : Math.max(options.indexedPaths.length, options.inventory?.indexedCount ?? 0);
     if (
       options.candidatesState === 'initializing' ||
       options.candidatesState === 'unavailable'
@@ -1044,12 +1053,30 @@ async function runIndexedVaultReview(
         const plannedPaths = [...new Set([...baseSearch.coverage.plannedPaths, ...extra.coverage.plannedPaths])];
         // 같은 문서를 다시 계획에 넣은 사실만으로 앞선 부분 읽기 실패를 해소하지 않습니다.
         const unreviewedPaths = [...new Set([...baseSearch.coverage.unreviewedPaths, ...extra.coverage.unreviewedPaths])];
+        // 후속 검토가 성공해도 기본 검토에서 남은 미검토·미색인 수를 지우지 않습니다.
+        const unreviewedDocuments = Math.max(
+          baseSearch.coverage.unreviewedDocuments,
+          extra.coverage.unreviewedDocuments,
+          unreviewedPaths.length,
+          merged.coverage.unreviewedDocuments,
+        );
+        const notIndexedDocuments = Math.max(
+          baseSearch.coverage.notIndexedDocuments,
+          extra.coverage.notIndexedDocuments,
+          merged.coverage.notIndexedDocuments,
+        );
         const coverage: IndexedVaultSearchCoverage = {
           ...baseSearch.coverage,
-          status: merged.coverage.status,
+          status:
+            unreviewedDocuments > 0 ||
+            merged.coverage.status === 'incomplete' ||
+            (baseSearch.coverage.documentScope === 'all' && notIndexedDocuments > 0)
+              ? 'incomplete'
+              : merged.coverage.status,
           requestedPaths, plannedPaths, unreviewedPaths,
           reviewedDocuments: plannedPaths.filter((path) => !unreviewedPaths.includes(path)).length,
-          unreviewedDocuments: Math.max(unreviewedPaths.length, merged.coverage.unreviewedDocuments),
+          unreviewedDocuments,
+          notIndexedDocuments,
         };
         search = {
           ...baseSearch,
@@ -1222,6 +1249,28 @@ async function runIndexedVaultReview(
       }
       for (const path of rejectedPaths) stale.add(path);
       evidence = evidence.filter((item) => !rejectedPaths.has(item.path));
+      // 현재 원문 검증을 통과한 근거는 색인 사본이 아니라 지금 읽은 본문의 revision·hash를
+      // 사용합니다. 해시가 달라도 현재 구절·절대 행 검증을 통과했으면 그 사실을 기록하고,
+      // 검증 없이 색인 사본을 verified로 승격하지 않습니다.
+      let hashMismatches = 0;
+      evidence = evidence.map((item) => {
+        const source = currentSources.get(item.path);
+        if (!source) return item;
+        if (item.contentHash && source.contentHash && item.contentHash !== source.contentHash) {
+          hashMismatches += 1;
+        }
+        return {
+          ...item,
+          revision: source.revision,
+          ...(source.contentHash ? { contentHash: source.contentHash } : {}),
+        };
+      });
+      if (hashMismatches > 0) {
+        appLogger.debug('Verified evidence was re-read from sources changed since indexing.', {
+          source: 'chat.indexed-review',
+          data: { hashMismatches },
+        });
+      }
     }
     if (options.sourceReader && stale.size > 0) {
       // 색인 뒤에 원문이 바뀐 문서도 인용이 현재 본문에 남아 있으면 근거로 복구합니다.
@@ -1328,11 +1377,22 @@ async function runIndexedVaultReview(
                   .map((status) => status.sourceId),
               )
             : new Set<string>();
-          const recovered = recoveryPlan.evidence.filter(
-            (item) =>
-              verified.has(item.sourceId) &&
-              !evidence.some((existing) => existing.path === item.path),
-          );
+          const recovered = recoveryPlan.evidence
+            .filter(
+              (item) =>
+                verified.has(item.sourceId) &&
+                !evidence.some((existing) => existing.path === item.path),
+            )
+            .map((item) => {
+              const source = currentSources.get(item.path);
+              return source
+                ? {
+                    ...item,
+                    revision: source.revision,
+                    ...(source.contentHash ? { contentHash: source.contentHash } : {}),
+                  }
+                : item;
+            });
           if (recovered.length > 0) {
             for (const item of recovered) stale.delete(item.path);
             evidence = [...recovered, ...evidence].slice(0, recoveryBudget.maxPassages);
@@ -1378,7 +1438,11 @@ async function runIndexedVaultReview(
     const newlyStale = [...stale].filter(
       (path) => !search.coverage.unreviewedPaths.includes(path),
     ).length;
-    const enumeration = followup.enumerate
+    // 모델이 열거를 선택하지 못하거나 후속 요청이 실패해도 목록·개수 질문은
+    // 결정적 의도 감지로 전체 열거를 유지합니다.
+    const enumerationIntent =
+      followup.enumerate === true || hasVaultInventoryIntentRust(options.question);
+    const enumeration = enumerationIntent
       ? await interruptible(enumerateIndexedDocuments(options, (request) => runIndexedVaultReview(request)))
       : undefined;
     check();

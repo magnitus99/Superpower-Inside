@@ -406,6 +406,58 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.dossier.discoverySummary?.selectedSourceDocuments).toBe(1);
   });
 
+  it('후속 검토가 성공해도 기본 검토의 미검토·미색인 수를 지우지 않는다', async () => {
+    vi.mocked(planIndexedEvidenceRust)
+      .mockReturnValueOnce(planFixture())
+      .mockReturnValueOnce(twoDocumentPlan());
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    let requests = 0;
+    const streamChat = vi.fn((_messages: ChatMessage[], consume: (chunk: { content: string }) => void) => {
+      requests++;
+      consume({
+        content:
+          requests === 1
+            ? '["delivery schedule", "cooling protocol"]'
+            : JSON.stringify({
+                paragraphs: [
+                  { text: '근거를 확인했습니다.', sources: [SOURCE_ID, OTHER_SOURCE_ID] },
+                ],
+              }),
+      });
+      return Promise.resolve();
+    });
+    const sourceReader = vi.fn((path: string) =>
+      Promise.resolve({
+        revision: '1:10',
+        text:
+          path === RELEVANT
+            ? '\n\nQuartz restarts only after two cooling cycles.\n'
+            : 'Delivery schedule for the northern region.',
+      }),
+    );
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        indexedPaths: [RELEVANT],
+        provider: { streamChat },
+        sourceReader,
+        inventory: { indexedCount: 3, unreviewedCount: 0, notIndexedCount: 1 },
+        discoveryPaths: [RELEVANT, OTHER],
+        discoveryCandidates: [
+          { path: RELEVANT, score: 2, source: 'bm25', rank: 1 },
+          { path: OTHER, score: 1, source: 'bm25', rank: 2 },
+        ],
+        getFollowupPaths: () => Promise.resolve([RELEVANT, OTHER]),
+      }),
+    );
+
+    expect(result.dossier.followup?.status).toBe('searched');
+    expect(result.coverage.reviewedDocuments).toBe(2);
+    // 기본 검토에서 요청 밖 색인 2개와 미색인 1개는 후속 검토 뒤에도 유지됩니다.
+    expect(result.coverage.unreviewedDocuments).toBe(2);
+    expect(result.coverage.notIndexedDocuments).toBe(1);
+    expect(result.coverage.status).toBe('incomplete');
+  });
+
   it.each([false, true])('필터·mixed 요청도 현재 범위의 마지막 페이지 단서로 후속 조사를 수행한다: %s', async (mixed) => {
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
     const paths = Array.from({ length: 121 }, (_, index) => `Synthetic/Lead-${index}.md`);
@@ -466,6 +518,79 @@ describe('엔진 근거 기반 색인 검토', () => {
     const controller = new AbortController();
     controller.abort();
     await expect(enumerateIndexedDocuments({ ...options, signal: controller.signal }, review)).rejects.toThrow();
+  });
+
+  it('열거 검토는 검색 계획 상한(3개)을 넘는 질의 변형을 전달하지 않는다', async () => {
+    const seed = await reviewIndexedVault(reviewOptions({ deferAnswer: true }));
+    const item = seed.evidence[0];
+    const citation = seed.citations[0];
+    if (!item || !citation) throw new Error('검증된 합성 근거 필요');
+    const review = vi.fn((request: IndexedVaultReviewOptions) => {
+      const path = request.indexedPaths[0];
+      const sourceId = `${path}#L1-L1`;
+      return Promise.resolve({
+        ...seed,
+        evidence: [{ ...item, path, sourceId, startLine: 1, endLine: 1 }],
+        citations: [{ ...citation, id: sourceId, filePath: path, status: 'verified' as const }],
+      });
+    });
+    const queries = ['q1', 'q2', 'q3', 'q4', 'q5'];
+    const options = reviewOptions({
+      indexedPaths: [RELEVANT],
+      discoveryPaths: [RELEVANT],
+      getFollowupPaths: () => Promise.resolve([RELEVANT]),
+      matchInventory: queries.map((query) => ({
+        query,
+        totalDocuments: 1,
+        totalChunks: 1,
+        totalOccurrences: 1,
+        documents: [{ sourcePath: RELEVANT, occurrences: 1 }],
+      })),
+    });
+
+    const result = await enumerateIndexedDocuments(options, review);
+
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(review.mock.calls[0]?.[0]).toMatchObject({
+      question: 'q1',
+      queryVariants: ['q2', 'q3', 'q4'],
+    });
+    expect(result.incomplete).toBe(false);
+  });
+
+  it('목록 질문은 후속 모델 응답 없이도 전체 열거를 수행한다', async () => {
+    const { provider, calls } = answerProvider();
+    const currentText =
+      '첫 줄\n둘째 줄\nQuartz restarts only after two cooling cycles.\n넷째 줄';
+
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        question: '볼트의 모든 문서를 나열해줘',
+        indexedPaths: [RELEVANT],
+        provider,
+        sourceReader: () =>
+          Promise.resolve({
+            revision: '1:10',
+            text: currentText,
+            contentHash: 'hash-relevant',
+          }),
+        matchInventory: [
+          {
+            query: 'Quartz',
+            totalDocuments: 1,
+            totalChunks: 1,
+            totalOccurrences: 1,
+            documents: [{ sourcePath: RELEVANT, occurrences: 1 }],
+          },
+        ],
+      }),
+    );
+
+    expect(result.dossier.followup?.status).not.toBe('searched');
+    expect(result.dossier.enumeration).toBeDefined();
+    expect(result.dossier.enumeration?.incomplete).toBe(false);
+    expect(result.citations.some((citation) => citation.filePath === RELEVANT)).toBe(true);
+    expect(calls.length).toBeGreaterThan(0);
   });
 
   it('검토 밖 단서를 보존하되 원문이나 인용으로 승격하지 않는다', async () => {
@@ -1218,6 +1343,41 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.outcome).toBe('answered');
     expect(result.evidence).toHaveLength(1);
     expect(result.citations).toHaveLength(1);
+  });
+
+  it('현재 file hash가 색인 hash와 달라도 현재 구절 검증을 통과하면 현재 revision·hash로 갱신한다', async () => {
+    const verify = vi.mocked(verifyIndexedEvidenceRust);
+    verify.mockReset();
+    verify.mockImplementation(verifiedStatuses);
+    const indexed = planFixture();
+    const first = indexed.evidence[0];
+    if (!first) throw new Error('plan fixture without evidence');
+    vi.mocked(planIndexedEvidenceRust).mockReturnValueOnce({
+      ...indexed,
+      evidence: [{ ...first, contentHash: 'hash-indexed' }],
+    });
+    const { provider } = answerProvider();
+    const currentText =
+      '첫 줄\n둘째 줄\nQuartz restarts only after two cooling cycles.\n넷째 줄';
+
+    const result = await reviewIndexedVault(
+      reviewOptions({
+        indexedPaths: [RELEVANT],
+        provider,
+        sourceReader: () =>
+          Promise.resolve({
+            revision: '1:10',
+            text: currentText,
+            contentHash: 'hash-current',
+          }),
+      }),
+    );
+
+    expect(result.evidence).toHaveLength(1);
+    expect(result.evidence[0]).toMatchObject({
+      revision: '1:10',
+      contentHash: 'hash-current',
+    });
   });
 
   it('현재 원문을 같은 청킹 규칙으로 검증하면 raw-text quote 불일치를 stale로 오인하지 않는다', async () => {

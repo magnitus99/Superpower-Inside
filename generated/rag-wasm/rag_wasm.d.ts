@@ -319,6 +319,11 @@ export function format_mcp_json(mcp_json_text: string): string;
 export function get_mcp_connection_state_rust(total_count: number, connected_count: number, failed_count: number, is_connecting: boolean): string;
 
 /**
+ * 파일·문서 목록이나 개수를 요구하는 질문을 결정적으로 감지합니다.
+ */
+export function has_vault_inventory_intent(question: string): boolean;
+
+/**
  * 파일 경로 확장자가 제외 대상 목록에 있으면 `true`를 반환한다.
  */
 export function is_excluded_ext_json(file_path: string, extension_keys_json: string): boolean;
@@ -1240,6 +1245,7 @@ export interface InitOutput {
     readonly format_mcp_connection_error: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly format_mcp_json: (a: number, b: number) => [number, number];
     readonly get_mcp_connection_state_rust: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly has_vault_inventory_intent: (a: number, b: number) => number;
     readonly is_excluded_ext_json: (a: number, b: number, c: number, d: number) => number;
     readonly is_excluded_path: (a: number, b: number, c: number, d: number) => number;
     readonly is_extractable_source_extension: (a: number, b: number) => number;

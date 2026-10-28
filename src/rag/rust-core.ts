@@ -63,6 +63,7 @@ import {
   is_recommendable_exclude_extension_json,
   is_mcp_tool_name_available,
   is_whole_vault_research_intent,
+  has_vault_inventory_intent,
   parse_mcp_tool_arguments_json,
   normalize_mcp_tool_result_json,
   is_mcp_tool_result_empty_json,
@@ -4798,6 +4799,16 @@ export function isWholeVaultResearchIntentRust(question: string): boolean | null
     return is_whole_vault_research_intent(question);
   } catch {
     return null;
+  }
+}
+
+/** 파일·문서 목록·개수 의도를 모델 응답과 무관하게 결정적으로 감지합니다. */
+export function hasVaultInventoryIntentRust(question: string): boolean {
+  if (!isStringValue(question) || !ensureRustCore()) return false;
+  try {
+    return has_vault_inventory_intent(question);
+  } catch {
+    return false;
   }
 }
 

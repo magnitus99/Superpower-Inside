@@ -49,9 +49,9 @@ quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검�
 
 ## 현재 구현과 목표의 차이
 
-- `src/search/indexed-search-deps.ts`는 exhaustive lexical 후보와 discovery 단서를 보유하면서 원문 심사 경로를 최대 96개로 선택한다. 따라서 전체 lexical 평가를 전체 현재 원문 검토 완료로 해석할 수 없다. `indexed-vault-review.ts`의 `exhaustiveReview` coverage 표현 역시 이 두 의미가 분리돼 있음을 보장하지 못한다.
-- 기본 생성에는 인벤토리 총계가 전달되지만 문서별 검증 열거는 후속 `enumerate` 경로다. 임의 열거 질문의 무누락을 기본 생성만으로 보장하지 않는다. 관련 근거는 `indexed-vault-followup.ts`, `indexed-vault-enumeration.ts`와 `indexed-vault-review.test.ts`다.
-- 채팅 검증은 현재 본문을 사용하지만 정상 경로에서 색인 파일 content hash와 현재 hash를 직접 비교하는 게이트는 확인되지 않았다. 이 명세의 hash 확인 요구를 이미 충족했다고 간주하지 않는다. 검색 화면은 `verifyCurrentSource: false`이므로 같은 검증 보장이 아니다.
+- `src/search/indexed-search-deps.ts`는 exhaustive lexical 후보와 discovery 단서를 보유하면서 원문 심사 경로를 최대 96개로 선택한다. 따라서 전체 lexical 발견을 전체 현재 원문 검토 완료로 해석할 수 없다. `indexed-vault-review.ts`의 coverage는 이제 원문을 실제로 읽은 경로만 `reviewedDocuments`로 세고, 발견 범위는 discovery 단서·일치 인벤토리·후속 조회로 분리한다. 검토 예산 밖 경로를 미검토 실패로 부풀리지 않지만, 발견 범위와 원문 검증 범위가 다르다는 사실은 그대로다.
+- 기본 생성에는 인벤토리 총계가 전달되고, 목록·개수 의도는 후속 모델 응답과 무관하게 Rust 결정적 감지로 `enumerate` 경로를 실행한다. 다만 일치 인벤토리가 상한으로 자른 문서는 `missing`으로 남으므로 전체 무누락은 인벤토리 범위에 한정된다. 관련 근거는 `indexed-vault-followup.ts`, `indexed-vault-enumeration.ts`와 `indexed-vault-review.test.ts`다.
+- 채팅 검증은 현재 본문을 읽고 구절·절대 행 주소를 Rust로 재검증하며, 현재 파일 content hash를 색인 hash와 비교해 다르면 현재 revision·hash로 갱신한다. 해시 일치만으로 색인 사본을 verified로 승격하지 않는다. 검색 화면은 `verifyCurrentSource: false`이므로 같은 검증 보장이 아니다.
 - 기본 발견·집계·주소를 엔진 한 번·색인 한 순회에서 얻는 것이 목표다. 현재는 facet별 검색·집계와 배치별 WASM 계획이 있으며, `src/chat/query-variants.ts`의 제공자 호출은 로컬 질의 계획만 허용한 기존 계약과 다르다. 이번 편입에서 동작이나 정책을 변경하지 않는다.
 
 구현 중심은 `indexed-vault-review.ts`의 `searchIndexedVault`·`reviewIndexedVault`다. `research-agent.ts`의 존재를 현재 주 실행 경로의 증거로 쓰지 않는다. 회귀 근거는 `indexed-vault-review.test.ts`, `indexed-vault-search.test.ts`, `indexed-vault-followup.test.ts`, `src/search/indexed-search-deps.test.ts`, `src/search/engine-adapter.test.ts`다. 로컬 회귀 계약과 실제 답변·전체 recall 검증은 별개이며, 이번 편입에서는 실제 답변·전체 recall을 재측정하지 않았다. 달성 상태와 종료 판정은 [engineering-contract.md](../../engineering-contract.md#검증-상태와-이력)의 검증 상태 절이 소유한다.

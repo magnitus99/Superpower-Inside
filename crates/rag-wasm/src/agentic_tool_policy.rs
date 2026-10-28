@@ -703,6 +703,17 @@ fn has_inventory_intent(question: &str, folder_scope: bool) -> bool {
     ) || folder_scope && count_intent
 }
 
+/// 파일·문서 목록이나 개수를 요구하는 질문을 결정적으로 감지합니다.
+#[must_use]
+#[wasm_bindgen]
+pub fn has_vault_inventory_intent(question: &str) -> bool {
+    if question.len() > 16_384 {
+        return false;
+    }
+    let normalized = question.to_lowercase();
+    has_inventory_intent(&normalized, has_folder_scope(&normalized))
+}
+
 /// 볼트 전체 집계 통계를 요구하는 표현을 감지함.
 fn has_stats_intent(question: &str) -> bool {
     contains_any(
@@ -2499,7 +2510,9 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 mod tests {
     use serde_json::{Value as JsonValue, json};
 
-    use super::{plan_agentic_tool_turn_json, requires_multiple_source_evidence};
+    use super::{
+        has_vault_inventory_intent, plan_agentic_tool_turn_json, requires_multiple_source_evidence,
+    };
 
     #[test]
     fn unmentioned_mcp_tools_remain_available_during_native_research() {
@@ -4425,6 +4438,31 @@ mod tests {
             assert!(
                 requires_multiple_source_evidence(question),
                 "다중 출처 표현을 감지하지 못했습니다: {question}"
+            );
+        }
+    }
+
+    #[test]
+    fn vault_inventory_intent_is_detected_without_provider_output() {
+        for question in [
+            "볼트의 모든 문서를 나열해줘",
+            "이 폴더의 파일 개수를 알려줘",
+            "어떤 노트들이 있는지 전부 나열해줘",
+            "list all documents in the vault",
+            "how many notes are there in this folder?",
+        ] {
+            assert!(
+                has_vault_inventory_intent(question),
+                "목록·개수 의도를 감지하지 못했습니다: {question}"
+            );
+        }
+        for question in [
+            "쿼츠 재시작 조건을 설명해줘",
+            "explain the cooling protocol",
+        ] {
+            assert!(
+                !has_vault_inventory_intent(question),
+                "일반 질문을 목록 의도로 오인했습니다: {question}"
             );
         }
     }

@@ -452,7 +452,7 @@ describe('색인 엔진 근거 선별', () => {
     });
   });
 
-  it('exhaustiveReview는 5,403개 전체를 검토 완료로 유지하고 review subset 실패만 미검토로 센다', async () => {
+  it('exhaustiveReview는 발견 범위와 원문 검토 범위를 구분해 review subset만 검토 완료로 센다', async () => {
     const reviewPaths = Array.from(
       { length: 100 },
       (_, index) => `Synthetic/Exhaustive-${String(index).padStart(3, '0')}.md`,
@@ -495,7 +495,7 @@ describe('색인 엔진 근거 선별', () => {
     });
     expect(complete?.coverage).toMatchObject({
       status: 'supported',
-      reviewedDocuments: 5403,
+      reviewedDocuments: reviewPaths.length,
       unreviewedDocuments: 0,
       unreviewedPaths: [],
     });
@@ -516,7 +516,7 @@ describe('색인 엔진 근거 선별', () => {
     });
     expect(partial?.coverage).toMatchObject({
       status: 'incomplete',
-      reviewedDocuments: 5402,
+      reviewedDocuments: reviewPaths.length - 1,
       unreviewedDocuments: 1,
       unreviewedPaths: [missingPath],
     });
@@ -678,7 +678,7 @@ describe('색인 엔진 근거 선별', () => {
     const selectedPaths = new Set(response?.evidence.map((item) => item.path) ?? []);
     expect(requested).toEqual(reviewPaths);
     expect(response?.coverage.documentScope).toBe('all');
-    expect(response?.coverage.reviewedDocuments).toBe(5403);
+    expect(response?.coverage.reviewedDocuments).toBe(reviewPaths.length);
     expect(selectedPaths.has(targetPath)).toBe(true);
     expect([...selectedPaths].some((path) => !candidatePaths.includes(path))).toBe(true);
   });
