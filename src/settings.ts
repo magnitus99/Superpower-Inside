@@ -6214,14 +6214,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             dropdown.addOption('custom', t('providerOpenCodePlanCustom'));
             dropdown.setValue(resolveOpenCodePlan(profile.baseUrl));
             dropdown.onChange((value) => {
-              if (value !== 'zen' && value !== 'go') return;
+              if (value !== 'zen' && value !== 'go') {
+                dropdown.setValue(resolveOpenCodePlan(profile.baseUrl));
+                return;
+              }
               const nextBaseUrl =
                 value === 'go' ? OPENCODE_GO_BASE_URL : OPENCODE_DEFAULT_BASE_URL;
               if ((profile.baseUrl ?? '') === nextBaseUrl) return;
               profile.baseUrl = nextBaseUrl;
               this.invalidateProviderProfileVerification(profile);
               this.debouncedProviderSave();
-              this.refreshProviderProfilePresentation(profile, disclosureRoot);
+              this.refreshProvidersTab(profile.id);
             });
           });
       }
