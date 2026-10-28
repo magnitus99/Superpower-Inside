@@ -47,6 +47,38 @@ describe('MCP 툴 실행 결과 반영', () => {
     expect(updates.at(-1)?.[0]?.result).toContain('Elite Series 2');
   });
 
+  it('사용자가 승인한 호출은 재준비 시 수동 정책으로 되돌리지 않는다', async () => {
+    const client = createClient({ content: [{ type: 'text', text: '승인 결과' }] });
+    const registry = createRegistry(client);
+    const approved = await prepareToolCallsForExecution(
+      [
+        createToolCall({
+          name: 'search',
+          arguments: '{"query":"synthetic"}',
+          approved: true,
+        }),
+      ],
+      registry,
+      ['serper'],
+      'always-manual',
+    );
+    const pending = await prepareToolCallsForExecution(
+      [
+        createToolCall({
+          name: 'search',
+          arguments: '{"query":"synthetic"}',
+          approved: false,
+        }),
+      ],
+      registry,
+      ['serper'],
+      'always-auto',
+    );
+
+    expect(approved[0]?.approved).toBe(true);
+    expect(pending[0]?.approved).toBe(false);
+  });
+
   it('채팅 실행의 취소 신호를 진행 중인 MCP 도구 요청까지 전달한다', async () => {
     const controller = new AbortController();
     const client = createClient({

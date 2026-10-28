@@ -75,13 +75,17 @@ export async function prepareToolCallsForExecution(
         next.mcpBindingSource = 'legacy';
       }
     }
-    next.approved =
-      Boolean(next.serverName && next.actualToolName) &&
-      shouldAutoExecuteToolCall(
-        { ...next, name: next.actualToolName ?? next.name },
-        policy,
-        mentionedServerNames,
-      );
+    // 이미 명시된 승인·거부는 재준비 과정에서 정책 재계산으로 덮어쓰지 않습니다.
+    // 아직 판정되지 않은 호출만 현재 정책으로 판정합니다.
+    if (next.approved === undefined) {
+      next.approved =
+        Boolean(next.serverName && next.actualToolName) &&
+        shouldAutoExecuteToolCall(
+          { ...next, name: next.actualToolName ?? next.name },
+          policy,
+          mentionedServerNames,
+        );
+    }
     prepared.push(next);
   }
   return prepared;
