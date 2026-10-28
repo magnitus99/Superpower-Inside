@@ -37,6 +37,25 @@ export interface SearchResultHandlers {
   openEvidence(evidence: SearchEvidence): void;
 }
 
+interface PendingSearch {
+  query: string;
+  filters?: SearchFilters;
+  /** 준비가 끝나면 한 번 자동으로 이어갈 수 있는지 여부입니다. */
+  autoResume: boolean;
+}
+
+/** 준비 중 전환과 색인 세대 변화를 구분하기 위한 안정적인 상태 서명입니다. */
+function searchStatusSignature(snapshot: SearchStatusSnapshot): string {
+  return [
+    snapshot.readiness,
+    snapshot.indexing ? 'indexing' : 'idle',
+    snapshot.ragStatus?.totalDocuments ?? -1,
+    snapshot.ragStatus?.totalVectors ?? -1,
+    snapshot.ragStatus?.staleDocuments ?? -1,
+    snapshot.ragStatus?.missingDocuments ?? -1,
+  ].join('|');
+}
+
 /** 엔진이 준 순서 그대로 결과 목록을 만든다. 점수 재계산·재정렬은 하지 않는다. */
 export function createSearchResultList(
   container: HTMLElement,
@@ -124,6 +143,9 @@ export class SearchView extends ItemView {
   private resultItems: HTMLElement[] = [];
   private activeResultIndex = 0;
   private runController: AbortController | null = null;
+  private pendingSearch: PendingSearch | null = null;
+  private statusSignature = '';
+  private indexEpoch = 0;
   private unsubscribeRefresh: (() => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, host: SearchViewHost) {
@@ -162,13 +184,14 @@ export class SearchView extends ItemView {
     });
 
     root.addEventListener('keydown', (event) => this.handleKeydown(event));
-    this.unsubscribeRefresh = this.host.refreshBus.on('rag', () => this.renderIndexState());
+    this.unsubscribeRefresh = this.host.refreshBus.on('rag', () => this.handleRagRefresh());
     this.renderIndexState();
     this.renderIdle();
   }
 
   async onClose(): Promise<void> {
     await Promise.resolve();
+    this.pendingSearch = null;
     this.cancelRun();
     this.unsubscribeRefresh?.();
     this.unsubscribeRefresh = null;
@@ -316,6 +339,7 @@ export class SearchView extends ItemView {
     el.empty();
     el.removeClass(WARNING_CLASS);
     const snapshot = this.host.getSearchStatusSnapshot();
+    this.noteStatusSnapshot(snapshot);
     const status = snapshot.ragStatus;
     const hasDocuments = (status?.totalDocuments ?? 0) > 0;
     const indexing = snapshot.indexing;
@@ -527,9 +551,10 @@ export class SearchView extends ItemView {
   }
 
   private handleKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape' && this.runController) {
+    if (event.key === 'Escape' && (this.runController || this.pendingSearch)) {
       event.preventDefault();
       this.cancelRun();
+      this.renderIdle();
       return;
     }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
@@ -542,7 +567,28 @@ export class SearchView extends ItemView {
     this.resultItems[next]?.focus();
   }
 
+  /** readiness·색인 수가 바뀌면 세대를 올려 진행 중 결과의 유효성을 판정합니다. */
+  private noteStatusSnapshot(snapshot: SearchStatusSnapshot): void {
+    const signature = searchStatusSignature(snapshot);
+    if (this.statusSignature !== '' && this.statusSignature !== signature) {
+      this.indexEpoch += 1;
+    }
+    this.statusSignature = signature;
+  }
+
+  /** 준비가 끝나면 보존한 검색을 한 번만 이어갑니다. */
+  private handleRagRefresh(): void {
+    this.renderIndexState();
+    const pending = this.pendingSearch;
+    if (!pending?.autoResume) return;
+    if (this.host.getSearchStatusSnapshot().readiness !== 'ready') return;
+    this.pendingSearch = null;
+    if (this.queryInput) this.queryInput.value = pending.query;
+    void this.executeSearch(pending.query, pending.filters, { allowAutoResume: false });
+  }
+
   private cancelRun(): void {
+    this.pendingSearch = null;
     const controller = this.runController;
     if (!controller) return;
     this.runController = null;
@@ -554,29 +600,57 @@ export class SearchView extends ItemView {
   private async runSearch(): Promise<void> {
     const query = this.queryInput?.value.trim() ?? '';
     if (query.length === 0) {
+      this.pendingSearch = null;
       this.renderIdle();
       return;
     }
-    // 버튼 비활성화를 우회한 Enter 제출도 준비 중에는 부분 색인을 검색하지 않습니다.
+    const filters = this.readFilters();
+    // 버튼 비활성화를 우회한 Enter 제출도 준비 중에는 질의를 보존하고
+    // 준비가 끝난 뒤 한 번 자동으로 이어갑니다.
     if (this.host.getSearchStatusSnapshot().readiness === 'preparing') {
+      this.pendingSearch = { query, filters, autoResume: true };
       this.renderIndexState();
+      this.setStatusText(t('searchStatusWaitingForIndex'), false);
       return;
     }
+    this.pendingSearch = null;
+    await this.executeSearch(query, filters, { allowAutoResume: true });
+  }
+
+  private async executeSearch(
+    query: string,
+    filters: SearchFilters | undefined,
+    options: { allowAutoResume: boolean },
+  ): Promise<void> {
     const port = this.host.getSearchPort();
     if (!port) {
+      this.pendingSearch = null;
       this.renderUnavailable();
       return;
     }
     this.cancelRun();
     const controller = new AbortController();
     this.runController = controller;
+    const startEpoch = this.indexEpoch;
     this.renderSearching();
     this.setRunning(true);
     try {
-      const response = await port({ query, filters: this.readFilters(), signal: controller.signal });
+      const response = await port({ query, filters, signal: controller.signal });
       if (controller.signal.aborted || this.runController !== controller) return;
       this.runController = null;
       this.setRunning(false);
+      const current = this.host.getSearchStatusSnapshot();
+      this.noteStatusSnapshot(current);
+      // 준비가 다시 시작됐거나 색인 세대가 달라진 결과는 게시하지 않고 대기로 돌립니다.
+      if (current.readiness === 'preparing' || this.indexEpoch !== startEpoch) {
+        this.pendingSearch = { query, filters, autoResume: options.allowAutoResume };
+        this.renderIndexState();
+        this.setStatusText(
+          t(options.allowAutoResume ? 'searchStatusWaitingForIndex' : 'searchStatusIndexChanged'),
+          false,
+        );
+        return;
+      }
       if (!response) {
         this.renderUnavailable();
         return;
@@ -586,6 +660,7 @@ export class SearchView extends ItemView {
       if (controller.signal.aborted || this.runController !== controller) return;
       this.runController = null;
       this.setRunning(false);
+      this.pendingSearch = null;
       this.host.logger.error('Vault search failed.', { source: 'search.view', error });
       this.renderFailed(error);
     }

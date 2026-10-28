@@ -218,6 +218,10 @@ function createHarness(options: HarnessOptions) {
   const errors: unknown[] = [];
   const files = new Map<string, InstanceType<typeof dom.TFile>>();
   const refreshBus = new RefreshBus();
+  const state = {
+    readiness: options.readiness ?? 'ready',
+    indexing: options.indexing ?? null,
+  };
   const app = {
     vault: {
       getAbstractFileByPath: (path: string) => files.get(path) ?? null,
@@ -241,7 +245,7 @@ function createHarness(options: HarnessOptions) {
     },
     refreshBus,
     getSearchStatusSnapshot: () => ({
-      readiness: options.readiness ?? 'ready',
+      readiness: state.readiness,
       keywordIndex: 'ready',
       ragStatus:
         options.totalDocuments === undefined
@@ -251,12 +255,20 @@ function createHarness(options: HarnessOptions) {
               staleDocuments: options.staleDocuments ?? 0,
               missingDocuments: 0,
             },
-      indexing: options.indexing ?? null,
+      indexing: state.indexing,
     }),
     getSearchPort: () => options.port,
   };
   const view = new SearchView(undefined as never, host as never);
-  return { view, opened, errors, files };
+  const setReadiness = (
+    readiness: SearchStatusSnapshot['readiness'],
+    indexing: SearchStatusSnapshot['indexing'] = null,
+  ) => {
+    state.readiness = readiness;
+    state.indexing = indexing;
+    refreshBus.emit('rag', { status: 'success' });
+  };
+  return { view, opened, errors, files, setReadiness };
 }
 
 function evidence(overrides: Partial<SearchEvidence> = {}): SearchEvidence {
@@ -398,8 +410,8 @@ describe('검색 화면 구조', () => {
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
   });
 
-  it('준비 중 Enter 제출도 부분 색인 검색 포트를 호출하지 않는다', async () => {
-    const port = vi.fn(() => Promise.resolve(response([], 'no-candidate')));
+  it('준비 중 Enter 제출은 질의를 보존하고 준비가 끝나면 한 번 재개한다', async () => {
+    const port = vi.fn(() => Promise.resolve(response([evidence()])));
     const harness = createHarness({
       port,
       totalDocuments: 10,
@@ -422,8 +434,96 @@ describe('검색 화면 구조', () => {
     await flush();
 
     expect(port).not.toHaveBeenCalled();
+    expect(input?.value).toBe('quartz');
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusWaitingForIndex'),
+    );
+
+    harness.setReadiness('ready');
+    await flush();
+
+    expect(port).toHaveBeenCalledTimes(1);
+    expect(root.querySelectorAll('.superpower-inside-search-passage')).toHaveLength(1);
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusResults', { count: 1, documents: 1 }),
+    );
+  });
+
+  it('준비 중 Escape는 보존한 검색을 취소하고 재개하지 않는다', async () => {
+    const port = vi.fn(() => Promise.resolve(response([evidence()])));
+    const harness = createHarness({
+      port,
+      totalDocuments: 10,
+      readiness: 'preparing',
+      indexing: {
+        phase: 'preparing',
+        completedFiles: 0,
+        totalFiles: 0,
+        currentFileEmbeddedChunks: null,
+        currentFileTotalChunks: null,
+        etaRemainingMs: null,
+      },
+    });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const input = root.querySelector('input');
+    if (input) input.value = 'quartz';
+    root.querySelector('form')?.dispatchEvent('submit');
+    await flush();
+    root.dispatchEvent('keydown', { key: 'Escape' });
+
+    harness.setReadiness('ready');
+    await flush();
+
+    expect(port).not.toHaveBeenCalled();
     expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
       t('searchStatusIdle'),
+    );
+  });
+
+  it('검색 중 색인 준비로 바뀐 늦은 결과는 게시하지 않고 한 번 재개한다', async () => {
+    let resolveFirst!: (value: SearchResponse) => void;
+    const first = new Promise<SearchResponse>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const port = vi
+      .fn<SearchPort>()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => Promise.resolve(response([evidence()])));
+    const harness = createHarness({ port, totalDocuments: 10 });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const input = root.querySelector('input');
+    if (input) input.value = 'quartz';
+    root.querySelector('form')?.dispatchEvent('submit');
+    await flush();
+    expect(port).toHaveBeenCalledTimes(1);
+
+    harness.setReadiness('preparing', {
+      phase: 'file',
+      completedFiles: 1,
+      totalFiles: 4,
+      currentFileEmbeddedChunks: null,
+      currentFileTotalChunks: null,
+      etaRemainingMs: null,
+    });
+    await flush();
+    resolveFirst(response([evidence()]));
+    await flush();
+
+    expect(root.querySelectorAll('.superpower-inside-search-passage')).toHaveLength(0);
+    expect(input?.value).toBe('quartz');
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusWaitingForIndex'),
+    );
+
+    harness.setReadiness('ready');
+    await flush();
+
+    expect(port).toHaveBeenCalledTimes(2);
+    expect(root.querySelectorAll('.superpower-inside-search-passage')).toHaveLength(1);
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusResults', { count: 1, documents: 1 }),
     );
   });
 

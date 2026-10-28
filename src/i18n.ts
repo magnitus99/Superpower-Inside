@@ -1752,6 +1752,8 @@ export interface I18nKeys {
   searchIndexStale: string;
   searchStatusIdle: string;
   searchStatusSearching: string;
+  searchStatusWaitingForIndex: string;
+  searchStatusIndexChanged: string;
   searchStatusResults: string;
   searchStatusStale: string;
   searchStatusStaleNoResults: string;
@@ -3780,6 +3782,10 @@ const ko: I18nKeys = {
   searchIndexStale: "색인이 오래되었습니다. 갱신 대기 문서 {count}개.",
   searchStatusIdle: "검색어를 입력하세요. 색인만 사용하며 모델을 호출하지 않습니다.",
   searchStatusSearching: "색인에서 찾는 중…",
+  searchStatusWaitingForIndex:
+    "색인 준비가 끝나면 같은 검색을 자동으로 한 번 이어갑니다.",
+  searchStatusIndexChanged:
+    "색인 상태가 바뀌어 이전 결과를 표시하지 않았습니다. 다시 검색해 주세요.",
   searchStatusResults: "구절 {count}개 · 문서 {documents}개",
   searchStatusStale:
     '색인 이후 원문이 바뀐 문서 {count}개를 결과에서 제외했습니다. 색인을 갱신한 뒤 다시 검색하세요.',
@@ -5859,6 +5865,10 @@ const en: I18nKeys = {
   searchIndexStale: "The index is stale. {count} documents are waiting for an update.",
   searchStatusIdle: "Enter a query. Search uses the index only and makes no model calls.",
   searchStatusSearching: "Searching the index…",
+  searchStatusWaitingForIndex:
+    "The same search will continue automatically once indexing is ready.",
+  searchStatusIndexChanged:
+    "The index changed, so the previous result was not shown. Run the search again.",
   searchStatusResults: "{count} passages · {documents} documents",
   searchStatusStale:
     'Excluded {count} documents whose source changed after indexing. Refresh the index and search again.',
