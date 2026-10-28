@@ -72,7 +72,6 @@ async function compileRuntime(root, directory) {
   const source = `
     export { TFile, TFolder } from 'obsidian';
     export { buildChatContext } from './src/chat/context';
-    export { VaultResearchAgent } from './src/agent/research-agent';
     export { ObsidianNativeVaultToolPort } from './src/agent/obsidian-native-vault-port';
     export { NativeVaultToolRuntime, createNativeVaultToolDefinitions } from './src/agent/native-vault-tool';
     export { planAgenticToolTurn } from './src/chat/tool-orchestration';
@@ -163,46 +162,7 @@ async function evaluate(runtime, settings) {
       modelRequests = 0,
       toolCalls = 0,
       contractPassed;
-    if (test.workflow === 'research') {
-      const requests = [];
-      const model = {
-        chat: async (...arguments_) => {
-          requests.push(arguments_[0]);
-          modelRequests += 1;
-          if (provider) providerCalls += 1;
-          return provider
-            ? provider.chat(...arguments_)
-            : 'Alpha 담당자 Mina, Beta 보안 검토 미완료 [vault:Alpha.md:1-1] [vault:Beta.md:1-1]';
-        },
-      };
-      const port = new runtime.ObsidianNativeVaultToolPort(
-        app,
-        {
-          listCandidateFiles: async () => files,
-          isCandidateFile: async (file) => files.includes(file),
-          isExplicitReadAllowed: async (file) => files.includes(file),
-          isPathVisible: () => true,
-        },
-        () => null,
-      );
-      const native = new runtime.NativeVaultToolRuntime(port);
-      const result = await new runtime.VaultResearchAgent(model, {
-        execute: (...args) => {
-          toolCalls += 1;
-          return native.execute(...args);
-        },
-      }).run({ question: test.question, systemPrompt: test.systemPrompt });
-      const finalRequest =
-        requests
-          .at(-1)
-          ?.map((message) => message.content)
-          .join('\n') ?? '';
-      contractPassed =
-        finalRequest.includes(test.systemPrompt) &&
-        !requests[0]?.some((message) => message.content.includes(test.systemPrompt));
-      citations = result.citations;
-      answer = provider ? result.content : null;
-    } else if (test.workflow === 'policy') {
+    if (test.workflow === 'policy') {
       const result = runtime.planAgenticToolTurn({
         question: test.question,
         contextAttachments: [],

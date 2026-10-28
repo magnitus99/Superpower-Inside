@@ -87,19 +87,6 @@
       "expectNoVerifiedSources": true
     },
     {
-      "id": "whole-vault-user-format",
-      "workflow": "research",
-      "question": "볼트 전체를 요약해줘.",
-      "systemPrompt": "한국어로 답하고 최종 답변은 짧은 불릿 세 개로 작성해줘.",
-      "files": [
-        { "path": "Alpha.md", "text": "Alpha: 배포 책임자는 Mina." },
-        { "path": "Beta.md", "text": "Beta: 보안 검토가 남아 있다." }
-      ],
-      "expectedEvidence": [],
-      "expectedFacts": ["Mina", "보안"],
-      "forbiddenClaims": ["보안 검토 완료"]
-    },
-    {
       "id": "verified-minimum-keeps-tools",
       "workflow": "policy",
       "question": "내 노트에서 배포 결정의 근거를 찾아줘.",

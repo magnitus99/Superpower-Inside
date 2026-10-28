@@ -404,6 +404,23 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.content).not.toContain('{"paragraphs":');
   });
 
+  it('사용자 시스템 프롬프트를 provider 답변 요청에 전달한다', async () => {
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(
+      reviewOptions({ systemPrompt: '사용자 답변 지침', provider }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(calls.length).toBeGreaterThan(0);
+    for (const messages of calls) {
+      expect(messages.find((message) => message.role === 'system')?.content).toContain(
+        '사용자 답변 지침',
+      );
+      expect(messages.find((message) => message.role === 'user')?.content).not.toContain(
+        '사용자 답변 지침',
+      );
+    }
+  });
+
   it.each([false, true])('최초 후보 밖 후속 근거를 원문 검증 뒤 결합하고 실패한 문서는 제외한다: %s', async (sourceMissing) => {
     const extra = twoDocumentPlan();
     extra.evidence = extra.evidence.map((item) => ({ ...item, queryIndexes: [2], preferredQueryIndexes: [2] }));
