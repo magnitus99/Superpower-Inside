@@ -124,6 +124,67 @@ function engine(results: QueryResult[]): RAGQueryEngine {
 }
 
 describe('검색 의존성 factory', () => {
+  it('긴 질문은 핵심 term 의미 질의로 교차언어 문서를 추가 발견한다', async () => {
+    const question = '네빌 고다드가 말하는 지혜는 서로 무엇이 다르고 같은지 개념적으로 설명해줘.';
+    planIndexedSearchQueries.mockReturnValue({
+      mode: 'single',
+      facets: [
+        {
+          id: 'question',
+          kind: 'question',
+          query: question,
+          queryIndex: 0,
+          terms: ['네빌', '고다드', '말하', '지혜', '서로', '무엇', '다르고', '같은지', '개념적', '설명해줘'],
+        },
+      ],
+    } satisfies IndexedSearchPlan);
+    const query = vi.fn((text: string) =>
+      Promise.resolve(
+        text === '네빌 고다드 지혜'
+          ? [
+              queryResult({
+                sourcePath: 'neville/In Praise of Wisdom.txt',
+                entry: {
+                  id: 'praise',
+                  vector: [],
+                  metadata: {
+                    filePath: 'neville/In Praise of Wisdom.txt',
+                    startLine: 1,
+                    endLine: 3,
+                    text: 'synthetic',
+                  },
+                },
+              }),
+            ]
+          : [],
+      ),
+    );
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: {
+          query,
+          queryBm25Exhaustive: () => Promise.resolve([]),
+        } as unknown as RAGQueryEngine,
+        documentCorpus: {
+          ...corpus(),
+          getIndexedFilePaths: () =>
+            Promise.resolve([
+              'Synthetic/Alpha.md',
+              'Synthetic/Beta.md',
+              'neville/In Praise of Wisdom.txt',
+            ]),
+        },
+      },
+      question,
+    );
+
+    expect(query.mock.calls.map(([text]) => text)).toEqual([question, '네빌 고다드 지혜']);
+    expect(source?.candidates?.some((item) => item.path === 'neville/In Praise of Wisdom.txt')).toBe(
+      true,
+    );
+  });
+
   it.each(['empty', 'unavailable'] as const)(
     '원래 질의 후보가 %s여도 언어 변형으로 발견한 경로와 원문 평가 힌트를 보존한다',
     async (outcome) => {
@@ -842,7 +903,7 @@ describe('검색 의존성 factory', () => {
           },
           '합성 질의',
         );
-        await vi.advanceTimersByTimeAsync(8_000);
+        await vi.advanceTimersByTimeAsync(20_000);
         const source = await pending;
 
         expect(source?.exhaustiveReview).toBe(false);
@@ -911,7 +972,7 @@ describe('검색 의존성 factory', () => {
         '합성 질의',
       );
 
-      await vi.advanceTimersByTimeAsync(8_000);
+      await vi.advanceTimersByTimeAsync(20_000);
       const source = await pending;
 
       expect(source?.exhaustiveReview).toBe(true);

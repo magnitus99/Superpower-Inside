@@ -52,7 +52,9 @@ const REVIEW_PATHS_PER_SOURCE = 8;
  * 의미 후보 질의 하나가 기다릴 수 있는 시간입니다. 볼트 전체 벡터 색인은 첫 질의에서 만들어지고
  * 이후 질의는 수백 ms면 끝나므로, 검색 화면도 채팅과 같은 후보를 받도록 여유를 둡니다.
  */
-const SEMANTIC_CANDIDATE_TIMEOUT_MS = 8_000;
+// 로컬 임베딩·벡터 색인의 첫 질의는 차가운 인덱스를 읽느라 수 초가 걸릴 수 있습니다.
+// 짧은 제한으로 lexical-only로 떨어지면 교차언어 문서를 통째로 잃으므로 여유를 둡니다.
+const SEMANTIC_CANDIDATE_TIMEOUT_MS = 20_000;
 
 type IndexedSearchCandidate = IndexedEvidenceCandidate & { queryIndex?: number };
 
@@ -710,6 +712,59 @@ async function collectHybridCandidates(
   };
 }
 
+/** 질문 기능어·서술어를 뺀 핵심 term으로 짧은 의미 검색 질의를 만듭니다. */
+const SEMANTIC_STOP_TERMS = new Set([
+  '\uADF8\uB9AC\uACE0',
+  '\uADF8\uB7EC\uB098',
+  '\uB610\uB294',
+  '\uC11C\uB85C',
+  '\uBB34\uC5C7',
+  '\uBB34\uC5C7\uC774',
+  '\uBB34\uC5C7\uC744',
+  '\uC5B4\uB5BB\uAC8C',
+  '\uC5B4\uB5A4',
+  '\uC5B4\uB5A4\uC9C0',
+  '\uC65C',
+  '\uC778\uC9C0',
+  '\uC778\uAC00',
+  '\uD574\uC918',
+  '\uD574\uC8FC\uC138\uC694',
+  '\uC124\uBA85\uD574\uC918',
+  '\uC124\uBA85\uD574\uC8FC\uC138\uC694',
+  '\uAC1C\uB150\uC801',
+  '\uB9D0\uD558',
+  '\uB2E4\uB974\uACE0',
+  '\uAC19\uC740\uC9C0',
+  'the',
+  'and',
+  'or',
+  'what',
+  'how',
+  'why',
+  'which',
+  'does',
+  'do',
+  'is',
+  'are',
+  'explain',
+  'describe',
+  'different',
+  'same',
+]);
+
+function compactSemanticQuery(facet: IndexedSearchPlan['facets'][number]): string | null {
+  const terms = facet.terms
+    .map((term) => term.replace(/\s+/gu, ' ').trim())
+    .filter((term) => term.length >= 2 && !SEMANTIC_STOP_TERMS.has(term))
+    .filter((term) => !/(\uD574\uC918|\uD574\uC8FC\uC138\uC694|\uC778\uAC00\uC694|\uC778\uC9C0\uC694)$/u.test(term));
+  const unique = terms.filter(
+    (term, index) => terms.findIndex((candidate) => candidate === term) === index,
+  );
+  if (unique.length < 2 || facet.query.length < 24) return null;
+  const compact = unique.slice(0, 4).join(' ');
+  return compact && compact !== facet.query ? compact : null;
+}
+
 async function querySemanticCandidates(
   engine: RAGQueryEngine,
   facet: IndexedSearchPlan['facets'][number],
@@ -730,18 +785,42 @@ async function querySemanticCandidates(
     }, timeoutMs);
   });
   try {
+    const limit = facet.kind === 'question' ? MAIN_CANDIDATE_LIMIT : SUBJECT_CANDIDATE_LIMIT;
+    const compact = compactSemanticQuery(facet);
+    const queries = compact ? [facet.query, compact] : [facet.query];
     const results = await Promise.race([
-      engine.query(
-        facet.query,
-        facet.kind === 'question' ? MAIN_CANDIDATE_LIMIT : SUBJECT_CANDIDATE_LIMIT,
-        undefined,
-        undefined,
-        { signal: controller.signal, excludedProviderIds: ['bm25'] },
+      Promise.all(
+        queries.map((query) =>
+          engine.query(query, limit, undefined, undefined, {
+            signal: controller.signal,
+            excludedProviderIds: ['bm25'],
+          }),
+        ),
       ),
       timedOut,
     ]);
     signal?.throwIfAborted();
-    return results;
+    // 전체 질문과 핵심 term 질의의 후보를 점수순으로 합칩니다.
+    const merged = new Map<string, QueryResult>();
+    for (const result of results.flat()) {
+      const current = merged.get(result.sourcePath);
+      if (!current) {
+        merged.set(result.sourcePath, result);
+        continue;
+      }
+      // 같은 경로가 여러 질의·신호에서 오면 점수는 최고값을, 신호는 합집합을 보존합니다.
+      const best = result.combinedScore > current.combinedScore ? result : current;
+      merged.set(result.sourcePath, {
+        ...best,
+        vectorScore: Math.max(current.vectorScore, result.vectorScore),
+        bm25Score: Math.max(current.bm25Score, result.bm25Score),
+        combinedScore: Math.max(current.combinedScore, result.combinedScore),
+        retrievalSources: [
+          ...new Set([...(current.retrievalSources ?? []), ...(result.retrievalSources ?? [])]),
+        ],
+      });
+    }
+    return [...merged.values()].sort((left, right) => right.combinedScore - left.combinedScore);
   } finally {
     if (timeout !== undefined) timerHost.clearTimeout(timeout);
     signal?.removeEventListener('abort', forwardAbort);
