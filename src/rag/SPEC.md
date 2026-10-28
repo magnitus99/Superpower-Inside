@@ -49,7 +49,7 @@ dirty·stale·missing 판정은 파일 내용 hash와 revision을 단일 출처�
 
 ## 계약 버전과 원문 보존
 
-저장 원문은 원문 그대로 유지하고 검색용 접두·메타데이터는 별도 projection에만 둔다. 색인 계약 버전·토크나이저 버전이 다른 구세대 색인은 자동 폐기 후 재색인하며, 호환되지 않는 색인을 계속 사용하게 두지 않는다. 현재 `RAG_INDEX_CONTRACT_VERSION`(4)과 `createRagIndexNamespace`가 청킹 계약·크기·오버랩으로 세대 이름을 만들고, 값이 바뀌면 새 세대 색인을 다시 만든다(`src/rag/storage-lifecycle.ts`). 구세대 DB 정리 함수는 `cleanupStaleIndexedDbGenerations`에 있으나 런타임 초기화에서 자동 호출되지 않고, 물리 삭제는 설정에서 승인한 `RetiredArtifactService.cleanup` 경로에서만 수행된다. 따라서 앞 문장의 '자동 폐기 후 재색인' 요구와 현재 구현은 아직 일치하지 않는다.
+저장 원문은 원문 그대로 유지하고 검색용 접두·메타데이터는 별도 projection에만 둔다. 색인 계약 버전·토크나이저 버전이 다른 구세대 색인은 자동 폐기 후 재색인하며, 호환되지 않는 색인을 계속 사용하게 두지 않는다. 현재 `RAG_INDEX_CONTRACT_VERSION`(4)과 `createRagIndexNamespace`가 청킹 계약·크기·오버랩으로 세대 이름을 만들고, 값이 바뀌면 새 세대 색인을 다시 만든다(`src/rag/storage-lifecycle.ts`). 구세대 DB 정리 함수는 `cleanupStaleIndexedDbGenerations`에 있으나 런타임 초기화에서 자동 호출되지 않는다. 일반 정리는 설정에서 승인한 `RetiredArtifactService.cleanup` 경로에서 수행하고, 전체 플러그인 데이터 초기화는 `resetPluginData`가 `deleteRagIndexedDbGenerations`로 별도 삭제한다. 따라서 앞 문장의 '자동 폐기 후 재색인' 요구와 현재 구현은 아직 일치하지 않는다.
 
 ## 교체 계약
 
