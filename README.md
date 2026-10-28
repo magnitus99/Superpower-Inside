@@ -91,7 +91,7 @@ API keys and ChatGPT credentials are stored in **Obsidian's secret storage on th
 <summary><strong>Local search and data controls</strong></summary>
 
 - **Meaning-based search:** choose Ternlight for short English notes or EmbeddingGemma 300M for multilingual material. Prepare the model files in settings and let indexing finish. Changing the embedding model rebuilds the index. Keyword search and built-in vault tools are available without an embedding index.
-- **Local storage:** search indexes and the PDF OCR cache stay in the vault's local browser storage. Indexed-vault review sends the text of all allowed indexed documents to the selected chat provider in batches. A large collection takes more time and provider usage. Chat messages, referenced passages, and tool results may also be sent to configured providers or tools.
+- **Local storage:** search indexes and the PDF OCR cache stay in the vault's local browser storage. Indexed-vault review evaluates the allowed index on this device, re-checks the selected passages against the current files within a bounded review budget, and sends the verified evidence excerpts and review counts to the selected chat provider instead of the full text of every allowed document. A large collection takes more time and provider usage. Chat messages, referenced passages, and tool results may also be sent to configured providers or tools.
 - **Exclusions:** use `superpower-inside-exclude: true` in a note's top-level YAML or the document exclusion command. Path exclusions and sensitive-file safeguards also apply. Extension exclusions affect search and indexing; a direct reference can still read a supported file within the other safeguards and size limits.
 - **Responses and stopping:** indexed-vault answers appear after review and source checks finish. Other chat answers can stream. Stopping a run closes the active connection; the provider may continue inference after disconnection.
 - **Answer coverage:** review covers indexed documents in the allowed scope, including passages the model rejects as unrelated. Excluded and unindexed files are outside that review. Checking quotations and source identifiers does not guarantee that the model interpreted the evidence correctly.
@@ -205,7 +205,7 @@ API 키와 ChatGPT 자격 증명은 볼트와 동기화되는 플러그인 설�
 <summary><strong>로컬 검색과 데이터 제어</strong></summary>
 
 - **의미 검색:** 짧은 영어 노트에는 Ternlight, 다국어 자료에는 EmbeddingGemma 300M을 선택할 수 있습니다. 설정에서 모델 파일을 준비하고 인덱싱을 마치세요. 임베딩 모델을 바꾸면 인덱스를 다시 만듭니다. 키워드 검색과 내장 볼트 도구는 임베딩 인덱스 없이 사용할 수 있습니다.
-- **로컬 저장:** 검색 인덱스와 PDF OCR 캐시는 해당 볼트의 로컬 브라우저 저장소에 남습니다. 색인 볼트 검토는 허용된 색인 문서 전체의 본문을 선택한 채팅 제공자에게 묶음으로 보냅니다. 자료가 많으면 시간과 제공자 사용량이 늘어납니다. 채팅 메시지·참조 구간·도구 결과도 설정한 제공자나 도구로 전송될 수 있습니다.
+- **로컬 저장:** 검색 인덱스와 PDF OCR 캐시는 해당 볼트의 로컬 브라우저 저장소에 남습니다. 색인 볼트 검토는 이 기기에서 허용된 색인 범위를 평가하고, 선택된 구절을 검토 예산 안에서 현재 원문과 다시 대조한 뒤 검증된 근거 발췌와 검토 집계를 선택한 채팅 제공자에게 보냅니다. 허용된 모든 문서의 전체 본문을 보내지는 않습니다. 자료가 많으면 시간과 제공자 사용량이 늘어납니다. 채팅 메시지·참조 구간·도구 결과도 설정한 제공자나 도구로 전송될 수 있습니다.
 - **자료 제외:** 노트 맨 위 YAML에 `superpower-inside-exclude: true`를 넣거나 문서 제외 명령을 사용하세요. 경로 제외와 민감 파일 보호도 적용됩니다. 확장자 제외는 검색·인덱싱에 적용되며, 지원 파일을 직접 참조하면 다른 보호 규칙과 크기 제한 안에서 읽을 수 있습니다.
 - **응답과 중단:** 색인 볼트 답변은 검토와 출처 검사가 끝난 뒤 표시합니다. 다른 채팅 답변은 스트리밍될 수 있습니다. 중단하면 진행 중인 연결을 닫지만, 제공자의 추론은 연결 종료 후에도 계속될 수 있습니다.
 - **답변 범위:** 허용 범위의 색인 문서를 검토하며, 모델이 관련 없다고 제외한 구간도 검토에 포함됩니다. 제외한 파일과 색인하지 않은 파일은 검토 범위 밖입니다. 인용 구절과 출처가 존재해도 모델이 근거를 올바르게 해석했다는 보장은 없습니다.
