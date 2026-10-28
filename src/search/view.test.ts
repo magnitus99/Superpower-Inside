@@ -401,7 +401,7 @@ describe('검색 화면 구조', () => {
   it('준비 중 Enter 제출도 부분 색인 검색 포트를 호출하지 않는다', async () => {
     const port = vi.fn(() => Promise.resolve(response([], 'no-candidate')));
     const harness = createHarness({
-      port: port as SearchPort,
+      port,
       totalDocuments: 10,
       readiness: 'preparing',
       indexing: {
