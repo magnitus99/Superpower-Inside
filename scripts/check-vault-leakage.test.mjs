@@ -5,6 +5,8 @@ import {
   findVaultLeakage,
   isScannableFile,
   normalizeVaultText,
+  selectVaultDirectory,
+  vaultCandidates,
 } from './check-vault-leakage.mjs';
 
 const vaultText = normalizeVaultText(
@@ -21,6 +23,23 @@ describe('check-vault-leakage', () => {
     expect(isScannableFile('main.js')).toBe(false);
     expect(isScannableFile('generated/rag-wasm/rag_wasm.js')).toBe(false);
     expect(isScannableFile('simulations/obsidian-preview/main.js')).toBe(false);
+  });
+
+  it('작업 트리와 원본 저장소의 볼트 후보를 찾고 존재하는 경로만 고른다', () => {
+    const candidates = vaultCandidates({
+      cwd: '/worktree',
+      environment: { SUPERPOWER_VAULT_DIR: 'local-vault' },
+      mainWorktree: '/main-repo',
+    });
+    expect(candidates).toEqual([
+      '/worktree/local-vault',
+      '/worktree/.test-vault',
+      '/main-repo/.test-vault',
+    ]);
+    expect(selectVaultDirectory(candidates, (path) => path === '/main-repo/.test-vault')).toBe(
+      '/main-repo/.test-vault',
+    );
+    expect(selectVaultDirectory(candidates, () => false)).toBeNull();
   });
 
   it('긴 한글 구절만 후보로 뽑는다', () => {

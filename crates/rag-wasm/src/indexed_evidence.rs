@@ -3285,16 +3285,16 @@ mod tests {
     #[test]
     fn plan_prunes_korean_function_words_and_n_gram_fragments() {
         let plan = plan_of(&json!({
-            "question": "가톨릭 고다드는 51장 51 설명해줘",
-            "documents": [{"path": "a.md", "text": "가톨릭 전승과 고다드는 서로 다른 설명을 담는다."}],
+            "question": "알파벳 베타는 51장 51 설명해줘",
+            "documents": [{"path": "a.md", "text": "알파벳 전승과 베타는 서로 다른 설명을 담는다."}],
         }));
         let tokens = rows(&plan, "queryTokens");
-        assert!(find_row(&tokens, "text", "가톨릭").is_some());
-        assert!(find_row(&tokens, "text", "고다드는").is_some());
+        assert!(find_row(&tokens, "text", "알파벳").is_some());
+        assert!(find_row(&tokens, "text", "베타는").is_some());
         assert!(find_row(&tokens, "text", "51장").is_some());
-        assert!(find_row(&tokens, "text", "가톨").is_none());
-        assert!(find_row(&tokens, "text", "톨릭").is_none());
-        assert!(find_row(&tokens, "text", "드는").is_none());
+        assert!(find_row(&tokens, "text", "알파").is_none());
+        assert!(find_row(&tokens, "text", "파벳").is_none());
+        assert!(find_row(&tokens, "text", "타는").is_none());
         assert!(find_row(&tokens, "text", "1장").is_none());
         assert!(find_row(&tokens, "text", "설명해줘").is_none());
         let number = find_row(&tokens, "text", "51");
@@ -3318,30 +3318,30 @@ mod tests {
     fn plan_skips_documents_that_only_share_a_directory_name() {
         // 같은 디렉터리에 있다는 이유만으로 본문이 다른 문서를 근거로 올리지 않습니다.
         let plan = plan_of(&json!({
-            "question": "시편 51장",
+            "question": "보고서 51호",
             "documents": [
                 {
-                    "path": "bible/psalms/051.md",
-                    "title": "051장",
-                    "text": "다윗의 고백이 시작된다."
+                    "path": "archive/reports/051.md",
+                    "title": "051호",
+                    "text": "첫 번째 보고서의 본문이 시작된다."
                 },
                 {
-                    "path": "bible/psalms/052.md",
-                    "title": "052장",
-                    "text": "다른 장의 본문만 있다."
+                    "path": "archive/reports/052.md",
+                    "title": "052호",
+                    "text": "다른 호의 본문만 있다."
                 },
                 {
-                    "path": "bible/psalms/125.md",
-                    "title": "125장",
-                    "text": "또 다른 장의 본문만 있다."
+                    "path": "archive/reports/125.md",
+                    "title": "125호",
+                    "text": "또 다른 호의 본문만 있다."
                 }
             ],
         }));
         let evidence = rows(&plan, "evidence");
-        assert_eq!(evidence.len(), 1, "only the matching chapter is evidence");
+        assert_eq!(evidence.len(), 1, "only the matching report is evidence");
         assert_eq!(
             get(evidence.first().unwrap_or(&NULL), "path"),
-            &json!("bible/psalms/051.md")
+            &json!("archive/reports/051.md")
         );
     }
 
@@ -3349,24 +3349,24 @@ mod tests {
     fn plan_demotes_link_index_documents_below_content() {
         // 목차·색인 문서는 다른 문서를 안내할 뿐이므로 같은 단어를 담은 본문보다 낮습니다.
         let index_lines = (1..=20)
-            .map(|number| format!("- [[bible/psalms/{number:03}|{number}장]]"))
+            .map(|number| format!("- [[archive/reports/{number:03}|{number}호]]"))
             .collect::<Vec<_>>()
             .join("\n");
         let plan = plan_of(&json!({
-            "question": "시편 51장",
+            "question": "보고서 51호",
             "documents": [
-                {"path": "bible/psalms/000-목차.md", "title": "000-목차", "text": index_lines},
+                {"path": "archive/reports/000-색인.md", "title": "000-색인", "text": index_lines},
                 {
-                    "path": "bible/psalms/051.md",
-                    "title": "051장",
-                    "text": "시편 51장 다윗의 고백\n주님, 저를 불쌍히 여기소서."
+                    "path": "archive/reports/051.md",
+                    "title": "051호",
+                    "text": "보고서 51호\n첫 번째 보고서의 본문."
                 }
             ],
         }));
         let evidence = rows(&plan, "evidence");
         assert_eq!(
             get(evidence.first().unwrap_or(&NULL), "path"),
-            &json!("bible/psalms/051.md"),
+            &json!("archive/reports/051.md"),
             "content outranks a link index"
         );
     }
@@ -4178,12 +4178,12 @@ mod tests {
     fn plan_matches_aliases_as_a_document_field() {
         // 본문에 없는 별칭만으로도 문서가 근거 후보가 되어야 합니다.
         let plan = plan_of(&json!({
-            "question": "wisdom",
+            "question": "quartz",
             "documents": [
                 {
                     "path": "notes/b-007.md",
                     "title": "일곱째 묶음",
-                    "aliases": ["Wisdom", "지혜서"],
+                    "aliases": ["Quartz", "석영 안내서"],
                     "text": "본문에는 해당 낱말이 없다",
                 },
                 {

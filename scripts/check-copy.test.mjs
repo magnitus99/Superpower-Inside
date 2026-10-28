@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   isCopyPath,
   languageText,
-  validateScore,
-  validateRewrite,
+  onlineSettings,
   scoreArgs,
+  validateRewrite,
+  validateScore,
 } from './check-copy.mjs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -18,15 +19,22 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, delimiter } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 
 describe('홍보 문구 검사 계약', () => {
-  it('온라인 검사는 pi의 claude-cli 백엔드를 쓰고 모델은 환경변수로 정한다', () => {
+  it('기본은 오프라인이고 온라인은 명시적 백엔드·모델 입력을 요구한다', () => {
+    expect(scoreArgs('en')).toContain('--offline');
+    expect(scoreArgs('en', false)).toContain('--offline');
     expect(scoreArgs('en', true)).toContain('claude-cli');
-    expect(scoreArgs('en', true)).not.toContain('codex-cli');
     expect(scoreArgs('en', true)).not.toContain('--offline');
-    expect(scoreArgs('ko', false)).toContain('--offline');
-    expect(scoreArgs('ko')).toContain('15');
+    expect(scoreArgs('ko', true)).toContain('15');
+    expect(onlineSettings({ PATINA_PI_MODEL: 'provider/model', PATINA_PI_THINKING: 'high' })).toEqual(
+      { model: 'provider/model', thinking: 'high' },
+    );
+    expect(() => onlineSettings({ PATINA_PI_MODEL: 'provider/model' })).toThrow(
+      /PATINA_PI_THINKING/,
+    );
+    expect(() => onlineSettings({ PATINA_PI_THINKING: 'high' })).toThrow(/PATINA_PI_MODEL/);
   });
   it('README만 검사하고 다른 문서는 제외한다', () => {
     expect(isCopyPath('README.md')).toBe(true);
@@ -91,38 +99,46 @@ describe('홍보 문구 검사 계약', () => {
   });
 });
 
-describe('릴리스 문구 검사와 오프라인 Git 타임라인', () => {
+describe('Patina 실행 정책', () => {
   function fixture(action) {
-    const cwd = mkdtempSync(join(tmpdir(), 'copy-gate-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'patina-policy-'));
+    const bin = join(cwd, 'bin');
     const log = join(cwd, 'calls.jsonl');
-    const npm = join(cwd, 'npm');
+    writeFileSync(join(cwd, 'README.md'), 'Safe copy\n');
+    mkdirSync(bin, { recursive: true });
+    const patina = join(bin, 'patina');
+    writeFileSync(
+      patina,
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const text = fs.readFileSync(0, 'utf8');
+fs.appendFileSync(process.env.COPY_LOG, JSON.stringify({ tool: 'patina', args, text }) + '\\n');
+const failed = text.includes('BAD');
+console.log(JSON.stringify({ mode: 'score', overall: failed ? 80 : 0, gateResult: { threshold: 15, passed: !failed, exitCode: failed ? 3 : 0 }, scores: { llm: null } }));
+process.exitCode = failed ? 3 : 0;
+`,
+    );
+    chmodSync(patina, 0o755);
+    const npm = join(bin, 'npm');
     writeFileSync(
       npm,
       `#!/usr/bin/env node
 const fs = require('node:fs');
-const crypto = require('node:crypto');
 const args = process.argv.slice(2);
-let text = '';
-if (args[0] === 'exec') text = fs.readFileSync(0, 'utf8');
-fs.appendFileSync(process.env.COPY_LOG, JSON.stringify({args, text}) + '\\n');
 if (args[0] === 'view') {
-  if (process.env.COPY_REGISTRY_FAIL) process.exit(1);
-  const version = JSON.stringify(process.env.COPY_VERSION || '99.0.0');
-  console.log(process.env.COPY_BARE_VERSION ? version : '[' + version + ']');
-} else if (args.includes('--verify')) {
-  const output = text.replaceAll('BAD', 'Safe');
-  console.log(JSON.stringify({output, verification: {verified: true, mps: 100, fidelity: 100, outputHash: crypto.createHash('sha256').update(output).digest('hex')}}));
-} else {
-  const failed = text.includes('BAD');
-  console.log(JSON.stringify({mode: 'score', overall: failed ? 80 : 0, gateResult: {threshold: 15, passed: !failed, exitCode: failed ? 3 : 0}, scores: !args.includes('--offline') && !process.env.COPY_NO_LLM ? {llm: {overall: failed ? 80 : 0}} : {llm: null}}));
-  process.exitCode = failed ? 3 : 0;
+  fs.appendFileSync(process.env.COPY_LOG, JSON.stringify({ tool: 'npm', args }) + '\\n');
+  console.log(JSON.stringify(process.env.COPY_VERSION || '99.0.0'));
+  process.exit(0);
 }
+const text = fs.readFileSync(0, 'utf8');
+fs.appendFileSync(process.env.COPY_LOG, JSON.stringify({ tool: 'npm', args, text, model: process.env.PATINA_PI_MODEL, thinking: process.env.PATINA_PI_THINKING }) + '\\n');
+const failed = text.includes('BAD');
+console.log(JSON.stringify({ mode: 'score', overall: failed ? 80 : 0, gateResult: { threshold: 15, passed: !failed, exitCode: failed ? 3 : 0 }, scores: { llm: { overall: failed ? 80 : 0 } } }));
+process.exitCode = failed ? 3 : 0;
 `,
     );
     chmodSync(npm, 0o755);
-    const codex = join(cwd, 'codex');
-    writeFileSync(codex, '#!/usr/bin/env node\nprocess.exit(1);\n');
-    chmodSync(codex, 0o755);
     const git = (...args) => {
       const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
       if (result.status !== 0) throw new Error(result.stderr);
@@ -139,7 +155,7 @@ if (args[0] === 'view') {
         input,
         env: {
           ...process.env,
-          PATH: `${cwd}${delimiter}${process.env.PATH}`,
+          PATH: `${bin}${delimiter}${process.env.PATH}`,
           COPY_LOG: log,
           ...extra,
         },
@@ -158,228 +174,57 @@ if (args[0] === 'view') {
     }
   }
 
-  it('삭제한 스테이징 검사 모드는 온라인 호출이나 파일 수정 없이 거부한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'BAD staged copy');
-      git('add', 'README.md');
-      writeFileSync(join(cwd, 'README.md'), 'Unstaged copy');
-      const result = run(['--staged']);
+  it('기본 검사는 오프라인이며 레지스트리·모델을 호출하지 않는다', () =>
+    fixture(({ run, calls }) => {
+      expect(run([]).status).toBe(0);
+      expect(calls().map((call) => call.tool)).toEqual(['patina', 'patina']);
+      expect(calls().every((call) => call.args.includes('--offline'))).toBe(true);
+    }));
+
+  it('온라인 검사는 모델·추론 강도를 명시하지 않으면 실행 전에 막는다', () =>
+    fixture(({ run, calls }) => {
+      const result = run(['--online'], {
+        PATINA_PI_MODEL: '',
+        PATINA_PI_THINKING: '',
+      });
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain('알 수 없는 실행 모드: --staged');
+      expect(result.stderr).toContain('PATINA_PI_MODEL');
       expect(calls()).toEqual([]);
-      expect(git('show', ':README.md')).toBe('BAD staged copy');
-      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('Unstaged copy');
     }));
 
-  it('커밋은 레지스트리·모델 호출과 파일 재작성 없이 스테이징 형식만 검사한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'BAD copy');
-      git('add', 'README.md');
-      expect(run(['--commit-local'], { COPY_REGISTRY_FAIL: '1' }).status).toBe(0);
-      expect(calls()).toEqual([]);
-      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('BAD copy');
-      writeFileSync(join(cwd, 'README.md'), 'space \n');
-      git('add', 'README.md');
-      expect(run(['--commit-local']).status).toBe(1);
-      writeFileSync(join(cwd, 'package.json'), JSON.stringify({ description: '' }));
-      writeFileSync(join(cwd, 'README.md'), 'BAD copy');
-      git('add', '.');
-      expect(run(['--commit-local']).status).toBe(0);
+  it('온라인 검사는 명시적 플래그와 입력된 모델로만 실행한다', () =>
+    fixture(({ run, calls }) => {
+      const result = run(['--online'], {
+        PATINA_PI_MODEL: 'provider/model',
+        PATINA_PI_THINKING: 'high',
+      });
+      expect(result.status).toBe(0);
+      expect(calls()[0]).toMatchObject({ tool: 'npm' });
+      expect(calls()[0].args.slice(0, 2)).toEqual(['view', 'patina-cli@latest']);
+      const executions = calls().filter((call) => call.tool === 'npm' && call.args[0] === 'exec');
+      expect(executions).toHaveLength(2);
+      expect(
+        executions.every(
+          (call) => call.model === 'provider/model' && call.thinking === 'high',
+        ),
+      ).toBe(true);
     }));
 
-  it('일반 브랜치·비릴리스 태그·삭제는 과거 문구와 무관하게 모델을 호출하지 않는다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'BAD copy');
+  it('릴리스 참조 오프라인 검사는 커밋 문구만 읽고 모델을 호출하지 않는다', () =>
+    fixture(({ git, run, calls }) => {
+      writeFileSync(join(git('rev-parse', '--show-toplevel'), 'README.md'), 'Safe release copy\n');
       git('add', '.');
       git('commit', '-qm', 'fixture');
-      const sha = git('rev-parse', 'HEAD'),
-        zero = '0'.repeat(40);
-      expect(
-        run(
-          ['--push'],
-          { COPY_REGISTRY_FAIL: '1' },
-          `refs/heads/main ${sha} refs/heads/main ${zero}\nrefs/tags/dev ${sha} refs/tags/dev ${zero}\nrefs/tags/1.0.0 ${zero} refs/tags/1.0.0 ${sha}\n`,
-        ).status,
-      ).toBe(0);
+      const result = run(['--release-ref', 'HEAD']);
+      expect(result.status).toBe(0);
+      expect(calls().map((call) => call.tool)).toEqual(['patina', 'patina']);
+      expect(calls()[0].text).toContain('Safe release copy');
+    }));
+
+  it('오프라인과 온라인을 동시에 지정하거나 알 수 없는 모드를 쓰면 거부한다', () =>
+    fixture(({ run, calls }) => {
+      expect(run(['--online', '--offline']).status).toBe(1);
+      expect(run(['--push']).status).toBe(1);
       expect(calls()).toEqual([]);
     }));
-
-  it('주석 릴리스 태그의 최종 전체 문구를 검사하며 중간 이력과 작업 파일은 제외한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'BAD intermediate');
-      writeFileSync(
-        join(cwd, 'package.json'),
-        JSON.stringify({ version: '3.2.5', description: 'Safe description' }),
-      );
-      writeFileSync(
-        join(cwd, 'manifest.json'),
-        JSON.stringify({ version: '3.2.5', description: 'Safe description' }),
-      );
-      git('add', '.');
-      git('commit', '-qm', 'intermediate');
-      writeFileSync(join(cwd, 'README.md'), 'Final release copy');
-      git('add', '.');
-      git('commit', '-qm', 'final');
-      git('tag', '-a', '3.2.5', '-m', 'release');
-      const tag = git('rev-parse', '3.2.5');
-      writeFileSync(join(cwd, 'README.md'), 'BAD unstaged');
-      expect(
-        run(['--push'], {}, `refs/tags/3.2.5 ${tag} refs/tags/3.2.5 ${'0'.repeat(40)}\n`).status,
-      ).toBe(0);
-      expect(
-        calls()
-          .filter((call) => call.args.includes('--score'))
-          .map((call) => call.text),
-      ).toEqual(['Final release copy', 'Final release copy']);
-      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('BAD unstaged');
-    }));
-
-  it('릴리스 태그와 버전이 다르면 온라인 호출 전에 차단한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(
-        join(cwd, 'manifest.json'),
-        JSON.stringify({ version: '3.2.6', description: 'Safe' }),
-      );
-      writeFileSync(
-        join(cwd, 'package.json'),
-        JSON.stringify({ version: '3.2.6', description: 'Safe' }),
-      );
-      git('add', '.');
-      git('commit', '-qm', 'version');
-      expect(
-        run(
-          ['--push'],
-          {},
-          `refs/tags/3.2.5 ${git('rev-parse', 'HEAD')} refs/tags/3.2.5 ${'0'.repeat(40)}\n`,
-        ).status,
-      ).toBe(1);
-      expect(calls()).toEqual([]);
-    }));
-
-  it('릴리스 전에 통과한 동일 문구는 태그 푸시에서 다시 모델을 호출하지 않는다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe release');
-      writeFileSync(
-        join(cwd, 'manifest.json'),
-        JSON.stringify({ version: '3.2.5', description: 'Safe' }),
-      );
-      writeFileSync(
-        join(cwd, 'package.json'),
-        JSON.stringify({ version: '3.2.5', description: 'Safe' }),
-      );
-      expect(run([]).status).toBe(0);
-      git('add', '.');
-      git('commit', '-qm', 'release');
-      const sha = git('rev-parse', 'HEAD');
-      expect(
-        run(['--push'], {}, `refs/tags/3.2.5 ${sha} refs/tags/3.2.5 ${'0'.repeat(40)}\n`).status,
-      ).toBe(0);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(2);
-      expect(calls().filter((call) => call.args[0] === 'view')).toHaveLength(2);
-      expect(run(['--refresh']).status).toBe(0);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
-    }));
-
-  it('문구·최신 버전·정책 변경은 통과 기록을 무효화한다', () =>
-    fixture(({ cwd, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe');
-      expect(run([]).status).toBe(0);
-      writeFileSync(join(cwd, 'README.md'), 'Changed');
-      expect(run([]).status).toBe(0);
-      expect(run([], { COPY_VERSION: '99.0.1' }).status).toBe(0);
-      expect(run([], { COPY_VERSION: '99.0.1', COPY_BARE_VERSION: '1' }).status).toBe(0);
-      writeFileSync(join(cwd, '.patina.yaml'), 'star-nudge: false\n');
-      expect(run([], { COPY_VERSION: '99.0.1' }).status).toBe(0);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
-    }));
-
-  it('캐시가 있어도 최신 버전 조회 실패는 차단하고 오프라인 결과는 재사용하지 않는다', () =>
-    fixture(({ cwd, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe');
-      expect(run(['--offline']).status).toBe(0);
-      expect(run([]).status).toBe(0);
-      expect(run([], { COPY_REGISTRY_FAIL: '1' }).status).toBe(1);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(4);
-    }));
-
-  it('손상·만료·실제 모델 점수가 없는 기록은 다시 채점한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe');
-      expect(run([]).status).toBe(0);
-      const receipt = join(cwd, git('rev-parse', '--git-path', 'patina-release.json'));
-      writeFileSync(receipt, '{broken');
-      expect(run([]).status).toBe(0);
-      const entry = JSON.parse(readFileSync(receipt, 'utf8'));
-      entry.checkedAt = 0;
-      writeFileSync(receipt, JSON.stringify(entry));
-      expect(run([]).status).toBe(0);
-      const missing = JSON.parse(readFileSync(receipt, 'utf8'));
-      missing.scores[0].scores.llm = null;
-      writeFileSync(receipt, JSON.stringify(missing));
-      expect(run([]).status).toBe(0);
-      expect(calls().filter((call) => call.args.includes('--score'))).toHaveLength(8);
-    }));
-
-  it('실모델 점수 누락과 기준 초과는 차단하며 검사만으로 재작성하지 않는다', () =>
-    fixture(({ cwd, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe');
-      expect(run([], { COPY_NO_LLM: '1' }).status).toBe(1);
-      writeFileSync(join(cwd, 'README.md'), 'BAD copy');
-      expect(run([]).status).toBe(1);
-      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('BAD copy');
-      expect(calls().some((call) => call.args.includes('--verify'))).toBe(false);
-    }));
-
-  it('명시적 재작성만 의미 보존·양언어 재검사 후 저장하고 인덱스는 보존한다', () =>
-    fixture(({ cwd, git, run }) => {
-      writeFileSync(join(cwd, 'README.md'), 'BAD copy');
-      git('add', 'README.md');
-      expect(run(['--fix', 'README.md', 'en']).status).toBe(0);
-      expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('Safe copy');
-      expect(git('show', ':README.md')).toBe('BAD copy');
-    }));
-
-  it('릴리스 CI는 지정한 커밋의 전체 문구를 명시적 오프라인 방식으로 검사한다', () =>
-    fixture(({ cwd, git, run, calls }) => {
-      writeFileSync(join(cwd, 'README.md'), 'Safe copy');
-      git('add', '.');
-      git('commit', '-qm', 'release');
-      expect(run(['--release-ref', git('rev-parse', 'HEAD'), '--offline']).status).toBe(0);
-      const scores = calls().filter((call) => call.args.includes('--score'));
-      expect(scores).toHaveLength(2);
-      expect(scores.every((call) => call.args.includes('--offline'))).toBe(true);
-    }));
-
-  it('pi shim이 Patina 호출을 pi 실행으로 넘기고 모델·프롬프트를 보존한다', () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'copy-pi-'));
-    try {
-      const executable = join(cwd, 'capture');
-      writeFileSync(
-        executable,
-        '#!/usr/bin/env node\nconst fs = require("node:fs");\nconsole.log(JSON.stringify({args: process.argv.slice(2), prompt: fs.readFileSync(0, "utf8")}));\n',
-      );
-      chmodSync(executable, 0o755);
-      const result = spawnSync(
-        process.execPath,
-        [resolve('scripts/patina-bin/claude'), '-p', '--model', 'claude-sonnet-4-6'],
-        {
-          encoding: 'utf8',
-          input: 'score this copy',
-          env: {
-            ...process.env,
-            PATINA_PI_EXECUTABLE: executable,
-            PATINA_PI_MODEL: 'commandcode/claude-sonnet-5-5',
-          },
-        },
-      );
-      const captured = JSON.parse(result.stdout);
-      expect(captured.prompt).toBe('score this copy');
-      expect(captured.args).toContain('--print');
-      expect(captured.args).toContain('commandcode/claude-sonnet-5-5');
-      expect(captured.args).toContain('--no-tools');
-      expect(captured.args).not.toContain('claude-sonnet-4-6');
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  });
 });

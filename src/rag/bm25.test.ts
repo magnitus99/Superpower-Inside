@@ -27,15 +27,15 @@ describe('BM25 문서 필드', () => {
     >[0];
 
     expect(
-      getBM25DocumentFields(file, { frontmatter: { aliases: '시편 51장' } }, '본문'),
-    ).toMatchObject({ aliases: ['시편 51장'] });
+      getBM25DocumentFields(file, { frontmatter: { aliases: '보고서 51호' } }, '본문'),
+    ).toMatchObject({ aliases: ['보고서 51호'] });
     expect(
       getBM25DocumentFields(
         file,
-        { frontmatter: { aliases: ['시편 51', 51] } },
+        { frontmatter: { aliases: ['보고서 51', 51] } },
         '본문',
       ),
-    ).toMatchObject({ aliases: ['시편 51', '51'] });
+    ).toMatchObject({ aliases: ['보고서 51', '51'] });
     expect(getBM25DocumentFields(file, null, '본문')).toMatchObject({ aliases: [] });
   });
 });

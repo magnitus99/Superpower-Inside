@@ -65,15 +65,15 @@ process.exitCode=stage===process.env.QUALITY_FAIL ? 1 : 0;
         join(root, 'package.json'),
         JSON.stringify({ version: '1.0.1', description: 'after', scripts: { test: 'unchanged' } }),
       );
-      expect(run().calls).toEqual(['review']);
+      expect(run().calls).toEqual(['review', 'vault:leak-check']);
       git('add', 'README.md', 'package.json');
       git('commit', '-qm', 'docs');
-      expect(run(['--base', base]).calls).toEqual(['review']);
+      expect(run(['--base', base]).calls).toEqual(['review', 'vault:leak-check']);
       writeFileSync(join(root, 'src', 'file.ts'), 'export const value = 2;\n');
-      expect(run().calls).toEqual(['lint', 'typecheck', 'test', 'review']);
-      const failed = run([], 'test');
+      expect(run().calls).toEqual(['lint', 'typecheck', 'test:unit', 'review', 'vault:leak-check']);
+      const failed = run([], 'test:unit');
       expect(failed.result.status).toBe(1);
-      expect(failed.calls).toEqual(['lint', 'typecheck', 'test']);
+      expect(failed.calls).toEqual(['lint', 'typecheck', 'test:unit']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -109,7 +109,21 @@ process.exitCode=stage===process.env.QUALITY_FAIL ? 1 : 0;
     expect(qualityPlan(['styles.css'])).toMatchObject({
       typescript: false,
       tests: true,
+      contracts: true,
+      ui: true,
       rust: false,
+    });
+    expect(qualityPlan(['src/chat/view.ts'])).toMatchObject({
+      typescript: true,
+      tests: true,
+      contracts: true,
+      ui: true,
+    });
+    expect(qualityPlan(['.github/workflows/quality.yml'])).toMatchObject({
+      tests: false,
+      contracts: false,
+      workflows: true,
+      security: false,
     });
   });
   it('Rust와 공용 빌드 경계는 Rust 검사와 TS 계약 검사를 함께 선택한다', () => {

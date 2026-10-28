@@ -7,7 +7,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -24,6 +24,35 @@ const skippedFiles = new Set(['main.js', 'src/rag/rag-wasm-bytes.ts']);
 const textDocumentExtensions = ['.md', '.txt'];
 const MIN_PHRASE_LENGTH = 20;
 const MIN_DOCUMENT_NAME_LENGTH = 8;
+
+/**
+ * 로컬 테스트 볼트 후보 경로를 만듭니다. 작업 트리에서 실행해도 원본 저장소의
+ * 볼트를 찾을 수 있도록 Git 공용 디렉터리의 상위 경로를 함께 봅니다.
+ * @param {{ cwd?: string, environment?: NodeJS.ProcessEnv, mainWorktree?: string | null }} [input]
+ * @returns {string[]} 중복 없는 절대 경로
+ */
+export function vaultCandidates({
+  cwd = projectRoot,
+  environment = process.env,
+  mainWorktree = null,
+} = {}) {
+  const candidates = [];
+  if (environment.SUPERPOWER_VAULT_DIR)
+    candidates.push(resolve(cwd, environment.SUPERPOWER_VAULT_DIR));
+  candidates.push(resolve(cwd, defaultVaultDirectory));
+  if (mainWorktree) candidates.push(resolve(mainWorktree, defaultVaultDirectory));
+  return [...new Set(candidates)];
+}
+
+/**
+ * 후보 중 실제로 존재하는 볼트를 고릅니다.
+ * @param {string[]} candidates 후보 경로
+ * @param {(path: string) => boolean} [exists] 존재 판정
+ * @returns {string | null} 선택된 볼트
+ */
+export function selectVaultDirectory(candidates, exists = existsSync) {
+  return candidates.find((candidate) => exists(candidate)) ?? null;
+}
 
 /**
  * 검사 대상에서 제외할 파일인지 판정합니다.
@@ -143,18 +172,35 @@ function collectTextDocuments(directory) {
 
 /**
  * 저장소의 추적 파일 본문을 읽습니다.
+ * @param {boolean} staged 스테이징된 파일만 읽을지 여부
  * @returns {Record<string, string>} 경로별 본문
  */
-function readTrackedFiles() {
-  const tracked = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
-    cwd: projectRoot,
-    encoding: 'utf8',
-  })
-    .split('\n')
-    .filter(Boolean);
+function readTrackedFiles(staged = false) {
+  const tracked = staged
+    ? execFileSync(
+        'git',
+        ['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
+        { cwd: projectRoot, encoding: 'utf8' },
+      )
+        .split('\0')
+        .filter(Boolean)
+    : execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
+        cwd: projectRoot,
+        encoding: 'utf8',
+      })
+        .split('\n')
+        .filter(Boolean);
   const files = {};
   for (const file of tracked) {
     if (!isScannableFile(file)) continue;
+    if (staged) {
+      files[file] = execFileSync('git', ['show', `:${file}`], {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      continue;
+    }
     const path = join(projectRoot, file);
     if (!existsSync(path) || !statSync(path).isFile()) continue;
     files[file] = readFileSync(path, 'utf8');
@@ -162,9 +208,45 @@ function readTrackedFiles() {
   return files;
 }
 
+export function mainWorktreeRoot() {
+  try {
+    const common = execFileSync(
+      'git',
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { cwd: projectRoot, encoding: 'utf8' },
+    ).trim();
+    return dirname(common);
+  } catch {
+    return null;
+  }
+}
+
+function productText(files, staged) {
+  if (typeof files['src/i18n.ts'] === 'string') return files['src/i18n.ts'];
+  if (staged) {
+    try {
+      return execFileSync('git', ['show', ':src/i18n.ts'], {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+      });
+    } catch {
+      return '';
+    }
+  }
+  try {
+    return readFileSync(join(projectRoot, 'src/i18n.ts'), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 function main() {
-  const vaultDirectory = resolve(projectRoot, process.env.SUPERPOWER_VAULT_DIR || defaultVaultDirectory);
-  if (!existsSync(vaultDirectory)) {
+  const staged = process.argv.includes('--staged');
+  const vaultDirectory = selectVaultDirectory(
+    vaultCandidates({ mainWorktree: mainWorktreeRoot() }),
+  );
+  if (!vaultDirectory) {
     console.log('vault-leak check skipped: no local test vault');
     return;
   }
@@ -173,11 +255,17 @@ function main() {
   const vaultDocumentNames = extractDocumentNames(
     documents.map((path) => relative(vaultDirectory, path).split('\\').join('/')),
   );
-  const files = readTrackedFiles();
-  const productText = (files['src/i18n.ts'] ?? '').replace(/\\n/g, '\n');
-  const leakage = findVaultLeakage({ files, vaultText, vaultDocumentNames, productText });
+  const files = readTrackedFiles(staged);
+  const leakage = findVaultLeakage({
+    files,
+    vaultText,
+    vaultDocumentNames,
+    productText: productText(files, staged).replace(/\\n/g, '\n'),
+  });
   if (leakage.length === 0) {
-    console.log(`vault-leak check passed: ${documents.length} local documents`);
+    console.log(
+      `vault-leak check passed: ${documents.length} local documents, ${Object.keys(files).length} ${staged ? 'staged' : 'tracked'} files`,
+    );
     return;
   }
   for (const item of leakage) {

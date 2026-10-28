@@ -10,12 +10,20 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  mainWorktreeRoot,
+  selectVaultDirectory,
+  vaultCandidates,
+} from '../check-vault-leakage.mjs';
 
 const args = process.argv.slice(2);
 const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 
 async function main() {
-  const vault = option('--vault') ?? '.test-vault';
+  const vault =
+    option('--vault') ??
+    selectVaultDirectory(vaultCandidates({ mainWorktree: mainWorktreeRoot() })) ??
+    '.test-vault';
   const queries = Number(option('--queries') ?? 24);
   const timeoutMinutes = Number(option('--timeout-min') ?? 30);
   if (!Number.isInteger(queries) || queries < 1 || queries > 200)

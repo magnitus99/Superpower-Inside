@@ -16,8 +16,9 @@ for ARG in $argv
 end
 
 set CURRENT_BRANCH (git branch --show-current)
-if test "$CURRENT_BRANCH" != main
-    echo "ERROR: 릴리스 준비는 main 브랜치에서만 할 수 있습니다. 현재 브랜치: $CURRENT_BRANCH"
+if test "$CURRENT_BRANCH" != dev
+    echo "ERROR: 버전 커밋은 dev 브랜치에서만 만들 수 있습니다. 현재 브랜치: $CURRENT_BRANCH"
+    echo "기능 구현은 기능 브랜치에서 dev로 merge하고, 릴리스는 dev에서 준비한 뒤 main으로 squash merge합니다."
     exit 1
 end
 
@@ -69,4 +70,5 @@ git add manifest.json package.json package-lock.json versions.json main.js style
 and git commit -m "chore(release): $NEW_VERSION"
 or exit $status
 
-echo "릴리스 커밋이 준비되었습니다. GitHub Release 초안은 검증 완료 후 생성하며 게시 버튼은 누르지 않습니다."
+echo "릴리스 커밋이 dev에 준비되었습니다."
+echo "다음: dev를 main으로 squash merge하는 PR을 만들고, main에서 npm run release:tag로 태그를 생성하세요."

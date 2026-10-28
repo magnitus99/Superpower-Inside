@@ -8,39 +8,39 @@ function fakeProvider(reply: string) {
 
 describe('교차 언어 검색 구문', () => {
   it('비 ASCII 알파벳이 있는 질문만 다른 언어 검색 대상으로 봅니다', () => {
-    expect(needsCrossLanguageSearch('시편 51장')).toBe(true);
+    expect(needsCrossLanguageSearch('보고서 51호')).toBe(true);
     expect(needsCrossLanguageSearch('Forgiveness and the Immortal Eyes')).toBe(false);
-    expect(needsCrossLanguageSearch('Psalm 51 — 시편')).toBe(true);
+    expect(needsCrossLanguageSearch('Report 51 — 보고서')).toBe(true);
   });
 
   it('ASCII 질문에는 provider를 부르지 않습니다', async () => {
-    const provider = fakeProvider('["시편 51장"]');
-    await expect(requestQueryVariants(provider, 'Psalm 51', 'prompt')).resolves.toEqual([]);
+    const provider = fakeProvider('["보고서 51호"]');
+    await expect(requestQueryVariants(provider, 'Report 51', 'prompt')).resolves.toEqual([]);
     expect(provider.chat).not.toHaveBeenCalled();
   });
 
   it('provider 응답을 정규화·중복 제거합니다', async () => {
-    const provider = fakeProvider('["Psalm  51", "psalm 51", "The prayer of David"]');
-    const variants = await requestQueryVariants(provider, '시편 51장의 용서', 'prompt');
-    expect(variants).toEqual(['Psalm 51', 'The prayer of David']);
+    const provider = fakeProvider('["Report  51", "report 51", "The quarterly summary"]');
+    const variants = await requestQueryVariants(provider, '보고서 51호의 요약', 'prompt');
+    expect(variants).toEqual(['Report 51', 'The quarterly summary']);
   });
 
   it('Rust 확장기 상한을 넘는 응답은 버립니다', async () => {
     const provider = fakeProvider('["a", "b", "c", "d"]');
-    await expect(requestQueryVariants(provider, '시편 51장', 'prompt')).resolves.toEqual([]);
+    await expect(requestQueryVariants(provider, '보고서 51호', 'prompt')).resolves.toEqual([]);
   });
 
   it('provider 실패나 형식 오류는 검색 실패가 아니라 확장 없음입니다', async () => {
     const failing = { chat: vi.fn(async () => Promise.reject(new Error('offline'))) };
-    await expect(requestQueryVariants(failing, '시편 51장', 'prompt')).resolves.toEqual([]);
+    await expect(requestQueryVariants(failing, '보고서 51호', 'prompt')).resolves.toEqual([]);
     const malformed = fakeProvider('설명 없이 그냥 문장입니다.');
-    await expect(requestQueryVariants(malformed, '시편 51장', 'prompt')).resolves.toEqual([]);
+    await expect(requestQueryVariants(malformed, '보고서 51호', 'prompt')).resolves.toEqual([]);
   });
 });
 
 describe('긴 질문 분해', () => {
   it('상한 이하 질문은 그대로 한 조각입니다', () => {
-    expect(splitLongQuestion('시편 51장의 의미')).toEqual(['시편 51장의 의미']);
+    expect(splitLongQuestion('보고서 51호의 의미')).toEqual(['보고서 51호의 의미']);
   });
 
   it('문장 경계에서 나누고 모든 조각을 상한 이하로 유지합니다', () => {

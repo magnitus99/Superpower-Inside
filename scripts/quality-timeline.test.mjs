@@ -9,14 +9,14 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf
 describe('검사 시점과 중복 제거', () => {
   it('검색 품질 fixture 변경은 전체 테스트를 선택한다', () => {
     expect(
-      qualityPlan(['src/rag/fixtures/embeddinggemma-cross-lingual.json']).tests,
+      qualityPlan(['src/rag/search-quality-gate.test.ts']).tests,
     ).toBe(true);
   });
 
   it('미커밋 파일이 여러 개 있어도 릴리스 버전 수정 전에 멈춘다', () => {
     const root = mkdtempSync(join(tmpdir(), 'release-dirty-'));
     try {
-      expect(spawnSync('git', ['init', '-q', '--initial-branch=main'], { cwd: root }).status).toBe(
+      expect(spawnSync('git', ['init', '-q', '--initial-branch=dev'], { cwd: root }).status).toBe(
         0,
       );
       writeFileSync(join(root, 'first.txt'), 'first');
@@ -75,23 +75,27 @@ process.exitCode = stage === process.env.RELEASE_FAIL ? 7 : 0;
       rmSync(root, { recursive: true, force: true });
     }
   });
-  it('커밋과 일반 CI·릴리스 자동화에 Patina를 넣지 않고 수동 실행만 남긴다', () => {
-    expect(read('.githooks/pre-commit')).toContain('--commit-local');
+  it('커밋·푸시 훅은 오프라인 검사만 하고 Patina 온라인을 자동 실행하지 않는다', () => {
+    expect(read('.githooks/pre-commit')).toContain('pre-commit.mjs');
+    expect(read('.githooks/pre-push')).toContain('pre-push.mjs');
+    expect(read('scripts/pre-commit.mjs')).toContain('--staged');
+    expect(read('scripts/pre-commit.mjs')).not.toContain('copy:check');
+    expect(read('scripts/pre-push.mjs')).toContain('check-quality.mjs');
+    expect(read('scripts/pre-push.mjs')).not.toContain('--online');
     const release = read('.github/workflows/release.yml');
     expect(release).not.toContain('pull_request:');
     expect(release).toContain("- '[0-9]*.[0-9]*.[0-9]*'");
     expect(release).toContain('draft: true');
-    expect(release).toContain('needs: quality');
+    expect(release).toContain('check-branch-policy.mjs');
     expect(release).not.toContain('check-copy.mjs');
     expect(existsSync(new URL('../.github/workflows/copy.yml', import.meta.url))).toBe(false);
-    expect(existsSync(new URL('../.githooks/pre-push', import.meta.url))).toBe(false);
     const scripts = JSON.parse(read('package.json')).scripts;
     expect(scripts['quality:local']).toContain('scripts/check-quality.mjs');
     expect(scripts['quality:local']).not.toMatch(/copy:|perf-gate|rust:security/);
     expect(scripts['release:check']).toContain('scripts/check-release.fish');
     expect(read('scripts/check-release.fish')).toContain('security:full');
     expect(read('scripts/check-release.fish')).not.toContain('copy:check');
-    expect(scripts['copy:check']).toBe('node scripts/check-copy.mjs');
+    expect(scripts['copy:check']).toBe('node scripts/check-copy.mjs --offline');
     expect(scripts['copy:check:online']).toBe('node scripts/check-copy.mjs --online');
   });
   it('릴리스 스크립트는 전체 게이트를 재사용해 성능 검사를 빠뜨리지 않는다', () => {

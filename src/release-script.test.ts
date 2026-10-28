@@ -6,17 +6,22 @@ import { describe, expect, it } from 'vitest';
 const root = resolve(__dirname, '..');
 
 describe('릴리스 스크립트 브랜치 정책', () => {
-  it('버전 커밋과 태그 생성은 main 브랜치에서만 허용한다', () => {
-    const script = readFileSync(resolve(root, 'scripts/bump-version.fish'), 'utf8');
+  it('버전 커밋은 dev에서, 태그 생성은 main에서만 허용한다', () => {
+    const bump = readFileSync(resolve(root, 'scripts/bump-version.fish'), 'utf8');
+    const tag = readFileSync(resolve(root, 'scripts/tag-release.fish'), 'utf8');
 
-    expect(script).toContain('if test "$CURRENT_BRANCH" != main');
-    expect(script).toContain('patch|minor|major');
+    expect(bump).toContain('if test "$CURRENT_BRANCH" != dev');
+    expect(bump).toContain('patch|minor|major');
+    expect(bump).toContain('npm run release:tag');
+    expect(tag).toContain('if test "$CURRENT_BRANCH" != main');
+    expect(tag).toContain('check-branch-policy.mjs --release-tag');
+    expect(tag).toContain('git push origin $VERSION');
   });
 
   it('릴리스 스크립트는 release-notes 파일 대신 GitHub Release 본문 작성을 안내한다', () => {
     const script = readFileSync(resolve(root, 'scripts/bump-version.fish'), 'utf8');
 
-    expect(script).toContain('GitHub Release 초안은 검증 완료 후 생성하며 게시 버튼은 누르지 않습니다');
+    expect(script).toContain('다음: dev를 main으로 squash merge하는 PR을 만들고');
     expect(script).not.toContain('./scripts/release-notes.fish');
     expect(script).not.toContain('--notes-file');
     expect(script).not.toContain("git tag --sort=version:refname --list '[0-9]*'");
