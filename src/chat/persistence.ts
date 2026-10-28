@@ -318,6 +318,9 @@ function compactToolCallRecord(toolCall: ToolCallRecord): ToolCallRecord {
   if (toolCall.approved !== undefined) compacted.approved = toolCall.approved;
   if (toolCall.executionKind !== undefined) compacted.executionKind = toolCall.executionKind;
   if (toolCall.citations !== undefined) compacted.citations = toolCall.citations;
+  if (toolCall.thoughtSignature !== undefined) {
+    compacted.thoughtSignature = toolCall.thoughtSignature;
+  }
   return compacted;
 }
 

@@ -3,13 +3,26 @@ import { t } from '../i18n';
 import type {
   CustomOpenAIProviderConfig,
   EmbeddingProviderKey,
+  ProviderApiFormat,
   ProviderConfig,
   ProviderStrategyKey,
 } from '../settings';
+import {
+  buildOpenCodeEndpoint,
+  buildOpenCodeModelsUrl,
+  buildProviderApiEndpoint,
+  isLocalOllamaBaseUrl,
+  normalizeGeminiApiRoot,
+  normalizeOpenCodeBaseUrl,
+  normalizeProviderApiFormat,
+  normalizeProviderApiRoot,
+} from './provider-api-format';
 import { TernlightEmbeddingProvider, EmbeddingGemmaProvider } from './embedding';
 import type { TernlightRuntimeOptions } from './ternlight-runtime';
 import type { ProviderKey } from './providers';
 import { planProviderModelDetailsRust } from '../rag/rust-core';
+import { googleGeminiOAuth } from './google-gemini-oauth';
+import { createGeminiApiKeyProvider, createGeminiOAuthProvider } from './gemini-provider';
 
 export interface ProviderModelInfo {
   maxInputTokens?: number;
@@ -17,6 +30,8 @@ export interface ProviderModelInfo {
   name?: string;
   contextLength?: number;
   maxOutputTokens?: number;
+  apiFormat?: ProviderApiFormat;
+  supportedApiFormats?: ProviderApiFormat[];
 }
 
 export interface ValidationResult {
@@ -37,13 +52,28 @@ export interface EmbeddingConnectionValidator {
   testEmbedding(modelId: string): Promise<ValidationResult>;
 }
 
-export type ProviderValidationKey = ProviderKey | 'customOpenAI' | 'openAIChatGPT';
+export type ProviderValidationKey =
+  | ProviderKey
+  | 'customOpenAI'
+  | 'openAIChatGPT'
+  | 'opencode'
+  | 'gemini';
 
 const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 const OLLAMA_LOCAL_BASE_URL = 'http://localhost:11434';
 const OLLAMA_CLOUD_BASE_URL = 'https://ollama.com';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+const GEMINI_FALLBACK_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-pro',
+  'gemini-3-flash',
+];
 
 function normalizeOllamaBaseUrl(baseUrl: string): string {
   let url = baseUrl.trim().replace(/\/+$/, '');
@@ -133,12 +163,13 @@ export async function fetchOllamaModelInfo(
   config: ProviderConfig | CustomOpenAIProviderConfig,
   model: string,
 ): Promise<ProviderModelInfo | undefined> {
+  const baseUrl = normalizeOllamaBaseUrl(config.baseUrl?.trim() || getFixedProviderBaseUrl(key));
   const response = await requestUrl({
-    url: `${normalizeOllamaBaseUrl(config.baseUrl?.trim() || getFixedProviderBaseUrl(key))}/api/show`,
+    url: `${baseUrl}/api/show`,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(key === 'ollamaCloud' ? buildBearerHeaders(config.apiKey) : {}),
+      ...(!isLocalOllamaBaseUrl(baseUrl) ? buildBearerHeaders(config.apiKey) : {}),
     },
     body: JSON.stringify({ model }),
     throw: false,
@@ -155,8 +186,11 @@ export async function fetchAnthropicModelInfo(
   config: ProviderConfig | CustomOpenAIProviderConfig,
   model: string,
 ): Promise<ProviderModelInfo | undefined> {
+  const baseUrl = config.baseUrl?.trim()
+    ? normalizeProviderApiRoot(config.baseUrl)
+    : ANTHROPIC_BASE_URL;
   const response = await requestUrl({
-    url: `${ANTHROPIC_BASE_URL}/models/${encodeURIComponent(model)}`,
+    url: `${baseUrl}/models/${encodeURIComponent(model)}`,
     method: 'GET',
     headers: { 'x-api-key': config.apiKey.trim(), 'anthropic-version': '2023-06-01' },
     throw: false,
@@ -171,14 +205,28 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
   constructor(
     private readonly config: ProviderConfig | CustomOpenAIProviderConfig,
     private readonly baseUrl: string,
+    private readonly format: ProviderApiFormat = 'chat',
     private readonly isOpenRouter = false,
     private readonly isCustom = false,
+    private readonly modelsUrl?: string,
+    private readonly endpointBuilder?: (model: string) => string,
   ) {}
+
+  private buildMessagesHeaders(): Record<string, string> {
+    const apiKey = this.config.apiKey.trim();
+    return {
+      'Content-Type': 'application/json',
+      ...(apiKey
+        ? { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey }
+        : {}),
+      'anthropic-version': '2023-06-01',
+    };
+  }
 
   async fetchModels(): Promise<ValidationResult> {
     try {
       const res = await requestUrl({
-        url: `${this.baseUrl}/models`,
+        url: this.modelsUrl ?? `${this.baseUrl}/models`,
         method: 'GET',
         headers: buildBearerHeaders(this.config.apiKey),
         throw: false,
@@ -206,19 +254,41 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
 
   async testGeneration(modelId: string): Promise<ValidationResult> {
     try {
+      const endpoint =
+        this.endpointBuilder?.(modelId) ??
+        buildProviderApiEndpoint(this.baseUrl, this.format, modelId);
+      const headers =
+        this.format === 'messages'
+          ? this.buildMessagesHeaders()
+          : {
+              'Content-Type': 'application/json',
+              ...buildBearerHeaders(this.config.apiKey),
+            };
+      const body =
+        this.format === 'messages'
+          ? {
+              model: modelId,
+              max_tokens: 1,
+              messages: [{ role: 'user', content: 'ping' }],
+            }
+          : this.format === 'responses'
+            ? {
+                model: modelId,
+                input: [{ role: 'user', content: [{ type: 'input_text', text: 'ping' }] }],
+                max_output_tokens: 1,
+                stream: false,
+              }
+            : {
+                model: modelId,
+                messages: [{ role: 'user', content: 'ping' }],
+                max_tokens: 1,
+                stream: false,
+              };
       const res = await requestUrl({
-        url: `${this.baseUrl}/chat/completions`,
+        url: endpoint,
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...buildBearerHeaders(this.config.apiKey),
-        },
-        body: JSON.stringify({
-          model: modelId,
-          messages: [{ role: 'user', content: 'ping' }],
-          max_tokens: 1,
-          stream: false,
-        }),
+        headers,
+        body: JSON.stringify(body),
         throw: false,
       });
       if (res.status >= 400) {
@@ -235,13 +305,86 @@ class OpenAICompatibleValidator implements ProviderConnectionValidator {
   }
 }
 
+class GeminiValidator implements ProviderConnectionValidator {
+  constructor(
+    private readonly config: ProviderConfig | CustomOpenAIProviderConfig,
+    private readonly profileId: string,
+  ) {}
+
+  private async auth(): Promise<{ headers: Record<string, string>; projectId?: string }> {
+    if (this.config.geminiAuthMode === 'oauth') {
+      const credentials = await googleGeminiOAuth.credentials(this.profileId);
+      return {
+        headers: { Authorization: `Bearer ${credentials.accessToken}` },
+        projectId: credentials.projectId,
+      };
+    }
+    return this.config.apiKey.trim()
+      ? { headers: { 'x-goog-api-key': this.config.apiKey.trim() } }
+      : { headers: {} };
+  }
+
+  async fetchModels(): Promise<ValidationResult> {
+    try {
+      const auth = await this.auth();
+      const res = await requestUrl({
+        url: `${normalizeGeminiApiRoot(this.config.baseUrl?.trim() || GEMINI_BASE_URL)}/models`,
+        method: 'GET',
+        headers: auth.headers,
+        throw: false,
+      });
+      if (res.status >= 400) {
+        return this.config.geminiAuthMode === 'oauth'
+          ? {
+              valid: true,
+              models: GEMINI_FALLBACK_MODELS,
+              modelDetails: GEMINI_FALLBACK_MODELS.map((id) => ({ id })),
+            }
+          : {
+              valid: false,
+              models: [],
+              error: classifyHttpError(res.status, getResponseText(res.text)),
+            };
+      }
+      const modelDetails = planProviderModelDetailsRust('gemini', res.json) ?? [];
+      return { valid: true, models: modelDetails.map((model) => model.id), modelDetails };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+
+  async validateConnection(): Promise<ValidationResult> {
+    return this.fetchModels();
+  }
+
+  async testGeneration(modelId: string): Promise<ValidationResult> {
+    try {
+      const provider =
+        this.config.geminiAuthMode === 'oauth'
+          ? createGeminiOAuthProvider(modelId, this.profileId)
+          : createGeminiApiKeyProvider(modelId, this.config.apiKey, undefined, this.config.baseUrl);
+      const answer = await provider.chat([{ role: 'user', content: 'ping' }], 0, undefined, {
+        maxOutputTokens: 16,
+      });
+      return answer.trim()
+        ? { valid: true, models: [modelId] }
+        : { valid: false, models: [], error: t('geminiResponseInvalid') };
+    } catch (err) {
+      return { valid: false, models: [], error: classifyFetchError(err) };
+    }
+  }
+}
+
 class AnthropicValidator implements ProviderConnectionValidator {
-  constructor(private readonly config: ProviderConfig | CustomOpenAIProviderConfig) {}
+  constructor(
+    private readonly config: ProviderConfig | CustomOpenAIProviderConfig,
+    private readonly baseUrl = ANTHROPIC_BASE_URL,
+  ) {}
 
   async fetchModels(): Promise<ValidationResult> {
     try {
       const res = await requestUrl({
-        url: `${ANTHROPIC_BASE_URL}/models`,
+        url: `${this.baseUrl}/models`,
         method: 'GET',
         headers: {
           'x-api-key': this.config.apiKey,
@@ -270,7 +413,7 @@ class AnthropicValidator implements ProviderConnectionValidator {
   async testGeneration(modelId: string): Promise<ValidationResult> {
     try {
       const res = await requestUrl({
-        url: `${ANTHROPIC_BASE_URL}/messages`,
+        url: `${this.baseUrl}/messages`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -439,9 +582,13 @@ class OllamaEmbeddingValidator implements EmbeddingConnectionValidator {
   private readonly providerValidator: OllamaValidator;
   private readonly baseUrl: string;
 
-  constructor(config: ProviderConfig) {
+  constructor(private readonly config: ProviderConfig) {
     this.baseUrl = normalizeOllamaBaseUrl(config.baseUrl?.trim() || OLLAMA_LOCAL_BASE_URL);
-    this.providerValidator = new OllamaValidator(config, this.baseUrl, false);
+    this.providerValidator = new OllamaValidator(
+      config,
+      this.baseUrl,
+      !isLocalOllamaBaseUrl(this.baseUrl),
+    );
   }
 
   async validateConnection(): Promise<ValidationResult> {
@@ -455,6 +602,9 @@ class OllamaEmbeddingValidator implements EmbeddingConnectionValidator {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(!isLocalOllamaBaseUrl(this.baseUrl)
+            ? buildBearerHeaders(this.config.apiKey)
+            : {}),
         },
         body: JSON.stringify({ model: modelId, input: ['test'] }),
         throw: false,
@@ -536,7 +686,7 @@ function createProviderValidator(
         try {
           const { fetchChatGPTModelDetails } = await import('./chatgpt-provider');
           const modelDetails = await fetchChatGPTModelDetails(
-            'id' in config ? config.id : 'profile',
+            config.id ?? 'profile',
           );
           return {
             valid: true,
@@ -557,7 +707,7 @@ function createProviderValidator(
       testGeneration: async (modelId) => {
         try {
           const { ChatGPTProvider } = await import('./chatgpt-provider');
-          const provider = new ChatGPTProvider('id' in config ? config.id : 'profile', modelId);
+          const provider = new ChatGPTProvider(config.id ?? 'profile', modelId);
           const answer = await provider.chat([{ role: 'user', content: 'ping' }]);
           return answer.trim()
             ? { valid: true, models: [modelId] }
@@ -572,28 +722,61 @@ function createProviderValidator(
       },
     };
   }
+  if (key === 'gemini') {
+    return new GeminiValidator(config, config.id ?? 'profile');
+  }
   if (key === 'claude') {
-    return new AnthropicValidator(config);
+    return new AnthropicValidator(
+      config,
+      config.baseUrl?.trim() ? normalizeProviderApiRoot(config.baseUrl) : ANTHROPIC_BASE_URL,
+    );
   }
   if (key === 'ollama' || key === 'ollamaCloud') {
-    return new OllamaValidator(config, getFixedProviderBaseUrl(key), key === 'ollamaCloud');
+    const baseUrl =
+      key === 'ollamaCloud'
+        ? OLLAMA_CLOUD_BASE_URL
+        : config.baseUrl?.trim() || OLLAMA_LOCAL_BASE_URL;
+    return new OllamaValidator(config, baseUrl, !isLocalOllamaBaseUrl(baseUrl));
+  }
+  if (key === 'opencode') {
+    const format = normalizeProviderApiFormat(config.apiFormat) ?? 'responses';
+    return new OpenAICompatibleValidator(
+      config,
+      normalizeOpenCodeBaseUrl(config.baseUrl),
+      format,
+      false,
+      false,
+      buildOpenCodeModelsUrl(config.baseUrl),
+      (model) => buildOpenCodeEndpoint(config.baseUrl, format, model),
+    );
   }
   if (key === 'openRouter') {
-    return new OpenAICompatibleValidator(config, OPENROUTER_BASE_URL, true);
+    return new OpenAICompatibleValidator(
+      config,
+      config.baseUrl?.trim() ? normalizeProviderApiRoot(config.baseUrl) : OPENROUTER_BASE_URL,
+      'chat',
+      true,
+    );
   }
   if (key === 'customOpenAI' || key === 'openAICompatible') {
     if (!config.baseUrl?.trim()) {
       return null;
     }
+    const format = normalizeProviderApiFormat(config.apiFormat) ?? 'chat';
     return new OpenAICompatibleValidator(
       config,
-      normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? ''),
+      format === 'gemini' ? config.baseUrl : normalizeProviderApiRoot(config.baseUrl ?? ''),
+      format,
       false,
       true,
     );
   }
   if (key === 'openai') {
-    return new OpenAICompatibleValidator(config, OPENAI_BASE_URL);
+    return new OpenAICompatibleValidator(
+      config,
+      config.baseUrl?.trim() ? normalizeProviderApiRoot(config.baseUrl) : OPENAI_BASE_URL,
+      'chat',
+    );
   }
   return null;
 }
@@ -610,7 +793,11 @@ function createEmbeddingValidator(
     return new TernlightEmbeddingValidator(ternlightRuntime);
   }
   if (providerKey === 'openai' || providerKey === 'openRouter') {
-    const baseUrl = providerKey === 'openRouter' ? OPENROUTER_BASE_URL : OPENAI_BASE_URL;
+    const baseUrl = config.baseUrl?.trim()
+      ? normalizeProviderApiRoot(config.baseUrl)
+      : providerKey === 'openRouter'
+        ? OPENROUTER_BASE_URL
+        : OPENAI_BASE_URL;
     return new OpenAICompatibleEmbeddingValidator(config, baseUrl);
   }
   if (providerKey === 'openAICompatible') {
@@ -619,7 +806,7 @@ function createEmbeddingValidator(
     }
     return new OpenAICompatibleEmbeddingValidator(
       config,
-      normalizeOpenAICompatibleBaseUrl(config.baseUrl),
+      normalizeProviderApiRoot(config.baseUrl),
     );
   }
   if (providerKey.startsWith('customOpenAI:')) {
@@ -628,7 +815,7 @@ function createEmbeddingValidator(
     }
     return new OpenAICompatibleEmbeddingValidator(
       config,
-      normalizeOpenAICompatibleBaseUrl(config.baseUrl),
+      normalizeProviderApiRoot(config.baseUrl),
     );
   }
   return null;

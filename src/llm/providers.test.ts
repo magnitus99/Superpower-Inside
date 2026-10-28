@@ -9,6 +9,7 @@ vi.mock('../utils/desktop-stream', async (importOriginal) => {
 
 import { requestUrl } from 'obsidian';
 import { connectTestChatGPT, completedChatGPTResponse, requestUrlPromise } from '../test/chatgpt';
+import { connectTestGemini } from '../test/gemini';
 import { chatGPTOAuth } from './chatgpt-oauth';
 import type { ChatMessage, ToolCallInfo } from './providers';
 import {
@@ -457,6 +458,283 @@ describe('normalizeForOpenAI', () => {
       content: 'Allowed directories:\n/Users/test',
       tool_call_id: 'call_x',
       name: 'list_allowed_directories',
+    });
+  });
+});
+
+describe('편집 가능한 프로바이더 endpoint', () => {
+  it.each([
+    ['openai', 'https://proxy.example', 'https://proxy.example/v1/chat/completions'],
+    ['claude', 'https://proxy.example', 'https://proxy.example/v1/messages'],
+    ['openRouter', 'https://proxy.example/api', 'https://proxy.example/api/v1/chat/completions'],
+  ] as const)('%s는 저장한 base URL을 사용한다', async (key, baseUrl, expected) => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { choices: [{ message: { content: 'ok' } }], content: [{ type: 'text', text: 'ok' }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProvider(
+      key,
+      { apiKey: 'key', baseUrl, models: ['model'], enabled: true },
+      'model',
+    );
+    await provider.chat([{ role: 'user', content: 'hello' }]);
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) throw new Error('request missing');
+    expect(call.url).toBe(expected);
+  });
+
+  it('Gemini API 키도 편집한 base URL을 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }),
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy(
+      'gemini',
+      {
+        apiKey: 'gemini-key',
+        geminiAuthMode: 'apiKey',
+        baseUrl: 'https://gemini.example/v1beta',
+        enabled: true,
+        models: ['gemini-test'],
+      },
+      'gemini-test',
+    );
+    await provider.chat([{ role: 'user', content: 'hello' }]);
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) throw new Error('request missing');
+    expect(call.url).toBe(
+      'https://gemini.example/v1beta/models/gemini-test:generateContent',
+    );
+  });
+});
+
+describe('Gemini 네이티브 연결', () => {
+  it('API 키 모드는 공개 GenerateContent endpoint와 x-goog-api-key를 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'gemini answer' }] } }],
+        modelVersion: 'gemini-test',
+      }),
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy(
+      'gemini',
+      {
+        apiKey: 'gemini-key',
+        geminiAuthMode: 'apiKey',
+        enabled: true,
+        models: ['gemini-test'],
+      },
+      'gemini-test',
+      'gemini-profile',
+    );
+    expect(await provider.chat([{ role: 'user', content: 'hello' }])).toBe('gemini answer');
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) throw new Error('request missing');
+    expect(call.url).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent',
+    );
+    expect(call.headers).toMatchObject({ 'x-goog-api-key': 'gemini-key' });
+    const body = parseRequestUrlBody();
+    expect(body).toMatchObject({
+      contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+    });
+  });
+
+  it('Google OAuth 모드는 Code Assist envelope과 스트리밍을 사용한다', async () => {
+    connectTestGemini('gemini-oauth-profile');
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text:
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":"oauth "},{"text":"answer"}]}}]}}\n\n' +
+        'data: {"response":{"candidates":[{"content":{"parts":[{"text":" done"}]},"finishReason":"STOP"}]}}\n\n',
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy(
+      'gemini',
+      {
+        apiKey: '',
+        geminiAuthMode: 'oauth',
+        enabled: true,
+        models: ['gemini-test'],
+      },
+      'gemini-test',
+      'gemini-oauth-profile',
+    );
+    const chunks: string[] = [];
+    await provider.streamChat([{ role: 'user', content: 'hello' }], (chunk) => {
+      chunks.push(chunk.content);
+    });
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) throw new Error('request missing');
+    expect(call.url).toBe(
+      'https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse',
+    );
+    expect(call.headers).toMatchObject({ authorization: 'Bearer gemini-access' });
+    const body = parseRequestUrlBody();
+    expect(body).toMatchObject({
+      project: 'gemini-project',
+      model: 'gemini-test',
+      request: { contents: [{ role: 'user', parts: [{ text: 'hello' }] }] },
+    });
+    expect(chunks.join('')).toBe('oauth answer done');
+  });
+});
+
+describe('OpenCode·다중 프로토콜 연결', () => {
+  it('OpenCode는 Responses 형식과 OpenCode 세션 헤더로 스트리밍한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text:
+        'data: {"type":"response.output_text.delta","delta":"한글 😀"}\n\n' +
+        completedChatGPTResponse([
+          { type: 'message', content: [{ type: 'output_text', text: '한글 😀' }] },
+        ]),
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy(
+      'opencode',
+      {
+        apiKey: 'oc_sk_test',
+        enabled: true,
+        models: ['gpt-synthetic'],
+        baseUrl: 'https://opencode.ai/inference',
+      },
+      'gpt-synthetic',
+      'profile-a',
+    );
+    const chunks: string[] = [];
+    await provider.streamChat([{ role: 'user', content: 'hello' }], (chunk) => {
+      chunks.push(chunk.content);
+    });
+
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) throw new Error('request missing');
+    expect(call.url).toBe('https://opencode.ai/inference/openai/v1/responses');
+    expect(call.headers).toMatchObject({
+      authorization: 'Bearer oc_sk_test',
+      'x-opencode-session': 'ses_profile-a',
+    });
+    expect(chunks.join('')).toBe('한글 😀');
+  });
+
+  it('OpenCode Anthropic 형식은 /anthropic/v1/messages로 보낸다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: [
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"claude"}}',
+        'data: {"type":"message_stop"}',
+      ].join('\n\n') + '\n\n',
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy(
+      'opencode',
+      {
+        apiKey: 'oc_sk_test',
+        apiFormat: 'messages',
+        enabled: true,
+        models: ['claude-synthetic'],
+        baseUrl: 'https://opencode.ai/inference/go',
+      },
+      'claude-synthetic',
+    );
+    const chunks: string[] = [];
+    await provider.streamChat([{ role: 'user', content: 'hello' }], (chunk) => {
+      chunks.push(chunk.content);
+    });
+
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) throw new Error('request missing');
+    expect(call.url).toBe('https://opencode.ai/inference/go/anthropic/v1/messages');
+    expect(call.headers).toMatchObject({
+      authorization: 'Bearer oc_sk_test',
+      'anthropic-version': '2023-06-01',
+    });
+    expect(chunks.join('')).toBe('claude');
+  });
+
+  it('OpenCode Gemini 형식은 google v1beta 모델 경로를 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text:
+        'data: {"candidates":[{"content":{"parts":[{"text":"gemini"}]},"finishReason":"STOP"}]}\n\n',
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy(
+      'opencode',
+      {
+        apiKey: 'oc_sk_test',
+        apiFormat: 'gemini',
+        enabled: true,
+        models: ['gemini-synthetic'],
+        baseUrl: 'https://opencode.ai/inference/go',
+      },
+      'gemini-synthetic',
+      'profile-a',
+    );
+    const chunks: string[] = [];
+    await provider.streamChat([{ role: 'user', content: 'hello' }], (chunk) => {
+      chunks.push(chunk.content);
+    });
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) throw new Error('request missing');
+    expect(call.url).toBe(
+      'https://opencode.ai/inference/go/google/v1beta/models/gemini-synthetic:streamGenerateContent?alt=sse',
+    );
+    expect(call.headers).toMatchObject({
+      authorization: 'Bearer oc_sk_test',
+      'x-opencode-session': 'ses_profile-a',
+    });
+    expect(chunks.join('')).toBe('gemini');
+  });
+
+  it('Custom endpoint는 선택한 Messages 형식과 API 루트를 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text:
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n' +
+        'data: {"type":"message_stop"}\n\n',
+      json: {},
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProviderForStrategy(
+      'openAICompatible',
+      {
+        apiKey: 'cmd_test',
+        apiFormat: 'messages',
+        baseUrl: 'https://api.commandcode.ai/provider/v1/messages',
+        enabled: true,
+        models: ['claude-synthetic'],
+      },
+      'claude-synthetic',
+      'command-code',
+    );
+    await provider.streamChat([{ role: 'user', content: 'hello' }], () => {});
+
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) throw new Error('request missing');
+    expect(call.url).toBe('https://api.commandcode.ai/provider/v1/messages');
+    expect(call.headers).toMatchObject({
+      authorization: 'Bearer cmd_test',
+      'x-api-key': 'cmd_test',
     });
   });
 });
@@ -978,6 +1256,33 @@ describe('Ollama streamChat transport', () => {
     expect(body.tool_choice).toBeUndefined();
     expect(onChunk).toHaveBeenNthCalledWith(1, { content: 'cloud answer', done: false });
     expect(onChunk).toHaveBeenNthCalledWith(2, { content: '', done: true });
+  });
+
+  it('Ollama는 편집한 base URL과 원격 인증을 그대로 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { message: { content: 'remote answer' } },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const provider = createProvider(
+      'ollama',
+      {
+        apiKey: 'remote-key',
+        baseUrl: 'https://ollama.example.com',
+        enabled: true,
+        models: ['llama-remote'],
+      },
+      'llama-remote',
+    );
+
+    await provider.chat([{ role: 'user', content: 'Hello' }]);
+
+    const call = requestUrlMock.mock.calls[0]?.[0];
+    if (typeof call === 'string' || call === undefined) throw new Error('request missing');
+    expect(call.url).toBe('https://ollama.example.com/api/chat');
+    expect(call.headers).toMatchObject({ Authorization: 'Bearer remote-key' });
   });
 
   it('Ollama Local 스트리밍은 데스크톱 NDJSON fixture를 순서대로 처리한다', async () => {

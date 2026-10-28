@@ -2563,7 +2563,7 @@ export class ChatView extends ItemView {
       return;
     }
     try {
-      await this.saveCurrentSession(true);
+      await this.saveCurrentSession();
       const branchMessages = this.messages.slice(0, index + 1).map((message) => ({
         ...message,
         branchOf: message.branchOf ?? this.session.filePath ?? messageId,
@@ -2575,7 +2575,7 @@ export class ChatView extends ItemView {
         isDirty: true,
       };
       this.rebuildMessagesDOM();
-      await this.saveCurrentSession(true);
+      await this.saveCurrentSession();
       new Notice(t('branchSessionCreatedNotice'));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2627,7 +2627,7 @@ export class ChatView extends ItemView {
   async startNewSession(): Promise<void> {
     this.invalidateActiveChatRun(false);
     this.clearAutoSaveTimer();
-    await this.saveCurrentSession(true);
+    await this.saveCurrentSession();
     this.messages = [];
     this.activeVariantByRoot.clear();
     this.sessionSystemPrompt = null;
@@ -2723,9 +2723,9 @@ export class ChatView extends ItemView {
     this.autoSaveTimer = null;
   }
 
-  private async saveCurrentSession(force = false): Promise<void> {
+  private async saveCurrentSession(): Promise<void> {
     const folder = this.plugin.settings.chat.saveFolder;
-    if (!folder || this.messages.length === 0 || (!this.session.isDirty && !force)) return;
+    if (!folder || this.messages.length === 0 || !this.session.isDirty) return;
     if (this.session.filePath && !this.getCurrentSessionFile()) {
       this.resetMissingSession(this.session.filePath);
       return;
@@ -2756,7 +2756,7 @@ export class ChatView extends ItemView {
     this.invalidateActiveChatRun(false);
     try {
       this.clearAutoSaveTimer();
-      await this.saveCurrentSession(true);
+      await this.saveCurrentSession();
       const session = await loadChat(this.app.vault, filePath);
       const now = new Date().toISOString();
       this.messages = prepareLoadedSessionMessages(session.messages, {
@@ -2901,7 +2901,7 @@ export class ChatView extends ItemView {
     }
     this.invalidateActiveChatRun(false);
     this.clearAutoSaveTimer();
-    await this.saveCurrentSession(true);
+    await this.saveCurrentSession();
     openSessionHistoryModal(
       this.container!,
       this.app,
@@ -3159,7 +3159,7 @@ export class ChatView extends ItemView {
     if (assistantWrapper) {
       assistantWrapper.classList.add('generating');
     }
-    await this.saveCurrentSession(true);
+    await this.saveCurrentSession();
     if (!isChatRunActive(this.activeRun, run)) return;
     let restoreDraft = false;
 
@@ -3884,7 +3884,7 @@ export class ChatView extends ItemView {
         this.pendingRegeneration = null;
       }
       if (finalization.saveSession) {
-        await this.saveCurrentSession(true);
+        await this.saveCurrentSession();
         await this.summarizeCurrentSessionTitle(provider, run);
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {
@@ -3947,6 +3947,8 @@ export class ChatView extends ItemView {
       if (existing) {
         if (toolCallDelta.id) existing.id = toolCallDelta.id;
         if (toolCallDelta.function?.name) existing.name = toolCallDelta.function.name;
+        if (toolCallDelta.thoughtSignature)
+          existing.thoughtSignature = toolCallDelta.thoughtSignature;
         if (toolCallDelta.function?.arguments)
           existing.arguments += toolCallDelta.function.arguments;
       } else if (toolCallMap.size < MAX_TOOL_CALLS_PER_ROUND) {
@@ -3954,6 +3956,9 @@ export class ChatView extends ItemView {
           id: toolCallDelta.id || `local-tool-${++this.localToolCallSequence}`,
           name: toolCallDelta.function?.name ?? '',
           arguments: toolCallDelta.function?.arguments ?? '',
+          ...(toolCallDelta.thoughtSignature
+            ? { thoughtSignature: toolCallDelta.thoughtSignature }
+            : {}),
           status: 'running',
         });
       }
@@ -4805,7 +4810,7 @@ export class ChatView extends ItemView {
         status: 'streaming',
         turnStage: 'running-tools',
       });
-      await this.saveCurrentSession(true);
+      await this.saveCurrentSession();
       if (!isChatRunActive(this.activeRun, run)) return;
       const updated = await this.executeAssistantToolCalls(
         messageId,
@@ -4997,7 +5002,7 @@ export class ChatView extends ItemView {
         this.pendingRegeneration = null;
       }
       if (finalization.saveSession) {
-        await this.saveCurrentSession(true);
+        await this.saveCurrentSession();
         if (titleProvider) await this.summarizeCurrentSessionTitle(titleProvider, run);
       }
       if (finalization.clearLoading && isChatRunOwner(this.activeRun, run)) {

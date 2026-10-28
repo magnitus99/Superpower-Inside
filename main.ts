@@ -48,6 +48,10 @@ import {
   migrateChatGPTCredentials,
 } from './src/llm/chatgpt-oauth';
 import {
+  googleGeminiOAuth,
+  initializeGoogleGeminiOAuth,
+} from './src/llm/google-gemini-oauth';
+import {
   hydrateProviderApiKeys,
   migrateProviderKeysToKeychain,
   neutralizeProviderSecrets,
@@ -338,6 +342,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.getLogger().info('Plugin loading started.', { source: 'lifecycle' });
     const chatGPTAuth = initializeChatGPTOAuth(this.app, this.getLogger(), this.manifest.version);
     this.register(() => chatGPTAuth.dispose());
+    const geminiAuth = initializeGoogleGeminiOAuth(this.app, this.getLogger());
+    this.register(() => geminiAuth.dispose());
     await this.loadSettings();
     await this.runStartupPluginFileMaintenance();
     await this.configureAgentDiagnosticsService();
@@ -1013,7 +1019,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     });
 
     const resetLanguage = resolveUiLanguage(undefined, getObsidianLanguage());
-    for (const profile of this.settings.providerProfiles) chatGPTOAuth.disconnect(profile.id);
+    for (const profile of this.settings.providerProfiles) {
+      chatGPTOAuth.disconnect(profile.id);
+      googleGeminiOAuth.disconnect(profile.id);
+    }
     neutralizeProviderSecrets(this.app, this.settings);
     setLanguage(resetLanguage);
     this.settings = structuredClone(DEFAULT_SETTINGS);

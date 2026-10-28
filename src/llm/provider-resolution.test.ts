@@ -181,6 +181,28 @@ describe('채팅 provider 실행 연결', () => {
     });
   });
 
+  it('모델이 선언한 Messages 형식을 프로필 기본 Chat보다 우선한다', async () => {
+    const settings = createCanonicalSettings();
+    const profile = settings.providerProfiles[0];
+    if (!profile) throw new Error('테스트 프로필이 없습니다');
+    profile.baseUrl = 'https://api.commandcode.ai/provider/v1';
+    profile.apiFormat = 'chat';
+    profile.models[0].supportedApiFormats = ['messages'];
+    vi.mocked(requestUrl).mockReset().mockResolvedValueOnce({
+      status: 200,
+      text: '',
+      json: { content: [{ type: 'text', text: 'ok' }] },
+      headers: {},
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const resolved = createChatProviderForModel(settings, 'profile:remote:working');
+    if (!resolved) throw new Error('provider가 연결되지 않았습니다');
+    await resolved.provider.chat([{ role: 'user', content: 'hello' }]);
+    const request = vi.mocked(requestUrl).mock.calls.at(-1)?.[0];
+    if (!request || typeof request === 'string') throw new Error('요청이 없습니다');
+    expect(request.url).toBe('https://api.commandcode.ai/provider/v1/messages');
+  });
+
   it('저장된 provider와 model을 canonical ref로 다시 조립한다', () => {
     expect(buildStoredChatModelRef('profile:remote', 'working')).toBe('profile:remote:working');
     expect(buildStoredChatModelRef('', 'working')).toBe('');

@@ -27,6 +27,8 @@ import type { ToolCallRecord } from './types';
 const strategies: ProviderStrategyKey[] = [
   'openai',
   'openAIChatGPT',
+  'opencode',
+  'gemini',
   'claude',
   'ollama',
   'ollamaCloud',
@@ -72,9 +74,15 @@ function respond(text: string, status = 200, json: unknown = {}) {
 }
 
 function responseText(strategy: ProviderStrategyKey, text: string) {
-  if (strategy === 'openAIChatGPT') {
+  if (strategy === 'openAIChatGPT' || strategy === 'opencode') {
     respond(
       completedChatGPTResponse([{ type: 'message', content: [{ type: 'output_text', text }] }]),
+    );
+  } else if (strategy === 'gemini') {
+    respond(
+      `data: ${JSON.stringify({
+        candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }],
+      })}\n\n`,
     );
   } else if (strategy === 'claude') {
     respond(
@@ -91,7 +99,7 @@ function responseText(strategy: ProviderStrategyKey, text: string) {
 }
 
 function responseCall(strategy: ProviderStrategyKey) {
-  if (strategy === 'openAIChatGPT') {
+  if (strategy === 'openAIChatGPT' || strategy === 'opencode') {
     respond(
       completedChatGPTResponse([
         {
@@ -101,6 +109,21 @@ function responseCall(strategy: ProviderStrategyKey) {
           arguments: '{"project":"alpha"}',
         },
       ]),
+    );
+  } else if (strategy === 'gemini') {
+    respond(
+      `data: ${JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                { functionCall: { name: 'read_plan', args: { project: 'alpha' } } },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+      })}\n\n`,
     );
   } else if (strategy === 'claude') {
     respond(
@@ -306,10 +329,12 @@ describe.each(strategies)('도구 계약 점수: %s', (strategy) => {
   });
 
   it('10 provider 오류를 정상 완료로 삼키지 않고 복구 계층에 전달한다', async () => {
-    if (strategy === 'openAIChatGPT') {
+    if (strategy === 'openAIChatGPT' || strategy === 'opencode') {
       respond(
         'data: {"type":"response.failed","response":{"status":"failed","error":{"message":"failed"}}}\n\n',
       );
+    } else if (strategy === 'gemini') {
+      respond('data: {"error":{"message":"failed"}}\n\n');
     } else if (strategy === 'claude') {
       respond(
         'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',

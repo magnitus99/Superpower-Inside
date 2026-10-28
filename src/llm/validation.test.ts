@@ -1,4 +1,5 @@
 import { connectTestChatGPT, completedChatGPTResponse } from '../test/chatgpt';
+import { connectTestGemini } from '../test/gemini';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLanguage } from '../i18n';
 import type { ProviderConfig } from '../settings';
@@ -665,5 +666,176 @@ describe('provider validation', () => {
         throw: false,
       }),
     );
+  });
+
+  it('OpenCode 모델 목록과 형식별 생성 테스트 endpoint를 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { object: 'list', data: [{ id: 'gpt-synthetic', object: 'model' }] },
+    });
+    const config = { ...baseConfig, baseUrl: 'https://opencode.ai/inference' };
+    expect(await fetchProviderModelsForStrategy('opencode', config)).toMatchObject({
+      valid: true,
+      models: ['gpt-synthetic'],
+    });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      url: 'https://opencode.ai/inference/v1/models',
+    });
+
+    requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
+    await testProviderGenerationForStrategy(
+      'opencode',
+      { ...config, apiFormat: 'responses' },
+      'gpt-synthetic',
+    );
+    expect(requestUrlMock.mock.calls[1]?.[0]).toMatchObject({
+      url: 'https://opencode.ai/inference/openai/v1/responses',
+    });
+
+    requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
+    await testProviderGenerationForStrategy(
+      'opencode',
+      { ...config, apiFormat: 'messages' },
+      'claude-synthetic',
+    );
+    expect(requestUrlMock.mock.calls[2]?.[0]).toMatchObject({
+      url: 'https://opencode.ai/inference/anthropic/v1/messages',
+    });
+  });
+
+  it('Custom endpoint는 선택한 Responses·Messages·Gemini 경로를 검증한다', async () => {
+    const config = {
+      ...baseConfig,
+      baseUrl: 'https://api.commandcode.ai/provider/v1/messages',
+      apiFormat: 'responses' as const,
+    };
+    requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
+    await testProviderGenerationForStrategy('openAICompatible', config, 'gpt-synthetic');
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      url: 'https://api.commandcode.ai/provider/v1/responses',
+    });
+
+    requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
+    await testProviderGenerationForStrategy(
+      'openAICompatible',
+      { ...config, apiFormat: 'messages' },
+      'claude-synthetic',
+    );
+    const messageRequest = requestUrlMock.mock.calls[1]?.[0] as
+      | { url?: string; headers?: Record<string, string> }
+      | undefined;
+    expect(messageRequest?.url).toBe('https://api.commandcode.ai/provider/v1/messages');
+    expect(messageRequest?.headers).toMatchObject({
+      Authorization: 'Bearer stored-key',
+      'x-api-key': 'stored-key',
+    });
+
+    requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
+    await testProviderGenerationForStrategy(
+      'openAICompatible',
+      { ...config, apiFormat: 'gemini', baseUrl: 'https://gemini.example/v1beta' },
+      'gemini-synthetic',
+    );
+    expect(requestUrlMock.mock.calls[2]?.[0]).toMatchObject({
+      url: 'https://gemini.example/v1beta/models/gemini-synthetic:generateContent',
+    });
+  });
+
+  it('Gemini API 키 모델 목록과 GenerateContent 테스트를 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: {
+        models: [
+          {
+            name: 'models/gemini-test',
+            displayName: 'Gemini Test',
+            inputTokenLimit: 1000,
+            outputTokenLimit: 100,
+          },
+        ],
+      },
+    });
+    const config = { ...baseConfig, geminiAuthMode: 'apiKey' as const };
+    const models = await fetchProviderModelsForStrategy('gemini', config);
+    expect(models).toMatchObject({
+      valid: true,
+      models: ['gemini-test'],
+      modelDetails: [{ id: 'gemini-test', contextLength: 1000, maxOutputTokens: 100 }],
+    });
+    const modelsRequest = requestUrlMock.mock.calls[0]?.[0] as
+      | { url?: string; headers?: Record<string, string> }
+      | undefined;
+    expect(modelsRequest?.url).toBe('https://generativelanguage.googleapis.com/v1beta/models');
+    expect(modelsRequest?.headers).toMatchObject({ 'x-goog-api-key': 'stored-key' });
+
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      text: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'pong' }] } }],
+      }),
+      json: {},
+    });
+    expect(
+      await testProviderGenerationForStrategy('gemini', config, 'gemini-test'),
+    ).toMatchObject({ valid: true, models: ['gemini-test'] });
+    expect(requestUrlMock.mock.calls[1]?.[0]).toMatchObject({
+      url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-test:generateContent',
+    });
+  });
+
+  it('OpenAI·Claude·Gemini 검증도 편집한 base URL을 사용한다', async () => {
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { data: [{ id: 'model' }] },
+    });
+    await fetchProviderModels('openai', {
+      ...baseConfig,
+      baseUrl: 'https://openai-proxy.example',
+    });
+    expect(requestUrlMock.mock.calls[0]?.[0]).toMatchObject({
+      url: 'https://openai-proxy.example/v1/models',
+    });
+
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { id: 'claude-test', max_input_tokens: 1000 },
+    });
+    await fetchAnthropicModelInfo(
+      { ...baseConfig, baseUrl: 'https://claude-proxy.example' },
+      'claude-test',
+    );
+    expect(requestUrlMock.mock.calls[1]?.[0]).toMatchObject({
+      url: 'https://claude-proxy.example/v1/models/claude-test',
+    });
+
+    requestUrlMock.mockResolvedValueOnce({ status: 200, json: {} });
+    await testProviderGenerationForStrategy(
+      'gemini',
+      { ...baseConfig, baseUrl: 'https://gemini.example/v1beta' },
+      'gemini-test',
+    );
+    expect(requestUrlMock.mock.calls[2]?.[0]).toMatchObject({
+      url: 'https://gemini.example/v1beta/models/gemini-test:generateContent',
+    });
+  });
+
+  it('Gemini OAuth 모델 목록은 Bearer 인증을 사용한다', async () => {
+    connectTestGemini('gemini-profile');
+    requestUrlMock.mockResolvedValueOnce({
+      status: 200,
+      json: { models: [{ name: 'models/gemini-test', inputTokenLimit: 1000 }] },
+    });
+    const result = await fetchProviderModelsForStrategy('gemini', {
+      ...baseConfig,
+      id: 'gemini-profile',
+      geminiAuthMode: 'oauth',
+    });
+    expect(result).toMatchObject({ valid: true, models: ['gemini-test'] });
+    const oauthModelsRequest = requestUrlMock.mock.calls[0]?.[0] as
+      | { headers?: Record<string, string> }
+      | undefined;
+    expect(oauthModelsRequest?.headers).toMatchObject({
+      Authorization: 'Bearer gemini-access',
+    });
   });
 });
