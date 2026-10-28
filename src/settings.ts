@@ -1094,6 +1094,7 @@ export interface PluginLike {
     lastInitSkippedReason: string | null;
     initRunning: boolean;
     lastInitStartedAt: number | null;
+    autoRecoveryPausedByUser?: boolean;
   };
   saveSettings(options?: { reinitRag?: boolean; reinitMcp?: boolean }): Promise<{
     success: boolean;
@@ -1112,7 +1113,8 @@ export interface PluginLike {
   getRetrievalReadiness(): ChatRetrievalReadiness;
   getRagIndexingProgressSummary?(): import('./rag/indexing-progress').RagIndexingProgressSummary | null;
   getSearchStatusSnapshot?(): import('./rag/search-status').SearchStatusSnapshot;
-  cancelRagIndexing(): void;
+  cancelRagIndexing(options?: { byUser?: boolean }): void;
+  resumeRagAutoRecovery(): void;
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;
   resumeRagIndexing(): boolean;
   getRagPerformanceGuardState(): PerformanceGuardState | null;
@@ -4223,6 +4225,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               return { status: 'noop', detail: t('ragAutoUpdateAlreadyRunning') };
             }
             const scheduler = latestRuntime.ragIndexingScheduler;
+            this.plugin.resumeRagAutoRecovery();
             const signal = scheduler.beginPreparation();
             try {
               const status = await this.getRagStatus(signal);
@@ -4289,6 +4292,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               return { status: 'noop', detail: t('ragAutoUpdateAlreadyRunning') };
             }
             const scheduler = latestRuntime.ragIndexingScheduler;
+            this.plugin.resumeRagAutoRecovery();
             const signal = scheduler.beginPreparation();
             try {
               const status = await this.getRagStatus(signal);
@@ -4337,7 +4341,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             if (!this.plugin.isRagIndexing()) {
               return { status: 'noop', detail: t('ragNoRunningIndexing') };
             }
-            this.plugin.cancelRagIndexing();
+            this.plugin.cancelRagIndexing({ byUser: true });
             this.updateRagStats();
             return { status: 'success', detail: t('ragIndexCancelRequestedNotice') };
           },
@@ -4353,10 +4357,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           refreshBus: this.plugin.refreshBus,
           refreshDomains: ['rag'],
           action: () => {
-            if (this.plugin.getRagPerformanceGuardState()?.mode !== 'paused') {
+            const guardPaused = this.plugin.getRagPerformanceGuardState()?.mode === 'paused';
+            const userPaused =
+              this.plugin.getRagRuntimeState().autoRecoveryPausedByUser === true;
+            if (!guardPaused && !userPaused) {
               return { status: 'noop', detail: t('ragNotPerformancePaused') };
             }
-            if (!this.plugin.resumeRagIndexing()) {
+            const resumed = this.plugin.resumeRagIndexing();
+            if (!resumed && guardPaused) {
               return { status: 'error', detail: t('ragNotPerformancePaused') };
             }
             this.updateRagStats();
@@ -4384,6 +4392,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             if (!(await confirmWithModal(this.app, t('settingsAuto177')))) {
               return { status: 'noop', detail: t('actionCancelledNotice') };
             }
+            this.plugin.resumeRagAutoRecovery();
             try {
               const latestRuntime = this.getRagRuntimeAccess();
               if (latestRuntime.vectorStore) {
@@ -4417,6 +4426,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       updateRequiredCount: status?.updateRequiredDocuments.length ?? null,
       guardMode: this.plugin.getRagPerformanceGuardState()?.mode ?? null,
       guardRemainingPauseMs: this.plugin.getRagPerformanceGuardState()?.remainingPauseMs ?? null,
+      autoRecoveryPausedByUser: runtime.autoRecoveryPausedByUser === true,
     });
     this.applyButtonState(this.updatePendingButton, state.updatePending);
     this.applyButtonState(this.reindexAllButton, state.reindexAll);
@@ -4434,7 +4444,11 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     const firstReason = state.updatePending.reason ?? state.reindexAll.reason;
     if (this.ragControlsHint) {
-      this.ragControlsHint.setText(firstReason ?? t('settingsAuto180'));
+      this.ragControlsHint.setText(
+        runtime.autoRecoveryPausedByUser
+          ? t('ragAutoRecoveryPausedByUser')
+          : (firstReason ?? t('settingsAuto180')),
+      );
     }
   }
   private applyButtonState(

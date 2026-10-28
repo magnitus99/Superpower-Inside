@@ -299,6 +299,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private vaultIndexer: VaultIndexer | null = null;
   private ragIndexingScheduler: RAGIndexingScheduler | null = null;
   private automaticRagRecovery: AutomaticRagRecoveryCoordinator | null = null;
+  /** 사용자가 색인을 중단한 동안에는 런타임 재초기화 뒤에도 자동 복구를 다시 시작하지 않습니다. */
+  private ragAutoRecoveryPausedByUser = false;
   private ragPerformanceGuard: PerformanceGuard | null = null;
   ragIndexingStatus: RagIndexingSchedulerStatus | null = null;
   private bm25RecoveryAttempts = 0;
@@ -416,6 +418,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           return;
         }
         if (this.isRagIndexing()) return;
+        this.resumeRagAutoRecovery();
         const scheduler = this.ragIndexingScheduler;
         const signal = scheduler?.beginPreparation();
         try {
@@ -650,10 +653,26 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
   }
 
-  cancelRagIndexing(): void {
+  cancelRagIndexing(options: { byUser?: boolean } = {}): void {
+    if (options.byUser === true) this.ragAutoRecoveryPausedByUser = true;
     this.automaticRagRecovery?.suspend();
     this.ragIndexAbortController?.abort();
     this.ragIndexingScheduler?.cancel();
+  }
+
+  /** 명시적 재색인·재개에서만 사용자 중단으로 멈춘 자동 복구를 다시 시작합니다. */
+  resumeRagAutoRecovery(): void {
+    this.ragAutoRecoveryPausedByUser = false;
+    this.automaticRagRecovery?.resume();
+  }
+
+  /** 사용자 중단 상태를 유지한 채 새 런타임의 자동 복구를 시작할지 결정합니다. */
+  private async startAutomaticRagRecovery(): Promise<void> {
+    if (this.ragAutoRecoveryPausedByUser) {
+      this.automaticRagRecovery?.suspend();
+      return;
+    }
+    await this.automaticRagRecovery?.start();
   }
 
   async deleteLocalEmbeddingModel(modelId: LocalEmbeddingModelId): Promise<void> {
@@ -678,6 +697,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   }
 
   resumeRagIndexing(): boolean {
+    this.resumeRagAutoRecovery();
     const resumed = this.ragIndexingScheduler?.resumeNow() ?? false;
     if (resumed) {
       this.refreshBus?.emit('rag', {
@@ -1254,6 +1274,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       lastInitError: this.lastRagRuntimeInitError,
       lastInitSkippedReason: this.lastRagRuntimeInitSkippedReason,
       initRunning: this.ragRuntimeInitRunner?.isRunning() ?? false,
+      autoRecoveryPausedByUser: this.ragAutoRecoveryPausedByUser,
       lastInitStage: this.lastRagRuntimeInitStage,
       lastInitStartedAt: this.lastRagRuntimeInitStartedAt,
       lastInitFinishedAt: this.lastRagRuntimeInitFinishedAt,
@@ -1727,7 +1748,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.setupRagStatusTimer();
     if (this.ragIndexingScheduler) this.registerRAGEvents();
     else this.registerLexicalRAGEvents(this.bm25Index ?? undefined);
-    this.automaticRagRecovery?.resume();
+    if (!this.ragAutoRecoveryPausedByUser) this.automaticRagRecovery?.resume();
     this.refreshBus?.emit('rag', {
       status: 'success',
       detail: this.ragIndexingStatus
@@ -2247,7 +2268,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       // 초기 상태 계산 이후에는 vault 이벤트가 상태 갱신을 유도한다.
       this.setupRagStatusTimer();
       this.registerRAGEvents();
-      await this.automaticRagRecovery.start();
+      await this.startAutomaticRagRecovery();
       requireCurrentRun();
       this.getLogger().info('RAG runtime initialization completed.', {
         source: 'rag',
@@ -2354,7 +2375,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       detail: this.formatRagIndexingStatus(status),
     });
     if (wasRunning && !status.running) {
-      if (status.lastResult && status.lastResult !== previousResult) {
+      if (
+        !this.ragAutoRecoveryPausedByUser &&
+        status.lastResult &&
+        status.lastResult !== previousResult
+      ) {
         this.automaticRagRecovery?.resume();
       }
       this.debouncedRefreshStats();

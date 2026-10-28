@@ -89,6 +89,83 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     },
   );
 
+  it('사용자 중단은 런타임 재초기화 뒤에도 자동 복구를 시작하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const start = vi.fn(() => Promise.resolve());
+    const suspend = vi.fn();
+    const runtime = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(runtime, {
+      ragAutoRecoveryPausedByUser: true,
+      automaticRagRecovery: { start, suspend },
+    });
+    const restart = runtime as unknown as { startAutomaticRagRecovery(): Promise<void> };
+    await restart.startAutomaticRagRecovery();
+    expect(start).not.toHaveBeenCalled();
+    expect(suspend).toHaveBeenCalledOnce();
+    Object.assign(runtime, { ragAutoRecoveryPausedByUser: false });
+    await restart.startAutomaticRagRecovery();
+    expect(start).toHaveBeenCalledOnce();
+  });
+
+  it('명시적 재개는 사용자 중단을 풀고 자동 복구를 다시 시작한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const resume = vi.fn();
+    const runtime = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(runtime, {
+      ragAutoRecoveryPausedByUser: true,
+      automaticRagRecovery: { resume },
+      ragIndexingScheduler: { resumeNow: () => false },
+      refreshBus: { emit: vi.fn() },
+    });
+    expect(runtime.resumeRagIndexing()).toBe(false);
+    expect(
+      (runtime as unknown as { ragAutoRecoveryPausedByUser: boolean }).ragAutoRecoveryPausedByUser,
+    ).toBe(false);
+    expect(resume).toHaveBeenCalledOnce();
+  });
+
+  it('사용자 중단은 자동 복구를 멈추고 완료된 색인으로 재개하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const resume = vi.fn();
+    const runtime = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(runtime, {
+      ragAutoRecoveryPausedByUser: true,
+      ragIndexingStatus: { running: true, lastResult: { indexed: 1, vectors: 1 } },
+      automaticRagRecovery: { resume },
+      getLogger: () => ({ debug: vi.fn() }),
+      refreshBus: { emit: vi.fn() },
+      debouncedRefreshStats: vi.fn(),
+    });
+    (
+      runtime as unknown as { handleRagIndexingStatusChange(status: object): void }
+    ).handleRagIndexingStatusChange({
+      running: false,
+      phase: 'idle',
+      queuedFiles: 0,
+      progress: null,
+      lastResult: { indexed: 2, vectors: 2 },
+    });
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('사용자 중단 버튼은 자동 복구 일시정지를 기록한다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const suspend = vi.fn();
+    const cancel = vi.fn();
+    const runtime = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(runtime, {
+      automaticRagRecovery: { suspend },
+      ragIndexingScheduler: { cancel },
+      ragIndexAbortController: null,
+    });
+    runtime.cancelRagIndexing({ byUser: true });
+    expect(
+      (runtime as unknown as { ragAutoRecoveryPausedByUser: boolean }).ragAutoRecoveryPausedByUser,
+    ).toBe(true);
+    expect(suspend).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it('자동 인덱싱 준비 중 취소하면 늦은 상태 계산 뒤 작업을 시작하지 않는다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');

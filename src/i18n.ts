@@ -1426,6 +1426,7 @@ export interface I18nKeys {
   ragIndexResumeRequestedNotice: string;
   ragNoRunningIndexing: string;
   ragNotPerformancePaused: string;
+  ragAutoRecoveryPausedByUser: string;
   embeddingDimensionsLabel: string;
   embeddingProviderModelDesc: string;
   embeddingCurrentLabel: string;
@@ -3350,6 +3351,8 @@ const ko: I18nKeys = {
   ragIndexResumeRequestedNotice: '인덱싱을 재개했습니다.',
   ragNoRunningIndexing: '실행 중인 인덱싱이 없습니다.',
   ragNotPerformancePaused: '성능 보호 대기 상태가 아닙니다.',
+  ragAutoRecoveryPausedByUser:
+    '사용자 중단으로 자동 복구가 멈춰 있습니다. 지금 재개를 누르면 다시 시작합니다.',
   embeddingDimensionsLabel: '{name} ({dimensions}차원)',
   embeddingProviderModelDesc: 'Providers 탭의 모델 목록에서 가져온 임베딩 모델입니다.',
   embeddingCurrentLabel: '{model} (현재 선택됨)',
@@ -5411,6 +5414,8 @@ const en: I18nKeys = {
   ragIndexResumeRequestedNotice: 'Indexing resumed.',
   ragNoRunningIndexing: 'No indexing job is running.',
   ragNotPerformancePaused: 'Performance guard is not paused.',
+  ragAutoRecoveryPausedByUser:
+    'Automatic recovery is paused after a user stop. Choose Resume now to start it again.',
   embeddingDimensionsLabel: '{name} ({dimensions} dimensions)',
   embeddingProviderModelDesc: 'Embedding model from the Providers tab model list.',
   embeddingCurrentLabel: '{model} (currently selected)',

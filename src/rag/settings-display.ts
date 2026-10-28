@@ -74,6 +74,8 @@ export interface RagIndexingControlStateInput {
   updateRequiredCount: number | null;
   guardMode: PerformanceGuardMode | null;
   guardRemainingPauseMs: number | null;
+  /** 사용자가 색인을 중단해 자동 복구까지 멈춘 상태입니다. */
+  autoRecoveryPausedByUser?: boolean;
 }
 
 export interface RagIndexingButtonState {
@@ -176,7 +178,11 @@ export function getRagIndexingControlState(
     updatePending: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noUpdatesReason),
     reindexAll: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noDocumentsReason),
     cancel: toButtonState(input.isIndexing ? null : t('ragNoRunningIndexing')),
-    resume: toButtonState(input.guardMode === 'paused' ? null : t('ragNotPerformancePaused')),
+    resume: toButtonState(
+      input.guardMode === 'paused' || input.autoRecoveryPausedByUser === true
+        ? null
+        : t('ragNotPerformancePaused'),
+    ),
     reset: toButtonState(runningReason),
   };
 }

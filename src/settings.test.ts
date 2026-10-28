@@ -1112,6 +1112,21 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(state.reindexAll.reason).toBeNull();
   });
 
+  it('사용자 중단 뒤에는 성능 보호 일시정지가 아니어도 재개를 제공한다', () => {
+    const state = getRagIndexingControlState({
+      hasIndexer: true,
+      isIndexing: false,
+      totalDocuments: 10,
+      updateRequiredCount: 1,
+      guardMode: null,
+      guardRemainingPauseMs: null,
+      autoRecoveryPausedByUser: true,
+    });
+
+    expect(state.resume.disabled).toBe(false);
+    expect(state.cancel.disabled).toBe(true);
+  });
+
   it('keeps recovery available when a paused guard has no usable deadline', () => {
     const state = getRagIndexingControlState({
       hasIndexer: true,
