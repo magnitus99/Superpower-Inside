@@ -659,7 +659,13 @@ export class SearchView extends ItemView {
       this.noteStatusSnapshot(current);
       if (current.readiness === 'degraded') {
         this.pendingSearch = null;
-        this.setStatusText(t('searchStatusUnavailable'), true);
+        // 확인된 제한은 이미 색인된 문서 범위의 결과를 계속 보여 줍니다.
+        // 응답 자체가 없을 때만 사용 불가로 닫습니다.
+        if (!response) {
+          this.renderUnavailable();
+          return;
+        }
+        this.renderResponse(response);
         return;
       }
       // 준비가 다시 시작됐거나 색인 세대가 달라진 결과는 게시하지 않고 대기로 돌립니다.

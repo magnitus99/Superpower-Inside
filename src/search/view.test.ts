@@ -676,6 +676,27 @@ describe('검색 화면 구조', () => {
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
   });
 
+  it('확인된 제한 상태의 검색 결과를 색인 범위로 표시한다', async () => {
+    const port = vi.fn(() => Promise.resolve(response([evidence()])));
+    const harness = createHarness({
+      port,
+      totalDocuments: 10,
+      readiness: 'degraded',
+    });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const input = root.querySelector('input');
+    if (input) input.value = 'quartz';
+    root.querySelector('form')?.dispatchEvent('submit');
+    await flush();
+
+    expect(port).toHaveBeenCalledOnce();
+    expect(root.querySelectorAll('.superpower-inside-search-passage')).toHaveLength(1);
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusResults', { count: 1, documents: 1 }),
+    );
+  });
+
   it('색인 현황이 아직 없으면 색인 없음으로 안내한다', async () => {
     const harness = createHarness({ port: null, readiness: 'ready' });
     await harness.view.onOpen();

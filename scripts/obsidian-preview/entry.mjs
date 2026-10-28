@@ -171,9 +171,14 @@ async function start() {
     }),
     isRagIndexing: () => params.has('indexing'),
     // 검색 화면은 색인 상태 스냅샷을 직접 받습니다.
+    // ?readiness=preparing|degraded와 ?docs=N 조합으로 준비·제한 화면을 검수합니다.
     getSearchStatusSnapshot: () => ({
-      readiness: params.has('noindex') ? 'empty' : 'ready',
-      keywordIndex: params.has('noindex') ? 'empty' : 'ready',
+      readiness: params.has('noindex')
+        ? 'ready'
+        : params.get('readiness') === 'preparing' || params.get('readiness') === 'degraded'
+          ? params.get('readiness')
+          : 'ready',
+      keywordIndex: params.has('noindex') ? 'unavailable' : 'ready',
       ragStatus: params.has('noindex')
         ? null
         : {

@@ -4225,7 +4225,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               return { status: 'noop', detail: t('ragAutoUpdateAlreadyRunning') };
             }
             const scheduler = latestRuntime.ragIndexingScheduler;
-            this.plugin.resumeRagAutoRecovery();
+            this.plugin.resumeRagAutoRecovery?.();
             const signal = scheduler.beginPreparation();
             try {
               const status = await this.getRagStatus(signal);
@@ -4292,7 +4292,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
               return { status: 'noop', detail: t('ragAutoUpdateAlreadyRunning') };
             }
             const scheduler = latestRuntime.ragIndexingScheduler;
-            this.plugin.resumeRagAutoRecovery();
+            this.plugin.resumeRagAutoRecovery?.();
             const signal = scheduler.beginPreparation();
             try {
               const status = await this.getRagStatus(signal);
@@ -4392,7 +4392,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
             if (!(await confirmWithModal(this.app, t('settingsAuto177')))) {
               return { status: 'noop', detail: t('actionCancelledNotice') };
             }
-            this.plugin.resumeRagAutoRecovery();
+            this.plugin.resumeRagAutoRecovery?.();
             try {
               const latestRuntime = this.getRagRuntimeAccess();
               if (latestRuntime.vectorStore) {
