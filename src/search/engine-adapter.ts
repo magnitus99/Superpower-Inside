@@ -165,7 +165,7 @@ function currentVerificationWindow(
   };
 }
 
-/** 화면 검색도 답변과 같은 최신 원문·절대 행·revision 경계를 통과시킵니다. */
+/** 현재 원문 검증이 켜진 경로에서 원문·절대 행·revision 경계를 확인합니다. 검색 화면은 verifyCurrentSource: false로 이 함수를 건너뛰고 revision 대조만 합니다. */
 async function keepCurrentSourceEvidence(
   evidence: readonly IndexedEvidenceItem[],
   reader: NonNullable<IndexedSearchSource['sourceReader']>,
