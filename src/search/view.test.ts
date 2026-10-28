@@ -363,7 +363,7 @@ describe('검색 화면 구조', () => {
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
   });
 
-  it('색인 중이면 문서 범위를 보여 주고 검색 실행을 막는다', async () => {
+  it('색인 중이면 문서 범위를 보여 주고 대기 등록 제출 경로를 연다', async () => {
     const harness = createHarness({
       port: null,
       readiness: 'preparing',
@@ -382,10 +382,11 @@ describe('검색 화면 구조', () => {
 
     expect(index?.textContent).toBe(t('searchIndexProgress', { completed: 2, total: 5 }));
     expect(index?.textContent).toContain('2/5');
-    expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
+    // 버튼을 비활성화하면 브라우저의 Enter 암시 제출도 막히므로 대기 등록은 허용합니다.
+    expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
   });
 
-  it('준비 중에는 키워드 색인만 남아도 부분 색인 검색을 막는다', async () => {
+  it('준비 중에는 키워드 색인만 남아도 부분 색인 검색을 막고 대기 등록은 받는다', async () => {
     const harness = createHarness({
       port: null,
       totalDocuments: 10,
@@ -406,8 +407,8 @@ describe('검색 화면 구조', () => {
 
     expect(index?.textContent).toContain(t('chatReadinessRagIndexing'));
     expect(index?.textContent).toContain('1200');
-    // 부분 색인을 정상 결과로 쓰지 않도록 준비가 끝날 때까지 실행하지 않습니다.
-    expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
+    // 부분 색인을 정상 결과로 쓰지 않지만, 질의를 대기 등록할 수 있도록 제출은 엽니다.
+    expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
   });
 
   it('준비 중 Enter 제출은 질의를 보존하고 준비가 끝나면 한 번 재개한다', async () => {
@@ -430,6 +431,8 @@ describe('검색 화면 구조', () => {
     const root = contentOf(harness.view);
     const input = root.querySelector('input');
     if (input) input.value = 'quartz';
+    // 실제 Enter 암시 제출이 동작하도록 실행 버튼이 비활성화되지 않아야 합니다.
+    expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
     root.querySelector('form')?.dispatchEvent('submit');
     await flush();
 
@@ -525,6 +528,137 @@ describe('검색 화면 구조', () => {
     expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
       t('searchStatusResults', { count: 1, documents: 1 }),
     );
+  });
+
+  it('준비 전환이 첫 응답보다 먼저 끝나도 ready에서 즉시 한 번 재개한다', async () => {
+    let resolveFirst!: (value: SearchResponse) => void;
+    const first = new Promise<SearchResponse>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const port = vi
+      .fn<SearchPort>()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => Promise.resolve(response([evidence()])));
+    const harness = createHarness({ port, totalDocuments: 10 });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const input = root.querySelector('input');
+    if (input) input.value = 'quartz';
+    root.querySelector('form')?.dispatchEvent('submit');
+    await flush();
+    expect(port).toHaveBeenCalledTimes(1);
+
+    harness.setReadiness('preparing', {
+      phase: 'file',
+      completedFiles: 1,
+      totalFiles: 4,
+      currentFileEmbeddedChunks: null,
+      currentFileTotalChunks: null,
+      etaRemainingMs: null,
+    });
+    await flush();
+    // 첫 응답이 오기 전에 다시 ready가 되어도 즉시 재개할 수 있어야 합니다.
+    harness.setReadiness('ready');
+    await flush();
+    expect(port).toHaveBeenCalledTimes(1);
+
+    resolveFirst(response([evidence()]));
+    await flush();
+
+    expect(port).toHaveBeenCalledTimes(2);
+    expect(root.querySelectorAll('.superpower-inside-search-passage')).toHaveLength(1);
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusResults', { count: 1, documents: 1 }),
+    );
+  });
+
+  it('검색 중 대기 등록은 이전 실행을 취소해 늦은 응답이 새 대기를 덮지 않는다', async () => {
+    let resolveFirst!: (value: SearchResponse) => void;
+    const first = new Promise<SearchResponse>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const port = vi
+      .fn<SearchPort>()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => Promise.resolve(response([evidence()])));
+    const harness = createHarness({ port, totalDocuments: 10 });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const input = root.querySelector('input');
+    if (input) input.value = 'first query';
+    root.querySelector('form')?.dispatchEvent('submit');
+    await flush();
+    expect(port).toHaveBeenCalledTimes(1);
+
+    harness.setReadiness('preparing', {
+      phase: 'file',
+      completedFiles: 1,
+      totalFiles: 4,
+      currentFileEmbeddedChunks: null,
+      currentFileTotalChunks: null,
+      etaRemainingMs: null,
+    });
+    await flush();
+    if (input) input.value = 'second query';
+    root.querySelector('form')?.dispatchEvent('submit');
+    await flush();
+    expect(port).toHaveBeenCalledTimes(1);
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusWaitingForIndex'),
+    );
+
+    // 취소된 첫 실행의 늦은 응답이 두 번째 대기를 지우거나 게시하지 않아야 합니다.
+    resolveFirst(response([evidence()]));
+    await flush();
+    expect(input?.value).toBe('second query');
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusWaitingForIndex'),
+    );
+
+    harness.setReadiness('ready');
+    await flush();
+
+    expect(port).toHaveBeenCalledTimes(2);
+    expect(root.querySelectorAll('.superpower-inside-search-passage')).toHaveLength(1);
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusResults', { count: 1, documents: 1 }),
+    );
+  });
+
+  it('준비 대기 중 degraded가 되면 pending을 버리고 종료 상태를 표시한다', async () => {
+    const port = vi.fn(() => Promise.resolve(response([evidence()])));
+    const harness = createHarness({
+      port,
+      totalDocuments: 10,
+      readiness: 'preparing',
+      indexing: {
+        phase: 'preparing',
+        completedFiles: 0,
+        totalFiles: 0,
+        currentFileEmbeddedChunks: null,
+        currentFileTotalChunks: null,
+        etaRemainingMs: null,
+      },
+    });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const input = root.querySelector('input');
+    if (input) input.value = 'quartz';
+    root.querySelector('form')?.dispatchEvent('submit');
+    await flush();
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusWaitingForIndex'),
+    );
+
+    harness.setReadiness('degraded');
+    await flush();
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusUnavailable'),
+    );
+
+    harness.setReadiness('ready');
+    await flush();
+    expect(port).not.toHaveBeenCalled();
   });
 
   it('확인된 제한 상태에서는 색인된 문서 범위로 검색을 허용한다', async () => {

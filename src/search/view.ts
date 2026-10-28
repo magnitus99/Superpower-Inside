@@ -356,18 +356,22 @@ export class SearchView extends ItemView {
               total: indexing.totalFiles,
             }),
       );
-      this.setRunEnabled(false);
+      // 진행 중에도 질의를 대기 등록할 수 있도록 제출 경로를 열어 둡니다.
+      this.setRunEnabled(true);
       return;
     }
     if (snapshot.readiness !== 'ready') {
       // 준비 중에는 부분 색인을 결과 근거로 쓰지 않습니다. 확인된 제한(degraded)만
-      // 이미 색인된 문서 범위에서 검색을 허용합니다.
+      // 이미 색인된 문서 범위에서 검색을 허용하고, preparing은 대기 등록을 받습니다.
       const description = describeSearchStatus(snapshot);
       el.setText(
         description.detail ? `${description.label} · ${description.detail}` : description.label,
       );
       el.addClass(WARNING_CLASS);
-      this.setRunEnabled(snapshot.readiness === 'degraded' && hasDocuments);
+      this.setRunEnabled(
+        snapshot.readiness === 'preparing' ||
+          (snapshot.readiness === 'degraded' && hasDocuments),
+      );
       return;
     }
     if (!status) {
@@ -579,9 +583,21 @@ export class SearchView extends ItemView {
   /** 준비가 끝나면 보존한 검색을 한 번만 이어갑니다. */
   private handleRagRefresh(): void {
     this.renderIndexState();
+    this.resumePendingSearch();
+  }
+
+  /** 공통 재개 경로: ready에서 한 번 실행하고, degraded·실패에서는 대기를 버립니다. */
+  private resumePendingSearch(): void {
     const pending = this.pendingSearch;
-    if (!pending?.autoResume) return;
-    if (this.host.getSearchStatusSnapshot().readiness !== 'ready') return;
+    if (!pending) return;
+    const readiness = this.host.getSearchStatusSnapshot().readiness;
+    if (readiness === 'degraded') {
+      this.pendingSearch = null;
+      this.setStatusText(t('searchStatusUnavailable'), true);
+      return;
+    }
+    if (!pending.autoResume) return;
+    if (readiness !== 'ready') return;
     this.pendingSearch = null;
     if (this.queryInput) this.queryInput.value = pending.query;
     void this.executeSearch(pending.query, pending.filters, { allowAutoResume: false });
@@ -605,9 +621,9 @@ export class SearchView extends ItemView {
       return;
     }
     const filters = this.readFilters();
-    // 버튼 비활성화를 우회한 Enter 제출도 준비 중에는 질의를 보존하고
-    // 준비가 끝난 뒤 한 번 자동으로 이어갑니다.
+    // 준비 중 제출은 이전 실행을 먼저 취소해 늦은 응답이 새 대기를 덮지 않게 합니다.
     if (this.host.getSearchStatusSnapshot().readiness === 'preparing') {
+      this.cancelRun();
       this.pendingSearch = { query, filters, autoResume: true };
       this.renderIndexState();
       this.setStatusText(t('searchStatusWaitingForIndex'), false);
@@ -641,10 +657,20 @@ export class SearchView extends ItemView {
       this.setRunning(false);
       const current = this.host.getSearchStatusSnapshot();
       this.noteStatusSnapshot(current);
+      if (current.readiness === 'degraded') {
+        this.pendingSearch = null;
+        this.setStatusText(t('searchStatusUnavailable'), true);
+        return;
+      }
       // 준비가 다시 시작됐거나 색인 세대가 달라진 결과는 게시하지 않고 대기로 돌립니다.
       if (current.readiness === 'preparing' || this.indexEpoch !== startEpoch) {
         this.pendingSearch = { query, filters, autoResume: options.allowAutoResume };
         this.renderIndexState();
+        if (current.readiness === 'ready' && options.allowAutoResume) {
+          // ready 이벤트가 이미 지나갔어도 남은 한 번의 재개를 즉시 시작합니다.
+          this.resumePendingSearch();
+          return;
+        }
         this.setStatusText(
           t(options.allowAutoResume ? 'searchStatusWaitingForIndex' : 'searchStatusIndexChanged'),
           false,
