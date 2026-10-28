@@ -836,6 +836,169 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(progress.filter((item) => item.phase === 'complete').at(-1)?.totalFiles).toBe(2);
   });
 
+  it('원문 변경 복구에도 discovery 후보의 비교 facet 귀속을 보존한다', async () => {
+    const revisedHidden = 'Quartz cooling cycles now require a fourth cycle.';
+    const initialPlan = comparisonEvidencePlan();
+    const first = initialPlan.evidence[0];
+    if (!first) throw new Error('comparison fixture missing');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation((input) => {
+      if (
+        input.documents.length > 0 &&
+        input.documents.every((document) => document.path === HIDDEN)
+      ) {
+        const plan = hiddenPlan();
+        const quote = (input.documents[0]?.text ?? '').includes('fourth')
+          ? revisedHidden
+          : 'Quartz cooling cycles increase in winter.';
+        const hasFacet =
+          input.candidates?.some(
+            (candidate) => candidate.path === HIDDEN && candidate.queryIndex === 2,
+          ) === true;
+        return {
+          ...plan,
+          evidence: [
+            {
+              ...plan.evidence[0],
+              quote,
+              queryIndexes: hasFacet ? [2] : [],
+            },
+          ],
+        };
+      }
+      return { ...initialPlan, evidence: [{ ...first, queryIndexes: [1] }] };
+    });
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation((input) => {
+      const template = verifiedStatuses(input).statuses[0];
+      const currentSource = input.documents.some((document) => document.revision === '2:20');
+      return {
+        statuses: input.evidence.map((item) => ({
+          ...template,
+          sourceId: item.sourceId,
+          path: item.path,
+          status:
+            currentSource && item.quote.includes('increase in winter')
+              ? ('quote-missing' as const)
+              : ('verified' as const),
+        })),
+      };
+    });
+    const result = await reviewIndexedVault(reviewOptions({
+      corpus: corpusWithDiscoverableDocument(),
+      indexedPaths: [RELEVANT],
+      deferAnswer: true,
+      searchPlan: COMPARISON_SEARCH_PLAN,
+      candidates: [{ path: RELEVANT, score: 2, source: 'bm25', rank: 1, queryIndex: 1 }],
+      discoveryCandidates: [
+        {
+          path: HIDDEN,
+          score: 0.5,
+          source: 'vector',
+          rank: 97,
+          queryIndex: 2,
+          startLine: 1,
+          endLine: 1,
+        },
+      ],
+      discoveryPaths: [RELEVANT, HIDDEN],
+      sourceReader: (path) =>
+        Promise.resolve(
+          path === HIDDEN
+            ? { revision: '2:20', text: revisedHidden, contentHash: 'hash-hidden-2' }
+            : {
+                revision: '1:10',
+                text: 'Quartz restarts only after two cooling cycles.',
+                contentHash: 'hash-relevant',
+              },
+        ),
+    }));
+    expect(result.evidence.find((item) => item.path === HIDDEN)?.queryIndexes).toEqual([2]);
+    const recoveryCall = vi.mocked(planIndexedEvidenceRust).mock.calls.at(-1)?.[0];
+    expect(recoveryCall?.documents.some((document) => document.revision === '2:20')).toBe(true);
+    expect(recoveryCall?.candidates).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: HIDDEN, queryIndex: 2 })]),
+    );
+    expect(
+      result.dossier.answerPlan?.facets.find((facet) => facet.id === 'subject-1')?.status,
+    ).toBe('supported');
+  });
+
+  it('원문 변경 복구가 기존 검증 근거를 고정 상한으로 자르지 않는다', async () => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const basePaths = Array.from({ length: 24 }, (_, index) => `Synthetic/Base-${index}.md`);
+    const extraPaths = Array.from({ length: 8 }, (_, index) => `Synthetic/Extra-${index}.md`);
+    const allPaths = [...basePaths, ...extraPaths];
+    const texts = new Map(
+      allPaths.map((path) => [path, `Quartz cooling cycles variant ${path.slice(-6)}.`]),
+    );
+    const records = allPaths.map((path) => ({
+      filePath: path,
+      contentHash: `hash-${path}`,
+      sourceMtime: 1,
+      sourceSize: 10,
+      vectorCount: 1,
+      updated: 1,
+    }));
+    const entries = allPaths.map((path) => ({
+      id: `chunk-${path}`,
+      vector: [],
+      metadata: {
+        filePath: path,
+        startLine: 1,
+        endLine: 1,
+        text: texts.get(path) ?? '',
+        contentHash: `hash-${path}`,
+      },
+    }));
+    const result = await reviewIndexedVault(reviewOptions({
+      corpus: {
+        getEntriesByFilePaths: (paths) =>
+          Promise.resolve(entries.filter((entry) => paths.includes(entry.metadata.filePath))),
+        getFileIndexRecords: () => Promise.resolve(records),
+      },
+      indexedPaths: basePaths,
+      candidates: basePaths.map((path, index) => ({
+        path,
+        score: 1,
+        source: 'bm25' as const,
+        rank: index + 1,
+      })),
+      discoveryCandidates: [
+        ...basePaths.map((path, index) => ({
+          path,
+          score: 1,
+          source: 'bm25' as const,
+          rank: index + 1,
+        })),
+        ...extraPaths.map((path, index) => ({
+          path,
+          score: 0.5,
+          source: 'bm25' as const,
+          rank: 97 + index,
+        })),
+      ],
+      discoveryPaths: allPaths,
+      deferAnswer: true,
+      sourceReader: (path) =>
+        Promise.resolve(
+          path === extraPaths[0]
+            ? {
+                revision: '2:20',
+                text: 'Quartz cooling cycles updated fourth cycle.',
+                contentHash: 'hash-updated',
+              }
+            : {
+                revision: '1:10',
+                text: texts.get(path) ?? '',
+                contentHash: `hash-${path}`,
+              },
+        ),
+    }));
+    expect(result.evidence.length).toBeGreaterThan(24);
+    expect(result.evidence.filter((item) => extraPaths.includes(item.path)).length).toBe(8);
+  });
+
   it('discovery 허용 범위 밖 경로는 추가 검토로 승격하지 않는다', async () => {
     const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
     vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);

@@ -165,6 +165,30 @@ function planDocument(
   };
 }
 
+/**
+ * 원문 변경 복구 계획에도 기본 후보와 discovery 추가 검토에서 고른 후보를 함께 넘깁니다.
+ * 복구 대상 문서의 경로만 남기고 같은 경로·신호·순위·facet 후보는 한 번만 전달합니다.
+ */
+function recoveryCandidatePool(
+  base: readonly IndexedEvidenceCandidate[] | undefined,
+  inspected: readonly IndexedEvidenceCandidate[],
+  documents: readonly RustIndexedEvidenceDocument[],
+): IndexedEvidenceCandidate[] | undefined {
+  const paths = new Set(documents.map((document) => document.path));
+  const merged = new Map<string, IndexedEvidenceCandidate>();
+  for (const candidate of [...(base ?? []), ...inspected]) {
+    if (!paths.has(candidate.path)) continue;
+    const key = [
+      candidate.path,
+      candidate.source,
+      candidate.rank,
+      candidate.queryIndex ?? '',
+    ].join('\u0000');
+    if (!merged.has(key)) merged.set(key, candidate);
+  }
+  return merged.size > 0 ? [...merged.values()] : undefined;
+}
+
 const EVIDENCE_PATH_BATCH = 256;
 /** 검토 예산 밖 discovery 페이지에서 추가로 원문 검토할 경로 상한입니다. */
 const MAX_DISCOVERY_INSPECTIONS = 8;
@@ -701,6 +725,7 @@ export interface IndexedReviewDiagnostics {
     followupRequests?: number;
     followupDocuments?: number;
     discoveryInspectedDocuments?: number;
+    recoveryExcludedSegments?: number;
   };
   /** 최종 리뷰 결과 종류입니다. 디버그 추적에서 답변이 왜 근거만 나왔는지 판단할 때 씁니다. */
   outcome?: IndexedReviewOutcome;
@@ -1144,6 +1169,7 @@ async function runIndexedVaultReview(
     // 검토 예산 밖 discovery 페이지의 미검토 경로를 결정적으로 골라 원문 검토에 넘깁니다.
     // 후보 구절이나 미검증 단서는 답변 컨텍스트로 승격하지 않고, 엔진의 현재 원문 검증을 통과한 근거만 합칩니다.
     const discoveryCorpus = options.corpus;
+    let inspectedDiscoveryCandidates: readonly IndexedEvidenceCandidate[] = [];
     if (
       discoveryCorpus &&
       options.discoveryCandidates &&
@@ -1191,6 +1217,7 @@ async function runIndexedVaultReview(
           const inspectedCandidates = options.discoveryCandidates.filter((candidate) =>
             inspected.has(candidate.path),
           );
+          inspectedDiscoveryCandidates = inspectedCandidates;
           const inspectedSearch = await interruptible(
             searchIndexedVault({
               question: options.scoringQuestion ?? options.question,
@@ -1303,7 +1330,8 @@ async function runIndexedVaultReview(
         stale.add(path);
       }
     }
-    let evidence = search.evidence.filter((item) => !stale.has(item.path));
+    let evidence: readonly IndexedEvidenceItem[] = search.evidence.filter((item) => !stale.has(item.path));
+    let recoveryExcludedSegments = 0;
     if (options.sourceReader && evidence.length > 0) {
       const verificationDocuments = new Map<string, RustIndexedEvidenceVerificationDocument>();
       const rejectedPaths = new Set<string>();
@@ -1483,7 +1511,11 @@ async function runIndexedVaultReview(
                 queryVariants: options.queryVariants,
                 documents: unresolved,
                 scopes: options.scopes,
-                candidates: options.candidates ? [...options.candidates] : undefined,
+                candidates: recoveryCandidatePool(
+                  options.candidates,
+                  inspectedDiscoveryCandidates,
+                  unresolved,
+                ),
                 ...(options.filters ? { filters: options.filters } : {}),
                 budget: recoveryBudget,
                 inventory: {
@@ -1531,7 +1563,41 @@ async function runIndexedVaultReview(
             });
           if (recovered.length > 0) {
             for (const item of recovered) stale.delete(item.path);
-            evidence = [...recovered, ...evidence].slice(0, recoveryBudget.maxPassages);
+            // 기존 검증 근거가 없으면 복구 근거를 그대로 쓰고, 있으면 확장 예산으로 다시 병합해
+            // 고정 상한이 앞선 검증 근거를 버리지 않게 합니다.
+            const mergedRecovery =
+              evidence.length === 0
+                ? null
+                : mergeIndexedEvidencePlansRust({
+              plans: [
+                {
+                  ...search.plan,
+                  evidence,
+                  order: evidence.map((item) => item.sourceId),
+                },
+                { ...recoveryPlan, evidence: recovered },
+              ],
+              budget: {
+                maxPassages: evidence.length + recovered.length,
+                maxChars: search.plan.budget.maxChars + recoveryPlan.budget.maxChars,
+              },
+            });
+            if (evidence.length === 0) {
+              evidence = recovered;
+            } else if (mergedRecovery) {
+              recoveryExcludedSegments += Math.max(
+                0,
+                evidence.length + recovered.length - mergedRecovery.evidence.length,
+              );
+              evidence = mergedRecovery.evidence;
+            } else {
+              // 엔진 병합이 불가능하면 기존 검증 근거를 유지하고 복구분만 보류합니다.
+              recoveryExcludedSegments += recovered.length;
+              appLogger.warn(
+                'Recovered evidence could not be merged; keeping the verified evidence.',
+                { source: 'chat.indexed-review', data: { recovered: recovered.length } },
+              );
+            }
             appLogger.debug('Recovered evidence from documents changed after indexing.', {
               source: 'chat.indexed-review',
               data: { recovered: recovered.length },
@@ -1567,6 +1633,7 @@ async function runIndexedVaultReview(
       search.plan.diagnostics.droppedDocuments.belowThreshold +
       search.plan.diagnostics.droppedDocuments.filtered;
     const budgetExcluded = search.rejected.filter((item) => item.status === 'unreviewed').length;
+    diagnostics.counts.recoveryExcludedSegments = recoveryExcludedSegments;
     const verificationRejected = search.rejected.length - budgetExcluded;
     // 전역 예산·coverage·truncated는 엔진 병합 값을 그대로 두고, 엔진이 알 수 없는
     // 현재 vault 리비전(stale) 제거분만 별도 읽기 실패로 반영합니다.
@@ -1582,7 +1649,7 @@ async function runIndexedVaultReview(
       ? await interruptible(enumerateIndexedDocuments(options, (request) => runIndexedVaultReview(request)))
       : undefined;
     check();
-    const hasIncompleteCoverage = search.coverage.status === 'incomplete' || stale.size > 0 || enumeration?.incomplete === true;
+    const hasIncompleteCoverage = search.coverage.status === 'incomplete' || stale.size > 0 || recoveryExcludedSegments > 0 || enumeration?.incomplete === true;
     const effectiveCoverage: IndexedVaultSearchCoverage = {
       ...search.coverage,
       status: hasIncompleteCoverage ? ('incomplete' as const) : search.coverage.status,
@@ -1602,7 +1669,7 @@ async function runIndexedVaultReview(
       machineExcluded,
       accepted: accepted.size,
       rejected: verificationRejected,
-      budgetExcluded,
+      budgetExcluded: budgetExcluded + recoveryExcludedSegments,
       unreviewed: effectiveCoverage.unreviewedDocuments,
       notIndexed: effectiveCoverage.notIndexedDocuments,
       unreadable: stale.size,
