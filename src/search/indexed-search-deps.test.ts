@@ -318,6 +318,109 @@ describe('검색 의존성 factory', () => {
         .every((item) => (item.queryIndexes ?? []).every((index) => index === 0))).toBe(true);
     },
   );
+  it('16개를 넘는 facet term도 batch 한도 안에서 한 번에 집계한다', async () => {
+    const terms = Array.from({ length: 20 }, (_, index) => `term${index}`);
+    planIndexedSearchQueries.mockReturnValue({
+      mode: 'single',
+      facets: [
+        {
+          id: 'question',
+          kind: 'question',
+          query: 'alpha query',
+          queryIndex: 0,
+          terms,
+        },
+      ],
+    } satisfies IndexedSearchPlan);
+    const queryBm25Batch = vi.fn(() =>
+      Promise.resolve({
+        matches: [[{ path: 'Synthetic/Alpha.md', score: 1, rank: 1 }]],
+        inventories: terms.map((term) => ({
+          totalDocuments: 1,
+          totalChunks: 1,
+          totalOccurrences: 1,
+          documents: [
+            {
+              sourcePath: 'Synthetic/Alpha.md',
+              occurrences: 1,
+              chunks: [{ docId: term, occurrences: 1 }],
+            },
+          ],
+        })),
+      }),
+    );
+    const queryMatchInventory = vi.fn();
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: {
+          query: () => Promise.resolve([]),
+          queryBm25Exhaustive: () => Promise.resolve([]),
+          queryBm25Batch,
+          queryMatchInventory,
+        } as unknown as RAGQueryEngine,
+        documentCorpus: corpus(),
+      },
+      '합성 질의',
+    );
+
+    expect(queryBm25Batch).toHaveBeenCalledOnce();
+    expect(queryMatchInventory).not.toHaveBeenCalled();
+    expect(source?.matchInventory).toHaveLength(20);
+  });
+
+  it('batch가 null이면 facet별 검색과 term 집계 경로로 되돌아간다', async () => {
+    planIndexedSearchQueries.mockReturnValue({
+      mode: 'single',
+      facets: [
+        {
+          id: 'question',
+          kind: 'question',
+          query: 'alpha query',
+          queryIndex: 0,
+          terms: ['alpha'],
+        },
+      ],
+    } satisfies IndexedSearchPlan);
+    const queryBm25Batch = vi.fn(() => Promise.resolve(null));
+    const queryBm25Exhaustive = vi.fn(() =>
+      Promise.resolve([{ path: 'Synthetic/Alpha.md', score: 1, rank: 1 }]),
+    );
+    const queryMatchInventory = vi.fn(() =>
+      Promise.resolve({
+        totalDocuments: 1,
+        totalChunks: 1,
+        totalOccurrences: 1,
+        documents: [
+          {
+            sourcePath: 'Synthetic/Alpha.md',
+            occurrences: 1,
+            chunks: [{ docId: 'alpha', occurrences: 1 }],
+          },
+        ],
+      }),
+    );
+    const source = await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: {
+          query: () => Promise.resolve([]),
+          queryBm25Batch,
+          queryBm25Exhaustive,
+          queryMatchInventory,
+        } as unknown as RAGQueryEngine,
+        documentCorpus: corpus(),
+      },
+      '합성 질의',
+    );
+
+    expect(queryBm25Batch).toHaveBeenCalledOnce();
+    expect(queryBm25Exhaustive).toHaveBeenCalledOnce();
+    expect(queryMatchInventory).toHaveBeenCalledOnce();
+    expect(source?.candidates?.some((item) => item.path === 'Synthetic/Alpha.md')).toBe(true);
+    expect(source?.matchInventory?.[0]?.query).toBe('alpha');
+  });
+
   it('facet 검색과 term 집계를 한 batch 호출로 공유한다', async () => {
     planIndexedSearchQueries.mockReturnValue({
       mode: 'comparison',
@@ -367,10 +470,11 @@ describe('검색 의존성 factory', () => {
     expect(queryBm25Batch).toHaveBeenCalledWith(
       [{ query: 'alpha query' }, { query: 'gamma query' }],
       [
-        { query: 'alpha', limit: 2, allowedPaths: ['Synthetic/Alpha.md', 'Synthetic/Beta.md'] },
-        { query: 'beta', limit: 2, allowedPaths: ['Synthetic/Alpha.md', 'Synthetic/Beta.md'] },
-        { query: 'gamma', limit: 2, allowedPaths: ['Synthetic/Alpha.md', 'Synthetic/Beta.md'] },
+        { query: 'alpha', limit: 2 },
+        { query: 'beta', limit: 2 },
+        { query: 'gamma', limit: 2 },
       ],
+      ['Synthetic/Alpha.md', 'Synthetic/Beta.md'],
       undefined,
     );
     expect(queryBm25Exhaustive).not.toHaveBeenCalled();

@@ -711,7 +711,8 @@ export class IndexedDbBM25Index {
    */
   async batchSearchAndAggregate(
     queries: readonly { query: string; limit: number }[],
-    aggregates: readonly { query: string; limit: number; allowedPaths?: readonly string[] }[],
+    aggregates: readonly { query: string; limit: number }[],
+    allowedPaths?: readonly string[],
     signal?: AbortSignal,
   ): Promise<BM25BatchResult | null> {
     signal?.throwIfAborted();
@@ -725,10 +726,12 @@ export class IndexedDbBM25Index {
       await awaitBm25SearchQueue(this.workerQueue, signal);
       signal?.throwIfAborted();
       if (this.workerFailure || worker.isClosed || generation !== this.workerGeneration) return null;
-      return parseBm25BatchJson(await worker.batch(queries, aggregates, signal));
+      return parseBm25BatchJson(await worker.batch(queries, aggregates, allowedPaths, signal));
     }
     return parseBm25BatchJson(
-      this.ensureRuntime().batchSearchAndAggregateJson(JSON.stringify({ queries, aggregates })),
+      this.ensureRuntime().batchSearchAndAggregateJson(
+        JSON.stringify({ queries, aggregates, ...(allowedPaths !== undefined ? { allowedPaths } : {}) }),
+      ),
     );
   }
 

@@ -68,7 +68,8 @@ describe('BM25 worker runtime', () => {
         id: 3,
         operation: 'batch',
         queries: [{ query: 'lexical', limit: 5 }],
-        aggregates: [{ query: 'lexical', limit: 5, allowedPaths: ['alpha.md'] }],
+        aggregates: [{ query: 'lexical', limit: 5 }],
+        allowedPaths: ['alpha.md'],
       });
       const batchResponse = await batched;
       expect(batchResponse).toEqual(expect.objectContaining({ id: 3 }));

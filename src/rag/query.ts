@@ -281,8 +281,8 @@ export class RAGQueryEngine {
     aggregates: readonly {
       query: string;
       limit?: number;
-      allowedPaths?: readonly string[];
     }[],
+    allowedPaths?: readonly string[],
     signal?: AbortSignal,
   ): Promise<{
     matches: (readonly RAGExhaustiveBm25Match[])[];
@@ -297,14 +297,14 @@ export class RAGQueryEngine {
           ? totalDocs
           : Math.max(0, Math.min(totalDocs, Math.floor(Number.isFinite(limit) ? limit : 0))),
     }));
-    const normalizedAggregates = aggregates.map(({ query, limit, allowedPaths }) => ({
+    const normalizedAggregates = aggregates.map(({ query, limit }) => ({
       query,
       limit: Math.max(0, Math.floor(Number.isFinite(limit) ? (limit ?? MATCH_INVENTORY_PATH_LIMIT) : 0)),
-      ...(allowedPaths !== undefined ? { allowedPaths } : {}),
     }));
     const batch = await this.bm25Index.batchSearchAndAggregate(
       normalizedQueries,
       normalizedAggregates,
+      allowedPaths,
       signal,
     );
     if (!batch) return null;

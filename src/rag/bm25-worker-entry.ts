@@ -28,7 +28,7 @@ export interface BM25WorkerRequest {
   limit?: number;
   allowedPaths?: readonly string[];
   queries?: readonly { query: string; limit: number }[];
-  aggregates?: readonly { query: string; limit: number; allowedPaths?: readonly string[] }[];
+  aggregates?: readonly { query: string; limit: number }[];
 }
 
 interface BM25WorkerHit {
@@ -180,6 +180,7 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
       batchJson: active.batch_search_and_aggregate_json(JSON.stringify({
         queries: request.queries ?? [],
         aggregates: request.aggregates ?? [],
+        ...(request.allowedPaths !== undefined ? { allowedPaths: request.allowedPaths } : {}),
       })),
     };
   }

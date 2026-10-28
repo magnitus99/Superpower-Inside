@@ -320,14 +320,16 @@ async function collectBm25Batch(
   const facets = plan.facets.slice(0, MAX_HYBRID_FACETS);
   if (facets.length === 0) return { matches: [], inventories: [] };
   const terms = planTerms(plan);
+  // Rust batch 상한과 맞춘다. 넘으면 개별 term 경로가 정확히 처리한다.
+  if (terms.length > 128) return null;
   try {
     const result = await engine.queryBm25Batch(
       facets.map((facet) => ({ query: facet.query })),
       terms.map((term) => ({
         query: term,
         limit: Math.max(1, allowedPaths.length || 40),
-        allowedPaths,
       })),
+      allowedPaths,
       signal,
     );
     if (!result) return null;

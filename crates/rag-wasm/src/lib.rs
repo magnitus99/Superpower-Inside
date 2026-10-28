@@ -4668,9 +4668,23 @@ impl Bm25RuntimeIndex {
         else {
             return String::new();
         };
-        if queries.len() > 8 || aggregates.len() > 16 {
+        if queries.len() > 8 || aggregates.len() > 128 {
             return String::new();
         }
+        let allowed_paths = match value.get("allowedPaths") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Array(values)) => {
+                let mut paths = BTreeSet::new();
+                for value in values {
+                    let Some(path) = value.as_str() else {
+                        return String::new();
+                    };
+                    paths.insert(path.to_owned());
+                }
+                Some(paths)
+            }
+            Some(_) => return String::new(),
+        };
         let mut query_results = Vec::with_capacity(queries.len());
         for item in queries {
             let Some(query) = item.get("query").and_then(serde_json::Value::as_str) else {
@@ -4685,7 +4699,9 @@ impl Bm25RuntimeIndex {
         }
         let mut aggregate_results = Vec::with_capacity(aggregates.len());
         for item in aggregates {
-            let Some(parsed) = bm25_batch_aggregate_result(&self.index, item) else {
+            let Some(parsed) =
+                bm25_batch_aggregate_result(&self.index, item, allowed_paths.as_ref())
+            else {
                 return String::new();
             };
             aggregate_results.push(parsed);
@@ -12499,10 +12515,9 @@ fn bm25_batch_query_hits(index: &Bm25IndexData, query: &str, limit: u64) -> Vec<
     let limit = usize::try_from(limit).unwrap_or(usize::MAX).min(10_000);
     let mut seen_paths = BTreeSet::new();
     let mut hits = Vec::new();
-    for (index_in_scores, score) in bm25_query::search_index(index, query)
-        .into_iter()
-        .enumerate()
-    {
+    let mut scores = bm25_query::search_index(index, query);
+    scores.sort_by(|left, right| right.score.total_cmp(&left.score));
+    for (index_in_scores, score) in scores.into_iter().enumerate() {
         if hits.len() >= limit {
             break;
         }
@@ -12528,26 +12543,16 @@ fn bm25_batch_query_hits(index: &Bm25IndexData, query: &str, limit: u64) -> Vec<
 fn bm25_batch_aggregate_result(
     index: &Bm25IndexData,
     item: &serde_json::Value,
+    allowed_paths: Option<&BTreeSet<String>>,
 ) -> Option<serde_json::Value> {
     let query = item.get("query")?.as_str()?;
     let limit = usize::try_from(item.get("limit")?.as_u64()?)
         .unwrap_or(usize::MAX)
         .min(10_000);
-    let allowed_paths = match item.get("allowedPaths") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::Array(values)) => {
-            let mut paths = BTreeSet::new();
-            for value in values {
-                paths.insert(value.as_str()?.to_owned());
-            }
-            Some(paths)
-        }
-        Some(_) => return None,
-    };
     let matches = bm25_query::aggregate_matches(index, query)
         .into_iter()
         .filter(|entry| {
-            allowed_paths.as_ref().is_none_or(|paths| {
+            allowed_paths.is_none_or(|paths| {
                 let path = index
                     .doc_sources
                     .get(&entry.doc_id)
@@ -15884,9 +15889,9 @@ mod tests {
         );
     }
 
-    /// batch API는 개별 검색·집계와 같은 점수·순위·총계를 반환해야 한다.
+    /// batch 검색은 개별 검색과 같은 점수 내림차순·source path 순위를 반환해야 한다.
     #[test]
-    fn bm25_batch_search_and_aggregate_matches_individual_calls() {
+    fn bm25_batch_search_matches_individual_order() {
         let mut index = Bm25RuntimeIndex::new(2);
         index.add_new_document("a.md::0", "alpha beta alpha", "a.md", 2);
         index.add_new_document("a.md::1", "alpha gamma", "a.md", 2);
@@ -15898,10 +15903,7 @@ mod tests {
                 {"query": "alpha", "limit": 10},
                 {"query": "gamma", "limit": 1},
             ],
-            "aggregates": [
-                {"query": "alpha", "limit": 10},
-                {"query": "alpha", "limit": 10, "allowedPaths": ["b.md"]},
-            ],
+            "aggregates": [],
         })
         .to_string();
         let batch =
@@ -15915,26 +15917,61 @@ mod tests {
             .and_then(JsonValue::as_array)
             .cloned()
             .unwrap_or_default();
-        // 한 파일의 여러 chunk는 한 경로로 합치고 rank는 전체 score 순위를 유지한다.
         assert_eq!(hits.len(), 2);
-        let mut paths = hits
-            .iter()
-            .filter_map(|hit| hit.get("sourcePath").and_then(JsonValue::as_str))
-            .collect::<Vec<_>>();
-        paths.sort_unstable();
-        assert_eq!(paths, ["a.md", "b.md"]);
+        assert_eq!(
+            hits.first()
+                .and_then(|hit| hit.get("sourcePath"))
+                .and_then(JsonValue::as_str),
+            Some("b.md")
+        );
         assert_eq!(
             hits.first()
                 .and_then(|hit| hit.get("rank"))
                 .and_then(JsonValue::as_u64),
             Some(1)
         );
-        let second_rank = hits
-            .get(1)
-            .and_then(|hit| hit.get("rank"))
-            .and_then(JsonValue::as_u64);
-        assert!(second_rank.is_some_and(|rank| rank > 1));
+        assert_eq!(
+            hits.get(1)
+                .and_then(|hit| hit.get("sourcePath"))
+                .and_then(JsonValue::as_str),
+            Some("a.md")
+        );
+        assert_eq!(
+            hits.get(1)
+                .and_then(|hit| hit.get("rank"))
+                .and_then(JsonValue::as_u64),
+            Some(2)
+        );
+        let top = serde_json::from_str::<JsonValue>(&index.search_top_json("alpha", 10))
+            .unwrap_or(JsonValue::Null);
+        assert_eq!(
+            top.as_array()
+                .and_then(|scores| scores.first())
+                .and_then(|score| score.get("docId")),
+            Some(&JsonValue::String("b.md::0".to_owned()))
+        );
+    }
 
+    /// batch 집계는 개별 집계와 같은 총계·경로 상한·scope를 반환해야 한다.
+    #[test]
+    fn bm25_batch_aggregates_match_individual_calls() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        index.add_new_document("a.md::0", "alpha beta alpha", "a.md", 2);
+        index.add_new_document("a.md::1", "alpha gamma", "a.md", 2);
+        index.add_new_document("b.md::0", "alpha alpha alpha", "b.md", 2);
+        index.add_new_document("c.md::0", "gamma", "c.md", 2);
+
+        let input = serde_json::json!({
+            "queries": [],
+            "aggregates": [
+                {"query": "alpha", "limit": 10},
+                {"query": "gamma", "limit": 10},
+            ],
+        })
+        .to_string();
+        let batch =
+            serde_json::from_str::<JsonValue>(&index.batch_search_and_aggregate_json(&input))
+                .unwrap_or(JsonValue::Null);
         let aggregates = batch
             .get("aggregates")
             .and_then(JsonValue::as_array)
@@ -15951,14 +15988,36 @@ mod tests {
         assert_eq!(
             aggregates
                 .get(1)
-                .and_then(|value| value.get("totalDocuments"))
+                .and_then(|value| value.get("totalOccurrences"))
+                .and_then(JsonValue::as_u64),
+            Some(2)
+        );
+
+        let scoped_input = serde_json::json!({
+            "queries": [],
+            "aggregates": [{"query": "alpha", "limit": 10}],
+            "allowedPaths": ["b.md"],
+        })
+        .to_string();
+        let scoped = serde_json::from_str::<JsonValue>(
+            &index.batch_search_and_aggregate_json(&scoped_input),
+        )
+        .unwrap_or(JsonValue::Null);
+        let scoped_aggregate = scoped
+            .get("aggregates")
+            .and_then(JsonValue::as_array)
+            .and_then(|values| values.first())
+            .cloned()
+            .unwrap_or(JsonValue::Null);
+        assert_eq!(
+            scoped_aggregate
+                .get("totalDocuments")
                 .and_then(JsonValue::as_u64),
             Some(1)
         );
         assert_eq!(
-            aggregates
-                .get(1)
-                .and_then(|value| value.get("totalOccurrences"))
+            scoped_aggregate
+                .get("totalOccurrences")
                 .and_then(JsonValue::as_u64),
             Some(3)
         );

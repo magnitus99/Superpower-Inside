@@ -213,16 +213,13 @@ describe('IndexedDbBM25Index', () => {
         ],
         [
           { query: 'alpha', limit: 10 },
-          { query: 'alpha', limit: 10, allowedPaths: ['b.md'] },
+          { query: 'gamma', limit: 10 },
         ],
       );
 
       expect(batch?.queries).toHaveLength(2);
-      expect(new Set(batch?.queries[0]?.hits.map((hit) => hit.sourcePath))).toEqual(
-        new Set(['a.md', 'b.md']),
-      );
-      expect(batch?.queries[0]?.hits[0]?.rank).toBe(1);
-      expect(batch?.queries[0]?.hits[1]?.rank).toBeGreaterThan(1);
+      expect(batch?.queries[0]?.hits.map((hit) => hit.sourcePath)).toEqual(['b.md', 'a.md']);
+      expect(batch?.queries[0]?.hits.map((hit) => hit.rank)).toEqual([1, 2]);
       expect(batch?.queries[1]?.hits.map((hit) => hit.sourcePath)).toEqual(['a.md']);
       expect(batch?.aggregates[0]).toMatchObject({
         totalDocuments: 2,
@@ -230,6 +227,16 @@ describe('IndexedDbBM25Index', () => {
         totalOccurrences: 6,
       });
       expect(batch?.aggregates[1]).toMatchObject({
+        totalDocuments: 1,
+        totalOccurrences: 1,
+      });
+
+      const scoped = await bm25.batchSearchAndAggregate(
+        [],
+        [{ query: 'alpha', limit: 10 }],
+        ['b.md'],
+      );
+      expect(scoped?.aggregates[0]).toMatchObject({
         totalDocuments: 1,
         totalOccurrences: 3,
       });

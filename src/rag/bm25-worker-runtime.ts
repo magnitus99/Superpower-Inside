@@ -25,7 +25,6 @@ export interface BM25WorkerSearchQuery {
 export interface BM25WorkerAggregateQuery {
   query: string;
   limit: number;
-  allowedPaths?: readonly string[];
 }
 
 export interface BM25WorkerRequest {
@@ -190,9 +189,13 @@ export class BM25WorkerRuntime {
   async batch(
     queries: readonly BM25WorkerSearchQuery[],
     aggregates: readonly BM25WorkerAggregateQuery[],
+    allowedPaths?: readonly string[],
     signal?: AbortSignal,
   ): Promise<string> {
-    const response = await this.request({ operation: 'batch', queries, aggregates }, signal);
+    const response = await this.request(
+      { operation: 'batch', queries, aggregates, allowedPaths },
+      signal,
+    );
     return response.batchJson ?? '';
   }
 

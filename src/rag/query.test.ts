@@ -128,6 +128,7 @@ describe('RAGQueryEngine', () => {
       [{ query: 'alpha', limit: 2 }],
       [{ query: 'alpha', limit: 4 }],
       undefined,
+      undefined,
     );
     expect(documents).toHaveBeenCalledOnce();
     expect(documents).toHaveBeenCalledWith(['Synthetic/Alpha.md::0']);
