@@ -1565,7 +1565,6 @@ export interface I18nKeys {
   indexedReviewSearchUnavailable: string;
   indexedReviewAnswerUnavailable: string;
   indexedReviewNoEvidence: string;
-  queryVariantPrompt: string;
   indexedReviewComparisonMissing: string;
   indexedReviewComparisonSearchFailed: string;
   llmIndexedReviewFollowup: string;
@@ -3516,8 +3515,6 @@ const ko: I18nKeys = {
     '검토한 근거로 최종 답변을 생성하지 못했습니다. 잠시 뒤 다시 시도하거나 모델 출력 설정을 확인하세요.',
   indexedReviewNoEvidence:
     '이번 검색에서는 질문과 직접 일치하는 원문 근거를 찾지 못했습니다. 볼트 전체에 관련 내용이 없다는 뜻은 아니며, 색인 범위 밖 문서나 이번 검색이 닿지 못한 문서가 있을 수 있습니다. 검색 범위·색인 상태를 확인하거나 질문을 더 구체화해 주세요.',
-  queryVariantPrompt:
-    '사용자 질문을 다른 언어의 검색 구문으로 충실히 번역하고 JSON 문자열 배열만 반환하세요. 최대 3개이며 첫 구문에는 질문의 대상과 핵심 주제·관계를 함께 보존하세요. 나머지는 같은 주제의 번역어나 동의어로 보완하세요. 고유명사만 남기거나 질문의 주제를 그 대상과 흔히 연관되는 다른 개념으로 바꾸지 마세요. 사용자가 한 대상 안의 개념들을 비교하면 다른 대상을 새로 추가하지 마세요. 짧게 쓰되 중요한 수식·조건·부정·숫자는 유지하고 설명·인용·줄바꿈은 넣지 마세요.',
   indexedReviewComparisonMissing:
     '이번 검토 범위에서는 비교 항목 {facets}의 검증된 근거를 찾지 못했습니다. 볼트 전체에 해당 내용이 없다는 뜻은 아니며, 다른 검색·색인 범위에서는 확인될 수 있습니다.',
   indexedReviewComparisonSearchFailed:
@@ -5580,8 +5577,6 @@ const en: I18nKeys = {
     'The reviewed evidence could not be turned into a final answer. Retry later or check the model output settings.',
   indexedReviewNoEvidence:
     'This search did not find an original passage that directly supports the question. This does not mean the vault contains nothing relevant: documents outside the indexed scope or documents this search did not reach may still be relevant. Check the search scope and indexing status, or make the question more specific.',
-  queryVariantPrompt:
-    'Faithfully translate the user question into search phrases in other languages and return only a JSON array of at most 3 strings. Preserve the subject together with its central topic and relationship in the first phrase. Use the others for translations or synonyms of that same topic. Do not retain only a proper name or replace the requested topic with other concepts commonly associated with the subject. When comparing concepts within one subject, do not introduce a new comparison subject. Be concise but preserve important modifiers, conditions, negations, and numbers, with no explanation, quotation, or line breaks.',
   indexedReviewComparisonMissing:
     'No verified evidence for the comparison facets {facets} was found in the reviewed scope. This does not mean those facets are absent from the entire vault; another search or indexed scope may still contain them.',
   indexedReviewComparisonSearchFailed:

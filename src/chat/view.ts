@@ -133,7 +133,7 @@ import {
 } from './chat-message-actions';
 import { createStreamingRenderPlan, STREAMING_CURSOR_CLASS } from './chat-streaming-renderer';
 import { expandVaultSearchPlan, expandVaultSearchQueryLocally } from './vault-query-expansion';
-import { requestQueryVariants, splitLongQuestion } from './query-variants';
+import { planQueryVariants, splitLongQuestion } from './query-variants';
 import {
   createDataBoundarySnapshot,
   createResearchDataBoundarySnapshot,
@@ -3257,18 +3257,8 @@ export class ChatView extends ItemView {
           .map((mention) => mention.name);
         const restrictedSearch = mentionedFolders.length > 0 || mentionedTags.length > 0;
         // 검색 화면과 같은 corpus·hybrid 후보·리비전 reader를 공유합니다.
-        // 질문 언어와 색인 언어가 다르면 provider가 만든 교차 언어 구문을 후보 수집에 더합니다.
-        const variantProvider = await prepareChatProviderForModel(
-          this.plugin.settings,
-          selectedModel,
-        );
-        const loadQueryVariants = () =>
-          requestQueryVariants(
-            variantProvider?.provider,
-            text,
-            t('queryVariantPrompt'),
-            abortController.signal,
-          );
+        // 긴 질문은 제공자 호출 없이 로컬에서 나눈 조각을 변형 후보로 사용합니다.
+        const loadQueryVariants = () => Promise.resolve(planQueryVariants(text));
         // 검색 계획 상한을 넘는 질문은 원문을 버리지 않고 첫 조각으로 시작하고 나머지는 변형으로 넘깁니다.
         const searchQuestion = splitLongQuestion(localSearchQuestion)[0] ?? localSearchQuestion;
         const searchSource = await collectIndexedSearchSource(

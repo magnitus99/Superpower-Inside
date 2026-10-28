@@ -1,58 +1,12 @@
-import type { LLMProvider } from '../llm/providers';
-import { planVaultQueryExpansionRust } from '../rag/rust-core';
-
-/** 한 번에 붙일 수 있는 교차 언어 검색 구문 상한입니다. */
+/** 한 번에 붙일 수 있는 검색 구문 변형 상한입니다. */
 export const MAX_QUERY_VARIANTS = 3;
 
 /**
- * 질문에 ASCII 밖의 알파벳이 있으면 다른 언어로 색인된 문서를 놓칠 수 있습니다.
- * Rust 확장기와 같은 규칙을 씁니다.
+ * 긴 질문을 검색 계획 상한 이하 조각으로 나눠 변형을 만듭니다.
+ * 제공자 번역·확장 호출 없이 로컬 결정적 분해만 사용합니다.
  */
-export function needsCrossLanguageSearch(question: string): boolean {
-  for (const character of question) {
-    if (!/\p{L}/u.test(character)) continue;
-    const code = character.codePointAt(0) ?? 0;
-    if (code > 0x7f) return true;
-  }
-  return false;
-}
-
-/**
- * provider에 다른 언어 검색 구문을 요청하고 Rust 확장기로 검증합니다.
- * 실패·지연·형식 오류는 검색 실패가 아니라 확장 없음으로 처리합니다.
- */
-export async function requestQueryVariants(
-  provider: Pick<LLMProvider, 'chat'> | null | undefined,
-  question: string,
-  systemPrompt: string,
-  signal?: AbortSignal,
-): Promise<string[]> {
-  const segments = splitLongQuestion(question);
-  const longQuestionVariants = segments.slice(1);
-  if (!provider || !needsCrossLanguageSearch(question)) return longQuestionVariants;
-  if (signal?.aborted) return [];
-  let response: string;
-  try {
-    response = await provider.chat(
-      [{ role: 'system', content: systemPrompt }, { role: 'user', content: question }],
-      undefined, undefined, { signal },
-    );
-  } catch {
-    return [];
-  }
-  if (signal?.aborted) return [];
-  const plan = planVaultQueryExpansionRust(question, response.trim());
-  if (!plan) return [];
-  const seen = new Set<string>([question.trim().toLocaleLowerCase()]);
-  const variants: string[] = [...longQuestionVariants];
-  for (const variant of plan.variants) {
-    const normalized = variant.replace(/\s+/gu, ' ').trim();
-    const key = normalized.toLocaleLowerCase();
-    if (normalized.length === 0 || seen.has(key)) continue;
-    seen.add(key);
-    variants.push(normalized);
-  }
-  return variants.slice(0, MAX_QUERY_VARIANTS);
+export function planQueryVariants(question: string): string[] {
+  return splitLongQuestion(question).slice(1, 1 + MAX_QUERY_VARIANTS);
 }
 
 /** Rust 검색 계획이 받아들이는 질의 하나의 문자 수 상한과 같습니다. */
@@ -60,7 +14,7 @@ export const MAX_SEARCH_QUERY_CHARS = 320;
 
 /**
  * 긴 질문을 검색 계획 상한 이하 조각으로 나눕니다.
- * 원문을 버리지 않고, 문장·절 경계를 우선하며 숫자·고유명사를 함께 남깁니다.
+ * 문장·절 경계를 우선하고, 지정한 조각 수까지 숫자·고유명사를 함께 남깁니다.
  */
 export function splitLongQuestion(
   question: string,
