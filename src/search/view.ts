@@ -336,13 +336,14 @@ export class SearchView extends ItemView {
       return;
     }
     if (snapshot.readiness !== 'ready') {
-      // 키워드 색인이 준비되지 않아도 벡터 색인으로 찾을 수 있으면 검색은 허용합니다.
+      // 준비 중에는 부분 색인을 결과 근거로 쓰지 않습니다. 확인된 제한(degraded)만
+      // 이미 색인된 문서 범위에서 검색을 허용합니다.
       const description = describeSearchStatus(snapshot);
       el.setText(
         description.detail ? `${description.label} · ${description.detail}` : description.label,
       );
       el.addClass(WARNING_CLASS);
-      this.setRunEnabled(hasDocuments);
+      this.setRunEnabled(snapshot.readiness === 'degraded' && hasDocuments);
       return;
     }
     if (!status) {
@@ -554,6 +555,11 @@ export class SearchView extends ItemView {
     const query = this.queryInput?.value.trim() ?? '';
     if (query.length === 0) {
       this.renderIdle();
+      return;
+    }
+    // 버튼 비활성화를 우회한 Enter 제출도 준비 중에는 부분 색인을 검색하지 않습니다.
+    if (this.host.getSearchStatusSnapshot().readiness === 'preparing') {
+      this.renderIndexState();
       return;
     }
     const port = this.host.getSearchPort();

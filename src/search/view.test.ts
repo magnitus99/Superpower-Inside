@@ -373,7 +373,7 @@ describe('검색 화면 구조', () => {
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
   });
 
-  it('키워드 색인만 준비 중이면 상태와 근거를 보여 주고 검색은 허용한다', async () => {
+  it('준비 중에는 키워드 색인만 남아도 부분 색인 검색을 막는다', async () => {
     const harness = createHarness({
       port: null,
       totalDocuments: 10,
@@ -394,7 +394,51 @@ describe('검색 화면 구조', () => {
 
     expect(index?.textContent).toContain(t('chatReadinessRagIndexing'));
     expect(index?.textContent).toContain('1200');
-    // 벡터 색인은 준비되어 있으므로 실행을 막지 않습니다.
+    // 부분 색인을 정상 결과로 쓰지 않도록 준비가 끝날 때까지 실행하지 않습니다.
+    expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
+  });
+
+  it('준비 중 Enter 제출도 부분 색인 검색 포트를 호출하지 않는다', async () => {
+    const port = vi.fn(() => Promise.resolve(response([], 'no-candidate')));
+    const harness = createHarness({
+      port: port as SearchPort,
+      totalDocuments: 10,
+      readiness: 'preparing',
+      indexing: {
+        phase: 'preparing',
+        completedFiles: 0,
+        totalFiles: 0,
+        currentFileEmbeddedChunks: null,
+        currentFileTotalChunks: null,
+        etaRemainingMs: null,
+        keywordRestore: { processedDocuments: 12, expectedDocuments: 100 },
+      },
+    });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+    const input = root.querySelector('input');
+    if (input) input.value = 'quartz';
+    root.querySelector('form')?.dispatchEvent('submit');
+    await flush();
+
+    expect(port).not.toHaveBeenCalled();
+    expect(root.querySelector('.superpower-inside-search-status')?.textContent).toBe(
+      t('searchStatusIdle'),
+    );
+  });
+
+  it('확인된 제한 상태에서는 색인된 문서 범위로 검색을 허용한다', async () => {
+    const harness = createHarness({
+      port: null,
+      totalDocuments: 10,
+      readiness: 'degraded',
+    });
+    await harness.view.onOpen();
+    const root = contentOf(harness.view);
+
+    expect(root.querySelector('.superpower-inside-search-index')?.textContent).toContain(
+      t('chatReadinessRagNotReady'),
+    );
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
   });
 
