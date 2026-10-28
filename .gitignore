@@ -35,9 +35,6 @@ simulations/
 # 마케팅 작업물(로컬 전용)
 /marketing/
 
-# 로컬 제품 철학 기준
-/product-philosophy.md
-/product-philosophy/
 
 # CodeGraph 로컬 인덱스(기기 전용)
 .codegraph/
