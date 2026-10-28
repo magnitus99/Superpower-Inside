@@ -48,6 +48,8 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 
 **코드 경계 보강(2026-10-28, 미커밋):** 검토 coverage를 원문 검증 범위로 분리하고, 채택 근거의 현재 revision·contentHash를 갱신하며, 목록·개수 의도를 결정적으로 감지해 열거하고, WASM 벡터 랭킹 실패를 TS 대체 없이 닫았다. 검색 없이·server-only 우선순위, 준비 중 부분 색인 context 차단, 대기 실패 뒤 전사 중복 방지, 진행 문구 작업 영역 분리, 생성물 DB·승인 경계도 보강했다. `npm run quality:local` exit 0(전체 Vitest·i18n·UX gate·leak check·lint·typecheck·Rust)과 `npm run rust:check` 통과(538 passed·2 ignored)를 확인했지만 실제 답변·전수 recall·모델별 3회·화면 검수는 여전히 미완료다.
 
+**검색 준비·결정적 코어 보강(2026-10-28, 미커밋):** 검색 화면은 `preparing`에서 실행과 Enter 제출을 모두 막고 확인된 제한(`degraded`)에서만 색인 범위 검색을 허용한다. 채팅 readiness는 키워드·벡터 중 하나라도 실제 사용 가능하면 다른 백엔드의 초기화 실패만으로 검색을 막지 않는다. 질의 변형은 제공자 번역 호출 없이 로컬 질문 분해만 쓴다. 검색 선택·다양성, 벡터 저장소 mutation·통계·lookup, RAG 상태, pending 파일 계획의 TypeScript 계산 fallback을 제거해 WASM 실패 시 null·빈 결과·쓰기 중단으로 닫았다. `npm run quality:local` exit 0(Vitest 2,428 passed·1 skipped, i18n·UX gate·quality eval 187 passed·vault leak·Rust 538 passed·2 ignored·review·diff check). 다만 검색 화면 `degraded`의 실제 화면 검수, 검토 예산 밖 discovery page를 최종 답변 조사에 연결하는 경로, facet별 검색·집계를 엔진 한 번·색인 한 순회로 통합하는 목표는 아직 미완료다.
+
 **구현·합성 검증 통과:** 사용자 지정 범위와 집계 일치, 발견 원장·후속 조사·상위 k와 분리한 문서별 열거·100문서 합성 열거, 미완료·예산 제한·검토 완료 구분, 실제 진행·추론 요약·검증 후 게시·상세 접기, 준비 대기 질문 보존과 한 번 재개, 문서·구현 차이 판정.
 
 **수정한 확인 결함:** 문자 예산 초과 구절 뒤 짧은 구절 선택 중단(`f79fc1b`), 문서 예산을 고유 경로가 아닌 청크 수로 계산한 `candidate_depth`(`759ad03`), BM25 작업자 순차 처리에서 미전송 요청에 timeout이 흐르던 계약(`c737093`), 번역 질의의 원래 주제 손실과 전체 원장 입력 예산 초과로 답변 호출이 건너뛰어지던 문제.
