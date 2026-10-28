@@ -88,7 +88,7 @@ export interface SettingsOverviewSnapshot {
 interface ProviderSource {
   id: string;
   label: string;
-  key: ProviderKey | 'customOpenAI' | 'ternlight';
+  key: ProviderKey | 'customOpenAI' | 'ternlight' | 'opencode' | 'gemini';
   config: ProviderConfig | CustomOpenAIProviderConfig;
   profile?: ProviderProfileConfig;
 }
@@ -127,7 +127,7 @@ function buildProviderRows(settings: SuperpowerInsideSettings): SettingsOverview
   return getProviderSources(settings).map((source) => {
     const modelCount = source.config.models.length;
     const profileTone = source.profile ? resolveProviderProfileTone(source.profile) : null;
-    const requiresKey = shouldRequireProviderApiKey(source.key);
+    const requiresKey = shouldRequireProviderApiKey(source.key, source.config.baseUrl);
     const missingKey = requiresKey && source.config.enabled && source.config.apiKey.trim() === '';
     const tone: SettingsOverviewTone = profileTone
       ? profileTone === 'ready'
@@ -152,7 +152,10 @@ function buildProviderRows(settings: SuperpowerInsideSettings): SettingsOverview
           : profileTone === 'needs-key'
             ? source.profile?.strategy === 'openAIChatGPT'
               ? t('chatGPTOAuthRequired')
-              : t('overviewProviderKeyNeeded')
+              : source.profile?.strategy === 'gemini' &&
+                  source.profile.geminiAuthMode === 'oauth'
+                ? t('geminiOAuthRequired')
+                : t('overviewProviderKeyNeeded')
             : profileTone === 'needs-url'
               ? t('providerStatusNeedsBaseUrl')
               : profileTone === 'needs-models'

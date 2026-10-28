@@ -898,7 +898,7 @@ describe('설정 화면 리디자인 구조', () => {
     expect(methodSource).toContain('createSettingsStatusRow');
     expect(methodSource).toContain('createSettingsActionRow');
     expect(methodSource).toContain('const firstAttention = profiles.find');
-    expect(methodSource).toContain('createProviderProfile');
+    expect(methodSource).toContain('openProviderPicker');
     expect(methodSource).not.toContain('superpower-inside-provider-summary-bar');
   });
 

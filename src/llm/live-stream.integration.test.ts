@@ -73,6 +73,11 @@ function frames(strategy: ProviderStrategyKey): [string, string] {
         { type: 'message', content: [{ type: 'output_text', text: '한글 😀' }] },
       ]),
     ];
+  if (strategy === 'gemini')
+    return [
+      `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: '한글 😀' }] } }] })}\n\n`,
+      `data: ${JSON.stringify({ candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] })}\n\n`,
+    ];
   return ['data: {"choices":[{"delta":{"content":"한글 😀"}}]}\n\n', 'data: [DONE]\n\n'];
 }
 

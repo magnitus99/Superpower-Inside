@@ -24,6 +24,7 @@ import {
   plan_chatgpt_json,
   plan_turn_usage_json,
   normalize_provider_usage_json,
+  plan_gemini_json,
   plan_chat_evidence_json,
   plan_chat_request_json,
   plan_tool_result_summary_json,
@@ -1212,6 +1213,7 @@ export interface RustProviderStateInput {
   strategy: string;
   enabled: boolean;
   apiKeyConfigured: boolean;
+  apiKeyRequired?: boolean;
   baseUrlConfigured: boolean;
   models: RustProviderModelStateInput[];
 }
@@ -1485,6 +1487,8 @@ export function planProviderModelDetailsRust(
   contextLength?: number;
   maxInputTokens?: number;
   maxOutputTokens?: number;
+  apiFormat?: 'responses' | 'chat' | 'messages';
+  supportedApiFormats?: Array<'responses' | 'chat' | 'messages'>;
 }> | null {
   if (!ensureRustCore()) return null;
   try {
@@ -1496,6 +1500,8 @@ export function planProviderModelDetailsRust(
       contextLength?: number;
       maxInputTokens?: number;
       maxOutputTokens?: number;
+      apiFormat?: 'responses' | 'chat' | 'messages';
+      supportedApiFormats?: Array<'responses' | 'chat' | 'messages'>;
     }>;
   } catch {
     return null;
@@ -2995,6 +3001,17 @@ export function planChatGPTRust<T>(input: Record<string, unknown>): T | null {
   if (!ensureRustCore()) return null;
   try {
     const raw = plan_chatgpt_json(JSON.stringify(input));
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Gemini 요청·스트림·응답과 OAuth 자격 증명 wire 결과를 Rust에서 매핑한다. */
+export function planGeminiRust<T>(input: Record<string, unknown>): T | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const raw = plan_gemini_json(JSON.stringify(input));
     return raw ? (JSON.parse(raw) as T) : null;
   } catch {
     return null;
@@ -7092,6 +7109,7 @@ function isValidProviderStateInput(input: RustProviderStateInput): boolean {
     input.strategy.trim().length > 0 &&
     typeof input.enabled === 'boolean' &&
     typeof input.apiKeyConfigured === 'boolean' &&
+    (input.apiKeyRequired === undefined || typeof input.apiKeyRequired === 'boolean') &&
     typeof input.baseUrlConfigured === 'boolean' &&
     Array.isArray(input.models) &&
     input.models.every(

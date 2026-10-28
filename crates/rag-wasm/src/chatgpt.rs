@@ -71,7 +71,7 @@ fn plan(input: &Value) -> Option<Value> {
                 "response.output_text.delta" | "response.refusal.delta" => {
                     Some(json!({"content": event.get("delta")?.as_str()?, "done": false}))
                 }
-                "response.reasoning_summary_text.delta" => Some(
+                "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => Some(
                     json!({"content": "", "reasoning": event.get("delta")?.as_str()?, "done": false}),
                 ),
                 "response.failed" | "response.incomplete" | "error" => Some(json!({"error": true})),
@@ -125,6 +125,10 @@ fn token_claims(token: &str) -> Option<Value> {
 
 /// 기존 채팅 메시지와 도구 결과를 구독 서버의 요청 항목으로 변환한다.
 fn request(value: &Value) -> Option<Value> {
+    let api = text(value, "api").unwrap_or("chatgpt");
+    if !matches!(api, "chatgpt" | "responses") {
+        return None;
+    }
     let mut instructions = Vec::new();
     let mut items = Vec::new();
     for message in value.get("messages")?.as_array()? {
@@ -157,9 +161,15 @@ fn request(value: &Value) -> Option<Value> {
     let tools = value.get("tools").and_then(Value::as_array).into_iter().flatten()
         .map(|tool| {
             let function = tool.get("function")?;
-            Some(json!({ "type": "function", "name": text(function, "name")?,
-                "description": function.get("description")?.as_str()?, "parameters": function.get("parameters")?, "strict": null,
-            }))
+            let mut mapped = json!({ "type": "function", "name": text(function, "name")?,
+                "description": function.get("description")?.as_str()?, "parameters": function.get("parameters")?,
+            });
+            if api == "chatgpt" {
+                mapped
+                    .as_object_mut()?
+                    .insert("strict".to_owned(), Value::Null);
+            }
+            Some(mapped)
         }).collect::<Option<Vec<_>>>()?;
     let choice = value
         .get("toolChoice")
@@ -168,12 +178,23 @@ fn request(value: &Value) -> Option<Value> {
     if !matches!(choice, "auto" | "required" | "none") {
         return None;
     }
-    Some(
-        json!({ "model": text(value, "model")?, "instructions": instructions.join("\n\n"),
-            "input": items, "tools": tools, "tool_choice": choice, "store": false, "stream": true,
-            "parallel_tool_calls": true, "include": ["reasoning.encrypted_content"],
-        }),
-    )
+    let mut body = json!({ "model": text(value, "model")?, "instructions": instructions.join("\n\n"),
+        "input": items, "tools": tools, "tool_choice": choice, "store": false, "stream": true,
+        "parallel_tool_calls": true,
+    });
+    if api == "chatgpt" {
+        body.as_object_mut()?
+            .insert("include".to_owned(), json!(["reasoning.encrypted_content"]));
+    }
+    if let Some(max_output) = value
+        .get("maxOutputTokens")
+        .and_then(Value::as_u64)
+        .filter(|tokens| *tokens > 0)
+    {
+        body.as_object_mut()?
+            .insert("max_output_tokens".to_owned(), json!(max_output));
+    }
+    Some(body)
 }
 
 /// 완료된 이벤트만 텍스트·추론 요약·도구 호출 결과로 인정한다.
@@ -371,6 +392,28 @@ mod tests {
         ] {
             assert!(plan(&json!({"operation":"response","text":text})).is_none());
         }
+    }
+
+    #[test]
+    fn generic_responses_request_omits_chatgpt_only_fields() {
+        let result = plan(&json!({ "operation": "request", "api": "responses",
+            "model": "synthetic", "messages": [{"role":"user","content":"hello"}],
+            "tools": [], "toolChoice":"auto", "maxOutputTokens": 64 }))
+        .unwrap_or_default();
+        assert_eq!(result.get("model"), Some(&json!("synthetic")));
+        assert_eq!(result.get("max_output_tokens"), Some(&json!(64)));
+        assert!(result.get("include").is_none());
+        assert_eq!(result.get("stream"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn reasoning_text_delta_is_forwarded_as_reasoning() {
+        let chunk = plan(&json!({"operation":"stream-event","data":json!({
+            "type":"response.reasoning_text.delta","delta":"thought"
+        }).to_string()}))
+        .unwrap_or_default();
+        assert_eq!(chunk.get("reasoning"), Some(&json!("thought")));
+        assert_eq!(chunk.get("content"), Some(&json!("")));
     }
 
     #[test]

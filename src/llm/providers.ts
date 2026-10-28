@@ -1,9 +1,25 @@
 import { requestUrl } from 'obsidian';
 import { desktopFetch, consumeDesktopStream, streamHeaders } from '../utils/desktop-stream';
 import { ChatGPTProvider } from './chatgpt-provider';
+import {
+  createGeminiApiKeyProvider,
+  createGeminiCompatibleProvider,
+  createGeminiOAuthProvider,
+} from './gemini-provider';
 import { prepareProviderRequest } from './request-budget';
-import { normalizeProviderUsageRust } from '../rag/rust-core';
-import type { CustomOpenAIProviderConfig, ProviderConfig, ProviderStrategyKey } from '../settings';
+import { normalizeProviderUsageRust, planChatGPTRust } from '../rag/rust-core';
+import type {
+  CustomOpenAIProviderConfig,
+  ProviderApiFormat,
+  ProviderConfig,
+  ProviderStrategyKey,
+} from '../settings';
+import {
+  buildOpenCodeEndpoint,
+  buildProviderApiEndpoint,
+  isLocalOllamaBaseUrl,
+  normalizeProviderApiFormat,
+} from './provider-api-format';
 import {
   REASONING_EXTRACTORS,
   createStreamingReasoningSink,
@@ -34,6 +50,8 @@ export interface ChatMessage {
 export interface ToolCallInfo {
   id: string;
   type: 'function';
+  /** Gemini thought signature. 다른 provider는 무시합니다. */
+  thoughtSignature?: string;
   function: {
     name: string;
     arguments: string;
@@ -45,6 +63,7 @@ export interface ToolCallDelta {
   index: number;
   id?: string;
   type?: 'function';
+  thoughtSignature?: string;
   function?: {
     name?: string;
     arguments?: string;
@@ -278,6 +297,7 @@ class OpenAICompatibleProvider implements LLMProvider {
   protected endpoint: string;
   protected modelOverride?: string;
   protected reasoningExtractor: ReasoningExtractor;
+  private extraHeaders: Record<string, string>;
 
   constructor(
     config: ProviderConfig,
@@ -286,11 +306,13 @@ class OpenAICompatibleProvider implements LLMProvider {
     reasoningExtractor?: ReasoningExtractor,
     useRequestUrl = false,
     capability?: ProviderCapabilitySnapshot,
+    extraHeaders: Record<string, string> = {},
   ) {
     this.config = config;
     this.endpoint = endpointOverride ?? OPENAI_CHAT_COMPLETIONS_URL;
     this.modelOverride = modelOverride;
     this.reasoningExtractor = reasoningExtractor ?? REASONING_EXTRACTORS.default;
+    this.extraHeaders = extraHeaders;
     this.capability =
       capability ??
       resolveProviderCapability({
@@ -393,6 +415,7 @@ class OpenAICompatibleProvider implements LLMProvider {
   protected buildHeaders(): Record<string, string> {
     const h: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...this.extraHeaders,
     };
     if (this.config.apiKey) {
       h.Authorization = `Bearer ${this.config.apiKey}`;
@@ -467,25 +490,156 @@ class OpenAICompatibleProvider implements LLMProvider {
   }
 }
 
-/* ---------- Claude (Anthropic Messages API) ---------- */
+/* ---------- OpenAI Responses API ---------- */
 
-class ClaudeProvider implements LLMProvider {
+class OpenAIResponsesProvider implements LLMProvider {
   readonly capability: ProviderCapabilitySnapshot;
   private observedModel: string | undefined;
 
   getObservedModel(): string | undefined {
     return this.observedModel;
   }
-  private config: ProviderConfig;
-  private modelOverride?: string;
 
   constructor(
-    config: ProviderConfig,
-    modelOverride?: string,
+    private readonly config: ProviderConfig,
+    private readonly endpoint: string,
+    private readonly modelOverride?: string,
+    capability?: ProviderCapabilitySnapshot,
+    private readonly extraHeaders: Record<string, string> = {},
+  ) {
+    this.capability =
+      capability ??
+      resolveProviderCapability({
+        providerKey: 'openai',
+        model: this.modelOverride ?? this.config.models[0] ?? '',
+      });
+  }
+
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...this.extraHeaders,
+    };
+    if (this.config.apiKey) headers.Authorization = `Bearer ${this.config.apiKey}`;
+    return headers;
+  }
+
+  private buildBody(
+    messages: ChatMessage[],
+    tools?: ToolDefinition[],
+    options?: ChatOptions,
+  ): Record<string, unknown> {
+    messages = prepareProviderRequest(
+      messages,
+      this.capability.toolCalling ? tools : undefined,
+      options?.inputBudgetBytes,
+    ).messages;
+    const body = planChatGPTRust<Record<string, unknown>>({
+      operation: 'request',
+      api: 'responses',
+      model: this.modelOverride ?? this.config.models[0] ?? '',
+      messages,
+      tools: this.capability.toolCalling ? (tools ?? []) : [],
+      toolChoice: this.capability.toolCalling ? (options?.toolChoice ?? 'auto') : 'none',
+      ...(options?.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+    });
+    if (!body) throw new Error('Responses request could not be prepared');
+    return body;
+  }
+
+  async chat(
+    messages: ChatMessage[],
+    _temperature = 0.7,
+    tools?: ToolDefinition[],
+    options?: ChatOptions,
+  ): Promise<string> {
+    throwIfChatAborted(options?.signal);
+    const res = await requestUrl({
+      url: this.endpoint,
+      method: 'POST',
+      headers: this.buildHeaders(),
+      body: JSON.stringify(this.buildBody(messages, tools, options)),
+      throw: false,
+    });
+    if (res.status >= 400) throw createProviderHttpError('Responses chat failed', res);
+    const result = planChatGPTRust<StreamChunk & { model?: string }>({
+      operation: 'response',
+      text: res.text,
+    });
+    if (!result?.content) throw new Error('Responses chat returned no text');
+    this.observedModel = result.model ?? this.observedModel;
+    throwIfChatAborted(options?.signal);
+    return result.content;
+  }
+
+  async streamChat(
+    messages: ChatMessage[],
+    onChunk: (chunk: StreamChunk) => void,
+    _temperature = 0.7,
+    tools?: ToolDefinition[],
+    options?: StreamChatOptions,
+  ): Promise<void> {
+    throwIfChatAborted(options?.signal);
+    const res = await requestProviderStream(
+      this.endpoint,
+      this.buildHeaders(),
+      this.buildBody(messages, tools, options),
+      options?.signal,
+    );
+    let content = '';
+    let reasoning = '';
+    let raw = '';
+    await consumeDesktopStream(
+      res,
+      'sse',
+      (data) => {
+        raw += `data: ${data}\n\n`;
+        const chunk = planChatGPTRust<StreamChunk & { error?: boolean }>({
+          operation: 'stream-event',
+          data,
+        });
+        if (!chunk || chunk.error) throw new Error('Responses stream failed');
+        if (chunk.content || chunk.reasoning) {
+          content += chunk.content;
+          reasoning += chunk.reasoning ?? '';
+          onChunk(chunk);
+        }
+        return chunk.done;
+      },
+      options?.signal,
+    );
+    const result = planChatGPTRust<StreamChunk & { model?: string }>({
+      operation: 'stream-tail',
+      text: raw,
+      content,
+      reasoning,
+    });
+    if (!result) throw new Error('Responses stream could not be reconciled');
+    this.observedModel = result.model ?? this.observedModel;
+    if (result.content || result.reasoning || (result.toolCalls?.length ?? 0) > 0) {
+      onChunk({ ...result, done: false });
+    }
+    onChunk({ content: '', done: true });
+  }
+}
+
+/* ---------- Anthropic Messages API ---------- */
+
+class AnthropicMessagesProvider implements LLMProvider {
+  readonly capability: ProviderCapabilitySnapshot;
+  private observedModel: string | undefined;
+
+  getObservedModel(): string | undefined {
+    return this.observedModel;
+  }
+
+  constructor(
+    private readonly config: ProviderConfig,
+    private readonly endpoint: string,
+    private readonly headers: Record<string, string>,
+    private readonly modelOverride?: string,
     capability?: ProviderCapabilitySnapshot,
   ) {
-    this.config = config;
-    this.modelOverride = modelOverride;
     this.capability =
       capability ??
       resolveProviderCapability({
@@ -494,8 +648,45 @@ class ClaudeProvider implements LLMProvider {
       });
   }
 
-  private normalizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
-    return normalizeForClaude(messages);
+  private buildHeaders(): Record<string, string> {
+    return { 'Content-Type': 'application/json', ...this.headers };
+  }
+
+  private buildBody(
+    messages: ChatMessage[],
+    temperature: number,
+    stream: boolean,
+    tools?: ToolDefinition[],
+    options?: ChatOptions,
+  ): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: this.modelOverride ?? this.config.models[0] ?? '',
+      max_tokens: options?.maxOutputTokens ?? 4096,
+      temperature,
+      ...(stream ? { stream: true } : {}),
+      messages: normalizeForClaude(
+        prepareProviderRequest(
+          messages,
+          this.capability.toolCalling ? tools : undefined,
+          options?.inputBudgetBytes,
+        ).messages,
+      ),
+      system: messages
+        .filter((message) => message.role === 'system')
+        .map((message) => message.content)
+        .join('\n'),
+    };
+    if (this.capability.toolCalling && tools && tools.length > 0) {
+      body.tools = tools.map((tool) => ({
+        name: tool.function.name,
+        description: tool.function.description,
+        input_schema: tool.function.parameters,
+      }));
+      if (options?.toolChoice) {
+        body.tool_choice = mapClaudeToolChoice(options.toolChoice);
+      }
+    }
+    return body;
   }
 
   async chat(
@@ -505,46 +696,14 @@ class ClaudeProvider implements LLMProvider {
     options?: ChatOptions,
   ): Promise<string> {
     throwIfChatAborted(options?.signal);
-    const body: Record<string, unknown> = {
-      model: this.modelOverride ?? this.config.models[0] ?? '',
-      max_tokens: options?.maxOutputTokens ?? 4096,
-      temperature,
-      messages: this.normalizeMessages(
-        prepareProviderRequest(
-          messages,
-          this.capability.toolCalling ? tools : undefined,
-          options?.inputBudgetBytes,
-        ).messages,
-      ),
-      system: messages
-        .filter((m) => m.role === 'system')
-        .map((message) => message.content)
-        .join('\n'),
-    };
-    if (this.capability.toolCalling && tools && tools.length > 0) {
-      body.tools = tools.map((t) => ({
-        name: t.function.name,
-        description: t.function.description,
-        input_schema: t.function.parameters,
-      }));
-      if (options?.toolChoice) {
-        body.tool_choice = mapClaudeToolChoice(options.toolChoice);
-      }
-    }
     const res = await requestUrl({
-      url: ANTHROPIC_MESSAGES_URL,
+      url: this.endpoint,
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify(body),
+      headers: this.buildHeaders(),
+      body: JSON.stringify(this.buildBody(messages, temperature, false, tools, options)),
       throw: false,
     });
-    if (res.status >= 400) {
-      throw createProviderHttpError('Claude chat failed', res);
-    }
+    if (res.status >= 400) throw createProviderHttpError('Messages chat failed', res);
     const data = res.json as {
       model?: string;
       content?: Array<{ type: string; text?: string }>;
@@ -553,7 +712,7 @@ class ClaudeProvider implements LLMProvider {
     throwIfChatAborted(options?.signal);
     const usage = normalizeProviderUsageRust('claude', data);
     if (usage) options?.onUsage?.(usage);
-    return data.content?.find((c) => c.type === 'text')?.text ?? '';
+    return data.content?.find((part) => part.type === 'text')?.text ?? '';
   }
 
   async streamChat(
@@ -564,41 +723,10 @@ class ClaudeProvider implements LLMProvider {
     options?: StreamChatOptions,
   ): Promise<void> {
     throwIfChatAborted(options?.signal);
-    const body: Record<string, unknown> = {
-      model: this.modelOverride ?? this.config.models[0] ?? '',
-      max_tokens: options?.maxOutputTokens ?? 4096,
-      temperature,
-      stream: true,
-      messages: this.normalizeMessages(
-        prepareProviderRequest(
-          messages,
-          this.capability.toolCalling ? tools : undefined,
-          options?.inputBudgetBytes,
-        ).messages,
-      ),
-      system: messages
-        .filter((m) => m.role === 'system')
-        .map((message) => message.content)
-        .join('\n'),
-    };
-    if (this.capability.toolCalling && tools && tools.length > 0) {
-      body.tools = tools.map((t) => ({
-        name: t.function.name,
-        description: t.function.description,
-        input_schema: t.function.parameters,
-      }));
-      if (options?.toolChoice) {
-        body.tool_choice = mapClaudeToolChoice(options.toolChoice);
-      }
-    }
     const res = await requestProviderStream(
-      ANTHROPIC_MESSAGES_URL,
-      {
-        'Content-Type': 'application/json',
-        'x-api-key': this.config.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body,
+      this.endpoint,
+      this.buildHeaders(),
+      this.buildBody(messages, temperature, true, tools, options),
       options?.signal,
     );
     await consumeDesktopStream(
@@ -621,7 +749,7 @@ class ClaudeProvider implements LLMProvider {
         };
         if (event.type === 'error') {
           throw new LLMProviderHttpError(
-            event.error?.message ?? 'Claude stream failed',
+            event.error?.message ?? 'Messages stream failed',
             event.error?.type === 'overloaded_error' ? 529 : 502,
           );
         }
@@ -705,7 +833,7 @@ class OllamaProvider implements LLMProvider {
       'Content-Type': 'application/json',
     };
     const baseUrl = normalizeOllamaBaseUrl(this.config.baseUrl ?? OLLAMA_LOCAL_BASE_URL);
-    if (baseUrl !== OLLAMA_LOCAL_BASE_URL && this.config.apiKey) {
+    if (!isLocalOllamaBaseUrl(baseUrl) && this.config.apiKey) {
       h.Authorization = `Bearer ${this.config.apiKey}`;
     }
     return h;
@@ -889,20 +1017,118 @@ function normalizeOllamaBaseUrl(baseUrl: string): string {
   return url.replace(/\/+$/, '');
 }
 
-function normalizeOpenAICompatibleBaseUrl(baseUrl: string): string {
-  let url = baseUrl.trim().replace(/\/+$/, '');
-  if (url.endsWith('/chat/completions')) {
-    url = url.slice(0, -17);
-  }
-  if (!url.endsWith('/v1')) {
-    url = `${url}/v1`;
-  }
-  return url.replace(/\/+$/, '');
-}
-
 /* ---------- Provider Factory ---------- */
 
 export type ProviderKey = 'openai' | 'claude' | 'ollama' | 'ollamaCloud' | 'openRouter';
+
+function buildCompatAnthropicHeaders(config: ProviderConfig): Record<string, string> {
+  const apiKey = config.apiKey.trim();
+  return {
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey } : {}),
+    'anthropic-version': '2023-06-01',
+  };
+}
+
+function buildOpenCodeSessionHeader(profileId: string): Record<string, string> {
+  const session = profileId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96) || 'profile';
+  return { 'x-opencode-session': `ses_${session}` };
+}
+
+function createOpenCodeProvider(
+  config: ProviderConfig,
+  modelOverride: string | undefined,
+  profileId: string,
+): LLMProvider {
+  const format = normalizeProviderApiFormat(config.apiFormat) ?? 'responses';
+  const model = modelOverride ?? config.models[0] ?? '';
+  const capability = resolveProviderCapability({ providerKey: 'opencode', model });
+  const sessionHeaders = buildOpenCodeSessionHeader(profileId);
+  if (format === 'messages') {
+    return new AnthropicMessagesProvider(
+      config,
+      buildOpenCodeEndpoint(config.baseUrl, 'messages'),
+      { ...buildCompatAnthropicHeaders(config), ...sessionHeaders },
+      modelOverride,
+      capability,
+    );
+  }
+  if (format === 'responses') {
+    return new OpenAIResponsesProvider(
+      config,
+      buildOpenCodeEndpoint(config.baseUrl, 'responses'),
+      modelOverride,
+      capability,
+      sessionHeaders,
+    );
+  }
+  if (format === 'gemini') {
+    return createGeminiCompatibleProvider({
+      model,
+      apiKey: config.apiKey,
+      endpointBuilder: (stream) =>
+        buildOpenCodeEndpoint(config.baseUrl, 'gemini', model, stream),
+      extraHeaders: sessionHeaders,
+      capability,
+    });
+  }
+  return new OpenAICompatibleProvider(
+    config,
+    buildOpenCodeEndpoint(config.baseUrl, 'chat'),
+    modelOverride,
+    REASONING_EXTRACTORS.openRouter,
+    false,
+    capability,
+    sessionHeaders,
+  );
+}
+
+function createCustomProviderWithFormat(
+  config: CustomOpenAIProviderConfig,
+  format: ProviderApiFormat,
+  modelOverride?: string,
+): LLMProvider {
+  const endpoint = buildProviderApiEndpoint(config.baseUrl ?? '', format);
+  if (!endpoint) {
+    throw new Error('Custom endpoint provider requires a base URL.');
+  }
+  const useRequestUrl = config.useRequestUrl ?? true;
+  const model = modelOverride ?? config.models[0] ?? '';
+  const capability = resolveProviderCapability({
+    providerKey: `customOpenAI:${config.id}`,
+    model,
+    useRequestUrl,
+    overrides: config.capabilityOverrides,
+  });
+  if (format === 'messages') {
+    return new AnthropicMessagesProvider(
+      config,
+      endpoint,
+      buildCompatAnthropicHeaders(config),
+      modelOverride,
+      capability,
+    );
+  }
+  if (format === 'responses') {
+    return new OpenAIResponsesProvider(config, endpoint, modelOverride, capability);
+  }
+  if (format === 'gemini') {
+    return createGeminiCompatibleProvider({
+      model,
+      apiKey: config.apiKey,
+      endpointBuilder: (stream) =>
+        buildProviderApiEndpoint(config.baseUrl ?? '', 'gemini', model, stream),
+      capability,
+    });
+  }
+  return new OpenAICompatibleProvider(
+    config,
+    endpoint,
+    modelOverride,
+    REASONING_EXTRACTORS.openRouter,
+    useRequestUrl,
+    capability,
+  );
+}
 
 export function createProvider(
   key: ProviderKey,
@@ -915,21 +1141,29 @@ export function createProvider(
     case 'openai':
       return new OpenAICompatibleProvider(
         config,
-        OPENAI_CHAT_COMPLETIONS_URL,
+        config.baseUrl?.trim()
+          ? buildProviderApiEndpoint(config.baseUrl, 'chat')
+          : OPENAI_CHAT_COMPLETIONS_URL,
         modelOverride,
         REASONING_EXTRACTORS.openai,
         false,
         capability,
       );
     case 'claude':
-      return new ClaudeProvider(config, modelOverride, capability);
-    case 'ollama':
-      return new OllamaProvider(
-        { ...config, baseUrl: OLLAMA_LOCAL_BASE_URL },
+      return new AnthropicMessagesProvider(
+        config,
+        config.baseUrl?.trim()
+          ? buildProviderApiEndpoint(config.baseUrl, 'messages')
+          : ANTHROPIC_MESSAGES_URL,
+        {
+          'x-api-key': config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
         modelOverride,
-        false,
         capability,
       );
+    case 'ollama':
+      return new OllamaProvider(config, modelOverride, false, capability);
     case 'ollamaCloud':
       return new OllamaProvider(
         { ...config, baseUrl: OLLAMA_CLOUD_BASE_URL },
@@ -940,7 +1174,9 @@ export function createProvider(
     case 'openRouter':
       return new OpenAICompatibleProvider(
         config,
-        OPENROUTER_CHAT_COMPLETIONS_URL,
+        config.baseUrl?.trim()
+          ? buildProviderApiEndpoint(config.baseUrl, 'chat')
+          : OPENROUTER_CHAT_COMPLETIONS_URL,
         modelOverride,
         REASONING_EXTRACTORS.openRouter,
         false,
@@ -955,27 +1191,8 @@ export function createCustomOpenAIProvider(
   config: CustomOpenAIProviderConfig,
   modelOverride?: string,
 ): LLMProvider {
-  if (!config.baseUrl?.trim()) {
-    throw new Error('Custom OpenAI-compatible provider requires a base URL.');
-  }
-  const baseUrl = normalizeOpenAICompatibleBaseUrl(config.baseUrl ?? '');
-  const useRequestUrl = config.useRequestUrl ?? true;
-  const model = modelOverride ?? config.models[0] ?? '';
-  const providerKey = `customOpenAI:${config.id}`;
-  const capability = resolveProviderCapability({
-    providerKey,
-    model,
-    useRequestUrl,
-    overrides: config.capabilityOverrides,
-  });
-  return new OpenAICompatibleProvider(
-    config,
-    `${baseUrl}/chat/completions`,
-    modelOverride,
-    REASONING_EXTRACTORS.openRouter,
-    useRequestUrl,
-    capability,
-  );
+  const format = normalizeProviderApiFormat(config.apiFormat) ?? 'chat';
+  return createCustomProviderWithFormat(config, format, modelOverride);
 }
 
 export function createProviderForStrategy(
@@ -994,12 +1211,22 @@ export function createProviderForStrategy(
       config.capabilityOverrides,
     );
   }
+  if (key === 'opencode') {
+    return createOpenCodeProvider(config, modelOverride, config.id ?? profileId);
+  }
+  if (key === 'gemini') {
+    const model = modelOverride ?? config.models[0] ?? '';
+    const capability = resolveProviderCapability({ providerKey: 'gemini', model });
+    return config.geminiAuthMode === 'oauth'
+      ? createGeminiOAuthProvider(model, config.id ?? profileId, capability)
+      : createGeminiApiKeyProvider(model, config.apiKey, capability, config.baseUrl);
+  }
   if (key === 'openAICompatible') {
     return createCustomOpenAIProvider(
       {
         ...config,
         id: config.id ?? profileId,
-        name: config.name ?? 'OpenAI-Compatible',
+        name: config.name ?? 'Custom endpoint',
         useRequestUrl: config.useRequestUrl ?? true,
       },
       modelOverride,

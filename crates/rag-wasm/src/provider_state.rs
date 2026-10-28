@@ -54,14 +54,25 @@ struct ProviderModelInput<'a> {
     verification_status: &'a str,
 }
 
+/// 호스트가 판정한 API 키 상태.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ApiKeyState {
+    /// 이 연결은 API 키를 요구하지 않는다.
+    NotRequired,
+    /// API 키가 필요하지만 아직 설정되지 않았다.
+    Missing,
+    /// API 키가 설정됐다.
+    Present,
+}
+
 /// 상태 판정에 필요한 프로바이더 입력 스냅샷.
 struct ProviderInput<'a> {
     /// provider transport 전략 식별자.
     strategy: &'a str,
     /// 사용자가 연결을 활성화했는지 여부.
     enabled: bool,
-    /// 비어 있지 않은 API 키가 설정됐는지 여부.
-    api_key_configured: bool,
+    /// 호스트가 base URL까지 고려해 판정한 API 키 상태.
+    api_key: ApiKeyState,
     /// 비어 있지 않은 endpoint URL이 설정됐는지 여부.
     base_url_configured: bool,
     /// 프로바이더에 등록된 모델 스냅샷.
@@ -204,6 +215,17 @@ fn parse_provider(value: &JsonValue) -> Option<ProviderInput<'_>> {
     let strategy = object.get("strategy")?.as_str()?;
     let enabled = object.get("enabled")?.as_bool()?;
     let api_key_configured = object.get("apiKeyConfigured")?.as_bool()?;
+    let api_key_required = object
+        .get("apiKeyRequired")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or_else(|| requires_api_key(strategy));
+    let api_key = if !api_key_required {
+        ApiKeyState::NotRequired
+    } else if api_key_configured {
+        ApiKeyState::Present
+    } else {
+        ApiKeyState::Missing
+    };
     let base_url_configured = object.get("baseUrlConfigured")?.as_bool()?;
     let model_values = object.get("models")?.as_array()?;
     if strategy.trim().is_empty() {
@@ -233,7 +255,7 @@ fn parse_provider(value: &JsonValue) -> Option<ProviderInput<'_>> {
     Some(ProviderInput {
         strategy,
         enabled,
-        api_key_configured,
+        api_key,
         base_url_configured,
         models,
     })
@@ -244,7 +266,7 @@ fn provider_tone(provider: &ProviderInput<'_>) -> ProviderTone {
     if !provider.enabled {
         return ProviderTone::Disabled;
     }
-    if requires_api_key(provider.strategy) && !provider.api_key_configured {
+    if provider.api_key == ApiKeyState::Missing {
         return ProviderTone::NeedsKey;
     }
     if requires_base_url(provider.strategy) && !provider.base_url_configured {
@@ -276,7 +298,7 @@ fn provider_tone(provider: &ProviderInput<'_>) -> ProviderTone {
 /// 활성화와 strategy별 필수 연결 정보가 모두 충족됐는지 확인한다.
 fn is_connection_usable(provider: &ProviderInput<'_>) -> bool {
     provider.enabled
-        && (!requires_api_key(provider.strategy) || provider.api_key_configured)
+        && provider.api_key != ApiKeyState::Missing
         && (!requires_base_url(provider.strategy) || provider.base_url_configured)
 }
 
@@ -311,7 +333,7 @@ fn usable_model_values<'a>(
         .collect()
 }
 
-/// provider strategy가 비어 있지 않은 API 키를 요구하는지 확인한다.
+/// provider strategy의 기본 API 키 요구 여부. 호스트가 더 구체적인 값을 보내면 그 값을 쓴다.
 fn requires_api_key(strategy: &str) -> bool {
     !matches!(strategy, "ollama" | "openAICompatible" | "ternlight")
 }
@@ -529,5 +551,26 @@ mod tests {
             Some("needs-models")
         );
         assert_eq!(parsed.get("embeddingModelValues"), Some(&json!([])));
+    }
+
+    #[test]
+    fn provider_state_uses_host_api_key_requirement() {
+        let output = plan_provider_profile_state_json(
+            r#"{"strategy":"ollama","enabled":true,"apiKeyConfigured":false,"apiKeyRequired":true,"baseUrlConfigured":true,"models":[{"value":"profile:ollama:cloud","label":"Ollama / cloud","kind":"general","verificationStatus":"unknown"}]}"#,
+        );
+        let parsed = serde_json::from_str::<JsonValue>(&output).unwrap_or_default();
+        assert_eq!(
+            parsed.get("tone").and_then(JsonValue::as_str),
+            Some("needs-key")
+        );
+
+        let local = plan_provider_profile_state_json(
+            r#"{"strategy":"ollama","enabled":true,"apiKeyConfigured":false,"apiKeyRequired":false,"baseUrlConfigured":true,"models":[{"value":"profile:ollama:local","label":"Ollama / local","kind":"general","verificationStatus":"unknown"}]}"#,
+        );
+        let parsed = serde_json::from_str::<JsonValue>(&local).unwrap_or_default();
+        assert_eq!(
+            parsed.get("tone").and_then(JsonValue::as_str),
+            Some("configured")
+        );
     }
 }

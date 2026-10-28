@@ -81,7 +81,7 @@ For recurring work, use presets for research, study, meetings, writing, reflecti
 
 ### Choose the connection that fits your work
 
-Connect **ChatGPT browser sign-in, OpenAI API, Claude, Ollama, Ollama Cloud, OpenRouter, or an OpenAI-compatible server**, then pick a model. ChatGPT sign-in uses the Codex backend. Access and limits depend on your account.
+Connect **ChatGPT browser sign-in, Google Gemini, OpenCode, Claude, Ollama, OpenRouter, an OpenAI API key, or a custom endpoint**, then pick a model. ChatGPT sign-in is the default; OpenAI API keys are marked legacy. OpenCode and custom endpoints can serve models over the Responses, Chat Completions, Anthropic Messages, or native Gemini API, and each model is routed to a format it supports. Google Gemini supports a Google account sign-in or a Google AI Studio API key. ChatGPT browser sign-in and Gemini Google account sign-in use their subscription endpoints; other connections let you change the API root for a proxy or compatible server. Ollama uses its native API; change the endpoint URL to use a local server or Ollama Cloud. Access and limits depend on your account.
 
 Search and chat have separate data choices. **Local search and PDF OCR run on your device.** Remote chat and remote embeddings can send material to the chosen provider. To keep chat content on your device too, use a local chat provider and check the external tools you enable.
 
@@ -101,8 +101,11 @@ API keys and ChatGPT credentials are stored in **Obsidian's secret storage on th
 <details>
 <summary><strong>Connection and manual installation</strong></summary>
 
-- **ChatGPT:** add an **OpenAI ChatGPT (OAuth)** connection and choose **Sign in with ChatGPT**. Finish browser sign-in, fetch or add an available model, and run its generation test. Use a separate embedding connection, such as a built-in local model, for meaning-based search.
-- **API keys:** choose **OpenAI API** for an OpenAI API key, or the matching provider for another service.
+- **ChatGPT:** choose **ChatGPT — browser OAuth** (the default), then **Sign in with ChatGPT**. Finish browser sign-in, fetch or add an available model, and run its generation test. Use a separate embedding connection, such as a built-in local model, for meaning-based search.
+- **Google Gemini:** choose **Google Gemini**, then use a Google AI Studio API key or **Google account sign-in**. Google account sign-in uses Cloud Code Assist and may require a linked Google Cloud project.
+- **OpenCode:** choose **OpenCode** and enter your Console API key. The default endpoint is `https://opencode.ai/inference`; for the Go plan use `https://opencode.ai/inference/go`. Pick a default API format if you want, but imported models can use their own supported format.
+- **Ollama:** choose **Ollama** and set the endpoint to `http://localhost:11434` or `https://ollama.com`. Remote endpoints need an API key.
+- **API keys:** **OpenAI API** is the legacy Chat Completions connection. For Command Code or another gateway, choose **Custom endpoint**, enter its API root, and select the API format.
 - **Manual installation:** put all runtime files from the [latest release](https://github.com/magnitus99/Superpower-Inside/releases/latest) in `.obsidian/plugins/superpower-inside/`, then reload and enable the plugin. Keep `THIRD_PARTY_NOTICES.md` with them. Missing PDF processing files are downloaded automatically when needed, which requires internet access.
 
 </details>
@@ -192,7 +195,7 @@ PDF 본문이 있으면 그것을 사용합니다. 스캔은 내 기기에서 �
 
 ### 내 작업에 맞는 연결을 선택하세요
 
-**ChatGPT 브라우저 로그인·OpenAI API·Claude·Ollama·Ollama Cloud·OpenRouter·OpenAI 호환 서버**를 연결하고 모델을 선택하세요. ChatGPT 로그인은 Codex 서버를 사용합니다. 모델 접근 권한과 사용 한도는 계정에 따라 다릅니다.
+**ChatGPT 브라우저 로그인·Google Gemini·OpenCode·Claude·Ollama·OpenRouter·OpenAI API 키·사용자 지정 엔드포인트**를 연결하고 모델을 선택하세요. ChatGPT 브라우저 로그인이 기본이며, OpenAI API 키는 레거시로 표시됩니다. OpenCode와 사용자 지정 엔드포인트는 Responses·Chat Completions·Anthropic Messages·Gemini 네이티브 형식을 지원하고 모델별로 지원 형식을 자동 선택합니다. Google Gemini는 Google 계정 로그인 또는 Google AI Studio API 키를 지원합니다. ChatGPT 브라우저 로그인과 Gemini Google 계정 로그인은 구독 endpoint를 사용하고, 나머지 연결은 프록시나 호환 서버를 위해 API 루트를 바꿀 수 있습니다. Ollama는 네이티브 API를 사용하며 endpoint를 바꿔 로컬 서버나 Ollama Cloud에 연결할 수 있습니다. 모델 접근 권한과 사용 한도는 계정에 따라 다릅니다.
 
 검색과 채팅의 데이터 처리 위치는 각각 선택합니다. **로컬 검색과 PDF OCR은 내 기기에서 실행됩니다.** 원격 채팅과 원격 임베딩은 선택한 제공자에게 자료를 보낼 수 있습니다. 채팅 내용도 기기 안에 두려면 로컬 채팅 제공자를 사용하고, 활성화한 외부 도구도 확인하세요.
 
@@ -212,8 +215,11 @@ API 키와 ChatGPT 자격 증명은 볼트와 동기화되는 플러그인 설�
 <details>
 <summary><strong>연결과 수동 설치</strong></summary>
 
-- **ChatGPT:** **OpenAI ChatGPT (OAuth)** 연결을 추가하고 **ChatGPT로 로그인**을 누르세요. 브라우저 로그인을 마친 뒤 사용 가능한 모델을 가져오거나 추가하고 생성 테스트를 실행하세요. 의미 검색에는 내장 로컬 모델 등 별도 임베딩 연결을 사용합니다.
-- **API 키:** OpenAI API 키는 **OpenAI API**를, 다른 서비스의 키는 해당 제공자를 선택하세요.
+- **ChatGPT:** 기본값인 **ChatGPT — 브라우저 OAuth**를 선택하고 **ChatGPT로 로그인**을 누르세요. 브라우저 로그인을 마친 뒤 사용 가능한 모델을 가져오거나 추가하고 생성 테스트를 실행하세요. 의미 검색에는 내장 로컬 모델 등 별도 임베딩 연결을 사용합니다.
+- **Google Gemini:** **Google Gemini**를 선택한 뒤 Google AI Studio API 키 또는 **Google 계정 로그인**을 사용하세요. Google 계정 로그인은 Cloud Code Assist를 사용하며 연결된 Google Cloud 프로젝트가 필요할 수 있습니다.
+- **OpenCode:** **OpenCode**를 선택하고 Console API 키를 입력하세요. 기본 endpoint는 `https://opencode.ai/inference`이며, Go 플랜은 `https://opencode.ai/inference/go`를 사용합니다. 기본 API 형식을 고를 수 있지만, 가져온 모델은 지원하는 형식을 자동으로 사용합니다.
+- **Ollama:** **Ollama**를 선택하고 endpoint를 `http://localhost:11434` 또는 `https://ollama.com`으로 설정하세요. 원격 endpoint에는 API 키가 필요합니다.
+- **API 키:** **OpenAI API**는 레거시 Chat Completions 연결입니다. Command Code 같은 게이트웨이는 **사용자 지정 엔드포인트**를 선택하고 API 루트와 API 형식을 입력하세요.
 - **수동 설치:** [최신 릴리스](https://github.com/magnitus99/Superpower-Inside/releases/latest)의 런타임 파일 전체를 `.obsidian/plugins/superpower-inside/`에 넣고 플러그인을 다시 불러와 활성화하세요. `THIRD_PARTY_NOTICES.md`도 함께 보관하세요. PDF 처리 파일이 없으면 필요할 때 자동으로 내려받으며, 이때 인터넷 연결이 필요합니다.
 
 </details>

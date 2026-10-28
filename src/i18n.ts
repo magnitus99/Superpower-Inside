@@ -1314,6 +1314,63 @@ export interface I18nKeys {
   providerCustomDockTitle: string;
   providerCustomDockDesc: string;
   providerStrategyLabel: string;
+  providerStrategyDesc: string;
+  providerOpenAIApiLegacy: string;
+  providerOllamaCloudLegacy: string;
+  providerCustomEndpointLabel: string;
+  providerStrategyChatGPTDesc: string;
+  providerStrategyOpenCodeDesc: string;
+  providerStrategyClaudeDesc: string;
+  providerStrategyOllamaDesc: string;
+  providerStrategyOpenRouterDesc: string;
+  providerStrategyOpenAIDesc: string;
+  providerStrategyCustomDesc: string;
+  providerStrategyOllamaCloudDesc: string;
+  providerStrategyTernlightDesc: string;
+  providerApiFormatLabel: string;
+  providerApiFormatDesc: string;
+  providerApiFormatResponses: string;
+  providerApiFormatChat: string;
+  providerApiFormatMessages: string;
+  providerApiFormatGemini: string;
+  providerGeminiLabel: string;
+  providerStrategyGeminiDesc: string;
+  providerGeminiSetup: string;
+  providerGeminiEndpointFixed: string;
+  geminiAuthModeLabel: string;
+  geminiAuthModeDesc: string;
+  geminiAuthModeApiKey: string;
+  geminiAuthModeOAuth: string;
+  geminiOAuthSignIn: string;
+  geminiOAuthDisconnect: string;
+  geminiOAuthDisconnected: string;
+  geminiOAuthConnected: string;
+  geminiOAuthPending: string;
+  geminiOAuthOpenBrowser: string;
+  geminiOAuthCancel: string;
+  geminiOAuthCancelled: string;
+  geminiOAuthRequired: string;
+  geminiOAuthUnavailable: string;
+  geminiOAuthTimeout: string;
+  geminiOAuthFailed: string;
+  geminiOAuthInvalidCallback: string;
+  geminiOAuthBrowserDone: string;
+  geminiOAuthHttpError: string;
+  geminiOAuthProjectFailed: string;
+  geminiOAuthProjectRequired: string;
+  geminiRequestFailed: string;
+  geminiResponseInvalid: string;
+  providerPickerRecommended: string;
+  providerPickerLegacy: string;
+  providerOpenCodeBaseUrlDesc: string;
+  providerOllamaBaseUrlDesc: string;
+  providerOpenAIBaseUrlDesc: string;
+  providerClaudeBaseUrlDesc: string;
+  providerOpenRouterBaseUrlDesc: string;
+  providerGeminiBaseUrlDesc: string;
+  providerOllamaApiKeyDesc: string;
+  providerCustomBaseUrlDesc: string;
+  providerChatGPTEndpointFixed: string;
   providerChatGPTLabel: string;
   providerChatGPTSetup: string;
   chatGPTOAuthSignIn: string;
@@ -1332,7 +1389,6 @@ export interface I18nKeys {
   chatGPTOAuthBrowserDone: string;
   chatGPTOAuthHttpError: string;
   chatGPTResponseInvalid: string;
-  providerStrategyDesc: string;
   providerBaseUrl: string;
   providerGeneralModels: string;
   providerEmbeddingModels: string;
@@ -3154,7 +3210,8 @@ const ko: I18nKeys = {
   providerAttentionTitle: '{provider} 설정을 마무리하세요',
   providerContinueSetup: '설정 계속',
   providerAddTitle: '새 프로바이더 연결',
-  providerAddDesc: 'OpenAI, Claude, Ollama, OpenRouter 또는 OpenAI 호환 서버를 추가합니다.',
+  providerAddDesc:
+    'ChatGPT 브라우저 로그인이 기본입니다. OpenAI API 키 방식은 레거시로 표시되며, Google Gemini·OpenCode·Claude·Ollama·OpenRouter·사용자 지정 엔드포인트를 선택할 수 있습니다.',
   providerConnectionsSectionTitle: '연결 목록',
   providerConnectionsSectionDesc: '프로바이더를 펼쳐 연결 정보와 사용할 모델을 관리합니다.',
   providerConnectionsEmpty: '연결된 프로바이더가 없습니다. 위에서 새 연결을 추가하세요.',
@@ -3224,7 +3281,83 @@ const ko: I18nKeys = {
   providerCustomDockTitle: '사용자 지정 OpenAI 호환',
   providerCustomDockDesc: '로컬 서버나 사내 OpenAI 호환 서버를 연결합니다.',
   providerStrategyLabel: '프로바이더 종류',
-  providerChatGPTLabel: 'OpenAI ChatGPT (OAuth)',
+  providerStrategyDesc: '이 프로필이 어떤 API 방식으로 연결할지 선택합니다.',
+  providerOpenAIApiLegacy: 'OpenAI API (레거시)',
+  providerOllamaCloudLegacy: 'Ollama Cloud (레거시)',
+  providerCustomEndpointLabel: '사용자 지정 엔드포인트',
+  providerStrategyChatGPTDesc:
+    '브라우저에서 ChatGPT 계정으로 로그인해 구독으로 GPT 모델을 사용합니다. 별도 API 키가 필요 없으며 기본 연결입니다.',
+  providerStrategyOpenCodeDesc:
+    'OpenCode Console의 OpenAI·Anthropic 호환 게이트웨이입니다. 한 프로필에서 모델별로 Responses·Chat·Messages 형식을 자동 선택합니다.',
+  providerStrategyClaudeDesc: 'Anthropic Claude API를 Messages 형식으로 연결합니다.',
+  providerStrategyOllamaDesc:
+    'Ollama의 네이티브 API를 사용합니다. base URL을 바꿔 로컬 서버와 Ollama Cloud를 함께 사용할 수 있습니다.',
+  providerStrategyOpenRouterDesc: 'OpenRouter의 OpenAI 호환 Chat Completions API를 사용합니다.',
+  providerStrategyOpenAIDesc:
+    'OpenAI API 키로 Chat Completions를 호출하는 레거시 방식입니다. 새 연결에는 ChatGPT 브라우저 로그인을 권장합니다.',
+  providerStrategyCustomDesc:
+    'OpenAI·Anthropic 호환이나 Responses API를 제공하는 서버를 직접 연결합니다. Command Code 같은 외부 게이트웨이도 여기서 사용합니다.',
+  providerStrategyOllamaCloudDesc: '이전 Ollama Cloud 연결입니다. Ollama로 통합되었습니다.',
+  providerStrategyTernlightDesc: '로컬 임베딩 전용 프로바이더입니다.',
+  providerApiFormatLabel: '기본 API 형식',
+  providerApiFormatDesc:
+    '모델 목록이 지원 형식을 알려 주면 모델별 형식이 우선합니다. 알려 주지 않으면 이 프로필의 모든 모델에 이 형식을 사용합니다.',
+  providerApiFormatResponses: 'Responses API',
+  providerApiFormatChat: 'Chat Completions',
+  providerApiFormatMessages: 'Anthropic Messages',
+  providerApiFormatGemini: 'Gemini API',
+  providerGeminiLabel: 'Google Gemini',
+  providerStrategyGeminiDesc:
+    'Gemini 네이티브 API를 사용합니다. Google 계정으로 로그인하거나 Google AI Studio API 키를 사용할 수 있습니다.',
+  providerGeminiSetup:
+    'Google AI Studio API 키를 입력하거나 Google 계정으로 로그인한 뒤 모델을 가져오세요. 계정 로그인은 Cloud Code Assist 프로젝트를 사용합니다.',
+  providerGeminiEndpointFixed:
+    'Google AI Studio 또는 Google 계정 로그인 전용 endpoint로 연결합니다. endpoint를 직접 바꾸지 않습니다.',
+  geminiAuthModeLabel: 'Gemini 인증',
+  geminiAuthModeDesc: 'Google 계정 로그인은 Cloud Code Assist를 사용하고, API 키는 Google AI Studio를 사용합니다.',
+  geminiAuthModeApiKey: 'Google AI Studio API 키',
+  geminiAuthModeOAuth: 'Google 계정 로그인',
+  geminiOAuthSignIn: 'Google로 로그인',
+  geminiOAuthDisconnect: '연결 해제',
+  geminiOAuthDisconnected: '브라우저에서 Google 계정으로 로그인하면 자동으로 연결됩니다.',
+  geminiOAuthConnected:
+    'Google 계정이 연결되었습니다. 모델을 가져오거나 추가한 뒤 채팅에서 선택하세요.',
+  geminiOAuthPending: '브라우저에서 Google 로그인을 완료하세요. 완료되면 자동으로 연결됩니다.',
+  geminiOAuthOpenBrowser: '로그인 주소 열기',
+  geminiOAuthCancel: '로그인 취소',
+  geminiOAuthCancelled: '로그인을 취소했습니다.',
+  geminiOAuthRequired: '먼저 Google 계정으로 로그인하세요.',
+  geminiOAuthUnavailable: 'Google 로그인 콜백을 열 수 없습니다. 플러그인을 다시 로드하고 재시도하세요.',
+  geminiOAuthTimeout: 'Google 로그인 대기 시간이 지났습니다. 다시 로그인하세요.',
+  geminiOAuthFailed: 'Google 로그인에 실패했습니다. 다시 로그인하세요.',
+  geminiOAuthInvalidCallback: '유효하지 않은 Google 로그인 응답입니다. 원래 로그인 창에서 완료하세요.',
+  geminiOAuthBrowserDone: 'Google Gemini 연결이 완료되었습니다. Obsidian으로 돌아가세요.',
+  geminiOAuthHttpError: 'Google 인증 요청 실패 (HTTP {status}). 다시 로그인하세요.',
+  geminiOAuthProjectFailed: 'Google Cloud Code Assist 프로젝트를 확인하지 못했습니다.',
+  geminiOAuthProjectRequired:
+    'Google 계정에 연결된 Gemini 프로젝트가 없습니다. Google Cloud 프로젝트를 설정하거나 API 키 연결을 사용하세요.',
+  geminiRequestFailed: 'Gemini 요청에 실패했습니다',
+  geminiResponseInvalid: 'Gemini 응답을 확인할 수 없습니다. 모델과 형식을 확인하세요.',
+  providerPickerRecommended: '기본',
+  providerPickerLegacy: '레거시',
+  providerOpenCodeBaseUrlDesc:
+    '기본값은 https://opencode.ai/inference 입니다. Go 플랜은 https://opencode.ai/inference/go 를 사용하세요.',
+  providerOllamaBaseUrlDesc:
+    '로컬은 http://localhost:11434, Ollama Cloud는 https://ollama.com 을 사용합니다. 원격 주소에는 API 키가 필요합니다.',
+  providerOpenAIBaseUrlDesc:
+    '기본값은 https://api.openai.com 입니다. 프록시나 호환 서버를 사용하면 API 루트로 바꾸세요.',
+  providerClaudeBaseUrlDesc:
+    '기본값은 https://api.anthropic.com 입니다. Anthropic 호환 프록시의 API 루트로 바꿀 수 있습니다.',
+  providerOpenRouterBaseUrlDesc:
+    '기본값은 https://openrouter.ai/api 입니다. 호환 프록시를 사용하면 API 루트로 바꾸세요.',
+  providerGeminiBaseUrlDesc:
+    '기본값은 https://generativelanguage.googleapis.com/v1beta 입니다. Gemini 호환 endpoint의 API 루트로 바꿀 수 있습니다.',
+  providerOllamaApiKeyDesc: '로컬 서버에서는 비워 둘 수 있고, Ollama Cloud나 원격 서버에서는 필요합니다.',
+  providerCustomBaseUrlDesc:
+    'API 루트를 입력하세요. /chat/completions, /responses, /messages 같은 경로가 붙어 있으면 자동으로 정리합니다.',
+  providerChatGPTEndpointFixed:
+    'ChatGPT 브라우저 로그인 전용 백엔드로 연결합니다. endpoint를 직접 바꾸지 않습니다.',
+  providerChatGPTLabel: 'ChatGPT — 브라우저 OAuth',
   providerChatGPTSetup:
     '브라우저에서 ChatGPT로 로그인하세요. 외부 중계 서버나 API 키 없이 구독으로 GPT 모델을 사용합니다. 구독 사용 한도가 적용되며 임베딩은 별도 연결이 필요합니다.',
   chatGPTOAuthSignIn: 'ChatGPT로 로그인',
@@ -3246,7 +3379,6 @@ const ko: I18nKeys = {
     'ChatGPT 요청 실패 (HTTP {status}). 로그인 상태와 구독 사용 한도를 확인하세요.',
   chatGPTResponseInvalid:
     'ChatGPT 응답을 확인할 수 없습니다. 모델 지원 여부를 확인하고 다시 시도하세요.',
-  providerStrategyDesc: '이 프로필이 어떤 API 방식으로 연결할지 선택합니다.',
   providerBaseUrl: '엔드포인트 URL',
   providerGeneralModels: '채팅 모델',
   providerEmbeddingModels: '임베딩 모델',
@@ -5210,7 +5342,7 @@ const en: I18nKeys = {
   providerContinueSetup: 'Continue setup',
   providerAddTitle: 'Connect a new provider',
   providerAddDesc:
-    'Connect OpenAI, Claude, Ollama, OpenRouter, or another OpenAI-compatible endpoint.',
+    'ChatGPT browser sign-in is the default. OpenAI API keys are marked legacy; you can also choose Google Gemini, OpenCode, Claude, Ollama, OpenRouter, or a custom endpoint.',
   providerConnectionsSectionTitle: 'Connections',
   providerConnectionsSectionDesc: 'Expand a provider to manage its connection and models.',
   providerConnectionsEmpty: 'No provider connections are configured. Add one above.',
@@ -5283,7 +5415,87 @@ const en: I18nKeys = {
   providerCustomDockTitle: 'Custom OpenAI-compatible',
   providerCustomDockDesc: 'Connect local servers or internal OpenAI-compatible endpoints.',
   providerStrategyLabel: 'Provider type',
-  providerChatGPTLabel: 'OpenAI ChatGPT (OAuth)',
+  providerStrategyDesc: 'Choose how this profile connects to the model API.',
+  providerOpenAIApiLegacy: 'OpenAI API (legacy)',
+  providerOllamaCloudLegacy: 'Ollama Cloud (legacy)',
+  providerCustomEndpointLabel: 'Custom endpoint',
+  providerStrategyChatGPTDesc:
+    'Sign in with a ChatGPT account in the browser and use GPT models through the subscription. No API key is required; this is the default connection.',
+  providerStrategyOpenCodeDesc:
+    'OpenCode Console OpenAI and Anthropic-compatible gateway. One profile routes each model to Responses, Chat, or Messages automatically.',
+  providerStrategyClaudeDesc: 'Connect the Anthropic Claude API over Messages.',
+  providerStrategyOllamaDesc:
+    'Use the native Ollama API. Change the base URL to use a local server or Ollama Cloud in one profile.',
+  providerStrategyOpenRouterDesc: 'Use the OpenRouter OpenAI-compatible Chat Completions API.',
+  providerStrategyOpenAIDesc:
+    'Legacy OpenAI API key access over Chat Completions. Prefer ChatGPT browser sign-in for new connections.',
+  providerStrategyCustomDesc:
+    'Connect a server that speaks OpenAI, Anthropic, or the Responses API. External gateways such as Command Code work here.',
+  providerStrategyOllamaCloudDesc: 'Legacy Ollama Cloud connection. It has been merged into Ollama.',
+  providerStrategyTernlightDesc: 'Local embedding-only provider.',
+  providerApiFormatLabel: 'Default API format',
+  providerApiFormatDesc:
+    'A model-level format from the model list wins when available. Otherwise every model in this profile uses this format.',
+  providerApiFormatResponses: 'Responses API',
+  providerApiFormatChat: 'Chat Completions',
+  providerApiFormatMessages: 'Anthropic Messages',
+  providerApiFormatGemini: 'Gemini API',
+  providerGeminiLabel: 'Google Gemini',
+  providerStrategyGeminiDesc:
+    'Use the native Gemini API with a Google account sign-in or a Google AI Studio API key.',
+  providerGeminiSetup:
+    'Enter a Google AI Studio API key or sign in with Google, then fetch models. Account sign-in uses a Cloud Code Assist project.',
+  providerGeminiEndpointFixed:
+    'Connects to the Google AI Studio or Google account sign-in endpoint. The endpoint is not edited directly.',
+  geminiAuthModeLabel: 'Gemini authentication',
+  geminiAuthModeDesc:
+    'Google account sign-in uses Cloud Code Assist; an API key uses Google AI Studio.',
+  geminiAuthModeApiKey: 'Google AI Studio API key',
+  geminiAuthModeOAuth: 'Google account sign-in',
+  geminiOAuthSignIn: 'Sign in with Google',
+  geminiOAuthDisconnect: 'Disconnect',
+  geminiOAuthDisconnected: 'Sign in with a Google account in the browser to connect automatically.',
+  geminiOAuthConnected:
+    'Google account connected. Fetch or add a model, then select it in chat.',
+  geminiOAuthPending:
+    'Complete Google sign-in in your browser. The connection will finish automatically.',
+  geminiOAuthOpenBrowser: 'Open sign-in link',
+  geminiOAuthCancel: 'Cancel sign-in',
+  geminiOAuthCancelled: 'Sign-in cancelled.',
+  geminiOAuthRequired: 'Sign in with Google first.',
+  geminiOAuthUnavailable:
+    'Could not start the Google sign-in callback. Reload the plugin and retry.',
+  geminiOAuthTimeout: 'Google sign-in timed out. Please try again.',
+  geminiOAuthFailed: 'Google sign-in failed. Please try again.',
+  geminiOAuthInvalidCallback:
+    'Invalid Google sign-in response. Complete sign-in in the original browser window.',
+  geminiOAuthBrowserDone: 'Google Gemini is connected. You can return to Obsidian.',
+  geminiOAuthHttpError: 'Google sign-in request failed (HTTP {status}). Please sign in again.',
+  geminiOAuthProjectFailed: 'Could not resolve the Google Cloud Code Assist project.',
+  geminiOAuthProjectRequired:
+    'No Gemini project is linked to this Google account. Set a Google Cloud project or use an API key connection.',
+  geminiRequestFailed: 'Gemini request failed',
+  geminiResponseInvalid: 'Could not validate the Gemini response. Check the model and format.',
+  providerPickerRecommended: 'Default',
+  providerPickerLegacy: 'Legacy',
+  providerOpenCodeBaseUrlDesc:
+    'The default is https://opencode.ai/inference. For the Go plan use https://opencode.ai/inference/go.',
+  providerOllamaBaseUrlDesc:
+    'Use http://localhost:11434 locally or https://ollama.com for Ollama Cloud. Remote endpoints need an API key.',
+  providerOpenAIBaseUrlDesc:
+    'The default is https://api.openai.com. Change the API root when using a proxy or compatible server.',
+  providerClaudeBaseUrlDesc:
+    'The default is https://api.anthropic.com. You can point it at an Anthropic-compatible proxy API root.',
+  providerOpenRouterBaseUrlDesc:
+    'The default is https://openrouter.ai/api. Change the API root when using a compatible proxy.',
+  providerGeminiBaseUrlDesc:
+    'The default is https://generativelanguage.googleapis.com/v1beta. You can point it at a compatible Gemini API root.',
+  providerOllamaApiKeyDesc: 'Leave empty for a local server; required for Ollama Cloud or a remote server.',
+  providerCustomBaseUrlDesc:
+    'Enter the API root. A pasted /chat/completions, /responses, or /messages suffix is trimmed automatically.',
+  providerChatGPTEndpointFixed:
+    'Connects to the ChatGPT browser sign-in backend. The endpoint is not edited directly.',
+  providerChatGPTLabel: 'ChatGPT — browser OAuth',
   providerChatGPTSetup:
     'Sign in with ChatGPT in your browser to use GPT models with your subscription. No relay server or API key is needed. Subscription usage limits apply; use a separate connection for embeddings.',
   chatGPTOAuthSignIn: 'Sign in with ChatGPT',
@@ -5306,7 +5518,6 @@ const en: I18nKeys = {
     'ChatGPT request failed (HTTP {status}). Check your sign-in and subscription usage limits.',
   chatGPTResponseInvalid:
     'Could not validate the ChatGPT response. Check model availability and retry.',
-  providerStrategyDesc: 'Choose how this profile connects to the model API.',
   providerBaseUrl: 'Endpoint URL',
   providerGeneralModels: 'Chat models',
   providerEmbeddingModels: 'Embedding models',

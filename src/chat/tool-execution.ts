@@ -297,6 +297,9 @@ export function encodeNativeToolTranscript(
         toolCalls: completedToolCalls.map(({ toolCall }) => ({
           id: toolCall.id,
           type: 'function' as const,
+          ...(toolCall.thoughtSignature
+            ? { thoughtSignature: toolCall.thoughtSignature }
+            : {}),
           function: {
             name: toolCall.name,
             arguments: toolCall.arguments,

@@ -621,6 +621,11 @@ export function plan_folder_lexical_evidence_indices_json(query: string, samples
 export function plan_folder_mention_file_indices_json(folder_path: string, file_paths_json: string, max_files: number): string;
 
 /**
+ * 요청 본문을 공개 Gemini API 또는 Cloud Code Assist envelope으로 만든다.
+ */
+export function plan_gemini_json(input_json: string): string;
+
+/**
  * 자연어 질문에서 직접 또는 한글 로마자 표기와 가까운 vault folder path를 고른다.
  */
 export function plan_implicit_folder_query_paths_json(question: string, folder_paths_json: string): string;
@@ -1307,6 +1312,7 @@ export interface InitOutput {
     readonly plan_file_index_records_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_folder_lexical_evidence_indices_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly plan_folder_mention_file_indices_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly plan_gemini_json: (a: number, b: number) => [number, number];
     readonly plan_implicit_folder_query_paths_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_inactive_indexed_db_cleanup_json: (a: number, b: number) => [number, number];
     readonly plan_index_pending_files_json: (a: number, b: number, c: number, d: number) => [number, number];
