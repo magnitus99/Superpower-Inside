@@ -9,6 +9,7 @@ import { googleGeminiOAuth } from './llm/google-gemini-oauth';
 import { DEFAULT_CHUNK_CONTRACT, DEFAULT_SEARCH_QUALITY } from './rag/search-defaults';
 import { DEBUG_TRACE_BUILD_ENABLED } from './debug/build-flags';
 import { providerKeyState, type ProviderSecretConfig } from './secrets/provider-secrets';
+import { renderProviderQuota } from './llm/provider-quota-display';
 import {
   App,
   Modal,
@@ -721,6 +722,7 @@ export interface SuperpowerInsideSettings {
   customOpenAIProviders: CustomOpenAIProviderConfig[];
   providerProfiles: ProviderProfileConfig[];
   providerValidation: Record<string, ProviderValidationSnapshot>;
+  quotaCheckIntervalSeconds: number;
   rag: RAGConfig;
   mcpServers: MCPServerConfig[];
   mcpPath: string;
@@ -767,6 +769,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   customOpenAIProviders: [],
   providerProfiles: [],
   providerValidation: {},
+  quotaCheckIntervalSeconds: 30,
   rag: {
     excludePaths: ['.git', 'node_modules', 'attachments'],
     excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'mp4', 'zip'],
@@ -1275,6 +1278,7 @@ export interface PluginLike {
   lastAutoUpdateResult?: IndexingResult | null;
   refreshBus: import('./utils/refresh-bus').RefreshBus;
   updateChecker?: PluginUpdateChecker | null;
+  providerQuota?: import('./llm/provider-quota-service').ProviderQuotaService | null;
   logger: AppLogger;
   documentCorpus: import('./rag/document-corpus-store').IndexedDbDocumentCorpusStore | null;
 }
@@ -1589,6 +1593,7 @@ class ProviderModelImportModal extends Modal {
 }
 
 export class SuperpowerInsideSettingTab extends PluginSettingTab {
+  private readonly providerQuotaElements = new Map<string, HTMLElement>();
   private plugin: PluginLike;
   private mcpStatusEventRef: EventRef | null = null;
   private activeTab: SettingsTabId = 'general';
@@ -1826,6 +1831,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.resumeIndexingButton = null;
     this.resetIndexButton = null;
     this.providerStatusBody = null;
+    this.providerQuotaElements.clear();
     this.updateNoticeEl = null;
   }
   display(): void {
@@ -1845,6 +1851,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     // RefreshBus 구독: 이벤트 수신 시 부분 업데이트
     const bus = this.plugin.refreshBus;
     if (bus) {
+      this.registerQuotaRefreshEvents();
       this.refreshBusUnsubscribers.push(
         bus.on('rag', (result) => {
           this.refreshGeneralStatusSection();
@@ -2659,8 +2666,39 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       (profile) => profile.strategy !== 'ternlight',
     );
     this.buildProviderStatusSection(workspace, profiles);
+    this.providerQuotaElements.clear();
     this.buildProviderConnectionsSection(workspace, profiles);
+    this.buildProviderQuotaSection(workspace);
   }
+
+  private buildProviderQuotaSection(containerEl: HTMLElement): void {
+    const section = this.createSettingsSection(containerEl, t('quotaSectionTitle'), { description: t('quotaSectionDesc') });
+    new Setting(section.body).setName(t('quotaIntervalName')).setDesc(t('quotaIntervalDesc')).addText((text) => {
+      text.inputEl.type = 'number'; text.inputEl.min = '10'; text.inputEl.max = '3600'; text.inputEl.step = '1';
+      text.inputEl.setAttribute('aria-label', t('quotaIntervalName'));
+      text.inputEl.setAttribute('data-quota-interval', 'true');
+      text.setValue(String(this.plugin.settings.quotaCheckIntervalSeconds)).onChange((value) => {
+        const interval = parseSettingsNumberRust(value, 10, 3600, true);
+        this.showNumericInputValidation(text.inputEl, interval);
+        if (interval === null) return;
+        this.plugin.settings.quotaCheckIntervalSeconds = interval;
+        this.debouncedSave();
+      });
+    });
+  }
+
+  private registerQuotaRefreshEvents(): void {
+    this.refreshBusUnsubscribers.push(this.plugin.refreshBus.on('quota', (result) => this.refreshProviderQuotas(result.detail)));
+  }
+
+  private refreshProviderQuotas(profileId?: string): void {
+    for (const [id, element] of this.providerQuotaElements) {
+      if (profileId && profileId !== id) continue;
+      const profile = this.plugin.settings.providerProfiles.find((candidate) => candidate.id === id);
+      if (profile && element.isConnected) renderProviderQuota(element, profile, this.plugin.providerQuota?.get(id));
+    }
+  }
+
   private buildRAGTab(containerEl: HTMLElement): void {
     const workspace = containerEl.createDiv({
       cls: 'superpower-inside-settings-workspace superpower-inside-rag-workspace',
@@ -5943,6 +5981,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       }),
       { idPrefix: 'superpower-inside-provider-disclosure' },
     );
+    const title = disclosure.button.querySelector<HTMLElement>('.superpower-inside-settings-disclosure-title');
+    if (title) {
+      title.empty();
+      title.createSpan({ cls: 'superpower-inside-provider-title-name', text: getProviderProfileDisplayName(profile) });
+      const quota = title.createSpan({ cls: 'superpower-inside-provider-quota', attr: { 'aria-live': 'polite', 'aria-atomic': 'true' } });
+      this.providerQuotaElements.set(profile.id, quota);
+      renderProviderQuota(quota, profile, this.plugin.providerQuota?.get(profile.id));
+    }
     const root = disclosure.button.parentElement;
     root?.addClass('superpower-inside-provider-disclosure');
     root?.setAttribute('data-provider-key', profile.id);
@@ -6282,8 +6328,9 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     if (!disclosureRoot?.isConnected) return;
     const tone = resolveProviderProfileTone(profile);
     disclosureRoot
-      .querySelector<HTMLElement>('.superpower-inside-settings-disclosure-title')
+      .querySelector<HTMLElement>('.superpower-inside-provider-title-name')
       ?.setText(getProviderProfileDisplayName(profile));
+    this.refreshProviderQuotas(profile.id);
     const status = disclosureRoot.querySelector<HTMLElement>(
       '.superpower-inside-provider-disclosure-status',
     );

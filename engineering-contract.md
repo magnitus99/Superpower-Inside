@@ -46,7 +46,7 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 
 2026-10-29 기준. 상세 실행 서사는 남기지 않고 날짜·커밋(있으면)·확인 범위·명령·종료 상태·반복 횟수·차단·한계만 기록한다. 반복 측정한 검증은 횟수를 명령 열에 함께 적는다. 아래 표는 날짜별 실행 기록이고 현재 상태는 바로 다음 '현재 코드 재검증' 문단이 소유한다. 원문·문서명·질의·답변·개인 설정은 스펙·기억에 복제하지 않는다.
 
-**현재 코드 재검증(2026-10-29, 작업 트리 포함):** `npm run quality:local` exit 0. lint → typecheck → `test:unit`을 통과했고 Vitest는 208개 파일 통과·1개 skipped(총 209개), 2,483개 테스트 통과·1 skipped(총 2,484개)다. `test:contracts`의 i18n·채팅 UX gate 통과, quality eval 186 passed. review·볼트 유출·diff 검사도 통과했다. Rust는 변경 없으며 선행 `npm run rust:check` 결과는 550 passed·2 ignored다. 실제 답변·전수 recall·모델별 3회·화면 검수는 포함하지 않았다.
+**현재 코드 재검증(2026-10-29, 한도 화면 작업 트리 포함):** `npm run quality:local` exit 0. lint → typecheck → `test:unit` 통과, Vitest는 213개 파일 통과·1개 skipped(총 214개), 2,605개 테스트 통과·1 skipped(총 2,606개)다. `test:contracts`의 i18n·채팅 UX gate·오프라인 quality eval 186개, Rust fmt·clippy·tests(568 passed·2 ignored), community review·볼트 유출·diff 검사를 통과했다. `preview:build`·`preview:verify`는 합성 한도·간격 8개와 기존 채팅·검색 7개, 총 15개 고정 화면의 DOM 계약과 PNG를 검증했다. 설정·채팅의 정상·조회 불가·미지원·대기·비활성·빈 목록·펼침·좁은 폭·테마·포커스 보존을 확인했으며, `npm run build` exit 0이다. 실제 계정 조회·현재 과금·실제 모델 답변·전수 recall·모델별 3회 검증은 포함하지 않았다.
 
 | 날짜·커밋 | 확인 범위 | 명령·종료 상태·반복 횟수 | 차단·한계 |
 | --- | --- | --- | --- |
@@ -58,6 +58,7 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 | 2026-10-28 | README의 '허용 색인 전체 본문 전송' 설명을 엔진 선별·현재 원문 검증 dossier 경로로 정정 | 문서 변경(코드 검사 없음) | 전체 재작성 없이 전송 범위만 수정, 다른 제품 설명 보존 |
 | 2026-10-28 | 스펙·코드 정합성 점검: 15개 노드의 코드 참조·링크·식별자 확인, 검사기 경로 분류 서술 보정, 검증 상태 서사를 표로 압축, 스펙이 참조하지 않는 WASM wire wrapper 10개와 전용 타입 11개·검증기 8개·import 10줄 제거 | `npm run quality:local` exit 0(lint·typecheck·test:unit·rust:check·review·leak·diff), `npm run test:contracts` 별도 실행 통과, `npx eslint` exit 0 | 실제 답변·전수 recall·화면 검수 미포함, WASM glue의 대응 export는 남음 |
 | 2026-10-28 `3231a6b`·`f2d7a7e` | 사용하지 않는 vault research agent와 chat-quality case 제거. `research-agent.test.ts`의 `it(` 선언 22건이 사라지고 `it.each`는 유지됐으며, chat-quality `whole-vault-user-format` case 1건이 빠지고 `indexed-vault-review.test.ts`에 1건이 추가됐다 | 당시 전면 재실행 기록은 없다. 제거 22건·추가 1건(순 −21)이 관측 감소(2,503→2,482)와 일치하고 quality eval은 187→186이다 | 제거된 실행 에이전트의 회귀 근거는 남기지 않음(의도 분류·진행 라벨만 유지) |
+| 2026-10-29 | 공식 제공자 한도·잔액의 공통 조회·Rust 정규화·전역 30초 갱신, 설정 연결명과 채팅 선택 모델 옆 표시, 연결이 비어도 보이는 간격 입력, 실제 초 기반 표시 단위, 조회 불가·미지원·비활성·대기의 구분 | `npm run quality:local` exit 0(lint·typecheck·Vitest 2,605 passed·1 skipped·i18n·UX gate·quality eval 186 passed·Rust 568 passed·2 ignored·review·leak·diff), `npm run preview:build`·`npm run preview:verify` 15개 화면 통과, `npm run build` exit 0(main.js 4,959,439 / 5,000,000 bytes) | 실제 계정 한도 조회·현재 과금 상태·OpenCode Go 공개 잔액은 미검증, 합성 응답과 고정 뷰포트만 확인 |
 | 2026-10-29 | 기존 구세대 색인 폐기의 설정 승인 경로를 스펙에 반영(런타임 변경 없음), facet별 엔진 호출 수 특성화와 batch 설계 기록, 실제 환경 검증 절차 추가 | `npm run quality:local` exit 0(lint·typecheck·test:unit·test:contracts·review·leak·diff), Vitest 2,483 passed·1 skipped·quality eval 186 passed | mock 엔진 호출 수만 확인. 실제 제공자·색인 순회·지연 계측, batch 구현, 실제 답변·전수 recall 검증은 미실행 |
 
 표에서 커밋 해시가 없는 행은 당시 커밋 기록을 남기지 않았다.

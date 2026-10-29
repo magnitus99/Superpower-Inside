@@ -3,7 +3,7 @@ import type { RefreshResult } from './refresh-action';
 // ── 타입 ────────────────────────────────────────────────────────────
 
 /** 새로고침 이벤트를 발행할 수 있는 도메인 */
-export type RefreshDomain = 'rag' | 'mcp' | 'models' | 'sessions' | 'exclude-counts';
+export type RefreshDomain = 'rag' | 'mcp' | 'models' | 'sessions' | 'exclude-counts' | 'quota';
 
 /** RefreshBus에서 사용하는 이벤트 핸들러 */
 export type RefreshHandler = (result: RefreshResult) => void;

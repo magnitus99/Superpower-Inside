@@ -966,6 +966,28 @@ button.superpower-inside-settings-status-row:focus-visible {
   line-height: 1.35;
 }
 
+.superpower-inside-provider-disclosure .superpower-inside-settings-disclosure-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.superpower-inside-provider-title-name,
+.superpower-inside-provider-quota {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.superpower-inside-provider-quota {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 400;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+}
+
 .superpower-inside-settings-disclosure-description {
   color: var(--text-muted);
   font-size: var(--superpower-inside-type-detail);
@@ -4497,6 +4519,15 @@ button.superpower-inside-prompt-danger-btn:disabled {
   gap: 8px;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.superpower-inside-chat-quota {
+  flex: 1 1 140px;
+}
+
+.superpower-inside-chat-quota[hidden] {
+  display: none;
 }
 
 .superpower-inside-chat-input-toolbar .superpower-inside-chat-model-select {

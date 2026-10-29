@@ -39,6 +39,15 @@ function setup() {
 beforeEach(() => requestMock.mockReset());
 
 describe('ChatGPT 브라우저 OAuth', () => {
+  it('연결 세대는 해당 프로필의 연결 해제에서만 바뀐다', () => {
+    const { auth } = setup();
+    expect(auth.getRevision('profile')).toBe(0);
+    auth.disconnect('other');
+    expect(auth.getRevision('profile')).toBe(0);
+    auth.disconnect('profile');
+    expect(auth.getRevision('profile')).toBe(1);
+    auth.dispose();
+  });
   it('로그인 제한 시간이 지나면 콜백을 닫고 인증을 저장하지 않는다', async () => {
     const { auth } = setup();
     try {

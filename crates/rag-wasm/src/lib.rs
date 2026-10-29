@@ -92,8 +92,11 @@ pub use tag_mentions::plan_tag_mentions_json;
 mod model_context;
 pub use model_context::{plan_model_context_json, plan_provider_model_details_json};
 mod chatgpt;
+/// 공식 제공자의 구독 한도와 크레딧 정규화·선택입니다.
+mod provider_quota;
 /// 공급자별 토큰 보고의 안전한 정규화입니다.
 mod provider_usage;
+pub use provider_quota::plan_provider_quota_json;
 /// 응답별 공급자 토큰 보고의 누적과 요청 간 집계입니다.
 mod turn_usage;
 pub use chat_input::{

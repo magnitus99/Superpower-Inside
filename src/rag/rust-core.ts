@@ -7,6 +7,12 @@ import type { GeneratedArtifactRecord } from '../storage/generated-artifacts';
 import type { MCPServerConfig } from '../settings';
 import type { TurnUsageSnapshot } from '../chat/types';
 import type { TokenUsage } from '../llm/providers';
+import type {
+  ProviderQuotaSnapshot,
+  ProviderQuotaSummary,
+  QuotaCredits,
+  QuotaWindow,
+} from '../llm/provider-quota-types';
 import {
   update_generated_artifact_registry_json,
   plan_retired_artifacts_json,
@@ -24,6 +30,7 @@ import {
   plan_chatgpt_json,
   plan_turn_usage_json,
   normalize_provider_usage_json,
+  plan_provider_quota_json,
   plan_gemini_json,
   plan_chat_evidence_json,
   plan_chat_request_json,
@@ -6516,6 +6523,118 @@ export function validateExcludeExtensionInputRust(
   } catch {
     return null;
   }
+}
+
+/** 공식 응답의 결정적 정규화는 Rust에만 위임하고 wire 실패는 null로 닫습니다. */
+export function normalizeProviderQuotaRust(
+  format: 'chatgpt' | 'gemini' | 'opencode-go' | 'ollama-cloud' | 'openrouter',
+  payload: unknown,
+): ProviderQuotaSnapshot | null {
+  const parsed = providerQuotaWire({ op: 'normalize', format, payload });
+  return isProviderQuotaSnapshot(parsed) ? parsed : null;
+}
+
+/** 선택·소진 계산을 TS에서 재현하지 않습니다. */
+export function summarizeProviderQuotaRust(
+  snapshot: ProviderQuotaSnapshot,
+): ProviderQuotaSummary | null {
+  if (!isProviderQuotaSnapshot(snapshot)) return null;
+  const parsed = providerQuotaWire({ op: 'summarize', snapshot });
+  return isProviderQuotaSummary(parsed) ? parsed : null;
+}
+
+/** 기본값·정수 제한은 Rust 소유이며 WASM 실패 시 기본값도 대신 계산하지 않습니다. */
+export function normalizeQuotaIntervalSecondsRust(value: unknown): number | null {
+  const parsed = providerQuotaWire({ op: 'interval', value });
+  return typeof parsed === 'number' && Number.isInteger(parsed) && parsed >= 10 && parsed <= 3600
+    ? parsed
+    : null;
+}
+
+function providerQuotaWire(input: unknown): unknown {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(plan_provider_quota_json(JSON.stringify(input)));
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+// 아래 검증은 wire 경계만 확인하며 제공자 정규화나 선택을 재구현하지 않습니다.
+function isQuotaNonnegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isQuotaText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function hasQuotaWireKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function isQuotaWindow(value: unknown): value is QuotaWindow {
+  return (
+    isStringRecordValueMap(value) &&
+    hasQuotaWireKeys(value, [
+      'id',
+      'remainingPercent',
+      'durationSeconds',
+      'period',
+      'resetsAt',
+      'modelId',
+    ]) &&
+    isQuotaText(value.id) &&
+    isQuotaNonnegativeNumber(value.remainingPercent) &&
+    value.remainingPercent <= 100 &&
+    (value.durationSeconds === undefined ||
+      (isQuotaNonnegativeNumber(value.durationSeconds) && value.durationSeconds > 0)) &&
+    (value.period === undefined ||
+      value.period === 'session' ||
+      value.period === 'week' ||
+      value.period === 'month') &&
+    (value.resetsAt === undefined || isQuotaText(value.resetsAt)) &&
+    (value.modelId === undefined || isQuotaText(value.modelId))
+  );
+}
+
+function isQuotaCredits(value: unknown): value is QuotaCredits {
+  return (
+    isStringRecordValueMap(value) &&
+    hasQuotaWireKeys(value, ['remaining', 'unit', 'unlimited']) &&
+    (value.unit === 'USD' || value.unit === 'credits') &&
+    (value.remaining !== undefined || value.unlimited === true) &&
+    (value.remaining === undefined || isQuotaNonnegativeNumber(value.remaining)) &&
+    (value.unlimited === undefined || typeof value.unlimited === 'boolean')
+  );
+}
+
+function isProviderQuotaSnapshot(value: unknown): value is ProviderQuotaSnapshot {
+  return (
+    isStringRecordValueMap(value) &&
+    hasQuotaWireKeys(value, ['windows', 'credits']) &&
+    Array.isArray(value.windows) &&
+    value.windows.every(isQuotaWindow) &&
+    Array.isArray(value.credits) &&
+    value.credits.every(isQuotaCredits)
+  );
+}
+
+function isProviderQuotaSummary(value: unknown): value is ProviderQuotaSummary {
+  return (
+    isStringRecordValueMap(value) &&
+    hasQuotaWireKeys(value, ['window', 'duration', 'credits']) &&
+    (value.window === undefined || isQuotaWindow(value.window)) &&
+    (value.duration === undefined ||
+      (isStringRecordValueMap(value.duration) &&
+       hasQuotaWireKeys(value.duration, ['value', 'unit']) &&
+       isQuotaNonnegativeNumber(value.duration.value) && value.duration.value > 0 &&
+       typeof value.duration.unit === 'string' &&
+       ['second', 'minute', 'hour', 'day', 'week'].includes(value.duration.unit))) &&
+    Array.isArray(value.credits) &&
+    value.credits.every(isQuotaCredits)
+  );
 }
 
 function ensureRustCore(): boolean {

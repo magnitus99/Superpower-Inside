@@ -1223,6 +1223,78 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.settings.rag.performanceGuardEnabled).toBe(true);
   });
 
+  it.each([
+    [undefined, 30], [null, 30], ['60', 30], [0, 10], [12.5, 30], [60, 60], [99999, 3600],
+  ])('전역 한도 조회 주기는 저장값 %s를 %s초로 정규화한다', async (saved, expected) => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(plugin, {
+      app: createApp({ localSettings: { ...DEFAULT_SETTINGS, quotaCheckIntervalSeconds: saved } }),
+      loadData: vi.fn(),
+    });
+    await plugin.loadSettings();
+    expect(plugin.settings.quotaCheckIntervalSeconds).toBe(expected);
+  });
+
+  it('한도 갱신 이벤트는 연결 ID를 보존하고 비활성을 부분 실패로 올리지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const { RefreshBus } = await import('./src/utils/refresh-bus');
+    const bus = new RefreshBus(); const updates: Array<{ status: string; detail?: string }> = [];
+    bus.on('quota', (result) => updates.push(result));
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(plugin, {
+      app: createApp(), register: vi.fn(), refreshBus: bus,
+      settings: { ...structuredClone(DEFAULT_SETTINGS), providerProfiles: ['first', 'second'].map((id) => ({
+        id, name: id, strategy: 'openai', enabled: false, apiKey: '', models: [],
+      })) },
+    });
+    (plugin as unknown as { startProviderQuota(): void }).startProviderQuota();
+    try {
+      expect(updates).toEqual([{ status: 'success', detail: 'first' }, { status: 'success', detail: 'second' }]);
+      expect(plugin.providerQuota?.get('first')).toEqual({ status: 'disabled' });
+      expect(plugin.providerQuota?.get('second')).toEqual({ status: 'disabled' });
+    } finally { plugin.providerQuota?.dispose(); bus.destroy(); }
+  });
+
+  it.each(['load', 'save'] as const)('WASM 간격 검증 실패 시 %s 경로는 기존 설정을 덮어쓰지 않는다', async (operation) => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const rust = await import('./src/rag/rust-core');
+    const normalize = vi.spyOn(rust, 'normalizeQuotaIntervalSecondsRust').mockReturnValueOnce(null);
+    const settings = { ...structuredClone(DEFAULT_SETTINGS), quotaCheckIntervalSeconds: 60 };
+    const app = createApp({ localSettings: settings });
+    const saveData = vi.fn();
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(plugin, { app, settings, loadData: vi.fn(), saveData });
+    try {
+      await expect(operation === 'load' ? plugin.loadSettings() : plugin.saveSettingsLight()).rejects.toThrow();
+      expect(plugin.settings.quotaCheckIntervalSeconds).toBe(60);
+      expect(saveData).not.toHaveBeenCalled();
+      expect(app.saveLocalStorage).not.toHaveBeenCalled();
+    } finally { normalize.mockRestore(); }
+  });
+
+  it('가벼운 설정 저장도 공통 조회기를 갱신하되 RAG와 MCP는 재초기화하지 않는다', async () => {
+    const { default: SuperpowerInsidePlugin } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const { ProviderQuotaService } = await import('./src/llm/provider-quota-service');
+    const quota = new ProviderQuotaService({ getProfiles: () => [], getIntervalSeconds: () => 60, onChange: () => {} });
+    const configure = vi.spyOn(quota, 'configure');
+    const initRAG = vi.fn(); const initMCP = vi.fn();
+    const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin;
+    Object.assign(plugin, {
+      app: createApp(), settings: { ...structuredClone(DEFAULT_SETTINGS), quotaCheckIntervalSeconds: 60 },
+      saveData: vi.fn(), initProvider: vi.fn(), providerQuota: quota, initRAG, initMCP,
+    });
+    await plugin.saveSettingsLight();
+    expect(configure).toHaveBeenCalledOnce();
+    expect(plugin.saveData).toHaveBeenCalledWith(expect.objectContaining({ quotaCheckIntervalSeconds: 60 }));
+    expect(initRAG).not.toHaveBeenCalled(); expect(initMCP).not.toHaveBeenCalled();
+    quota.dispose();
+  });
+
   it('기존 설정 로드 시 WSL PATH 조회 옵션 기본값을 보강한다', async () => {
     const { default: SuperpowerInsidePlugin } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');

@@ -15,6 +15,7 @@ import {
   Menu,
 } from './host.mjs';
 import { checkProduct } from './checks.mjs';
+import { createQuotaPreview } from './quota.mjs';
 
 async function start() {
   const params = new URLSearchParams(location.search);
@@ -99,6 +100,7 @@ async function start() {
     },
   };
   const settings = structuredClone(DEFAULT_SETTINGS);
+  settings.language = lang;
   settings.chat.autoSaveEnabled = false;
   settings.chat.saveFolder = 'Examples';
   settings.ollama.enabled = state !== 'blocked';
@@ -292,6 +294,7 @@ async function start() {
     },
   };
 
+  const quotaPreview = params.has('quota') ? await createQuotaPreview({ app, plugin, params }) : null;
   const view =
     state === 'search'
       ? new SearchView(new WorkspaceLeaf(app), searchHost)
@@ -435,6 +438,7 @@ async function start() {
     if (state === 'running') view.setLoading(true);
   }
 
+  quotaPreview?.mount();
   const toolbar = document.getElementById('preview-toolbar');
   toolbar.createSpan({
     text: `Obsidian ${reference.version} · 공식 기본 CSS · 합성 자료 · 외부 요청 차단`,
@@ -644,6 +648,14 @@ async function start() {
   }
   async function checkAll() {
     const host = await checkHost();
+    if (quotaPreview) {
+      const quota = await quotaPreview.check();
+      const result = document.getElementById('preview-result');
+      result.dataset.failed = 'false';
+      result.dataset.metrics = previewMetrics();
+      result.textContent = `기본 스타일·호스트 ${host.length}개 / 한도·인터벌 ${quota.length}개 통과 · 합성 응답`;
+      return;
+    }
     if (state === 'search') {
       const search = await checkSearch();
       window.preview.checks = [...host, ...search];

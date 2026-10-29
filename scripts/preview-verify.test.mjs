@@ -9,6 +9,14 @@ import {
 describe('헤드리스 Chrome 검수', () => {
   it('고정 뷰포트·테마·빈/오류 상태를 포함한다', () => {
     expect(PREVIEW_CASES.map((scenario) => scenario.name)).toEqual([
+      'quota-settings-light',
+      'quota-settings-dark-narrow',
+      'quota-settings-expanded',
+      'quota-settings-empty',
+      'quota-settings-disabled',
+      'quota-chat-light',
+      'quota-chat-error',
+      'quota-chat-loading-en',
       'chat-light-narrow',
       'chat-dark-medium',
       'chat-empty-light',
@@ -40,7 +48,10 @@ describe('헤드리스 Chrome 검수', () => {
       }),
     ).toBe('/missing/chrome');
     expect(
-      findChrome(candidates, { exists: () => false, which: (command) => command === 'google-chrome' }),
+      findChrome(candidates, {
+        exists: () => false,
+        which: (command) => command === 'google-chrome',
+      }),
     ).toBe('google-chrome');
     expect(findChrome(candidates, { exists: () => false, which: () => false })).toBeNull();
   });
