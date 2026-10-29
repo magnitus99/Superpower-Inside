@@ -1332,4 +1332,27 @@ describe('검색 의존성 factory', () => {
     expect(snapshot.chunks?.[0]?.startLine).toBe(1);
     expect(snapshot.chunks?.[0]?.text).toContain('Synthetic body');
   });
+
+  it('다중 facet 계획은 엔진 질의를 facet마다 따로 보낸다(호출 수 기준선)', async () => {
+    planIndexedSearchQueries.mockReturnValue({
+      mode: 'comparison',
+      facets: [
+        { id: 'question', kind: 'question', query: 'alpha', queryIndex: 0, terms: [] },
+        { id: 'subject-0', kind: 'subject', query: 'beta', queryIndex: 1, terms: [] },
+        { id: 'subject-1', kind: 'subject', query: 'gamma', queryIndex: 2, terms: [] },
+      ],
+    } satisfies IndexedSearchPlan);
+    const query = vi.fn<QueryCall>(() => Promise.resolve([]));
+    const queryBm25Exhaustive = vi.fn(() => Promise.resolve([]));
+    await collectIndexedSearchSource(
+      {
+        app: app({}),
+        ragEngine: { query, queryBm25Exhaustive } as unknown as RAGQueryEngine,
+        documentCorpus: corpus(),
+      },
+      'alpha',
+    );
+
+    expect(query.mock.calls.map((call) => call[0])).toEqual(['alpha', 'beta', 'gamma']);
+  });
 });

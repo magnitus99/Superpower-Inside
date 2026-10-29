@@ -49,7 +49,7 @@ dirty·stale·missing 판정은 파일 내용 hash와 revision을 단일 출처�
 
 ## 계약 버전과 원문 보존
 
-저장 원문은 원문 그대로 유지하고 검색용 접두·메타데이터는 별도 projection에만 둔다. 색인 계약 버전·토크나이저 버전이 다른 구세대 색인은 자동 폐기 후 재색인하며, 호환되지 않는 색인을 계속 사용하게 두지 않는다. 현재 `RAG_INDEX_CONTRACT_VERSION`(4)과 `createRagIndexNamespace`가 청킹 계약·크기·오버랩으로 세대 이름을 만들고, 값이 바뀌면 새 세대 색인을 다시 만든다(`src/rag/storage-lifecycle.ts`). 구세대 DB 정리 함수 `cleanupStaleIndexedDbGenerations`는 현재 런타임 호출 경로가 없고 회귀 테스트만 호출한다. 일반 정리는 설정에서 승인한 `RetiredArtifactService.cleanup` 경로에서 수행하고, 전체 플러그인 데이터 초기화는 `resetPluginData`가 `deleteRagIndexedDbGenerations`로 별도 삭제한다. 따라서 앞 문장의 '자동 폐기 후 재색인' 요구와 현재 구현은 아직 일치하지 않는다.
+저장 원문은 원문 그대로 유지하고 검색용 접두·메타데이터는 별도 projection에만 둔다. `RAG_INDEX_CONTRACT_VERSION`(4)과 `createRagIndexNamespace`가 청킹 계약·크기·오버랩으로 세대 이름을 만들고, 값이 바뀌면 새 세대 색인을 다시 만든다(`src/rag/storage-lifecycle.ts`). 구세대 색인 폐기는 자동 실행하지 않고 설정에서 승인한 `RetiredArtifactService.cleanup` 경로가 소유한다. 활성 DB는 보호하고 현재 접두의 과거 `vectors`·`corpus`·`bm25` 세대는 승인 정리 대상으로 찾는다. 모델별 `embedding-cache`는 색인 세대 변경만으로 폐기하지 않지만, 지원 종료된 legacy 캐시 형식은 별도 폐기 정책을 따른다. 레거시 `graph` DB와 등록부에서 지원 종료로 판정한 생성물도 정리 범위에 포함될 수 있다. 승인·revision·활성 여부 재확인은 [생성물 정리 계약](../storage/SPEC.md)이 소유하고, 구체적 이름 판정은 `crates/rag-wasm/src/retired_artifacts.rs`, 회귀는 `src/storage/retired-artifacts.test.ts`에서 확인한다. 전체 플러그인 데이터 초기화는 `resetPluginData`가 `deleteRagIndexedDbGenerations`로 별도 삭제한다. `cleanupStaleIndexedDbGenerations`는 이 경로와 별개의 제한 배치 도우미이며 런타임 호출자가 없고 회귀 테스트만 호출한다.
 
 ## 교체 계약
 

@@ -56,3 +56,15 @@ quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검�
 - 기본 발견·집계·주소를 엔진 한 번·색인 한 순회에서 얻는 것이 목표다. BM25 facet 검색과 term 집계는 term 128개·입력 상한 안에서 `Bm25RuntimeIndex.batch_search_and_aggregate_json` 한 번의 worker 호출로 합치고 선택 chunk의 원문 주소도 한 번에 읽는다. 상한을 넘으면 기존 facet별 검색·term 집계로 되돌아간다. 후속 질의 변형은 로컬 질문 분해만 사용한다. 다만 vector 후보 임베딩·검색은 facet별 호출이 남아 있어 전체 발견 경로의 단일 순회는 아직 아니다.
 
 구현 중심은 `indexed-vault-review.ts`의 `searchIndexedVault`·`reviewIndexedVault`다. `research-agent.ts`는 의도 분류와 진행 라벨만 제공하며 실행 에이전트를 포함하지 않는다. 회귀 근거는 `indexed-vault-review.test.ts`, `indexed-vault-search.test.ts`, `indexed-vault-followup.test.ts`, `src/search/indexed-search-deps.test.ts`, `src/search/engine-adapter.test.ts`다. 로컬 회귀 계약과 실제 답변·전체 recall 검증은 별개이며, 이번 편입에서는 실제 답변·전체 recall을 재측정하지 않았다. 달성 상태와 종료 판정은 [engineering-contract.md](../../engineering-contract.md#검증-상태와-이력)의 검증 상태 절이 소유한다.
+
+## 단일 순회 통합 설계(미구현)
+
+**호출 수 기준선.** 정상 실행에서 한 검색 계획은 `MAX_HYBRID_FACETS`(3)개까지의 facet에 대해 `src/search/indexed-search-deps.ts`의 `querySemanticCandidates`를 facet마다 호출한다. facet마다 원 질의로 `engine.query`를 1회 호출하고, 질의가 24자 이상이며 필터·중복 제거 후 term이 2개 이상이고 압축 결과가 원 질의와 다르면 1회를 더 호출한다. 따라서 facet이 있는 계획의 정상 경로는 엔진 호출 1~6회다. 이는 실제 vector 검색·색인 순회·제공자 요청 횟수 계측이 아니다. 임베딩 사용 불가·쿨다운·이전 실패이면 임베딩을 생략하고, timeout·실패로 질의 벡터를 얻지 못해도 vector·ANN provider는 건너뛴다. 이 경로는 BM25를 제외해 호출하므로 lexical 후보 보존은 별도로 병렬 실행하는 BM25 경로와 구분한다. 회귀 기준선은 `src/search/indexed-search-deps.test.ts`의 "다중 facet 계획은 엔진 질의를 facet마다 따로 보낸다"(mock 엔진 호출 3회)와 긴 질문의 원문·압축 질의 2회 테스트다. 4개 이상 facet의 절단은 아직 테스트로 고정하지 않았다.
+
+**목표.** 계획 1회당 vector 질의 batch 1회와 임베딩 batch 1회로 줄이고, 후보는 facet별 `queryIndex` 귀속과 현재 순위 prior를 그대로 유지한다. 채팅 실행은 변형 계획을 최대 3개 더 돌리므로 계획당 batch가 끝나도 실행 1회에는 계획 수만큼 batch가 남는다.
+
+**설계 후보.** `deterministic-core`가 facet별 질의 목록·결과 귀속 계획을 계산하고, `RAGQueryEngine`이 임베딩·vector worker의 batch I/O를 조율한다. worker는 다중 질의의 결과를 질의 index로 반환한다. 실제 제공자의 batch 지원·요청 수와 worker 호출 수·색인 순회 수·지연은 각각 측정하며 하나의 API 호출이 단일 순회나 성능 향상을 보증하지 않는다. batch 실패·상한 초과 시 기존 facet별 경로를 사용하고, timeout 뒤 fallback은 남은 전체 예산 안에서만 허용한다. 사용자 취소 후에는 재실행하지 않으며 facet별 진단(`semantic:<facetId>`)을 유지한다.
+
+**수용 기준.** 성공 경로에서 batch 엔진 API 호출 1회·개별 `engine.query` 호출 0회를 테스트로 고정하고, fallback 경로에서는 facet별 호출과 `semantic:<facetId>` 진단이 유지되는지 확인한다. batch와 개별 경로의 후보·점수·순위가 같은지 확인하고, WASM 실패를 TS 계산으로 대체하지 않는다. 후보 상한·검토 예산·열거 총실도는 바꾸지 않는다.
+
+**상태.** 미구현이다. 이번 사이클은 mock 기반 엔진 호출 수 특성화와 설계 기록까지이며, 실제 제공자·worker·색인 순회·지연 계측은 하지 않았다. 순위·검토 세계·답변 자격은 이 변경의 대상이 아니다.
