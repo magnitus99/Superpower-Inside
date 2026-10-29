@@ -345,7 +345,7 @@ fn compare_windows(left: &Value, right: &Value) -> Ordering {
         })
 }
 
-/// 유효한 창 전체에서 소진을 판단하고 최솟값을 선택합니다.
+/// 유효한 창에서 최솟값을 선택하고 잔액을 전달합니다.
 fn summarize(snapshot: &Value) -> Option<Value> {
     let windows: Vec<Value> = snapshot
         .get("windows")?
@@ -368,10 +368,7 @@ fn summarize(snapshot: &Value) -> Option<Value> {
             )
         })
         .collect();
-    let exhausted = windows
-        .iter()
-        .any(|window| window.get("remainingPercent").and_then(Value::as_f64) == Some(0.0));
-    let mut output = json!({"credits":credits,"subscriptionExhausted":exhausted});
+    let mut output = json!({"credits":credits});
     if let Some(window) = windows
         .iter()
         .min_by(|left, right| compare_windows(left, right))
@@ -849,43 +846,28 @@ mod tests {
     }
 
     #[test]
-    fn provider_quota_exhaustion_credits_only_and_invalid_partial() {
+    fn provider_quota_credits_only_and_invalid_partial() {
         let result = call(
             &json!({"op":"summarize","snapshot":{"windows":[],"credits":[{"unit":"USD","remaining":5}]}}),
         );
         assert_eq!(
-            result
-                .pointer("/subscriptionExhausted")
-                .cloned()
-                .unwrap_or(Value::Null),
-            false,
-            "크레딧만 있으면 구독 소진이 아닙니다"
+            result,
+            json!({"credits":[{"unit":"USD","remaining":5.0}]}),
+            "크레딧만 있으면 구독 창을 만들지 않습니다"
         );
-        assert!(result.get("window").is_none(), "구독 창을 만들지 않습니다");
         let result = summarize(&json!([
             {"id":"bad","remainingPercent":-1},{"id":"string","remainingPercent":"0"},
             {"id":"valid","remainingPercent":0}, {"id":"over","remainingPercent":101}
         ]));
         assert_eq!(
-            result
-                .pointer("/subscriptionExhausted")
-                .cloned()
-                .unwrap_or(Value::Null),
-            true,
-            "유효한 0만 소진입니다"
-        );
-        assert_eq!(
             result.pointer("/window/id").cloned().unwrap_or(Value::Null),
             "valid",
-            "잘못된 창을 제외하고 선택합니다"
+            "잘못된 창을 제외하고 0% 창을 선택합니다"
         );
         assert_eq!(
-            summarize(&json!([]))
-                .pointer("/subscriptionExhausted")
-                .cloned()
-                .unwrap_or(Value::Null),
-            false,
-            "알 수 없음은 소진이 아닙니다"
+            summarize(&json!([])),
+            json!({"credits":[]}),
+            "알 수 없음은 0이나 소진으로 바뀌지 않습니다"
         );
     }
 
@@ -980,10 +962,10 @@ mod tests {
         ]}}));
         assert_eq!(
             result,
-            json!({"subscriptionExhausted":false,"credits":[
+            json!({"credits":[
                 {"unit":"credits","remaining":0.0}, {"unit":"credits","unlimited":true}
             ]}),
-            "알 수 없음은 소진이나 잔액 0으로 바뀌지 않습니다"
+            "알 수 없음은 0이나 잔액으로 바뀌지 않습니다"
         );
     }
 

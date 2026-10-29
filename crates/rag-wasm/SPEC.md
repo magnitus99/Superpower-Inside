@@ -15,7 +15,7 @@ references: [vault-evidence, superpower-architecture]
 
 TypeScript와의 경계는 `src/rag/rust-core.ts`의 입출력 매핑이며 WASM wire 형식·범위·타입 검증을 유지한다. 기본 발견·집계의 실행 횟수 목표와 현 구현의 차이는 `vault-evidence`가 소유한다.
 
-공식 제공자의 한도 응답 정규화·최소 잔여 창 선택·소진 판정과 전역 조회 간격의 정상 입력 기본값·범위 제한은 `provider_quota.rs`의 `plan_provider_quota_json`이 소유한다. 창은 실제 응답에 존재하는 가변 목록이며 요금제 이름에 따른 고정 창·미제공의 0/100% 대체를 만들지 않는다. 요약의 표시 기간 단위도 반환된 초가 정확히 나누어지는 주·일·시간·분만 계산하며, 실제 초가 없으면 기간 길이를 만들지 않는다. 제공자 인증·endpoint·주기 수명과 결제 정책의 소유자는 `provider-boundary`다.
+공식 제공자의 한도 응답 정규화·최소 잔여 창 선택과 전역 조회 간격의 정상 입력 기본값·범위 제한은 `provider_quota.rs`의 `plan_provider_quota_json`이 소유한다. 창은 실제 응답에 존재하는 가변 목록이며 요금제 이름에 따른 고정 창·미제공의 0/100% 대체를 만들지 않는다. 요약의 표시 기간 단위도 반환된 초가 정확히 나누어지는 주·일·시간·분만 계산하며, 실제 초가 없으면 기간 길이를 만들지 않는다. 제공자 인증·endpoint·주기 수명과 결제 정책의 소유자는 `provider-boundary`다.
 
 ## 실패·생성물 경계
 

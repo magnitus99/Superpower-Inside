@@ -46,7 +46,7 @@ export async function createQuotaPreview({ app, plugin, params }) {
         status: 'ready',
         snapshot: {
           windows: [
-            { id: 'actual-week', remainingPercent: 2, durationSeconds: 604800 },
+            { id: 'actual-week', remainingPercent: 2.0000000000000004, durationSeconds: 604800 },
             { id: 'actual-short', remainingPercent: 80, durationSeconds: 18000 },
           ],
           credits: [],
@@ -108,6 +108,7 @@ export async function createQuotaPreview({ app, plugin, params }) {
         check(values.length === plugin.settings.providerProfiles.length, '모든 연결명 옆 표시');
         if (scenario !== 'empty') {
           check(values[0].textContent === expected, '설정의 실제 공통 캐시 표시');
+          check(!/\.\d{3,}/.test(values[0].textContent), '부동소수 잔차 없는 표시');
           check(values[1].textContent === t('quotaUnsupported'), '사용자 지정 자동 조회 미지원');
           check(values[2].textContent.includes('12.40'), 'OpenRouter 잔여 크레딧');
         }
@@ -158,7 +159,13 @@ export async function createQuotaPreview({ app, plugin, params }) {
           responses.set(first.id, {
             status: 'ready',
             snapshot: {
-              windows: [{ id: 'actual-week', remainingPercent: 2, durationSeconds: 604800 }],
+              windows: [
+                {
+                  id: 'actual-week',
+                  remainingPercent: 2.0000000000000004,
+                  durationSeconds: 604800,
+                },
+              ],
               credits: [],
             },
           });

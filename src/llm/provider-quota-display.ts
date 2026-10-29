@@ -67,7 +67,7 @@ export function getProviderQuotaDisplay(
         parts.push(
           t('quotaRemaining', {
             period: periodText(summary),
-            remaining: new Intl.NumberFormat(getLanguage(), { maximumFractionDigits: 20 }).format(
+            remaining: new Intl.NumberFormat(getLanguage(), { maximumFractionDigits: 2 }).format(
               summary.window.remainingPercent,
             ),
           }),
@@ -79,7 +79,7 @@ export function getProviderQuotaDisplay(
             t(credit.unit === 'USD' ? 'quotaCreditsUsd' : 'quotaCreditsCount', {
               remaining: new Intl.NumberFormat('en-US', {
                 minimumFractionDigits: credit.unit === 'USD' ? 2 : 0,
-                maximumFractionDigits: 20,
+                maximumFractionDigits: 2,
               }).format(credit.remaining),
             }),
           );

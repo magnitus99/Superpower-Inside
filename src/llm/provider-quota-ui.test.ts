@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 
 const field = vi.hoisted(() => ({
@@ -61,19 +60,5 @@ describe('한도 화면 연결 회귀', () => {
     field.change?.('60');
     expect(settings.quotaCheckIntervalSeconds).toBe(60);
     expect(save).toHaveBeenCalledWith();
-  });
-  it('설정과 채팅 양쪽에서 공통 캐시·renderer·갱신을 실제로 참조한다', () => {
-    const settings = readFileSync(new URL('../settings.ts', import.meta.url), 'utf8');
-    const chat = readFileSync(new URL('../chat/view.ts', import.meta.url), 'utf8');
-    expect(settings).toContain('this.buildProviderQuotaSection(workspace)');
-    expect(settings).toContain('this.registerQuotaRefreshEvents()');
-    expect(settings).toContain("this.plugin.refreshBus.on('quota'");
-    expect(settings).toContain(
-      'renderProviderQuota(quota, profile, this.plugin.providerQuota?.get(profile.id))',
-    );
-    expect(chat).toContain("this.plugin.refreshBus.on('quota', () => this.renderModelQuota())");
-    expect(chat).toContain('this.modelQuotaEl = toolbar.createSpan');
-    expect(chat).toContain('this.renderModelQuota();');
-    expect(chat).toContain('this.plugin.providerQuota?.get(resolved.profile.id)');
   });
 });

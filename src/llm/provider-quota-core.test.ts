@@ -273,7 +273,6 @@ describe('공식 quota 실제 WASM 연동 · 독립 합성 응답', () => {
     if (!snapshot) throw new Error('합성 스냅샷 정규화 실패');
     expect(summarizeProviderQuotaRust(snapshot)).toEqual({
       credits: [{ unit: 'USD', remaining: 6 }],
-      subscriptionExhausted: false,
     });
     for (const data of [
       { limit_remaining: 20 },
@@ -299,8 +298,8 @@ describe('공식 quota 실제 WASM 연동 · 독립 합성 응답', () => {
         },
       })?.windows,
     ).toEqual([{ id: 'secondary', remainingPercent: 0 }]);
-    expect(summary([{ id: 'zero', remainingPercent: 0 }])?.subscriptionExhausted).toBe(true);
-    expect(summary([])).toEqual({ credits: [], subscriptionExhausted: false });
+    expect(summary([{ id: 'zero', remainingPercent: 0 }])?.window?.remainingPercent).toBe(0);
+    expect(summary([])).toEqual({ credits: [] });
     for (const balance of ['', '-1', 'NaN', 'Infinity', null]) {
       expect(
         normalizeProviderQuotaRust('chatgpt', {
@@ -384,15 +383,15 @@ describe('quota wire의 엄격한 스키마와 실패 경계', () => {
       { value: 2, unit: 'month' },
       { value: '2', unit: 'hour' },
       { value: 2, unit: 'hour', extra: true },
-    ].map((duration) => ({ duration, credits: [], subscriptionExhausted: false })),
-    { credits: [], subscriptionExhausted: 'false' },
-    { window: null, credits: [], subscriptionExhausted: false },
+    ].map((duration) => ({ duration, credits: [] })),
+    { credits: [], subscriptionExhausted: false },
+    { window: null, credits: [] },
     {
       window: { id: 'x', remainingPercent: 101 },
       credits: [],
-      subscriptionExhausted: false,
     },
-    { credits: [{ unit: 'USD', remaining: -1 }], subscriptionExhausted: false },
+    { credits: [{ unit: 'USD', remaining: -1 }] },
+    { credits: [], extra: true },
   ])('손상된 요약 wire %j도 null로 닫는다', (result) => {
     wire.plan.mockReturnValueOnce(JSON.stringify(result));
     expect(summary([])).toBeNull();

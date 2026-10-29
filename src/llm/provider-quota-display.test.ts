@@ -98,6 +98,37 @@ describe('공통 한도 표시', () => {
     expect(result.text).not.toContain('사용 중');
     expect(result.text).not.toContain('비용');
   });
+  it('부동소수 잔차를 그대로 노출하지 않고 표시 자릿수만 제한한다', () => {
+    const fraction = getProviderQuotaDisplay(profile, {
+      status: 'ready',
+      snapshot: {
+        windows: [{ id: 'week', period: 'week', remainingPercent: 56.99999999999999 }],
+        credits: [],
+      },
+    });
+    expect(fraction.text).toBe('1주 · 57% 남음');
+    const tiny = getProviderQuotaDisplay(profile, {
+      status: 'ready',
+      snapshot: {
+        windows: [{ id: 'week', period: 'week', remainingPercent: 0.09999999999999432 }],
+        credits: [],
+      },
+    });
+    expect(tiny.text).toBe('1주 · 0.1% 남음');
+    const credits = getProviderQuotaDisplay(
+      { ...profile, strategy: 'openRouter' },
+      {
+        status: 'ready',
+        snapshot: { windows: [], credits: [{ unit: 'USD', remaining: 0.29999999999999893 }] },
+      },
+    );
+    expect(credits.text).toBe('크레딧 $0.30 남음');
+    const count = getProviderQuotaDisplay(profile, {
+      status: 'ready',
+      snapshot: { windows: [], credits: [{ unit: 'credits', remaining: 4.000000000000001 }] },
+    });
+    expect(count.text).toBe('크레딧 4 남음');
+  });
   it('영어 UI도 같은 한도와 잔액을 표시한다', () => {
     setLanguage('en');
     expect(

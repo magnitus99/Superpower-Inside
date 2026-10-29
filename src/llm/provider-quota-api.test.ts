@@ -7,21 +7,22 @@ const mocks = vi.hoisted(() => ({
   geminiCredentials: vi.fn(),
 }));
 vi.mock('obsidian', () => ({ requestUrl: mocks.request }));
+const authState = vi.hoisted(() => ({ connected: true, revision: 0 }));
 vi.mock('./chatgpt-oauth', () => ({
   chatGPTOAuth: {
     credentials: mocks.chatCredentials,
-    isConnected: () => true,
-    getRevision: () => 0,
+    isConnected: () => authState.connected,
+    getRevision: () => authState.revision,
   },
 }));
 vi.mock('./google-gemini-oauth', () => ({
   googleGeminiOAuth: {
     credentials: mocks.geminiCredentials,
-    isConnected: () => true,
-    getRevision: () => 0,
+    isConnected: () => authState.connected,
+    getRevision: () => authState.revision,
   },
 }));
-import { fetchProviderQuota } from './provider-quota-api';
+import { fetchProviderQuota, getProviderQuotaIdentity } from './provider-quota-api';
 
 function profile(
   strategy: ProviderProfileConfig['strategy'],
@@ -53,6 +54,27 @@ beforeEach(() => {
 });
 
 describe('공식 제공자 한도 조회 어댑터', () => {
+  it('자격증명·연결 변경만 식별자를 바꾸고 변경 없는 반복은 유지한다', () => {
+    const base = profile('openAIChatGPT');
+    const identity = getProviderQuotaIdentity(base);
+    expect(getProviderQuotaIdentity({ ...base })).toBe(identity);
+    for (const changed of [
+      { ...base, apiKey: 'other' },
+      { ...base, baseUrl: 'https://chatgpt.com' },
+      { ...base, enabled: false },
+      { ...base, geminiAuthMode: 'oauth' as const },
+    ]) {
+      expect(getProviderQuotaIdentity(changed)).not.toBe(identity);
+    }
+    authState.revision = 1;
+    expect(getProviderQuotaIdentity(base)).not.toBe(identity);
+    authState.revision = 0;
+    expect(getProviderQuotaIdentity(base)).toBe(identity);
+    authState.connected = false;
+    expect(getProviderQuotaIdentity(base)).not.toBe(identity);
+    authState.connected = true;
+    expect(getProviderQuotaIdentity(base)).toBe(identity);
+  });
   it('ChatGPT 실제 한도 응답과 OAuth 계정 헤더를 사용한다', async () => {
     mocks.request.mockResolvedValue(
       response({
