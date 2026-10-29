@@ -73,6 +73,11 @@ export class GoogleGeminiOAuth {
     return !this.disposed && this.load(profileId) !== null;
   }
 
+  /** 연결 해제·재로그인 전의 늦은 조회 결과를 구분하는 메모리 세대입니다. */
+  getRevision(profileId: string): number {
+    return this.revisions.get(profileId) ?? 0;
+  }
+
   disconnect(profileId: string): void {
     this.cancelLogin(profileId);
     this.revisions.set(profileId, (this.revisions.get(profileId) ?? 0) + 1);

@@ -803,6 +803,13 @@ export function plan_provider_model_details_json(provider: string, payload: stri
 export function plan_provider_profile_state_json(provider_json: string): string;
 
 /**
+ * 제공자 한도를 정규화·요약하거나 갱신 간격을 제한합니다.
+ *
+ * 잘못된 요청·지원하지 않는 형식은 JSON null이며 I/O를 수행하지 않습니다.
+ */
+export function plan_provider_quota_json(input_json: string): string;
+
+/**
  * 연결 정보 변경 후 저장된 모델 검증 상태를 안전한 미확인 상태로 되돌린다.
  *
  * 입력 상태가 wire contract를 벗어나면 빈 문자열을 반환한다.
@@ -1358,6 +1365,7 @@ export interface InitOutput {
     readonly plan_prompt_library_summary_json: (a: number, b: number) => [number, number];
     readonly plan_provider_model_details_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_provider_profile_state_json: (a: number, b: number) => [number, number];
+    readonly plan_provider_quota_json: (a: number, b: number) => [number, number];
     readonly plan_provider_verification_reset_json: (a: number, b: number) => [number, number];
     readonly plan_query_result_score_json: (a: number, b: number) => [number, number];
     readonly plan_rag_automatic_recovery_batch_json: (a: number, b: number) => [number, number];

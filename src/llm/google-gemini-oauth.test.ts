@@ -32,6 +32,15 @@ beforeEach(() => {
 });
 
 describe('Google Gemini OAuth', () => {
+  it('다시 연결한 계정과 이전 조회를 연결 세대로 구분한다', () => {
+    const auth = new GoogleGeminiOAuth(store(credentials()));
+    expect(auth.getRevision('profile')).toBe(0);
+    auth.disconnect('other');
+    expect(auth.getRevision('profile')).toBe(0);
+    auth.disconnect('profile');
+    expect(auth.getRevision('profile')).toBe(1);
+    auth.dispose();
+  });
   it('저장된 자격 증명을 연결 상태로 읽는다', () => {
     const auth = new GoogleGeminiOAuth(store(credentials()));
     expect(auth.isConnected('profile')).toBe(true);

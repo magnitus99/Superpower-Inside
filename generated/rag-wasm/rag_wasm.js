@@ -3022,6 +3022,28 @@ export function plan_provider_profile_state_json(provider_json) {
 }
 
 /**
+ * 제공자 한도를 정규화·요약하거나 갱신 간격을 제한합니다.
+ *
+ * 잘못된 요청·지원하지 않는 형식은 JSON null이며 I/O를 수행하지 않습니다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_provider_quota_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_provider_quota_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 연결 정보 변경 후 저장된 모델 검증 상태를 안전한 미확인 상태로 되돌린다.
  *
  * 입력 상태가 wire contract를 벗어나면 빈 문자열을 반환한다.

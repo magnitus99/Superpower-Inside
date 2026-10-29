@@ -721,6 +721,7 @@ export interface SuperpowerInsideSettings {
   customOpenAIProviders: CustomOpenAIProviderConfig[];
   providerProfiles: ProviderProfileConfig[];
   providerValidation: Record<string, ProviderValidationSnapshot>;
+  quotaCheckIntervalSeconds: number;
   rag: RAGConfig;
   mcpServers: MCPServerConfig[];
   mcpPath: string;
@@ -767,6 +768,7 @@ export const DEFAULT_SETTINGS: SuperpowerInsideSettings = {
   customOpenAIProviders: [],
   providerProfiles: [],
   providerValidation: {},
+  quotaCheckIntervalSeconds: 30,
   rag: {
     excludePaths: ['.git', 'node_modules', 'attachments'],
     excludeExts: ['png', 'jpg', 'jpeg', 'gif', 'mp4', 'zip'],
@@ -1275,6 +1277,7 @@ export interface PluginLike {
   lastAutoUpdateResult?: IndexingResult | null;
   refreshBus: import('./utils/refresh-bus').RefreshBus;
   updateChecker?: PluginUpdateChecker | null;
+  providerQuota?: import('./llm/provider-quota-service').ProviderQuotaService | null;
   logger: AppLogger;
   documentCorpus: import('./rag/document-corpus-store').IndexedDbDocumentCorpusStore | null;
 }

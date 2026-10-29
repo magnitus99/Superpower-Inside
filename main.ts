@@ -1,4 +1,5 @@
-import { migrateStoredMcpServersRust } from './src/rag/rust-core';
+import { migrateStoredMcpServersRust, normalizeQuotaIntervalSecondsRust } from './src/rag/rust-core';
+import { ProviderQuotaService } from './src/llm/provider-quota-service';
 import {
   getLanguage as getObsidianLanguage,
   Plugin,
@@ -339,6 +340,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private statsDebounceTimer: number | null = null;
   refreshBus: RefreshBus = new RefreshBus();
   updateChecker: PluginUpdateChecker | null = null;
+  providerQuota: ProviderQuotaService | null = null;
 
   async onload(): Promise<void> {
     this.unloaded = false;
@@ -355,6 +357,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     await this.loadSettings();
     await this.runStartupPluginFileMaintenance();
     this.initProvider();
+    this.startProviderQuota();
 
     // 채팅 뷰 등록
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
@@ -505,10 +508,30 @@ export default class SuperpowerInsidePlugin extends Plugin {
     this.mcpConnectionRunId++;
     this.updateChecker?.dispose();
     this.updateChecker = null;
+    this.providerQuota?.dispose();
+    this.providerQuota = null;
     this.clearMcpRetryTimers();
     this.clearRAG();
     this.refreshBus.destroy();
     this.getLogger().info('Plugin unloaded.', { source: 'lifecycle' });
+  }
+
+  private startProviderQuota(): void {
+    const providerQuota = new ProviderQuotaService({
+      getProfiles: () => this.settings.providerProfiles,
+      getIntervalSeconds: () => this.settings.quotaCheckIntervalSeconds,
+      onChange: (profileId) => {
+        const state = this.providerQuota?.get(profileId);
+        this.refreshBus.emit('quota', {
+          status: state?.status === 'unavailable' ? 'error' : state?.status === 'loading' ? 'partial' : 'success',
+          detail: profileId,
+        });
+      },
+      logger: this.getLogger(),
+    });
+    this.providerQuota = providerQuota;
+    this.register(() => providerQuota.dispose());
+    providerQuota.start();
   }
 
   /**
@@ -1167,6 +1190,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
 
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data as Partial<SuperpowerInsideSettings>);
+    const quotaInterval = normalizeQuotaIntervalSecondsRust(data.quotaCheckIntervalSeconds);
+    if (quotaInterval === null) throw new Error(t('settingsApplyFailed'));
+    this.settings.quotaCheckIntervalSeconds = quotaInterval;
     this.settings.rag = {
       ...DEFAULT_SETTINGS.rag,
       ...(data.rag as Partial<SuperpowerInsideSettings['rag']> | undefined),
@@ -1213,10 +1239,14 @@ export default class SuperpowerInsidePlugin extends Plugin {
 
   /** 저장 전에 키 원문을 보안 저장소에 반영하고 저장 사본에서 제거한다. 모든 저장 경로가 이 메서드를 지난다. */
   private async persistSettings(): Promise<void> {
+    const quotaInterval = normalizeQuotaIntervalSecondsRust(this.settings.quotaCheckIntervalSeconds);
+    if (quotaInterval === null) throw new Error(t('settingsApplyFailed'));
+    this.settings.quotaCheckIntervalSeconds = quotaInterval;
     persistProviderApiKeys(this.app, this.settings);
     const persisted = settingsForPersistence(this.settings);
     saveLocalSettings(this.app, persisted);
     await this.saveData(persisted);
+    this.providerQuota?.configure();
   }
 
   async saveSettings(options?: {
