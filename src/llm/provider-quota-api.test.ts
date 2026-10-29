@@ -175,6 +175,18 @@ describe('공식 제공자 한도 조회 어댑터', () => {
         body: JSON.stringify({ project: 'synthetic-project' }),
       }),
     );
+    expect(mocks.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
+        body: JSON.stringify({
+          metadata: {
+            ideType: 'IDE_UNSPECIFIED',
+            platform: 'PLATFORM_UNSPECIFIED',
+            pluginType: 'GEMINI',
+          },
+        }),
+      }),
+    );
   });
   it('Gemini 크레딧 조회만 실패해도 확보한 한도를 버리지 않는다', async () => {
     mocks.request.mockImplementation((request: { url: string }) =>

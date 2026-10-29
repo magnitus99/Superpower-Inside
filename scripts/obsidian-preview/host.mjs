@@ -454,14 +454,64 @@ class Unsupported {
 }
 export class App extends Unsupported {}
 export class Plugin extends Component {}
-export class PluginSettingTab extends Unsupported {}
-export class Setting extends Unsupported {}
+export class PluginSettingTab {
+  constructor(app) { this.app = app; this.containerEl = document.createElement('div'); }
+  hide() {}
+}
+export class TextComponent {
+  constructor(container) { this.inputEl = container.createEl('input', { type: 'text' }); }
+  setValue(value) { this.inputEl.value = value; return this; }
+  getValue() { return this.inputEl.value; }
+  setPlaceholder(value) { this.inputEl.placeholder = value; return this; }
+  setDisabled(value) { this.inputEl.disabled = value; return this; }
+  onChange(callback) { this.inputEl.addEventListener('input', () => callback(this.inputEl.value)); return this; }
+}
+export class ButtonComponent {
+  constructor(container) { this.buttonEl = container.createEl('button', { attr: { type: 'button' } }); }
+  setButtonText(value) { this.buttonEl.setText(value); return this; }
+  setTooltip(value) { this.buttonEl.title = value; return this; }
+  setDisabled(value) { this.buttonEl.disabled = value; return this; }
+  setCta() { this.buttonEl.addClass('mod-cta'); return this; }
+  setWarning() { this.buttonEl.addClass('mod-warning'); return this; }
+  setIcon(value) { setIcon(this.buttonEl, value); return this; }
+  onClick(callback) { this.buttonEl.addEventListener('click', callback); return this; }
+}
+export class ExtraButtonComponent extends ButtonComponent {
+  constructor(container) { super(container); this.extraSettingsEl = this.buttonEl; this.buttonEl.addClass('clickable-icon'); }
+}
+export class DropdownComponent {
+  constructor(container) { this.selectEl = container.createEl('select', { cls: 'dropdown' }); }
+  addOption(value, label) { this.selectEl.createEl('option', { value, text: label }); return this; }
+  addOptions(values) { for (const [value, label] of Object.entries(values)) this.addOption(value, label); return this; }
+  setValue(value) { this.selectEl.value = value; return this; }
+  getValue() { return this.selectEl.value; }
+  setDisabled(value) { this.selectEl.disabled = value; return this; }
+  onChange(callback) { this.selectEl.addEventListener('change', () => callback(this.selectEl.value)); return this; }
+}
+export class ToggleComponent {
+  constructor(container) { this.toggleEl = container.createDiv({ cls: 'checkbox-container', attr: { role: 'switch', tabindex: '0' } }); this.value = false; }
+  setValue(value) { this.value = value; this.toggleEl.toggleClass('is-enabled', value); this.toggleEl.setAttribute('aria-checked', String(value)); return this; }
+  onChange(callback) { this.toggleEl.addEventListener('click', () => { this.setValue(!this.value); callback(this.value); }); return this; }
+}
+export class Setting {
+  constructor(container) {
+    this.settingEl = container.createDiv({ cls: 'setting-item' });
+    this.infoEl = this.settingEl.createDiv({ cls: 'setting-item-info' });
+    this.nameEl = this.infoEl.createDiv({ cls: 'setting-item-name' });
+    this.descEl = this.infoEl.createDiv({ cls: 'setting-item-description' });
+    this.controlEl = this.settingEl.createDiv({ cls: 'setting-item-control' });
+  }
+  setName(value) { this.nameEl.setText(value); return this; }
+  setDesc(value) { this.descEl.replaceChildren(typeof value === 'string' ? document.createTextNode(value) : value); return this; }
+  setHeading() { this.settingEl.addClass('setting-item-heading'); return this; }
+  setClass(value) { this.settingEl.addClass(value); return this; }
+  addText(callback) { callback(new TextComponent(this.controlEl)); return this; }
+  addDropdown(callback) { callback(new DropdownComponent(this.controlEl)); return this; }
+  addToggle(callback) { callback(new ToggleComponent(this.controlEl)); return this; }
+  addButton(callback) { callback(new ButtonComponent(this.controlEl)); return this; }
+  addExtraButton(callback) { callback(new ExtraButtonComponent(this.controlEl)); return this; }
+}
 export class SettingGroup extends Unsupported {}
-export class ButtonComponent extends Unsupported {}
-export class TextComponent extends Unsupported {}
-export class DropdownComponent extends Unsupported {}
-export class ExtraButtonComponent extends Unsupported {}
-export class ToggleComponent extends Unsupported {}
 export class SecretComponent extends Unsupported {}
 export class FileView extends Unsupported {}
 export class FuzzySuggestModal extends Unsupported {}

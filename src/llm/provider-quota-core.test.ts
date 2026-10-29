@@ -36,6 +36,12 @@ function summary(windows: QuotaWindow[]) {
 }
 
 describe('공식 quota 실제 WASM 연동 · 독립 합성 응답', () => {
+  it('표시 단위 변환도 실제 반환 초를 Rust에서만 사용한다', () => {
+    expect(
+      summary([{ id: 'actual', remainingPercent: 40, durationSeconds: 18000 }])?.duration,
+    ).toEqual({ value: 5, unit: 'hour' });
+    expect(summary([{ id: 'unknown', remainingPercent: 40 }])?.duration).toBeUndefined();
+  });
   it.each([
     { remaining: [10, 2, 80], expected: 'week' },
     { remaining: [100, 100, 100], expected: 'session' },
@@ -372,6 +378,13 @@ describe('quota wire의 엄격한 스키마와 실패 경계', () => {
   });
 
   it.each([
+    ...[
+      null,
+      { value: 0, unit: 'hour' },
+      { value: 2, unit: 'month' },
+      { value: '2', unit: 'hour' },
+      { value: 2, unit: 'hour', extra: true },
+    ].map((duration) => ({ duration, credits: [], subscriptionExhausted: false })),
     { credits: [], subscriptionExhausted: 'false' },
     { window: null, credits: [], subscriptionExhausted: false },
     {

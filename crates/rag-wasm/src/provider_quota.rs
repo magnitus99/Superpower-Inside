@@ -377,6 +377,26 @@ fn summarize(snapshot: &Value) -> Option<Value> {
         .min_by(|left, right| compare_windows(left, right))
     {
         put(&mut output, "window", window.clone());
+        if let Some(seconds) = window
+            .get("durationSeconds")
+            .and_then(nonnegative)
+            .filter(|seconds| *seconds > 0.0)
+        {
+            let (unit, divisor) = [
+                ("week", 604_800.0),
+                ("day", 86400.0),
+                ("hour", 3600.0),
+                ("minute", 60.0),
+            ]
+            .into_iter()
+            .find(|(_, divisor)| seconds % divisor == 0.0)
+            .unwrap_or(("second", 1.0));
+            put(
+                &mut output,
+                "duration",
+                json!({"value":seconds / divisor,"unit":unit}),
+            );
+        }
     }
     Some(output)
 }
@@ -399,6 +419,29 @@ mod tests {
     /// 합성 창을 요약합니다.
     fn summarize(windows: &Value) -> Value {
         call(&json!({"op":"summarize","snapshot":{"windows":windows,"credits":[]}}))
+    }
+
+    #[test]
+    fn provider_quota_display_duration_uses_only_returned_seconds() {
+        for (seconds, value, unit) in [
+            (604_800.0, 1.0, "week"),
+            (18000.0, 5.0, "hour"),
+            (90.0, 90.0, "second"),
+            (12.5, 12.5, "second"),
+        ] {
+            let output = summarize(
+                &json!([{"id":"actual","remainingPercent":20,"durationSeconds":seconds}]),
+            );
+            assert_eq!(
+                output.get("duration"),
+                Some(&json!({"value":value,"unit":unit}))
+            );
+        }
+        assert!(
+            summarize(&json!([{"id":"unknown","remainingPercent":20}]))
+                .get("duration")
+                .is_none()
+        );
     }
 
     #[test]

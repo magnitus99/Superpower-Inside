@@ -13,6 +13,14 @@ const screens = resolve(cache, 'screens');
 const execFileAsync = promisify(execFile);
 
 export const PREVIEW_CASES = [
+  { name: 'quota-settings-light', query: 'check&state=empty&quota=ready&quotaSettings&theme=light&width=800', width: 800, height: 1050 },
+  { name: 'quota-settings-dark-narrow', query: 'check&state=empty&quota=ready&quotaSettings&theme=dark&width=360', width: 360, height: 1100 },
+  { name: 'quota-settings-expanded', query: 'check&state=empty&quota=ready&quotaSettings&expanded&theme=light&width=800', width: 800, height: 1100 },
+  { name: 'quota-settings-empty', query: 'check&state=empty&quota=empty&quotaSettings&theme=light&width=520', width: 520, height: 720 },
+  { name: 'quota-settings-disabled', query: 'check&state=empty&quota=disabled&quotaSettings&theme=dark&width=520', width: 520, height: 900 },
+  { name: 'quota-chat-light', query: 'check&state=empty&quota=ready&theme=light&width=520', width: 520, height: 720 },
+  { name: 'quota-chat-error', query: 'check&state=empty&quota=error&theme=light&width=320', width: 320, height: 720 },
+  { name: 'quota-chat-loading-en', query: 'check&state=empty&quota=loading&theme=dark&lang=en&width=360', width: 360, height: 720 },
   { name: 'chat-light-narrow', query: 'check&theme=light&width=360', width: 360, height: 720 },
   { name: 'chat-dark-medium', query: 'check&theme=dark&width=520', width: 520, height: 800 },
   { name: 'chat-empty-light', query: 'check&state=empty&theme=light&width=360', width: 360, height: 720 },

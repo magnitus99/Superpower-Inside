@@ -24,6 +24,7 @@ export interface ProviderQuotaSnapshot {
 /** 최소 잔여 창과 전체 유효 창의 소진 여부입니다. 크레딧은 구독 창과 독립입니다. */
 export interface ProviderQuotaSummary {
   window?: QuotaWindow;
+  duration?: { value: number; unit: 'second' | 'minute' | 'hour' | 'day' | 'week' };
   credits: QuotaCredits[];
   subscriptionExhausted: boolean;
 }

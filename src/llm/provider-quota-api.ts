@@ -111,14 +111,11 @@ async function oauthQuota(
         method === 'retrieveUserQuota'
           ? { project: auth.projectId }
           : {
-              cloudaicompanionProject: auth.projectId,
               metadata: {
                 ideType: 'IDE_UNSPECIFIED',
                 platform: 'PLATFORM_UNSPECIFIED',
                 pluginType: 'GEMINI',
-                duetProject: auth.projectId,
               },
-              mode: 'HEALTH_CHECK',
             };
       return await requestQuota({
         url: `https://cloudcode-pa.googleapis.com/v1internal:${method}`,

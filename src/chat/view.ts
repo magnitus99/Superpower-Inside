@@ -1,5 +1,6 @@
 import { ItemView, Menu, WorkspaceLeaf, Notice, TFile, setIcon, type Events } from 'obsidian';
-import type { PluginLike } from '../settings';
+import { resolveProviderModelRef, type PluginLike } from '../settings';
+import { renderProviderQuota } from '../llm/provider-quota-display';
 
 function isPluginSearching(plugin: PluginLike): boolean {
   return (
@@ -287,6 +288,7 @@ export class ChatView extends ItemView {
   private preparationErrorEl: HTMLElement | null = null;
   private runControlEl: HTMLElement | null;
   private modelSelectEl: HTMLSelectElement | null;
+  private modelQuotaEl: HTMLElement | null = null;
   private contextPreviewEl: HTMLElement | null;
   private mentionDropdown: HTMLElement | null;
   private mentionQuery: string;
@@ -449,6 +451,7 @@ export class ChatView extends ItemView {
   }
 
   private registerRefreshBusEvents(): void {
+    this.refreshBusUnsubscribers.push(this.plugin.refreshBus.on('quota', () => this.renderModelQuota()));
     this.refreshBusUnsubscribers.push(
       this.plugin.refreshBus.on('mcp', () => {
         this.renderChatReadiness();
@@ -689,6 +692,7 @@ export class ChatView extends ItemView {
       cls: 'superpower-inside-chat-model-select',
       attr: { 'aria-label': t('modelSelector') },
     });
+    this.modelQuotaEl = toolbar.createSpan({ cls: 'superpower-inside-provider-quota superpower-inside-chat-quota', attr: { 'aria-live': 'polite', 'aria-atomic': 'true' } });
     this.modelSelectEl.addEventListener('change', () => this.renderChatReadiness());
     this.populateModelSelect();
 
@@ -801,6 +805,7 @@ export class ChatView extends ItemView {
       opt.value = '';
       opt.text = t('noModelsEnabled');
       this.modelSelectEl.disabled = true;
+      this.renderModelQuota();
       return;
     }
 
@@ -820,7 +825,17 @@ export class ChatView extends ItemView {
     this.renderChatReadiness();
   }
 
+  private renderModelQuota(): void {
+    if (!this.modelQuotaEl) return;
+    const selected = this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel;
+    const resolved = resolveProviderModelRef(this.plugin.settings, selected, 'general');
+    this.modelQuotaEl.hidden = !resolved;
+    if (resolved) renderProviderQuota(this.modelQuotaEl, resolved.profile, this.plugin.providerQuota?.get(resolved.profile.id));
+    else this.modelQuotaEl.empty();
+  }
+
   private renderChatReadiness(): void {
+    this.renderModelQuota();
     if (!this.readinessEl) return;
     // 준비가 끝날 때까지 진행률을 갱신합니다. 색인 이벤트가 없어도 화면이 멈춰 보이지 않게 합니다.
     if (this.readinessTicker !== null) {

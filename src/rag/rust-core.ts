@@ -6624,8 +6624,14 @@ function isProviderQuotaSnapshot(value: unknown): value is ProviderQuotaSnapshot
 function isProviderQuotaSummary(value: unknown): value is ProviderQuotaSummary {
   return (
     isStringRecordValueMap(value) &&
-    hasQuotaWireKeys(value, ['window', 'credits', 'subscriptionExhausted']) &&
+    hasQuotaWireKeys(value, ['window', 'duration', 'credits', 'subscriptionExhausted']) &&
     (value.window === undefined || isQuotaWindow(value.window)) &&
+    (value.duration === undefined ||
+      (isStringRecordValueMap(value.duration) &&
+       hasQuotaWireKeys(value.duration, ['value', 'unit']) &&
+       isQuotaNonnegativeNumber(value.duration.value) && value.duration.value > 0 &&
+       typeof value.duration.unit === 'string' &&
+       ['second', 'minute', 'hour', 'day', 'week'].includes(value.duration.unit))) &&
     Array.isArray(value.credits) &&
     value.credits.every(isQuotaCredits) &&
     typeof value.subscriptionExhausted === 'boolean'

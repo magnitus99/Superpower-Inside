@@ -1245,6 +1245,25 @@ export interface I18nKeys {
   providerContinueSetup: string;
   providerAddTitle: string;
   providerAddDesc: string;
+  quotaSectionTitle: string;
+  quotaSectionDesc: string;
+  quotaIntervalName: string;
+  quotaIntervalDesc: string;
+  quotaLoading: string;
+  quotaUnavailable: string;
+  quotaUnsupported: string;
+  quotaUnsupportedDesc: string;
+  quotaDisabled: string;
+  quotaNotApplicable: string;
+  quotaAuthentication: string;
+  quotaRemaining: string;
+  quotaCreditsUsd: string;
+  quotaCreditsCount: string;
+  quotaCreditsUnlimited: string;
+  quotaPeriodUnknown: string;
+  quotaPeriodSession: string;
+  quotaPeriodWeek: string;
+  quotaPeriodMonth: string;
   providerConnectionsSectionTitle: string;
   providerConnectionsSectionDesc: string;
   providerConnectionsEmpty: string;
@@ -3215,6 +3234,25 @@ const ko: I18nKeys = {
   providerAddTitle: '새 프로바이더 연결',
   providerAddDesc:
     'ChatGPT 브라우저 로그인이 기본입니다. OpenAI API 키 방식은 레거시로 표시되며, Google Gemini·OpenCode·Claude·Ollama·OpenRouter·사용자 지정 엔드포인트를 선택할 수 있습니다.',
+  quotaSectionTitle: '한도 조회',
+  quotaSectionDesc: '조회 가능한 잔여 한도와 크레딧만 표시합니다. 조회 실패나 미지원은 모델 사용을 막지 않습니다.',
+  quotaIntervalName: '한도 확인 간격(초)',
+  quotaIntervalDesc: '모든 연결과 채팅에 공통 적용합니다. 기본 30초, 10~3,600초. 제공자의 재시도 대기시간을 우선합니다.',
+  quotaLoading: '한도 조회 중…',
+  quotaUnavailable: '한도를 조회할 수 없습니다',
+  quotaUnsupported: '한도·크레딧 자동 조회 미지원',
+  quotaUnsupportedDesc: '사용자 지정 엔드포인트는 한도·크레딧 자동 조회를 지원하지 않습니다.',
+  quotaDisabled: '연결 비활성',
+  quotaNotApplicable: '로컬 실행 · 원격 한도 없음',
+  quotaAuthentication: '인증 정보를 갱신하지 못했습니다. 연결을 확인하거나 다시 로그인하세요.',
+  quotaRemaining: '{period} · {remaining}% 남음',
+  quotaCreditsUsd: '크레딧 ${remaining} 남음',
+  quotaCreditsCount: '크레딧 {remaining} 남음',
+  quotaCreditsUnlimited: '크레딧 무제한',
+  quotaPeriodUnknown: '기간 미제공',
+  quotaPeriodSession: '세션',
+  quotaPeriodWeek: '1주',
+  quotaPeriodMonth: '1개월',
   providerConnectionsSectionTitle: '연결 목록',
   providerConnectionsSectionDesc: '프로바이더를 펼쳐 연결 정보와 사용할 모델을 관리합니다.',
   providerConnectionsEmpty: '연결된 프로바이더가 없습니다. 위에서 새 연결을 추가하세요.',
@@ -5349,6 +5387,25 @@ const en: I18nKeys = {
   providerAddTitle: 'Connect a new provider',
   providerAddDesc:
     'ChatGPT browser sign-in is the default. OpenAI API keys are marked legacy; you can also choose Google Gemini, OpenCode, Claude, Ollama, OpenRouter, or a custom endpoint.',
+  quotaSectionTitle: 'Quota checks',
+  quotaSectionDesc: 'Only reported remaining quotas and credits are shown. Unavailable or unsupported checks do not block model use.',
+  quotaIntervalName: 'Quota check interval (seconds)',
+  quotaIntervalDesc: 'Shared by all connections and chats. Default: 30 seconds; range: 10–3,600 seconds. Provider retry delays take precedence.',
+  quotaLoading: 'Checking quota…',
+  quotaUnavailable: 'Quota information is unavailable',
+  quotaUnsupported: 'Automatic quota and credit checks unsupported',
+  quotaUnsupportedDesc: 'Custom endpoints do not support automatic quota and credit checks.',
+  quotaDisabled: 'Connection disabled',
+  quotaNotApplicable: 'Local execution · no remote quota',
+  quotaAuthentication: 'Could not refresh authentication. Check the connection or sign in again.',
+  quotaRemaining: '{period} · {remaining}% left',
+  quotaCreditsUsd: '${remaining} credits left',
+  quotaCreditsCount: '{remaining} credits left',
+  quotaCreditsUnlimited: 'Unlimited credits',
+  quotaPeriodUnknown: 'Period not reported',
+  quotaPeriodSession: 'Session',
+  quotaPeriodWeek: '1 week',
+  quotaPeriodMonth: '1 month',
   providerConnectionsSectionTitle: 'Connections',
   providerConnectionsSectionDesc: 'Expand a provider to manage its connection and models.',
   providerConnectionsEmpty: 'No provider connections are configured. Add one above.',
