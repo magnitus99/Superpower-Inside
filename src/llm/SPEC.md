@@ -18,7 +18,7 @@ parent: superpower-architecture
 
 ## 한도·크레딧 조회
 
-`provider-quota-api.ts`는 현재 연결의 기존 인증으로 읽기 전용 한도 조회를 조율하고, `provider-quota-service.ts`는 메모리 캐시와 하나의 전역 갱신 수명을 소유한다. `quotaCheckIntervalSeconds`는 기본 30초이며 정상 입력의 기본값·10…3,600초 정수 제한과 응답 정규화·최소 창 선택은 `deterministic-core`에 위임한다. 요금제 이름으로 한도의 존재·기간·총량을 만들지 않는다. 잔여율이 같으면 실제 알려진 짧은 기간을 우선하며, 기간 미제공을 임의의 시간으로 보완하지 않는다.
+`provider-quota-api.ts`는 현재 연결의 기존 인증으로 읽기 전용 한도 조회를 조율하고, `provider-quota-service.ts`는 메모리 캐시와 하나의 전역 갱신 수명을 소유한다. `provider-quota-display.ts`는 공통 요약·번역으로 설정 연결명과 채팅의 선택 모델 옆 표시를 조립한다. 두 화면은 연결 ID의 공통 캐시만 읽고 별도 요청·타이머를 만들지 않는다. 연결 목록 아래 공통 간격 입력은 빈 목록에서도 보이며 가벼운 설정 저장으로 적용해 RAG·MCP를 재초기화하지 않는다. `quotaCheckIntervalSeconds`는 기본 30초이며 정상 입력의 기본값·10…3,600초 정수 제한과 응답 정규화·최소 창 선택은 `deterministic-core`에 위임한다. 요금제 이름으로 한도의 존재·기간·총량을 만들지 않는다. 잔여율이 같으면 실제 알려진 짧은 기간을 우선하며, 기간 미제공을 임의의 시간으로 보완하지 않는다.
 
 조회 경로는 ChatGPT 로그인 `/backend-api/wham/usage`, Gemini 로그인 `v1internal:retrieveUserQuota`와 `:loadCodeAssist`, OpenCode Go `/zen/go/v1/usage`, Ollama Cloud `/api/balance`, OpenRouter `/api/v1/credits`다. OpenRouter는 구독 창이나 키의 지출 상한이 아니라 계정 크레딧만 취급한다. 공개 조회가 없는 OpenAI API·Claude API·Gemini API 키·OpenCode Console 잔액은 조회 불가이며, 사용자 지정 엔드포인트는 조회 미지원, 로컬 실행은 원격 한도 비대상이다. 공식 전략이라도 사용자 지정 URL의 키를 공식 서버에 전송하지 않는다. 내부 로그인·Go 조회 경로의 가용성은 제공자 변경에 따라 달라질 수 있다.
 
