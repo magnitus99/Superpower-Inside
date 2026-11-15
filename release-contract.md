@@ -13,6 +13,8 @@ references: [superpower-goals]
 
 SemVer MAJOR.MINOR.PATCH를 사용하며 기능 추가는 minor, 버그·호환성 수정은 patch, 비호환 변경은 major다. 게시한 버전·태그는 보존한다. 릴리스 준비는 dev에서 하고 manifest.json·package.json·package-lock.json 및 versions.json의 새 키를 맞춘다. main에는 dev에서 준비한 커밋만 squash merge하며 직접 커밋·push하지 않는다. 태그는 main의 squash merge 커밋에만 만들고 v 접두어 없는 정확한 버전이다. 버전 스크립트·검증·훅도 같은 형식을 처리한다.
 
+태그 workflow는 커밋된 `.local/plugin/` 배포 번들을 사용하고 루트 정본의 manifest·CSS·법적 고지를 같은 폴더에 준비해 검증·증명·업로드한다. 공개 자산 파일명은 유지하며 태그에서 모델·번들을 재다운로드하거나 재빌드하지 않는다.
+
 릴리스는 사용자 요청 범위에서만 진행한다. workflow와 수동 Release 생성을 경합시키지 않고 전체 검사·게시 완료 후 자산을 확인한다. 같은 버전 재게시·태그 이동도 별도 요청 범위에 한한다.
 
 릴리스 준비는 다음 전체 검증을 한 번 실행하고 실패하면 게시로 넘어가지 않는다. build에 포함된 `engineering-contract`의 교차언어 품질 게이트가 실패해도 릴리스를 중단한다. Patina는 이 경로에 자동 연결하지 않는다.

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
@@ -103,7 +102,9 @@ function readEmbeddedWasmBytes(filePath) {
 
 async function importGeneratedWasmModule() {
   const sourcePath = path.join(repoRoot, '.local/generated/rag-wasm/rag_wasm.js');
-  const tempDir = mkdtempSync(path.join(tmpdir(), 'rag-wasm-bench-'));
+  const cache = path.join(repoRoot, '.local/cache/bench');
+  mkdirSync(cache, { recursive: true });
+  const tempDir = mkdtempSync(path.join(cache, 'rag-wasm-'));
   const modulePath = path.join(tempDir, 'rag_wasm.mjs');
   writeFileSync(modulePath, readFileSync(sourcePath, 'utf8'));
   try {

@@ -1,6 +1,7 @@
 import esbuild from 'esbuild';
 import process from 'process';
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { ARTIFACT_PATHS } from './scripts/artifact-paths.mjs';
 import { builtinModules } from 'node:module';
 import { mcpStdioNodeTimers } from './scripts/mcp-stdio-build.mjs';
@@ -20,15 +21,30 @@ const prod = process.argv[2] === 'production';
 
 const outfile = `${ARTIFACT_PATHS.plugin}/main.js`;
 await mkdir(ARTIFACT_PATHS.plugin, { recursive: true });
-await Promise.all(['manifest.json', 'styles.css', 'THIRD_PARTY_NOTICES.md'].map(
-  (file) => copyFile(file, `${ARTIFACT_PATHS.plugin}/${file}`),
-));
+const sourceAssets = ['manifest.json', 'styles.css', 'THIRD_PARTY_NOTICES.md'];
+const pluginAssets = {
+  name: 'plugin-source-assets',
+  setup(builder) {
+    builder.onLoad({ filter: /[/\\]main\.ts$/ }, async ({ path }) => ({
+      contents: await readFile(path, 'utf8'),
+      loader: 'ts',
+      resolveDir: dirname(path),
+      watchFiles: sourceAssets.map((file) => resolve(file)),
+    }));
+    builder.onEnd(async ({ errors }) => {
+      if (errors.length) return;
+      await Promise.all(sourceAssets.map(
+        (file) => copyFile(file, `${ARTIFACT_PATHS.plugin}/${file}`),
+      ));
+    });
+  },
+};
 
 const buildOptions = {
   banner: { js: banner },
   entryPoints: ['main.ts'],
   bundle: true,
-  plugins: [mcpStdioNodeTimers],
+  plugins: [mcpStdioNodeTimers, pluginAssets],
   external: [
     'obsidian',
     'electron',
@@ -48,6 +64,8 @@ const buildOptions = {
   ],
   format: 'cjs',
   target: 'es2022',
+  // 문자열 값의 공백은 보존하고 출력 파일에는 이스케이프된 문자열로 기록합니다.
+  supported: { 'template-literal': false },
   logLevel: 'info',
   treeShaking: true,
   outfile,

@@ -4,6 +4,15 @@ import { readFileSync } from 'node:fs';
 const source = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
 describe('자체 생성물 통합 경로', () => {
+  it('삭제 도구는 명시 생성물만 다루고 링크를 따라가지 않는다', () => {
+    const reset = source('scripts/reset-generated.ps1');
+    expect(reset).toContain('SupportsShouldProcess');
+    expect(reset).toContain('ReparsePoint');
+    expect(reset).toContain('$PSCmdlet.ShouldProcess');
+    expect(reset).not.toContain("$targets += '.test-vault'");
+    expect(reset).not.toContain("$targets += '.local/plugin'");
+    expect(reset).not.toContain('git clean');
+  });
   it('Rust·bindgen·base64 출력은 .local 아래에만 둔다', () => {
     const build = source('scripts/build-rag-wasm.fish');
     expect(build).toContain('$REPO_ROOT/.local/generated/rag-wasm');
@@ -12,6 +21,9 @@ describe('자체 생성물 통합 경로', () => {
     expect(build).toContain('.local/generated/rag-wasm-bytes.ts');
     expect(build).not.toContain('toolchain install');
     expect(build).toContain('--frozen');
+    expect(build).toContain('node_modules/binaryen/bin/wasm-opt');
+    expect(build).toContain('node "$WASM_OPT_BIN"');
+    expect(build).not.toContain('node_modules/.bin/wasm-opt');
     expect(source('scripts/check-rust-local.fish')).toContain('/.local/cache/rust/');
     expect(source('scripts/check-rust-security.fish')).toContain('/.local/cache/rust/');
   });

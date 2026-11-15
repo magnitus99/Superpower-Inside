@@ -15,7 +15,7 @@ vi.mock('obsidian', () => ({ requestUrl: vi.fn() }));
 const MODEL_PATH = `.obsidian/plugins/superpower-inside/${TERNLIGHT_MODEL_FILE_NAME}`;
 const PLUGIN_VERSION = '1.4.2';
 const validModel = toArrayBuffer(
-  readFileSync(join(process.cwd(), TERNLIGHT_MODEL_FILE_NAME)),
+  readFileSync(join(process.cwd(), '.local/plugin', TERNLIGHT_MODEL_FILE_NAME)),
 );
 
 describe('ensureTernlightModel', () => {

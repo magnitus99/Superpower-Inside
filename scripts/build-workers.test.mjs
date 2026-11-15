@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -50,6 +51,11 @@ it('작업 디렉터리와 무관하게 worker를 생성하고 Electron에서도
       expect(source).toContain(`export const ${constant}_WORKER_SOURCE = `);
       expect(encoded).toBeDefined();
       expect(JSON.parse(encoded)).toContain(`workerKind="${constant}"`);
+    }
+    expect(existsSync(join(root, 'generated'))).toBe(false);
+    for (const file of ['embeddinggemma-worker.js', 'pdf-worker.js', 'pdf-ocr-worker.js', 'embeddinggemma-runtime.wasm', 'embeddinggemma-runtime.mjs']) {
+      expect(existsSync(join(root, file))).toBe(false);
+      expect(existsSync(join(root, '.local/plugin', file))).toBe(true);
     }
     const gemmaSource = readFileSync(join(root, '.local/plugin/embeddinggemma-worker.js'), 'utf8');
     expect(gemmaSource).toContain('workerKind="GEMMA"');

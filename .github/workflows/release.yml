@@ -38,6 +38,7 @@ jobs:
       - name: Verify committed release assets
         run: node scripts/validate-obsidian-review.mjs --tag "$GITHUB_REF_NAME" --built
 
+      # 숨김 디렉터리의 자산을 빠뜨리지 않도록 두 액션 모두 파일 경로를 명시합니다.
       - name: Attest release assets
         uses: actions/attest-build-provenance@v4
         with:

@@ -3,8 +3,8 @@
 // 사용법: node scripts/test-pdf-ocr.mjs <PDF가 있는 디렉터리> [--timeout-ms 1200000] [--chrome <경로>] [--serve]
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { resolve, extname, join } from 'node:path';
 import process from 'node:process';
 
@@ -42,8 +42,8 @@ if (pdfFiles.length === 0) {
 
 // 워커 파일은 저장소의 배포 산출물을 그대로 사용합니다.
 const [workerSource, ocrSource] = await Promise.all([
-  readFile(new URL('../pdf-worker.js', import.meta.url)),
-  readFile(new URL('../pdf-ocr-worker.js', import.meta.url)),
+  readFile(new URL('../.local/plugin/pdf-worker.js', import.meta.url)),
+  readFile(new URL('../.local/plugin/pdf-ocr-worker.js', import.meta.url)),
 ]);
 
 const page = `<!doctype html><html lang="ko"><meta charset="utf-8"><title>PDF 런타임 검사</title>
@@ -165,7 +165,9 @@ if (serveOnly) {
   console.error(`수동 검사 페이지: ${url}`);
 } else {
   const chromePath = chromeCandidates.find((candidate) => candidate);
-  profileDirectory = await mkdtemp(join(tmpdir(), 'pdf-ocr-check-'));
+  const cache = fileURLToPath(new URL('../.local/cache/pdf-ocr/', import.meta.url));
+  await mkdir(cache, { recursive: true });
+  profileDirectory = await mkdtemp(join(cache, 'profile-'));
   chrome = spawn(
     chromePath,
     [

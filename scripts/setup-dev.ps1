@@ -149,7 +149,7 @@ function Register-ObsidianVault {
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
-$pluginOutput = & node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { ARTIFACT_PATHS } = await import(pathToFileURL(process.argv[1])); console.log(ARTIFACT_PATHS.plugin)' (Join-Path $repoRoot "scripts/artifact-paths.mjs")
+$pluginOutput = & node --input-type=module -e "import { pathToFileURL } from 'node:url'; const { ARTIFACT_PATHS } = await import(pathToFileURL(process.argv[1])); console.log(ARTIFACT_PATHS.plugin)" (Join-Path $repoRoot "scripts/artifact-paths.mjs")
 if ($LASTEXITCODE -ne 0) { throw "플러그인 출력 경로를 확인할 수 없습니다." }
 $pluginTarget = Join-Path $repoRoot $pluginOutput
 if (-not (Test-Path -LiteralPath (Join-Path $pluginTarget "main.js")) -or -not (Test-Path -LiteralPath (Join-Path $pluginTarget "manifest.json"))) {

@@ -40,7 +40,7 @@ export function qualityPlan(
   const tests =
     typescript ||
     changed.some((file) =>
-      /^(src\/.*\.json$|scripts\/.*\.(mjs|fish)$|\.githooks\/|esbuild\.config\.mjs$|styles\.css$|package\.json$|tests\/fixtures\/)/.test(
+      /^(src\/.*\.json$|scripts\/.*\.(mjs|fish|ps1)$|\.githooks\/|esbuild\.config\.mjs$|styles\.css$|package\.json$|tests\/fixtures\/)/.test(
         file,
       ),
     );

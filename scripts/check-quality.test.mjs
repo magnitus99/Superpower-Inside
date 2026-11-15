@@ -101,6 +101,7 @@ process.exitCode=stage===process.env.QUALITY_FAIL ? 1 : 0;
       rust: false,
       security: false,
     });
+    expect(qualityPlan(['scripts/reset-generated.ps1']).tests).toBe(true);
     expect(qualityPlan(['scripts/check-copy.mjs'])).toMatchObject({
       typescript: false,
       tests: true,

@@ -139,6 +139,12 @@ function validateBuiltAssets() {
       errors.push(`release asset is missing: ${ARTIFACT_PATHS.plugin}/${asset}`);
     }
   }
+  for (const asset of ['manifest.json', 'styles.css', 'THIRD_PARTY_NOTICES.md']) {
+    const staged = path.join(root, ARTIFACT_PATHS.plugin, asset);
+    if (existsSync(staged) && !readFileSync(staged).equals(readFileSync(path.join(root, asset)))) {
+      errors.push(`staged release asset differs from source: ${ARTIFACT_PATHS.plugin}/${asset}`);
+    }
+  }
   const mainJsPath = path.join(root, ARTIFACT_PATHS.plugin, 'main.js');
   if (existsSync(mainJsPath)) {
     const mainJsBytes = statSync(mainJsPath).size;

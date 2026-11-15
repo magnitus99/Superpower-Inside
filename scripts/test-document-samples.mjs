@@ -162,7 +162,7 @@ process.exitCode = failures > 0 ? 1 : 0;
 
 /** 실제 배포 PDF worker를 사용하며 OCR 자산 요청은 별도 검증으로 남깁니다. */
 async function extractPdf(bytes) {
-  const source = await readFile(new URL('../pdf-worker.js', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../.local/plugin/pdf-worker.js', import.meta.url), 'utf8');
   const worker = new Worker(
     `
     const { parentPort } = require('node:worker_threads');
