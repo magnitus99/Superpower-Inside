@@ -1,5 +1,5 @@
-import { VECTOR_SEARCH_WORKER_SOURCE } from '../../generated/vector-search-worker-source';
-import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
+import { VECTOR_SEARCH_WORKER_SOURCE } from '../../.local/generated/vector-search-worker-source';
+import { RAG_WASM_BASE64 } from '../../.local/generated/rag-wasm-bytes';
 import type { VectorSearchFilter } from './store';
 
 export interface VectorSearchWorkerHit {

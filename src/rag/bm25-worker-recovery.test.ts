@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
+import { RAG_WASM_BASE64 } from '../../.local/generated/rag-wasm-bytes';
 import { RustBm25RuntimeIndex } from './rust-core';
 import type { BM25WorkerRequest, BM25WorkerResponse } from './bm25-worker-entry';
 

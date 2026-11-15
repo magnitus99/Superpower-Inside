@@ -16,11 +16,13 @@ const scanExtensions = ['.ts', '.rs', '.mjs', '.js', '.json', '.md', '.css', '.y
 const skippedPrefixes = [
   '.agents/',
   '.test-vault/',
-  'generated/',
+  '.local/generated/',
+  '.local/cache/',
+  '.local/plugin/',
   'node_modules/',
   'simulations/',
 ];
-const skippedFiles = new Set(['main.js', 'src/rag/rag-wasm-bytes.ts']);
+const skippedFiles = new Set();
 const textDocumentExtensions = ['.md', '.txt'];
 const MIN_PHRASE_LENGTH = 20;
 const MIN_DOCUMENT_NAME_LENGTH = 8;

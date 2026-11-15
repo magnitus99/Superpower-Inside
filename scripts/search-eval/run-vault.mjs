@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ARTIFACT_PATHS } from '../artifact-paths.mjs';
 import {
   mainWorktreeRoot,
   selectVaultDirectory,
@@ -28,7 +29,7 @@ async function main() {
   const timeoutMinutes = Number(option('--timeout-min') ?? 30);
   if (!Number.isInteger(queries) || queries < 1 || queries > 200)
     throw new Error('--queries는 1..200 정수여야 합니다.');
-  const tempRoot = path.resolve('node_modules/.cache/search-eval');
+  const tempRoot = path.resolve(ARTIFACT_PATHS.searchEval);
   execFileSync('git', ['check-ignore', '--quiet', path.join(tempRoot, 'probe')]);
   await mkdir(tempRoot, { recursive: true });
   const directory = await mkdtemp(path.join(tempRoot, 'vault-'));

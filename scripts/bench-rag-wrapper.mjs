@@ -15,7 +15,7 @@ const {
   chunk_markdown_json,
   initSync,
 } = await importGeneratedWasmModule();
-const wasmBytes = readEmbeddedWasmBytes(path.join(repoRoot, 'src/rag/rag-wasm-bytes.ts'));
+const wasmBytes = readEmbeddedWasmBytes(path.join(repoRoot, '.local/generated/rag-wasm-bytes.ts'));
 
 initSync({ module: wasmBytes });
 
@@ -102,7 +102,7 @@ function readEmbeddedWasmBytes(filePath) {
 }
 
 async function importGeneratedWasmModule() {
-  const sourcePath = path.join(repoRoot, 'generated/rag-wasm/rag_wasm.js');
+  const sourcePath = path.join(repoRoot, '.local/generated/rag-wasm/rag_wasm.js');
   const tempDir = mkdtempSync(path.join(tmpdir(), 'rag-wasm-bench-'));
   const modulePath = path.join(tempDir, 'rag_wasm.mjs');
   writeFileSync(modulePath, readFileSync(sourcePath, 'utf8'));

@@ -1,7 +1,7 @@
 import { Worker as NodeWorker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { VECTOR_SEARCH_WORKER_SOURCE } from '../../generated/vector-search-worker-source';
-import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
+import { VECTOR_SEARCH_WORKER_SOURCE } from '../../.local/generated/vector-search-worker-source';
+import { RAG_WASM_BASE64 } from '../../.local/generated/rag-wasm-bytes';
 import {
   VectorSearchWorkerRuntime,
   type VectorSearchWorkerAdapter,

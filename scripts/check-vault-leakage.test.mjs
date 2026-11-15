@@ -20,8 +20,9 @@ describe('check-vault-leakage', () => {
   it('스캔 대상과 제외 대상을 구분한다', () => {
     expect(isScannableFile('src/rag/query.ts')).toBe(true);
     expect(isScannableFile('crates/rag-wasm/src/lib.rs')).toBe(true);
-    expect(isScannableFile('main.js')).toBe(false);
-    expect(isScannableFile('generated/rag-wasm/rag_wasm.js')).toBe(false);
+    expect(isScannableFile('.local/plugin/main.js')).toBe(false);
+    expect(isScannableFile('.local/cache/search-eval/result.json')).toBe(false);
+    expect(isScannableFile('.local/generated/rag-wasm/rag_wasm.js')).toBe(false);
     expect(isScannableFile('simulations/obsidian-preview/main.js')).toBe(false);
   });
 

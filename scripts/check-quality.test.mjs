@@ -134,6 +134,13 @@ process.exitCode=stage===process.env.QUALITY_FAIL ? 1 : 0;
     });
     expect(qualityPlan(['scripts/build-rag-wasm.fish'])).toMatchObject({ tests: true, rust: true });
   });
+  it('통합 생성 코드도 TS와 회귀 검사를 선택한다', () => {
+    expect(qualityPlan(['.local/generated/rag-wasm-bytes.ts'])).toMatchObject({
+      typescript: true,
+      tests: true,
+    });
+    expect(qualityPlan(['.local/generated/rag-wasm/rag_wasm.js']).typescript).toBe(true);
+  });
   it('의존성·보안 정책 변경은 CI 전체 보안 검사 대상으로 선택한다', () => {
     expect(qualityPlan(['Cargo.lock']).security).toBe(true);
     expect(qualityPlan(['package-lock.json']).security).toBe(true);

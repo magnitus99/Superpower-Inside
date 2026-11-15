@@ -32,7 +32,7 @@ export function qualityPlan(
   const typescript =
     rust ||
     changed.some((file) =>
-      /^(src\/.*\.(ts|tsx|js|mjs|cjs)$|main\.ts$|tsconfig.*\.json$|eslint\.config\.|vitest\.config\.|generated\/.*\.(ts|js)$)/.test(
+      /^(src\/.*\.(ts|tsx|js|mjs|cjs)$|main\.ts$|tsconfig.*\.json$|eslint\.config\.|vitest\.config\.|\.local\/generated\/.*\.(ts|js)$)/.test(
         file,
       ),
     ) ||

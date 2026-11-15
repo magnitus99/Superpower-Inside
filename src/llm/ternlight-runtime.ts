@@ -1,6 +1,6 @@
 import { type App } from 'obsidian';
 
-import { TERNLIGHT_WORKER_SOURCE } from '../../generated/ternlight-worker-source';
+import { TERNLIGHT_WORKER_SOURCE } from '../../.local/generated/ternlight-worker-source';
 import { TERNLIGHT_MODEL_FILE_NAME } from './ternlight-model';
 import { getLocalEmbeddingModels } from './local-embedding-models';
 

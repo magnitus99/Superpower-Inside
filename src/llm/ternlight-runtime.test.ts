@@ -11,7 +11,7 @@ import {
   type TernlightWorkerResponse,
 } from './ternlight-runtime';
 import { TERNLIGHT_MODEL_FILE_NAME } from './ternlight-model';
-import { TERNLIGHT_WORKER_SOURCE } from '../../generated/ternlight-worker-source';
+import { TERNLIGHT_WORKER_SOURCE } from '../../.local/generated/ternlight-worker-source';
 
 vi.mock('obsidian', () => ({
   normalizePath: (path: string) => path,

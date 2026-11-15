@@ -2,7 +2,7 @@
   "name": "superpower-inside",
   "version": "3.4.0",
   "description": "Find answers in your notes, compare sources, and draft with AI.",
-  "main": "main.js",
+  "main": ".local/plugin/main.js",
   "scripts": {
     "prepare": "node scripts/install-hooks.mjs",
     "hooks:install": "node scripts/install-hooks.mjs",

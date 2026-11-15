@@ -11,7 +11,7 @@ const root = new URL('../', import.meta.url);
 const compiled = await build({
   stdin: {
     contents:
-      "export * from './src/rag/rust-core'; export { chunkSourceDocument } from './src/rag/source-document'; export { XLSX_WORKER_SOURCE } from './generated/xlsx-worker-source'; export { RAG_WASM_BASE64 } from './src/rag/rag-wasm-bytes';",
+      "export * from './src/rag/rust-core'; export { chunkSourceDocument } from './src/rag/source-document'; export { XLSX_WORKER_SOURCE } from './.local/generated/xlsx-worker-source'; export { RAG_WASM_BASE64 } from './.local/generated/rag-wasm-bytes';",
     resolveDir: root.pathname,
     loader: 'ts',
   },

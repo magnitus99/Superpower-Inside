@@ -6,9 +6,10 @@ import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { captureReference } from './obsidian-preview/reference.mjs';
+import { ARTIFACT_PATHS } from './artifact-paths.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const cache = resolve(root, 'simulations/obsidian-preview');
+const cache = resolve(root, ARTIFACT_PATHS.preview);
 const source = resolve(root, 'scripts/obsidian-preview');
 
 export function parseCliJson(output) {

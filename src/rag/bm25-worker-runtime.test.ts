@@ -1,7 +1,7 @@
 import { Worker as NodeWorker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BM25_WORKER_SOURCE } from '../../generated/bm25-worker-source';
-import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
+import { BM25_WORKER_SOURCE } from '../../.local/generated/bm25-worker-source';
+import { RAG_WASM_BASE64 } from '../../.local/generated/rag-wasm-bytes';
 import { RustBm25RuntimeIndex } from './rust-core';
 import {
   BM25WorkerRuntime,

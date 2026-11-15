@@ -59,7 +59,7 @@ if test -x "$TOOLCHAIN_RUSTDOC"
     set -x RUSTDOC "$TOOLCHAIN_RUSTDOC"
 end
 
-set -x CARGO_TARGET_DIR "$REPO_ROOT/target/rustup-$TOOLCHAIN"
+set -x CARGO_TARGET_DIR "$REPO_ROOT/.local/cache/rust/rustup-$TOOLCHAIN"
 set -l CARGO_CMD "$CARGO_BIN"
 
 if command -sq "$RUSTUP_BIN"
@@ -110,9 +110,11 @@ echo "==> npm audit (critical)"
 npm audit --audit-level=critical
 or exit $status
 
-set -l GENERATED_SNAPSHOT (mktemp -d)
+mkdir -p "$REPO_ROOT/.local/cache"
 or exit $status
-set -l GENERATED_PATHS generated/rag-wasm
+set -l GENERATED_SNAPSHOT (mktemp -d "$REPO_ROOT/.local/cache/wasm-snapshot.XXXXXX")
+or exit $status
+set -l GENERATED_PATHS .local/generated/rag-wasm
 
 for path in $GENERATED_PATHS
     set -l source "$REPO_ROOT/$path"
@@ -149,7 +151,7 @@ for path in $GENERATED_PATHS
     or begin
         diff -ru "$before" "$after" | sed -n '1,240p'
         rm -rf "$GENERATED_SNAPSHOT"
-        echo "ERROR: Rust/WASM generated bindings are out of date. Run npm run wasm:build and commit generated/rag-wasm."
+        echo "ERROR: Rust/WASM generated bindings are out of date. Run npm run wasm:build and commit .local/generated/rag-wasm."
         exit 1
     end
 end

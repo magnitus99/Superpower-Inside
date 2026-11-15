@@ -1,5 +1,7 @@
 import esbuild from 'esbuild';
 import process from 'process';
+import { copyFile, mkdir } from 'node:fs/promises';
+import { ARTIFACT_PATHS } from './scripts/artifact-paths.mjs';
 import { builtinModules } from 'node:module';
 import { mcpStdioNodeTimers } from './scripts/mcp-stdio-build.mjs';
 import {
@@ -15,6 +17,12 @@ const banner =
   `*/`;
 
 const prod = process.argv[2] === 'production';
+
+const outfile = `${ARTIFACT_PATHS.plugin}/main.js`;
+await mkdir(ARTIFACT_PATHS.plugin, { recursive: true });
+await Promise.all(['manifest.json', 'styles.css', 'THIRD_PARTY_NOTICES.md'].map(
+  (file) => copyFile(file, `${ARTIFACT_PATHS.plugin}/${file}`),
+));
 
 const buildOptions = {
   banner: { js: banner },
@@ -42,7 +50,7 @@ const buildOptions = {
   target: 'es2022',
   logLevel: 'info',
   treeShaking: true,
-  outfile: 'main.js',
+  outfile,
   // 개발 빌드에서만 채팅 추적 기록을 허용합니다. 배포 번들은 항상 false로 접힙니다.
   define: { __SUPERPOWER_DEBUG_TRACE__: prod ? 'false' : 'true' },
 };
@@ -60,7 +68,7 @@ if (prod) {
     });
 
   let result = await buildProduction(false);
-  let output = result.metafile.outputs['main.js'];
+  let output = result.metafile.outputs[outfile];
   if (!output) throw new Error('esbuild did not report main.js output metadata.');
 
   if (needsStrongBundleOptimization(output.bytes)) {
@@ -68,7 +76,7 @@ if (prod) {
       `main.js is ${output.bytes.toLocaleString('en-US')} bytes, above the ${MAIN_JS_SIZE_LIMIT_BYTES.toLocaleString('en-US')}-byte budget. Rebuilding with the strong optimization profile.`,
     );
     result = await buildProduction(true);
-    output = result.metafile.outputs['main.js'];
+    output = result.metafile.outputs[outfile];
     if (!output) throw new Error('esbuild did not report optimized main.js output metadata.');
   }
 

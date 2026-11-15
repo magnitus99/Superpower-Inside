@@ -5,7 +5,7 @@ import {
   createGeneratedFileAdapter,
   GeneratedArtifactRegistry,
 } from '../storage/generated-artifacts';
-import { EMBEDDINGGEMMA_ASSETS } from '../../generated/embeddinggemma-assets';
+import { EMBEDDINGGEMMA_ASSETS } from '../../.local/generated/embeddinggemma-assets';
 import {
   buildTernlightReleaseAssetUrl,
   TERNLIGHT_MODEL_FILE_NAME,

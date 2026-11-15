@@ -1,4 +1,4 @@
-import { EMBEDDINGGEMMA_ASSETS } from '../../generated/embeddinggemma-assets';
+import { EMBEDDINGGEMMA_ASSETS } from '../../.local/generated/embeddinggemma-assets';
 import { getLocalEmbeddingModels } from './local-embedding-models';
 import { appLogger } from '../utils/logger';
 import { updateEmbeddingGemmaStatus } from './embeddinggemma-status';
