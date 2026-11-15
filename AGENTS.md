@@ -27,10 +27,10 @@ Obsidian 데스크톱 플러그인. 제품 의도·경계·품질 요구의 정�
 ## 브랜치와 릴리스
 
 - `main`은 릴리스 전용 브랜치입니다. 직접 커밋하거나 `git push`하지 않고, `dev`에서 올린 PR만 squash merge합니다. `main`에는 버전 태그와 GitHub Release만 남깁니다.
-- `dev`는 개발 허브입니다. 기능·수정 브랜치는 `dev`로 PR하고, 변경 범위 CI와 리뷰를 통과한 뒤 merge합니다. 릴리스 버전 업과 전체 검증도 `dev`에서 준비합니다.
-- 작업 브랜치는 `<type>/<short-slug>` 형식을 사용합니다. 예: `feat/search-dossier`, `fix/window-close`. `main`·`dev`를 작업 브랜치로 직접 사용하거나 `dev`로 `main`을 merge하지 않습니다.
+- `dev`는 개발 허브입니다. 로컬에서 변경 범위 검증과 독립 리뷰를 통과하면 `dev`에서 직접 작업하거나 로컬 작업 브랜치를 `dev`에 merge한 뒤 사용자 요청 범위에서 `dev`를 push할 수 있습니다. PR은 원격 협업이 필요하거나 가능한 경우 선택하며, 작업 브랜치의 원격 push는 필수가 아닙니다. 릴리스 버전 업과 전체 검증도 `dev`에서 준비합니다.
+- 작업 브랜치를 사용하면 `<type>/<short-slug>` 형식을 따릅니다. 예: `feat/search-dossier`, `fix/window-close`. `dev`로 `main`을 merge하지 않습니다.
 - 릴리스 순서:
-  1. 기능 브랜치 → `dev` PR (변경 범위 CI) → merge.
+  1. 위 개발 경로로 검증·독립 리뷰를 마친 변경을 `dev`에 통합합니다. PR을 사용하면 변경 범위 CI도 통과합니다.
   2. `dev`에서 `npm run release:check`로 전체 검증 (`security:full` → `build` → `review`).
   3. `dev`에서 `npm run release:bump -- patch|minor|major`로 버전 커밋을 만듭니다.
   4. `dev` → `main` PR을 만들고 전체 CI(`security:full`)를 통과한 뒤 squash merge합니다.

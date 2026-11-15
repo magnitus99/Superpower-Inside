@@ -5,8 +5,8 @@
 ## 브랜치
 
 - `main`: 릴리스 전용. 직접 커밋·push하지 않고 `dev` PR만 squash merge합니다. 태그와 GitHub Release만 남깁니다.
-- `dev`: 개발 허브. 기능·수정 브랜치의 PR을 받고 릴리스 버전을 준비합니다. `main`을 `dev`로 merge하지 않습니다.
-- 작업 브랜치: `<type>/<short-slug>` (예: `feat/search-dossier`, `fix/window-close`). `dev`로 PR합니다.
+- `dev`: 개발 허브. AGENTS의 변경 범위 검증·독립 리뷰·사용자 요청 권한에 따라 직접 작업 또는 로컬 작업 브랜치 통합 후 push할 수 있으며 릴리스 버전을 준비합니다. `main`을 `dev`로 merge하지 않습니다.
+- 작업 브랜치를 사용하면 `<type>/<short-slug>` (예: `feat/search-dossier`, `fix/window-close`) 형식을 따릅니다. 원격 push는 필수가 아니며 `dev` PR은 원격 협업 등에 선택합니다.
 
 ## 릴리스
 
@@ -26,7 +26,7 @@ git push origin (node -p "require('./manifest.json').version")
 ## 저장소 보호 설정 (관리자 1회)
 
 - `main`: Require a pull request before merging, Require status checks(`Quality`), Require linear history, squash merge만 허용, force push·직접 push 금지.
-- `dev`: Require a pull request before merging, Require status checks(`Quality`), force push 금지.
+- `dev`: PR 강제 없이 로컬 검증·독립 리뷰 후 직접 push를 허용하고, PR을 사용하면 `Quality` 통과를 요구합니다. force push는 금지합니다.
 - 릴리스 태그는 `main`의 `dev` squash merge 커밋에만 만들고, `v` 접두사를 붙이지 않습니다.
 
 ## 검사

@@ -156,7 +156,7 @@ Windows의 개발용 Node 도구는 `.cmd`를 임의 셸 문자열로 결합하�
 
 quality:local은 HEAD 대비 스테이징·작업 파일·새 파일을 기준으로 필요한 검사를 고른다. CI는 --base로 실제 비교 커밋을 전달한다. TS는 lint → typecheck → `test:unit`을 실행하고, `src/chat/`·`src/search/`·`src/i18n.ts`·CSS·채팅 UX fixture 변경은 `test:contracts`(i18n·채팅 UX·오프라인 계약)를 추가한다. 스크립트/CSS/CI는 관련 계약, Rust/WASM 경계는 TS 및 Rust fmt·clippy·tests를 확인한다. 문서·설명·버전만 바꾸면 community review·볼트 유출·diff 및 링크·명령을 확인하고 변경 없는 Rust·성능·온라인 보안·Patina를 강제하지 않는다. `.md`만 바뀌면 community review·볼트 유출·diff check가 선택되고, `design.md`는 preview 검수 안내를, `crates/` 아래 명세는 TS·Rust 검사를, `tests/fixtures/`는 `test:unit`을(`chat-ux/`는 `test:contracts`도) 추가로 선택한다. 이 선택은 게이트를 완화하는 근거가 아니다.
 
-의존성·보안 정책 변경의 CI와 수동 검사는 security:full을 사용한다. dev로 가는 기능 PR은 변경 범위만 검사하고, main으로 가는 릴리스 PR은 security:full 전체 검사를 실행한다. 태그 릴리스 workflow는 dev→main squash merge·버전·자산을 검증한 뒤 초안 Release를 만들며 전체 테스트를 중복 실행하지 않는다. 문서만 바뀌면 도구 설치·코드 검사도 생략한다. 이전 PR 실행은 새 커밋에서 취소한다. security:full의 기존 순서·측정 데이터·임계값·제외 정책을 유지한다.
+의존성·보안 정책 변경의 CI와 수동 검사는 security:full을 사용한다. dev 개발 변경은 로컬 quality:local로 변경 범위를 검사하고, dev로 가는 기능 PR이 있으면 CI도 같은 변경 범위를 검사한다. main으로 가는 릴리스 PR은 security:full 전체 검사를 실행한다. 태그 릴리스 workflow는 dev→main squash merge·버전·자산을 검증한 뒤 초안 Release를 만들며 전체 테스트를 중복 실행하지 않는다. 문서만 바뀌면 도구 설치·코드 검사도 생략한다. 이전 PR 실행은 새 커밋에서 취소한다. security:full의 기존 순서·측정 데이터·임계값·제외 정책을 유지한다.
 
 UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 구조 테스트와 community review 외에 `npm run preview:verify`의 헤드리스 Chrome 고정 뷰포트 스크린샷과 DOM 계약을 직접 확인한다. 정상·빈 상태·접기/펼치기·오류·disabled·진행·좁은 폭·테마·focus·대비를 포함한다. 네이티브 앱의 마우스·타이핑 자동화는 금지하며 CLI·코드·로그를 사용한다.
 
