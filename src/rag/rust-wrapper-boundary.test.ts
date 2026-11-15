@@ -73,8 +73,11 @@ describe('Rust wrapper boundary', () => {
       'utf8',
     );
 
-    expect(buildScript).toContain('node_modules/.bin/wasm-opt');
-    expect(buildScript).toContain('"$WASM_OPT_BIN" -Oz');
+    expect(buildScript).toContain('node_modules/binaryen/bin/wasm-opt');
+    expect(buildScript).toContain('node "$WASM_OPT_BIN" -Oz');
+    expect(buildScript.indexOf('node "$WASM_OPT_BIN" -Oz')).toBeLessThan(
+      buildScript.indexOf('node scripts/embed-rag-wasm.mjs'),
+    );
   });
 
   it('릴리즈 검증에서도 main.js 5 MB 예산을 강제한다', () => {

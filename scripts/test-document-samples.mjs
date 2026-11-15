@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
 const directory = process.argv[2];
@@ -12,7 +13,7 @@ const compiled = await build({
   stdin: {
     contents:
       "export * from './src/rag/rust-core'; export { chunkSourceDocument } from './src/rag/source-document'; export { XLSX_WORKER_SOURCE } from './.local/generated/xlsx-worker-source'; export { RAG_WASM_BASE64 } from './.local/generated/rag-wasm-bytes';",
-    resolveDir: root.pathname,
+    resolveDir: fileURLToPath(root),
     loader: 'ts',
   },
   bundle: true,

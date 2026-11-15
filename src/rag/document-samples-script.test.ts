@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const directories: string[] = [];
@@ -47,7 +48,7 @@ function syntheticScanPdf(): Buffer {
 }
 
 function run(args: string[]) {
-  return spawnSync(process.execPath, [script.pathname, ...args], { encoding: 'utf8' });
+  return spawnSync(process.execPath, [fileURLToPath(script), ...args], { encoding: 'utf8' });
 }
 
 describe('로컬 문서 예시 검사 명령', () => {

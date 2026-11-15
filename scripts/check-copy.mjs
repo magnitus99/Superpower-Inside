@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process';
+import { spawnNodeToolSync } from './run-node-tool.mjs';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { delimiter, resolve } from 'node:path';
@@ -55,7 +55,7 @@ export function validateRewrite(result, status) {
 }
 
 function command(program, args, options = {}) {
-  const result = spawnSync(program, args, {
+  const result = spawnNodeToolSync(program, args, {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
     ...options,

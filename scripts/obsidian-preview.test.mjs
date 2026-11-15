@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { assetPaths, parseCliJson, resolvePreviewFile } from './obsidian-preview.mjs';
 import { Component, Events } from './obsidian-preview/host.mjs';
@@ -18,10 +19,10 @@ describe('Obsidian 브라우저 검수 환경', () => {
   });
 
   it('서버는 검수 파일과 캡처한 자산 외의 경로를 노출하지 않는다', () => {
-    expect(resolvePreviewFile('/bundle.js', '/cache', '/repo')).toBe('/cache/bundle.js');
-    expect(resolvePreviewFile('/styles.css', '/cache', '/repo')).toBe('/repo/styles.css');
+    expect(resolvePreviewFile('/bundle.js', '/cache', '/repo')).toBe(resolve('/cache/bundle.js'));
+    expect(resolvePreviewFile('/styles.css', '/cache', '/repo')).toBe(resolve('/repo/styles.css'));
     expect(resolvePreviewFile('/public/fonts/a.woff2', '/cache', '/repo')).toBe(
-      '/cache/public/fonts/a.woff2',
+      resolve('/cache/public/fonts/a.woff2'),
     );
     for (const path of [
       '/data.json',

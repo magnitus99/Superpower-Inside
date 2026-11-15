@@ -150,6 +150,8 @@ naive Ctrl+F보다 품질이 낮은 사례는 사례 단위 실패로 처리해 
 
 ## 검증 범위와 게이트
 
+Windows의 개발용 Node 도구는 `.cmd`를 임의 셸 문자열로 결합하지 않고 현재 Node로 CLI 진입점을 실행해 인자·종료 상태를 보존한다. 기존 fish 스크립트는 설치된 WSL/fish 경로를 유지하며, 테스트의 OS 경로·URL 변환도 실제 실행 환경을 따른다.
+
 기능·버그 수정·리팩터링은 회귀 테스트를 먼저 추가하거나 확장한다. lint 비활성·타입 검사 무시·as any·clippy allow·prettier-ignore로 실패를 우회하지 않는다. 설치된 의존성·생성물로 오프라인 검증하고 Rust는 --frozen을 사용한다. 의존성이 없으면 준비 필요로 실패하며 네트워크·모델 호출로 조용히 대체하지 않는다.
 
 quality:local은 HEAD 대비 스테이징·작업 파일·새 파일을 기준으로 필요한 검사를 고른다. CI는 --base로 실제 비교 커밋을 전달한다. TS는 lint → typecheck → `test:unit`을 실행하고, `src/chat/`·`src/search/`·`src/i18n.ts`·CSS·채팅 UX fixture 변경은 `test:contracts`(i18n·채팅 UX·오프라인 계약)를 추가한다. 스크립트/CSS/CI는 관련 계약, Rust/WASM 경계는 TS 및 Rust fmt·clippy·tests를 확인한다. 문서·설명·버전만 바꾸면 community review·볼트 유출·diff 및 링크·명령을 확인하고 변경 없는 Rust·성능·온라인 보안·Patina를 강제하지 않는다. `.md`만 바뀌면 community review·볼트 유출·diff check가 선택되고, `design.md`는 preview 검수 안내를, `crates/` 아래 명세는 TS·Rust 검사를, `tests/fixtures/`는 `test:unit`을(`chat-ux/`는 `test:contracts`도) 추가로 선택한다. 이 선택은 게이트를 완화하는 근거가 아니다.
