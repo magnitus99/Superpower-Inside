@@ -3,7 +3,6 @@
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile, mkdtemp, mkdir, rm, access } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -251,7 +250,9 @@ async function evaluate(runtime, settings) {
 
 const args = process.argv.slice(2);
 const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
-const directory = await mkdtemp(path.join(tmpdir(), 'chat-quality-'));
+const cache = path.join(repository, '.local/cache/chat-quality');
+await mkdir(cache, { recursive: true });
+const directory = await mkdtemp(path.join(cache, 'run-'));
 try {
   const settingsPath = option('--settings');
   const settings = settingsPath

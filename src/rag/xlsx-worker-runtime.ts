@@ -1,8 +1,8 @@
 import type { TFile, Vault } from 'obsidian';
-import { XLSX_WORKER_SOURCE } from '../../generated/xlsx-worker-source';
+import { XLSX_WORKER_SOURCE } from '../../.local/generated/xlsx-worker-source';
 import { t } from '../i18n';
 import { appLogger } from '../utils/logger';
-import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
+import { RAG_WASM_BASE64 } from '../../.local/generated/rag-wasm-bytes';
 import type { SourceText } from './source-access';
 import type { PdfReadOptions } from './pdf-worker-runtime';
 import type { RustSourceTextSegment } from './rust-core';

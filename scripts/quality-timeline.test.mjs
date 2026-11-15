@@ -5,6 +5,33 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { qualityPlan } from './check-quality.mjs';
+import { buildFishInvocation, convertWindowsPathToWsl } from './run-fish.mjs';
+
+function runFish(script, cwd, environment = {}) {
+  const windows = process.platform === 'win32';
+  const scriptPath = fileURLToPath(new URL(script, import.meta.url));
+  const invocation = buildFishInvocation({
+    platform: process.platform,
+    scriptArgs: ['--no-config', windows ? convertWindowsPathToWsl(scriptPath) : scriptPath],
+    wslCwd: windows ? convertWindowsPathToWsl(cwd) : undefined,
+  });
+  if (windows) {
+    // WSL에는 Windows 환경변수가 자동 전달되지 않으므로 fixture 경계를 명시합니다.
+    const path = spawnSync('wsl.exe', ['--exec', 'printenv', 'PATH'], { encoding: 'utf8' });
+    if (path.error) throw path.error;
+    if (path.status !== 0) throw new Error(path.stderr);
+    invocation.args.splice(2, 0, 'env',
+      `PATH=${convertWindowsPathToWsl(cwd)}:${path.stdout.trim()}`,
+      ...Object.entries(environment).map(([key, value]) =>
+        `${key}=${key === 'RELEASE_LOG' ? convertWindowsPathToWsl(value) : value}`),
+    );
+  }
+  return spawnSync(invocation.command, invocation.args, {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${cwd}${delimiter}${process.env.PATH}`, ...environment },
+  });
+}
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 describe('검사 시점과 중복 제거', () => {
   it('검색 품질 fixture 변경은 전체 테스트를 선택한다', () => {
@@ -21,16 +48,12 @@ describe('검사 시점과 중복 제거', () => {
       );
       writeFileSync(join(root, 'first.txt'), 'first');
       writeFileSync(join(root, 'second.txt'), 'second');
-      const result = spawnSync(
-        'fish',
-        ['--no-config', fileURLToPath(new URL('./bump-version.fish', import.meta.url))],
-        { cwd: root, encoding: 'utf8' },
-      );
+      const result = runFish('./bump-version.fish', root);
       expect(result.status).toBe(1);
       expect(result.stdout).toContain('릴리스 준비 전에 작업 변경을 검토하고 커밋하세요');
       expect(readFileSync(join(root, 'first.txt'), 'utf8')).toBe('first');
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 3 });
     }
   });
   it('릴리스 각 단계가 실패하면 다음 명령을 실행하지 않고 실패를 반환한다', () => {
@@ -49,30 +72,36 @@ process.exitCode = stage === process.env.RELEASE_FAIL ? 7 : 0;
 `,
       );
       chmodSync(npm, 0o755);
+      if (process.platform === 'win32') {
+        // WSL의 실제 fish에서 합성 Node fixture를 설치된 Windows Node로 실행합니다.
+        const node = join(root, 'node');
+        const executable = convertWindowsPathToWsl(process.execPath).replaceAll("'", "'\\''");
+        writeFileSync(node, `#!/bin/sh
+if [ -n "$RELEASE_LOG" ]; then
+  export RELEASE_LOG="$(wslpath -w "$RELEASE_LOG")"
+fi
+export WSLENV="$WSLENV:RELEASE_LOG:RELEASE_FAIL"
+case "$1" in
+  /mnt/*) script="$(wslpath -w "$1")"; shift; set -- "$script" "$@" ;;
+esac
+exec '${executable}' "$@"
+`);
+        chmodSync(node, 0o755);
+      }
       for (const failed of [...order, '']) {
         const log = join(root, 'calls');
         rmSync(log, { force: true });
-        const result = spawnSync(
-          'fish',
-          ['--no-config', fileURLToPath(new URL('./check-release.fish', import.meta.url))],
-          {
-            cwd: root,
-            encoding: 'utf8',
-            env: {
-              ...process.env,
-              PATH: `${root}${delimiter}${process.env.PATH}`,
-              RELEASE_LOG: log,
-              RELEASE_FAIL: failed,
-            },
-          },
-        );
+        const result = runFish('./check-release.fish', root, {
+          RELEASE_LOG: log,
+          RELEASE_FAIL: failed,
+        });
         expect(result.status, result.stderr).toBe(failed ? 7 : 0);
         expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual(
           failed ? order.slice(0, order.indexOf(failed) + 1) : order,
         );
       }
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 3 });
     }
   });
   it('커밋·푸시 훅은 오프라인 검사만 하고 Patina 온라인을 자동 실행하지 않는다', () => {

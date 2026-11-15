@@ -20,12 +20,9 @@ if not test -x "$RUSTUP_BIN"
     end
 end
 
-if test -x "$RUSTUP_BIN"
-    "$RUSTUP_BIN" toolchain install "$TOOLCHAIN" --profile minimal
-    or exit $status
-    "$RUSTUP_BIN" component add clippy rustfmt --toolchain "$TOOLCHAIN"
-    or exit $status
-    "$RUSTUP_BIN" target add wasm32-unknown-unknown --toolchain "$TOOLCHAIN"
+# 빌드는 설치된 도구와 의존성만 사용합니다. 준비가 안 됐으면 실패로 알립니다.
+if command -sq "$RUSTUP_BIN"
+    "$RUSTUP_BIN" run "$TOOLCHAIN" rustc --version >/dev/null
     or exit $status
 end
 
@@ -37,14 +34,15 @@ end
 
 set -x PATH "$HOME/.cargo/bin" $PATH
 
-set -l OUT_DIR "$REPO_ROOT/generated/rag-wasm"
-set -l BINDGEN_DIR "$REPO_ROOT/target/rag-wasm-bindgen"
-set -l BUILD_TARGET_DIR "$REPO_ROOT/target"
+set -l OUT_DIR "$REPO_ROOT/.local/generated/rag-wasm"
+set -l BINDGEN_DIR "$REPO_ROOT/.local/cache/bindgen"
+set -l BUILD_TARGET_DIR "$REPO_ROOT/.local/cache/rust"
 
 if test -n "$CARGO_TARGET_DIR"
     set BUILD_TARGET_DIR "$CARGO_TARGET_DIR"
 end
 
+set -x CARGO_TARGET_DIR "$BUILD_TARGET_DIR"
 set -l WASM_INPUT "$BUILD_TARGET_DIR/wasm32-unknown-unknown/release/superpower_rag_wasm.wasm"
 set -l CARGO_CMD "$CARGO_BIN"
 
@@ -52,7 +50,7 @@ if command -sq "$RUSTUP_BIN"
     set CARGO_CMD "$RUSTUP_BIN" run "$TOOLCHAIN" cargo
 end
 
-$CARGO_CMD build -p superpower-rag-wasm --target wasm32-unknown-unknown --release
+$CARGO_CMD build -p superpower-rag-wasm --target wasm32-unknown-unknown --release --frozen
 or exit $status
 
 rm -rf "$BINDGEN_DIR"
@@ -66,14 +64,15 @@ end
 "$WASM_BINDGEN_BIN" --target web --out-dir "$BINDGEN_DIR" --out-name rag_wasm "$WASM_INPUT"
 or exit $status
 
-set -l WASM_OPT_BIN "$REPO_ROOT/node_modules/.bin/wasm-opt"
-if not test -x "$WASM_OPT_BIN"
+# npm의 Windows shim 대신 현재 fish 환경의 Node로 실행합니다.
+set -l WASM_OPT_BIN "$REPO_ROOT/node_modules/binaryen/bin/wasm-opt"
+if not test -f "$WASM_OPT_BIN"
     echo "ERROR: wasm-opt를 찾을 수 없습니다. npm install로 개발 의존성을 설치하세요."
     exit 1
 end
 
 set -l OPTIMIZED_WASM "$BINDGEN_DIR/rag_wasm_bg.optimized.wasm"
-"$WASM_OPT_BIN" -Oz "$BINDGEN_DIR/rag_wasm_bg.wasm" -o "$OPTIMIZED_WASM"
+node "$WASM_OPT_BIN" -Oz "$BINDGEN_DIR/rag_wasm_bg.wasm" -o "$OPTIMIZED_WASM"
 or exit $status
 mv "$OPTIMIZED_WASM" "$BINDGEN_DIR/rag_wasm_bg.wasm"
 or exit $status
@@ -84,4 +83,4 @@ node scripts/patch-rag-wasm-dts.mjs "$OUT_DIR/rag_wasm.d.ts"
 or exit $status
 node scripts/patch-rag-wasm-glue.mjs "$OUT_DIR/rag_wasm.js"
 or exit $status
-node scripts/embed-rag-wasm.mjs "$BINDGEN_DIR/rag_wasm_bg.wasm" "src/rag/rag-wasm-bytes.ts"
+node scripts/embed-rag-wasm.mjs "$BINDGEN_DIR/rag_wasm_bg.wasm" ".local/generated/rag-wasm-bytes.ts"

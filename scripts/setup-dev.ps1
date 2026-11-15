@@ -149,6 +149,12 @@ function Register-ObsidianVault {
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+$pluginOutput = & node --input-type=module -e "import { pathToFileURL } from 'node:url'; const { ARTIFACT_PATHS } = await import(pathToFileURL(process.argv[1])); console.log(ARTIFACT_PATHS.plugin)" (Join-Path $repoRoot "scripts/artifact-paths.mjs")
+if ($LASTEXITCODE -ne 0) { throw "플러그인 출력 경로를 확인할 수 없습니다." }
+$pluginTarget = Join-Path $repoRoot $pluginOutput
+if (-not (Test-Path -LiteralPath (Join-Path $pluginTarget "main.js")) -or -not (Test-Path -LiteralPath (Join-Path $pluginTarget "manifest.json"))) {
+  throw "먼저 npm run build:dev로 플러그인을 빌드하세요: $pluginTarget"
+}
 $testVaultDir = Join-Path $repoRoot ".test-vault"
 $obsidianDir = Join-Path $testVaultDir ".obsidian"
 $pluginsRoot = Join-Path $obsidianDir "plugins"
@@ -165,13 +171,21 @@ if (-not (Test-Path -LiteralPath $welcomePath)) {
   Write-Utf8NoBom -Path $welcomePath -Content "# Test Vault`n`nThis vault is for developing the Superpower Inside plugin."
 }
 
-if (Test-Path -LiteralPath $pluginDir) {
-  $pluginItem = Get-Item -LiteralPath $pluginDir
+$pluginItem = Get-Item -LiteralPath $pluginDir -Force -ErrorAction SilentlyContinue
+if ($null -ne $pluginItem) {
   if (($pluginItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
-    throw "Plugin path already exists but is not a Windows junction: $pluginDir"
+    throw "플러그인 경로가 이미 존재합니다. 원본을 보존하고 직접 재설정하세요: $pluginDir"
+  }
+  $existingTarget = [string](@($pluginItem.Target)[0])
+  if ([string]::IsNullOrWhiteSpace($existingTarget)) {
+    throw "기존 플러그인 연결 대상을 확인할 수 없습니다. 연결을 직접 재설정하세요: $pluginDir"
+  }
+  $existingTarget = [IO.Path]::GetFullPath($existingTarget)
+  if (-not [string]::Equals($existingTarget.TrimEnd('\'), $pluginTarget.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+    throw "기존 플러그인 연결이 다른 경로를 가리킵니다. 연결만 직접 제거한 뒤 setup을 다시 실행하여 재설정하세요: $pluginDir -> $pluginTarget"
   }
 } else {
-  New-Item -ItemType Junction -Path $pluginDir -Target $repoRoot | Out-Null
+  New-Item -ItemType Junction -Path $pluginDir -Target $pluginTarget | Out-Null
 }
 
 if (-not (Test-Path -LiteralPath $hotReloadDir)) {
@@ -200,6 +214,6 @@ Get-ChildItem -LiteralPath $testVaultDir -Recurse -Force -Filter ".DS_Store" -Er
   Remove-Item -Force
 
 Write-Host "Test vault: $testVaultDir"
-Write-Host "Plugin junction: $pluginDir -> $repoRoot"
+Write-Host "Plugin junction: $pluginDir -> $pluginTarget"
 Write-Host "Run: npm run dev"
 Write-Host "Open Obsidian: .\scripts\launch-obsidian-debug.ps1"

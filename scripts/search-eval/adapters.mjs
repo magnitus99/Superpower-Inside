@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { ARTIFACT_PATHS } from '../artifact-paths.mjs';
 
 export const SEARCH_EVAL_SCOPE = 'node-adapter-unit: BM25 WASM retrieval(+engine plan feature-detect), not product DB/IO end-to-end';
 
@@ -298,15 +299,15 @@ function buildSearchText(document, chunk) {
 }
 
 function readEmbeddedWasmBytes() {
-  const source = readFileSync(path.join(repository, 'src/rag/rag-wasm-bytes.ts'), 'utf8');
+  const source = readFileSync(path.join(repository, '.local/generated/rag-wasm-bytes.ts'), 'utf8');
   const chunks = [...source.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? '');
   if (chunks.length === 0) throw new Error('embedded WASM base64 청크를 찾지 못했습니다.');
   return Buffer.from(chunks.join(''), 'base64');
 }
 
 async function importGeneratedWasmModule() {
-  const sourcePath = path.join(repository, 'generated/rag-wasm/rag_wasm.js');
-  const tempRoot = path.join(repository, 'node_modules/.cache/search-eval');
+  const sourcePath = path.join(repository, '.local/generated/rag-wasm/rag_wasm.js');
+  const tempRoot = path.join(repository, ARTIFACT_PATHS.searchEval);
   execFileSync('git', ['check-ignore', '--quiet', path.join(tempRoot, 'probe')], { cwd: repository });
   mkdirSync(tempRoot, { recursive: true });
   const tempDir = mkdtempSync(path.join(tempRoot, 'wasm-'));

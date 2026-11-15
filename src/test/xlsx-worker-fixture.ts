@@ -1,5 +1,5 @@
 import { Worker as NodeWorker } from 'node:worker_threads';
-import { XLSX_WORKER_SOURCE } from '../../generated/xlsx-worker-source';
+import { XLSX_WORKER_SOURCE } from '../../.local/generated/xlsx-worker-source';
 
 const workers = new Set<NodeWorker>();
 

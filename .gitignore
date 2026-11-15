@@ -60,3 +60,28 @@ simulations/
 # 프로젝트 로컬 스킬은 전역(~/.agents/skills)에서 관리
 /.agents/skills/
 /skills-lock.json
+
+# 자체 생성물: 캐시·다운로드·개인 상태는 제외하고 배포에 필요한 기존 생성물만 추적
+/.local/*
+!/.local/generated/
+/.local/generated/*
+!/.local/generated/bm25-worker-source.ts
+!/.local/generated/vector-search-worker-source.ts
+!/.local/generated/xlsx-worker-source.ts
+!/.local/generated/ternlight-worker-source.ts
+!/.local/generated/embeddinggemma-assets.ts
+!/.local/generated/pdf-worker-assets.ts
+!/.local/generated/rag-wasm-bytes.ts
+!/.local/generated/rag-wasm/
+/.local/generated/rag-wasm/*
+!/.local/generated/rag-wasm/rag_wasm.js
+!/.local/generated/rag-wasm/rag_wasm.d.ts
+!/.local/plugin/
+/.local/plugin/*
+!/.local/plugin/main.js
+!/.local/plugin/embeddinggemma-worker.js
+!/.local/plugin/pdf-worker.js
+!/.local/plugin/pdf-ocr-worker.js
+!/.local/plugin/embeddinggemma-runtime.mjs
+!/.local/plugin/embeddinggemma-runtime.wasm
+!/.local/plugin/tern_engine_bg.wasm

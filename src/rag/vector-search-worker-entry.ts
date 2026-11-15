@@ -3,7 +3,7 @@ import {
   VectorRuntimeIndex,
   initSync,
   plan_vector_scope_indices_json,
-} from '../../generated/rag-wasm/rag_wasm';
+} from '../../.local/generated/rag-wasm/rag_wasm';
 
 interface VectorSearchFilter {
   embeddingProvider?: string;

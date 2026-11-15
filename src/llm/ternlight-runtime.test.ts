@@ -11,7 +11,7 @@ import {
   type TernlightWorkerResponse,
 } from './ternlight-runtime';
 import { TERNLIGHT_MODEL_FILE_NAME } from './ternlight-model';
-import { TERNLIGHT_WORKER_SOURCE } from '../../generated/ternlight-worker-source';
+import { TERNLIGHT_WORKER_SOURCE } from '../../.local/generated/ternlight-worker-source';
 
 vi.mock('obsidian', () => ({
   normalizePath: (path: string) => path,
@@ -24,7 +24,7 @@ describe('Ternlight worker runtime', () => {
   it('initializes the production worker bundle and returns a normalized 384-dimensional vector', async () => {
     const worker = createNodeWorker();
     try {
-      const bytes = readFileSync(join(process.cwd(), TERNLIGHT_MODEL_FILE_NAME));
+      const bytes = readFileSync(join(process.cwd(), '.local/plugin', TERNLIGHT_MODEL_FILE_NAME));
       const model = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
       const initialized = waitForNodeWorkerResponse(worker, 1);
       worker.postMessage({ id: 1, operation: 'initialize', wasmBytes: model }, [model]);
@@ -79,7 +79,7 @@ describe('Ternlight worker runtime', () => {
 });
 
 function createRuntimeOptions(createWorker: TernlightWorkerFactory, version = 'worker-test') {
-  const bytes = readFileSync(join(process.cwd(), TERNLIGHT_MODEL_FILE_NAME));
+  const bytes = readFileSync(join(process.cwd(), '.local/plugin', TERNLIGHT_MODEL_FILE_NAME));
   const model = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   const localStorage = new Map<string, unknown>();
   return {

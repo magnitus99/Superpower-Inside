@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
+import { ARTIFACT_PATHS } from './artifact-paths.mjs';
 import { MAIN_JS_SIZE_LIMIT_BYTES } from './bundle-size-policy.mjs';
 import { isReleaseVersion } from './release-version.mjs';
 
@@ -134,11 +135,17 @@ function validateBuiltAssets() {
     'embeddinggemma-runtime.mjs',
     'THIRD_PARTY_NOTICES.md',
   ]) {
-    if (!existsSync(path.join(root, asset))) {
-      errors.push(`release asset is missing: ${asset}`);
+    if (!existsSync(path.join(root, ARTIFACT_PATHS.plugin, asset))) {
+      errors.push(`release asset is missing: ${ARTIFACT_PATHS.plugin}/${asset}`);
     }
   }
-  const mainJsPath = path.join(root, 'main.js');
+  for (const asset of ['manifest.json', 'styles.css', 'THIRD_PARTY_NOTICES.md']) {
+    const staged = path.join(root, ARTIFACT_PATHS.plugin, asset);
+    if (existsSync(staged) && !readFileSync(staged).equals(readFileSync(path.join(root, asset)))) {
+      errors.push(`staged release asset differs from source: ${ARTIFACT_PATHS.plugin}/${asset}`);
+    }
+  }
+  const mainJsPath = path.join(root, ARTIFACT_PATHS.plugin, 'main.js');
   if (existsSync(mainJsPath)) {
     const mainJsBytes = statSync(mainJsPath).size;
     if (mainJsBytes > MAIN_JS_SIZE_LIMIT_BYTES) {
@@ -147,11 +154,11 @@ function validateBuiltAssets() {
       );
     }
   }
-  const ternlightPath = path.join(root, 'tern_engine_bg.wasm');
-  const gemmaManifest = readText('generated/embeddinggemma-assets.ts').match(/= ([\s\S]+) as const;/u)?.[1];
+  const ternlightPath = path.join(root, ARTIFACT_PATHS.plugin, 'tern_engine_bg.wasm');
+  const gemmaManifest = readText(`${ARTIFACT_PATHS.generated}/embeddinggemma-assets.ts`).match(/= ([\s\S]+) as const;/u)?.[1];
   if (!gemmaManifest) errors.push('EmbeddingGemma asset manifest is missing');
   else for (const asset of JSON.parse(gemmaManifest).filter((asset) => !asset.url)) {
-    const file = path.join(root, asset.file);
+    const file = path.join(root, ARTIFACT_PATHS.plugin, asset.file);
     if (!existsSync(file)) continue;
     const bytes = readFileSync(file);
     if (bytes.length !== asset.size || createHash('sha256').update(bytes).digest('hex') !== asset.sha256) errors.push(`EmbeddingGemma release asset mismatch: ${asset.file}`);
@@ -167,7 +174,7 @@ function validateBuiltAssets() {
 }
 
 function validateGeneratedWasmDeclarations() {
-  const declarationPath = 'generated/rag-wasm/rag_wasm.d.ts';
+  const declarationPath = `${ARTIFACT_PATHS.generated}/rag-wasm/rag_wasm.d.ts`;
   if (!existsSync(path.join(root, declarationPath))) return;
   const declaration = readText(declarationPath);
   const eslintDisableLine = findLine(declaration, 'eslint-disable');

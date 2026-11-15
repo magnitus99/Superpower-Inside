@@ -29,8 +29,8 @@ const SAMPLE_PDF_BASE64 =
   'MjEgMDAwMDAgbiAKMDAwMDAwMDI0NyAwMDAwMCBuIAowMDAwMDAwMzQ4IDAwMDAwIG4gCjAwMDAwMDA0NzQgMDAwMDAgbiAKMDAw' +
   'MDAwMDU3NiAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDggL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjY3MwolJUVPRgo=';
 
-const WORKER_SOURCE = readFileSync(new URL('../../pdf-worker.js', import.meta.url), 'utf8');
-const OCR_SOURCE = readFileSync(new URL('../../pdf-ocr-worker.js', import.meta.url), 'utf8');
+const WORKER_SOURCE = readFileSync(new URL('../../.local/plugin/pdf-worker.js', import.meta.url), 'utf8');
+const OCR_SOURCE = readFileSync(new URL('../../.local/plugin/pdf-ocr-worker.js', import.meta.url), 'utf8');
 const assetBytes = (source: string): ArrayBuffer => new TextEncoder().encode(source).buffer;
 
 afterEach(() => {

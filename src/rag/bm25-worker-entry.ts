@@ -1,5 +1,5 @@
 import { readWorkerStorePages } from './worker-indexed-db';
-import { Bm25RuntimeIndex, initSync } from '../../generated/rag-wasm/rag_wasm';
+import { Bm25RuntimeIndex, initSync } from '../../.local/generated/rag-wasm/rag_wasm';
 import type { BM25WorkerDocument } from './bm25-worker-runtime';
 import { TOKENIZER_VERSION } from './tokenizer-version';
 

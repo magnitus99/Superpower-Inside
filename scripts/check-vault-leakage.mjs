@@ -12,15 +12,17 @@ import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const defaultVaultDirectory = '.test-vault';
-const scanExtensions = ['.ts', '.rs', '.mjs', '.js', '.json', '.md', '.css', '.yml', '.fish'];
+const scanExtensions = ['.ts', '.rs', '.mjs', '.js', '.json', '.md', '.css', '.yml', '.fish', '.ps1'];
 const skippedPrefixes = [
   '.agents/',
   '.test-vault/',
-  'generated/',
+  '.local/generated/',
+  '.local/cache/',
+  '.local/plugin/',
   'node_modules/',
   'simulations/',
 ];
-const skippedFiles = new Set(['main.js', 'src/rag/rag-wasm-bytes.ts']);
+const skippedFiles = new Set();
 const textDocumentExtensions = ['.md', '.txt'];
 const MIN_PHRASE_LENGTH = 20;
 const MIN_DOCUMENT_NAME_LENGTH = 8;
@@ -123,21 +125,26 @@ export function normalizeVaultText(text) {
  * @param {string} input.vaultText 볼트 문서 본문
  * @param {string[]} input.vaultDocumentNames 볼트 문서명
  * @param {string} [input.productText] 제품 문구 코퍼스(사용자에게 보여 주는 정본 문장)
+ * @param {Record<string, string>} [input.publicReferences] 이미 커밋된 공개 고지의 경로와 본문
  * @returns {Array<{ file: string, line: number, kind: string }>} 위반 목록
  */
-export function findVaultLeakage({ files, vaultText, vaultDocumentNames, productText = '' }) {
+export function findVaultLeakage({ files, vaultText, vaultDocumentNames, productText = '', publicReferences = {} }) {
   const normalizedVault = normalizeVaultText(vaultText);
   const normalizedProduct = normalizeVaultText(productText);
+  const publicTexts = Object.values(publicReferences).map(normalizeVaultText);
+  const publicNames = new Set(extractDocumentNames(Object.keys(publicReferences)));
+  const documentPatterns = vaultDocumentNames
+    .filter((name) => !publicNames.has(name))
+    .map((name) => new RegExp(`(^|[^\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   const leakage = [];
   for (const [file, text] of Object.entries(files)) {
     for (const candidate of extractPhraseCandidates(text)) {
-      if (normalizedProduct.includes(candidate.value)) continue;
+      if (normalizedProduct.includes(candidate.value) || publicTexts.some((text) => text.includes(candidate.value))) continue;
       if (normalizedVault.includes(candidate.value)) {
         leakage.push({ file, line: candidate.line, kind: 'phrase' });
       }
     }
-    for (const name of vaultDocumentNames) {
-      const boundary = new RegExp(`(^|[^\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+    for (const boundary of documentPatterns) {
       const match = boundary.exec(text);
       if (match) {
         const line = text.slice(0, match.index).split('\n').length;
@@ -241,6 +248,22 @@ function productText(files, staged) {
   }
 }
 
+export function committedPublicReferences(readCommittedFile = (file) => execFileSync(
+  'git', ['show', `HEAD:${file}`],
+  { cwd: projectRoot, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
+)) {
+  const references = {};
+  // 현재 스테이징·작업 파일을 예외 기준선으로 사용하지 않습니다.
+  for (const file of ['THIRD_PARTY_NOTICES.md']) {
+    try {
+      references[file] = readCommittedFile(file);
+    } catch {
+      // 기준선이 없으면 기존 탐지를 그대로 유지합니다.
+    }
+  }
+  return references;
+}
+
 function main() {
   const staged = process.argv.includes('--staged');
   const vaultDirectory = selectVaultDirectory(
@@ -261,6 +284,7 @@ function main() {
     vaultText,
     vaultDocumentNames,
     productText: productText(files, staged).replace(/\\n/g, '\n'),
+    publicReferences: committedPublicReferences(),
   });
   if (leakage.length === 0) {
     console.log(

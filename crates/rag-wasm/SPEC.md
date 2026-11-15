@@ -27,7 +27,7 @@ TypeScript와의 경계는 `src/rag/rust-core.ts`의 입출력 매핑이며 WASM
 
 한도 정규화·요약·간격 wrapper는 WASM 초기화·wire 검증 실패에서 null을 반환한다. 호스트는 간격의 null을 기본 30초로 재계산해 사용자 설정에 저장하지 않는다. 로드·저장은 오류로 닫고, 이미 적용된 간격과 타이머를 보존한다. 정상적인 미설정 입력의 기본 30초와 정수 제한은 Rust의 성공 결과로만 얻는다.
 
-WASM glue·base64는 수동 편집하지 않고 `npm run wasm:build`로 같은 소스 상태에서 생성한다. build/dev의 선행 WASM 빌드와 저장 형식의 legacy load·round-trip을 유지한다. PDF worker의 추출·페이지 매핑 예외는 `superpower-architecture`를 따른다.
+WASM glue·base64는 수동 편집하지 않고 `npm run wasm:build`로 같은 소스 상태에서 `.local/generated/`에 생성한다. 컴파일·bindgen 중간물은 `engineering-contract`의 저장소 생성물 경계를 따른다. build/dev의 선행 WASM 빌드와 저장 형식의 legacy load·round-trip을 유지한다. PDF worker의 추출·페이지 매핑 예외는 `superpower-architecture`를 따른다.
 
 ## 구현·검증 근거
 

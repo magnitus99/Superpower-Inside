@@ -22,7 +22,7 @@ function listSourceFiles(path: string): string[] {
 }
 
 const sources = sourceRoots.flatMap(listSourceFiles).map((file) => ({
-  file: relative(root, file),
+  file: relative(root, file).replaceAll('\\', '/'),
   source: readFileSync(file, 'utf8'),
 }));
 

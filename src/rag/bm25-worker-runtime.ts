@@ -1,5 +1,5 @@
-import { BM25_WORKER_SOURCE } from '../../generated/bm25-worker-source';
-import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
+import { BM25_WORKER_SOURCE } from '../../.local/generated/bm25-worker-source';
+import { RAG_WASM_BASE64 } from '../../.local/generated/rag-wasm-bytes';
 
 export interface BM25WorkerDocument {
   id: string;

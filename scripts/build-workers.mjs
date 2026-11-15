@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { ARTIFACT_PATHS } from './artifact-paths.mjs';
 import { pdfMaskBuildPlugin } from './pdf-mask-build.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,7 +15,10 @@ const workers = [
   ['llm/ternlight', 'ternlight', 'TERNLIGHT'],
 ];
 
-await mkdir(resolve(root, 'generated'), { recursive: true });
+const generated = resolve(root, ARTIFACT_PATHS.generated);
+const plugin = resolve(root, ARTIFACT_PATHS.plugin);
+await mkdir(generated, { recursive: true });
+await mkdir(plugin, { recursive: true });
 for (const [entry, output, constant] of workers) {
   const result = await build({
     entryPoints: [resolve(root, `src/${entry}-worker-entry.ts`)],
@@ -29,7 +33,7 @@ for (const [entry, output, constant] of workers) {
   const source = result.outputFiles?.[0]?.text;
   if (!source) throw new Error(`${constant} worker 번들이 생성되지 않았습니다.`);
   await writeFile(
-    resolve(root, `generated/${output}-worker-source.ts`),
+    resolve(generated, `${output}-worker-source.ts`),
     `// 이 파일은 scripts/build-workers.mjs가 생성합니다. 직접 수정하지 마세요.\nexport const ${constant}_WORKER_SOURCE = ${JSON.stringify(source)};\n`,
     'utf8',
   );
@@ -51,7 +55,7 @@ const gemma = await build({
   }],
   minify: true, legalComments: 'none',
 });
-await writeFile(resolve(root, 'embeddinggemma-worker.js'), gemma.outputFiles[0].contents);
+await writeFile(resolve(plugin, 'embeddinggemma-worker.js'), gemma.outputFiles[0].contents);
 
 // pdf.js는 자체 worker를 전제로 하므로 번들 안에서 fake worker로 실행되도록 묶습니다.
 // main.js로 흡수하지 않고 별도 릴리스 자산으로 배포합니다.
@@ -68,7 +72,7 @@ const ocr = await build({
   banner: { js: `${ocrCore}\nglobalThis.TesseractCore = TesseractCore;\nglobalThis.PDF_OCR_LANGUAGES = ${JSON.stringify(ocrLanguages)};` },
   minify: true, legalComments: 'none',
 });
-await writeFile(resolve(root, 'pdf-ocr-worker.js'), ocr.outputFiles[0].contents);
+await writeFile(resolve(plugin, 'pdf-ocr-worker.js'), ocr.outputFiles[0].contents);
 
 const renderAssets = {};
 for (const directory of ['cmaps', 'standard_fonts']) {
@@ -87,11 +91,11 @@ const pdf = await build({
   define: browserDefines,
   minify: true, legalComments: 'none',
 });
-await writeFile(resolve(root, 'pdf-worker.js'), pdf.outputFiles[0].contents);
+await writeFile(resolve(plugin, 'pdf-worker.js'), pdf.outputFiles[0].contents);
 const { version } = JSON.parse(await readFile(resolve(root, 'manifest.json'), 'utf8'));
 const pdfAssets = [];
 for (const file of ['pdf-worker.js', 'pdf-ocr-worker.js']) {
-  const bytes = await readFile(resolve(root, file));
+  const bytes = await readFile(resolve(plugin, file));
   pdfAssets.push({
     file,
     size: bytes.length,
@@ -100,7 +104,7 @@ for (const file of ['pdf-worker.js', 'pdf-ocr-worker.js']) {
   });
 }
 await writeFile(
-  resolve(root, 'generated/pdf-worker-assets.ts'),
+  resolve(generated, 'pdf-worker-assets.ts'),
   `// 이 파일은 scripts/build-workers.mjs가 생성합니다. 직접 수정하지 마세요.\nexport const PDF_WORKER_ASSETS = ${JSON.stringify(pdfAssets, null, 2)} as const;\n`,
 );
 const runtimeFiles = [
@@ -113,14 +117,14 @@ for (const [source, target] of runtimeFiles) {
     const result = await transform(await readFile(sourcePath, 'utf8'), {
       define: browserDefines, format: 'esm', target: 'es2022', minify: true, legalComments: 'none',
     });
-    await writeFile(resolve(root, target), result.code);
+    await writeFile(resolve(plugin, target), result.code);
   } else {
-    await copyFile(sourcePath, resolve(root, target));
+    await copyFile(sourcePath, resolve(plugin, target));
   }
 }
 const assets = [];
 for (const file of ['embeddinggemma-worker.js', ...runtimeFiles.map(([, target]) => target)]) {
-  const bytes = await readFile(resolve(root, file));
+  const bytes = await readFile(resolve(plugin, file));
   assets.push({ file, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), url: '' });
 }
 const revision = '5090578d9565bb06545b4552f76e6bc2c93e4a66';
@@ -135,5 +139,5 @@ for (const [file, size, sha256] of [
 ]) {
   assets.push({file, size, sha256, url: `https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/${revision}/${file}`});
 }
-await writeFile(resolve(root, 'generated/embeddinggemma-assets.ts'),
+await writeFile(resolve(generated, 'embeddinggemma-assets.ts'),
   `// 이 파일은 scripts/build-workers.mjs가 생성합니다. 직접 수정하지 마세요.\nexport const EMBEDDINGGEMMA_ASSETS = ${JSON.stringify(assets, null, 2)} as const;\n`);

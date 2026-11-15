@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 // WASM 초기화 실패를 재현해 TypeScript 계산 대체가 일어나지 않는지 확인합니다.
-vi.mock('../../generated/rag-wasm/rag_wasm.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../generated/rag-wasm/rag_wasm.js')>();
+vi.mock('../../.local/generated/rag-wasm/rag_wasm.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../.local/generated/rag-wasm/rag_wasm.js')>();
   return {
     ...actual,
     initSync: () => {

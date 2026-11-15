@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnNodeToolSync } from './run-node-tool.mjs';
 
 export function metadataOnly(file, before, after) {
   try {
@@ -32,7 +33,7 @@ export function qualityPlan(
   const typescript =
     rust ||
     changed.some((file) =>
-      /^(src\/.*\.(ts|tsx|js|mjs|cjs)$|main\.ts$|tsconfig.*\.json$|eslint\.config\.|vitest\.config\.|generated\/.*\.(ts|js)$)/.test(
+      /^(src\/.*\.(ts|tsx|js|mjs|cjs)$|main\.ts$|tsconfig.*\.json$|eslint\.config\.|vitest\.config\.|\.local\/generated\/.*\.(ts|js)$)/.test(
         file,
       ),
     ) ||
@@ -40,7 +41,7 @@ export function qualityPlan(
   const tests =
     typescript ||
     changed.some((file) =>
-      /^(src\/.*\.json$|scripts\/.*\.(mjs|fish)$|\.githooks\/|esbuild\.config\.mjs$|styles\.css$|package\.json$|tests\/fixtures\/)/.test(
+      /^(src\/.*\.json$|scripts\/.*\.(mjs|fish|ps1)$|\.githooks\/|esbuild\.config\.mjs$|styles\.css$|package\.json$|tests\/fixtures\/)/.test(
         file,
       ),
     );
@@ -148,7 +149,7 @@ function run() {
       'UI 변경: 커밋 전에 `npm run preview:verify`로 고정 뷰포트 스크린샷과 DOM 계약을 확인합니다.',
     );
   for (const [program, commandArgs] of commands) {
-    const result = spawnSync(program, commandArgs, { stdio: 'inherit' });
+    const result = spawnNodeToolSync(program, commandArgs, { stdio: 'inherit' });
     if (result.error || result.status !== 0)
       throw result.error ?? new Error(`${program} ${commandArgs.join(' ')} 실패`);
   }

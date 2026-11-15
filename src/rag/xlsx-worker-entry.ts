@@ -1,4 +1,4 @@
-import { initSync, XlsxSourceText } from '../../generated/rag-wasm/rag_wasm';
+import { initSync, XlsxSourceText } from '../../.local/generated/rag-wasm/rag_wasm';
 
 interface XlsxWorkerRequest {
   bytes: Uint8Array;

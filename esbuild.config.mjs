@@ -1,5 +1,8 @@
 import esbuild from 'esbuild';
 import process from 'process';
+import { copyFile, mkdir, readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { ARTIFACT_PATHS } from './scripts/artifact-paths.mjs';
 import { builtinModules } from 'node:module';
 import { mcpStdioNodeTimers } from './scripts/mcp-stdio-build.mjs';
 import {
@@ -16,11 +19,32 @@ const banner =
 
 const prod = process.argv[2] === 'production';
 
+const outfile = `${ARTIFACT_PATHS.plugin}/main.js`;
+await mkdir(ARTIFACT_PATHS.plugin, { recursive: true });
+const sourceAssets = ['manifest.json', 'styles.css', 'THIRD_PARTY_NOTICES.md'];
+const pluginAssets = {
+  name: 'plugin-source-assets',
+  setup(builder) {
+    builder.onLoad({ filter: /[/\\]main\.ts$/ }, async ({ path }) => ({
+      contents: await readFile(path, 'utf8'),
+      loader: 'ts',
+      resolveDir: dirname(path),
+      watchFiles: sourceAssets.map((file) => resolve(file)),
+    }));
+    builder.onEnd(async ({ errors }) => {
+      if (errors.length) return;
+      await Promise.all(sourceAssets.map(
+        (file) => copyFile(file, `${ARTIFACT_PATHS.plugin}/${file}`),
+      ));
+    });
+  },
+};
+
 const buildOptions = {
   banner: { js: banner },
   entryPoints: ['main.ts'],
   bundle: true,
-  plugins: [mcpStdioNodeTimers],
+  plugins: [mcpStdioNodeTimers, pluginAssets],
   external: [
     'obsidian',
     'electron',
@@ -40,9 +64,11 @@ const buildOptions = {
   ],
   format: 'cjs',
   target: 'es2022',
+  // 문자열 값의 공백은 보존하고 출력 파일에는 이스케이프된 문자열로 기록합니다.
+  supported: { 'template-literal': false },
   logLevel: 'info',
   treeShaking: true,
-  outfile: 'main.js',
+  outfile,
   // 개발 빌드에서만 채팅 추적 기록을 허용합니다. 배포 번들은 항상 false로 접힙니다.
   define: { __SUPERPOWER_DEBUG_TRACE__: prod ? 'false' : 'true' },
 };
@@ -60,7 +86,7 @@ if (prod) {
     });
 
   let result = await buildProduction(false);
-  let output = result.metafile.outputs['main.js'];
+  let output = result.metafile.outputs[outfile];
   if (!output) throw new Error('esbuild did not report main.js output metadata.');
 
   if (needsStrongBundleOptimization(output.bytes)) {
@@ -68,7 +94,7 @@ if (prod) {
       `main.js is ${output.bytes.toLocaleString('en-US')} bytes, above the ${MAIN_JS_SIZE_LIMIT_BYTES.toLocaleString('en-US')}-byte budget. Rebuilding with the strong optimization profile.`,
     );
     result = await buildProduction(true);
-    output = result.metafile.outputs['main.js'];
+    output = result.metafile.outputs[outfile];
     if (!output) throw new Error('esbuild did not report optimized main.js output metadata.');
   }
 

@@ -7,8 +7,8 @@ const rustWireExports = vi.hoisted(() => ({
   plan_indexed_evidence_json: vi.fn<(input: string) => string>(),
 }));
 
-vi.mock('../../generated/rag-wasm/rag_wasm.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../generated/rag-wasm/rag_wasm.js')>();
+vi.mock('../../.local/generated/rag-wasm/rag_wasm.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../.local/generated/rag-wasm/rag_wasm.js')>();
   rustWireExports.plan_indexed_evidence_json.mockImplementation(actual.plan_indexed_evidence_json);
   return { ...actual, ...rustWireExports };
 });
@@ -260,8 +260,8 @@ describe('Rust WASM RAG core bridge', () => {
   });
 
   it('내장 WASM에서 분리형 한글 비교 질문과 검색어를 정규화한다', async () => {
-    const actual = await vi.importActual<typeof import('../../generated/rag-wasm/rag_wasm.js')>(
-      '../../generated/rag-wasm/rag_wasm.js',
+    const actual = await vi.importActual<typeof import('../../.local/generated/rag-wasm/rag_wasm.js')>(
+      '../../.local/generated/rag-wasm/rag_wasm.js',
     );
     rustWireExports.plan_indexed_search_queries_json.mockImplementation(
       actual.plan_indexed_search_queries_json,

@@ -7,8 +7,8 @@ const wire = vi.hoisted(() => ({
 }));
 
 // 정상 경로는 생성된 실제 WASM을 사용하고, 손상 wire·초기화 실패만 합성합니다.
-vi.mock('../../generated/rag-wasm/rag_wasm.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../generated/rag-wasm/rag_wasm.js')>();
+vi.mock('../../.local/generated/rag-wasm/rag_wasm.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../.local/generated/rag-wasm/rag_wasm.js')>();
   wire.plan.mockImplementation(actual.plan_provider_quota_json);
   return {
     ...actual,

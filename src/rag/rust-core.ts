@@ -177,11 +177,11 @@ import {
   select_relevant_result_indices,
   tokenize_json,
   VectorRuntimeIndex,
-} from '../../generated/rag-wasm/rag_wasm.js';
-import * as ragWasmGenerated from '../../generated/rag-wasm/rag_wasm.js';
+} from '../../.local/generated/rag-wasm/rag_wasm.js';
+import * as ragWasmGenerated from '../../.local/generated/rag-wasm/rag_wasm.js';
 import type { Chunk } from './indexer';
 import type { SourceProcessingInput, SourceProcessingSummary } from './source-processing';
-import { RAG_WASM_BASE64 } from './rag-wasm-bytes';
+import { RAG_WASM_BASE64 } from '../../.local/generated/rag-wasm-bytes';
 
 const RUST_RECALL_UNKNOWN_INDEX = 0xffffffff;
 

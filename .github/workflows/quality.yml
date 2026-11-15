@@ -49,7 +49,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: env.FULL_CHECK == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
         with:
-          workspaces: '. -> target/rustup-1.96.0'
+          workspaces: '. -> .local/cache/rust/rustup-1.96.0'
       - name: Rust 의존성 준비
         if: env.FULL_CHECK == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
         run: cargo fetch --locked

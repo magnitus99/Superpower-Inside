@@ -1,7 +1,7 @@
 import { normalizePath, type TFile, type Vault } from 'obsidian';
 import { appLogger } from '../utils/logger';
 import { ensureReleaseAsset } from '../utils/release-asset';
-import { PDF_WORKER_ASSETS } from '../../generated/pdf-worker-assets';
+import { PDF_WORKER_ASSETS } from '../../.local/generated/pdf-worker-assets';
 
 /** 줄 번호는 0부터 세며 Rust 원문 추출기의 구간 계약과 같습니다. */
 export interface PdfSourceSegment {

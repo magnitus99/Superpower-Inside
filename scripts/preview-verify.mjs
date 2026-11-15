@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 import { execFile, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { prepare, serve } from './obsidian-preview.mjs';
+import { ARTIFACT_PATHS } from './artifact-paths.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const cache = resolve(root, 'simulations/obsidian-preview');
-const screens = resolve(cache, 'screens');
+const cache = resolve(root, ARTIFACT_PATHS.preview);
+const screens = resolve(root, '.thinkrail/context/screens/obsidian-preview');
 const execFileAsync = promisify(execFile);
 
 export const PREVIEW_CASES = [
@@ -129,7 +129,8 @@ function chromeArguments(scenario, profile, output) {
 }
 
 async function runChrome(chrome, scenario, url, output) {
-  const profile = mkdtempSync(join(tmpdir(), 'superpower-preview-'));
+  mkdirSync(cache, { recursive: true });
+  const profile = mkdtempSync(join(cache, 'chrome-profile-'));
   try {
     return await execFileAsync(chrome, [...chromeArguments(scenario, profile, output), url], {
       encoding: 'utf8',

@@ -40,6 +40,18 @@ describe('Rust security tool installer portability', () => {
   });
 });
 
+describe('로컬 배포 경로 검증', () => {
+  it('review는 원본 대신 staging 자산과 이동한 생성물의 무결성을 검사한다', () => {
+    const review = readFileSync(resolve(root, 'scripts/validate-obsidian-review.mjs'), 'utf8');
+    expect(review).toContain("path.join(root, ARTIFACT_PATHS.plugin, 'main.js')");
+    expect(review).toContain('`${ARTIFACT_PATHS.generated}/embeddinggemma-assets.ts`');
+    expect(review).toContain('`${ARTIFACT_PATHS.generated}/rag-wasm/rag_wasm.d.ts`');
+    expect(review).toContain('staged release asset differs from source');
+    expect(review).toContain('ARTIFACT_PATHS.plugin, asset.file');
+    expect(review).not.toContain("path.join(root, 'main.js')");
+  });
+});
+
 describe('Windows Obsidian setup scripts', () => {
   it('opens the test vault in an isolated Obsidian profile instead of using URI path lookup', () => {
     const setupScript = readFileSync(resolve(root, 'scripts/setup-dev.ps1'), 'utf8');

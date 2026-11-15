@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import * as wasm from '../../generated/rag-wasm/rag_wasm.js';
+import * as wasm from '../../.local/generated/rag-wasm/rag_wasm.js';
 import { planEmbeddingInputsRust } from './rust-core';
 
 afterEach(() => vi.restoreAllMocks());

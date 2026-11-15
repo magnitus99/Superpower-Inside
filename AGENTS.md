@@ -47,7 +47,7 @@ Obsidian 데스크톱 플러그인. 제품 의도·경계·품질 요구의 정�
 - 독립 조사·계획·구현·리뷰가 필요하면 ThinkRail의 네이티브 `Agent` 도구(scout/planner/worker/reviewer)를 사용합니다. `pi --print`, Codex/Claude/Cursor CLI, 외부 CLI 에이전트로 우회하지 않습니다. 서브에이전트는 추가 서브에이전트를 만들지 않습니다.
 - 위임 패킷에는 목표, 비목표, 관련 경로·의심 호출 경로, 쓰기 권한, 필수 계약, 수용 기준, 검증 명령, 출력 형식, 중단 조건을 적습니다. 읽기 전용 역할에는 파일 수정·포맷터·패치·커밋 권한을 주지 않습니다.
 - 변경 전 관련 구현·호출부·테스트를 확인하고 쓰기 범위와 수용 기준을 정합니다. 독립 리뷰는 구현 동결 후 수행합니다. 쓰기 작업은 파일 소유권이 겹치지 않을 때만 최대 2개를 병렬 실행하고, 동시 실행 상한은 ThinkRail 설정을 따릅니다.
-- `main.ts`, `src/settings.ts`, `src/i18n.ts`, `src/rag/rust-core.ts`, `generated/`, `package.json`, `package-lock.json`처럼 충돌 반경이 큰 파일은 한 번에 한 작성자만 소유합니다.
+- `main.ts`, `src/settings.ts`, `src/i18n.ts`, `src/rag/rust-core.ts`, `.local/generated/`, `package.json`, `package-lock.json`처럼 충돌 반경이 큰 파일은 한 번에 한 작성자만 소유합니다.
 - 서브에이전트 결과는 그대로 신뢰하지 않고 본 모델이 근거와 실제 상태를 검증한 뒤 통합합니다. 결과가 잘렸거나 조사 범위를 벗어났으면 빈칸을 추측으로 채우지 않고 범위를 다시 나눕니다. 실패·중단·부분 완료는 완료로 합치지 않고 1회 범위를 좁혀 재시도한 뒤, 다시 실패하면 본 모델이 처리하며 이유를 남깁니다.
 - 비동기 완료 알림은 결과 이벤트이며 새 사용자 요청이 아닙니다. 결과를 읽고 기존 작업을 이어가며 반복 상태 조회·sleep 대기를 하지 않습니다.
 - 개인별 모델·추론 강도·계정·사용량 예산은 Git에서 제외한 ThinkRail 로컬 설정에서 관리합니다. 사용자가 선택한 모델·추론·과금 경로를 유지하고, 새 위임 전 사용 가능한 모델·도구·잔여 한도를 확인합니다. 확인 불가를 무제한으로 취급하거나 한도를 우회하지 않습니다.
@@ -60,6 +60,10 @@ Obsidian 데스크톱 플러그인. 제품 의도·경계·품질 요구의 정�
 
 - 별도 제품 철학 문서를 유지하지 않습니다. 제품 방향은 사용자의 최신 요청, 현재 구현·테스트, `design.md`, 관련 spec을 기준으로 확인하고, 새 가치 판단이 필요하면 사용자에게 확인합니다.
 - 디자인 도구에는 design.md·루트/해당 AGENTS·관련 문서의 역할과 읽을 수 있는 경로를 함께 전달합니다. 첨부·문서 참조를 우선하고 접근할 수 없으면 필요한 원문만 출처와 함께 제공합니다. 비밀·볼트 원문을 전달하지 않습니다. 생성된 화면이 기준을 충족하는지 구현 전에 확인하며 검수 절차는 `engineering-contract`를 따릅니다.
+
+## 생성물·다운로드 경로
+
+다운로드·worker/runtime·생성 코드·캐시·임시 출력 또는 `.gitignore` 항목을 추가·변경할 때는 먼저 [저장소 생성물 경계](engineering-contract.md#저장소-생성물-경계)를 적용하고, 예외가 필요하면 해당 소유 스펙의 근거를 확인·갱신합니다.
 
 ## TS/Rust 경계
 
@@ -76,6 +80,6 @@ Obsidian 데스크톱 플러그인. 제품 의도·경계·품질 요구의 정�
 - `pre-commit`은 스테이징 diff 형식과 스테이징 파일의 볼트 유출만 확인하고, `pre-push`는 `quality:local --base <원격 기준>`으로 변경 범위를 확인합니다. `main` 직접 push는 차단됩니다.
 - `quality:local`은 변경 범위에 따라 lint·typecheck·`test:unit`·`test:contracts`·Rust·review·볼트 유출을 선택합니다. `npm test`는 전체 Vitest·i18n·채팅 UX·오프라인 계약·볼트 유출을 실행합니다.
 - PR CI는 `dev` 기능 PR에서 범위 검사를, `main` 릴리스 PR에서 `security:full` 전체 검사를 실행합니다. 태그 릴리스 workflow는 `dev`→`main` squash merge·버전·자산을 검증한 뒤 초안 Release를 만들고 전체 테스트를 중복 실행하지 않습니다.
-- UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 `npm run preview:verify`로 헤드리스 Chrome 고정 뷰포트 스크린샷과 DOM 계약을 `simulations/obsidian-preview/screens/`에 남기고 직접 확인합니다. 정상·접힘/펼침·빈 상태·오류·disabled·진행 중·좁은 폭·테마·focus·대비를 포함합니다.
+- UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 `npm run preview:verify`로 헤드리스 Chrome 고정 뷰포트 스크린샷과 DOM 계약을 `.thinkrail/context/screens/obsidian-preview/`에 남기고 직접 확인합니다. 정상·접힘/펼침·빈 상태·오류·disabled·진행 중·좁은 폭·테마·focus·대비를 포함합니다.
 - Patina 온라인 검사는 사용자가 명시적으로 실행을 요청할 때만 수행합니다. 기본 `npm run copy:check`는 오프라인이며, 온라인은 실행 시점에 `PATINA_PI_MODEL`·`PATINA_PI_THINKING`을 입력받습니다. 훅·CI·릴리스 자동화에는 넣지 않습니다.
 - 로컬 검사는 설치된 의존성·생성물을 사용하며 모델과 네트워크를 호출하지 않습니다. Rust는 `--frozen`으로 검사합니다. 완료 보고에는 실제 실행한 명령·종료 상태·미실행 항목을 포함합니다.

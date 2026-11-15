@@ -30,38 +30,44 @@ jobs:
           git fetch --no-tags origin main dev
           node scripts/check-branch-policy.mjs --release-tag "$GITHUB_REF_NAME"
 
+      - name: Stage source release assets
+        run: |
+          mkdir -p .local/plugin
+          cp manifest.json styles.css THIRD_PARTY_NOTICES.md .local/plugin/
+
       - name: Verify committed release assets
         run: node scripts/validate-obsidian-review.mjs --tag "$GITHUB_REF_NAME" --built
 
+      # 숨김 디렉터리의 자산을 빠뜨리지 않도록 두 액션 모두 파일 경로를 명시합니다.
       - name: Attest release assets
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
-            manifest.json
-            main.js
-            styles.css
-            tern_engine_bg.wasm
-            embeddinggemma-worker.js
-            pdf-worker.js
-            pdf-ocr-worker.js
-            embeddinggemma-runtime.wasm
-            embeddinggemma-runtime.mjs
-            THIRD_PARTY_NOTICES.md
+            .local/plugin/manifest.json
+            .local/plugin/main.js
+            .local/plugin/styles.css
+            .local/plugin/tern_engine_bg.wasm
+            .local/plugin/embeddinggemma-worker.js
+            .local/plugin/pdf-worker.js
+            .local/plugin/pdf-ocr-worker.js
+            .local/plugin/embeddinggemma-runtime.wasm
+            .local/plugin/embeddinggemma-runtime.mjs
+            .local/plugin/THIRD_PARTY_NOTICES.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           draft: true
           files: |
-            manifest.json
-            main.js
-            styles.css
-            tern_engine_bg.wasm
-            embeddinggemma-worker.js
-            pdf-worker.js
-            pdf-ocr-worker.js
-            embeddinggemma-runtime.wasm
-            embeddinggemma-runtime.mjs
-            THIRD_PARTY_NOTICES.md
+            .local/plugin/manifest.json
+            .local/plugin/main.js
+            .local/plugin/styles.css
+            .local/plugin/tern_engine_bg.wasm
+            .local/plugin/embeddinggemma-worker.js
+            .local/plugin/pdf-worker.js
+            .local/plugin/pdf-ocr-worker.js
+            .local/plugin/embeddinggemma-runtime.wasm
+            .local/plugin/embeddinggemma-runtime.mjs
+            .local/plugin/THIRD_PARTY_NOTICES.md
           generate_release_notes: false
           fail_on_unmatched_files: true

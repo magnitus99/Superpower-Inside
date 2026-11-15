@@ -4,6 +4,13 @@
 
 set PLUGIN_ID "superpower-inside"
 set REPO_ROOT (realpath (dirname (status -f))/..)
+set -l PLUGIN_OUTPUT (node --input-type=module -e 'const { ARTIFACT_PATHS } = await import(process.argv[1]); console.log(ARTIFACT_PATHS.plugin)' "file://$REPO_ROOT/scripts/artifact-paths.mjs")
+or exit $status
+set -l PLUGIN_TARGET "$REPO_ROOT/$PLUGIN_OUTPUT"
+if not test -f "$PLUGIN_TARGET/main.js"; or not test -f "$PLUGIN_TARGET/manifest.json"
+    echo "ERROR: 먼저 npm run build:dev로 플러그인을 빌드하세요: $PLUGIN_TARGET" >&2
+    exit 1
+end
 set OBSIDIAN_CONFIG_DIR "$HOME/Library/Application Support/obsidian"
 set TEST_VAULT_DIR "$REPO_ROOT/.test-vault"
 set PLUGINS_DIR "$TEST_VAULT_DIR/.obsidian/plugins/$PLUGIN_ID"
@@ -21,12 +28,21 @@ end
 
 # --- 2. 플러그인 심링크 ---
 if test -L "$PLUGINS_DIR"
+    set -l LINK_TARGET (readlink "$PLUGINS_DIR")
+    if not test -e "$PLUGINS_DIR"; or test (realpath "$PLUGINS_DIR") != "$PLUGIN_TARGET"
+        echo "ERROR: 기존 플러그인 연결이 다른 경로를 가리킵니다($LINK_TARGET). 연결만 직접 제거한 뒤 setup을 다시 실행하여 재설정하세요: $PLUGINS_DIR → $PLUGIN_TARGET" >&2
+        exit 1
+    end
     echo "✅ 플러그인 심링크가 이미 존재합니다"
+else if test -e "$PLUGINS_DIR"
+    echo "ERROR: 플러그인 경로가 이미 존재합니다. 원본을 보존하고 경로를 직접 재설정하세요: $PLUGINS_DIR" >&2
+    exit 1
 else
     echo "🔗 플러그인 심링크 생성 중..."
     mkdir -p (dirname "$PLUGINS_DIR")
-    ln -s "$REPO_ROOT" "$PLUGINS_DIR"
-    echo "✅ 심링크 생성 완료: $PLUGINS_DIR → $REPO_ROOT"
+    ln -s "$PLUGIN_TARGET" "$PLUGINS_DIR"
+    or exit $status
+    echo "✅ 심링크 생성 완료: $PLUGINS_DIR → $PLUGIN_TARGET"
 end
 
 # --- 3. Hot-Reload 플러그인 설치 ---
@@ -52,7 +68,7 @@ echo "🎉 개발 환경 설정 완료!"
 echo "========================================"
 echo ""
 echo "테스트 볼트: $TEST_VAULT_DIR"
-echo "심링크:     $PLUGINS_DIR → $REPO_ROOT"
+echo "심링크:     $PLUGINS_DIR → $PLUGIN_TARGET"
 echo ""
 echo "다음 단계:"
 echo "  1. npm run dev        (esbuild watch 시작)"

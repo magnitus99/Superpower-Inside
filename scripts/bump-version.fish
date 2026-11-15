@@ -66,7 +66,7 @@ or exit $status
 npm run release:check
 or exit $status
 
-git add manifest.json package.json package-lock.json versions.json main.js styles.css tern_engine_bg.wasm THIRD_PARTY_NOTICES.md generated src/rag/rag-wasm-bytes.ts embeddinggemma-worker.js pdf-worker.js pdf-ocr-worker.js embeddinggemma-runtime.wasm embeddinggemma-runtime.mjs
+git add manifest.json package.json package-lock.json versions.json styles.css THIRD_PARTY_NOTICES.md .local/generated .local/plugin/main.js .local/plugin/tern_engine_bg.wasm .local/plugin/embeddinggemma-worker.js .local/plugin/pdf-worker.js .local/plugin/pdf-ocr-worker.js .local/plugin/embeddinggemma-runtime.wasm .local/plugin/embeddinggemma-runtime.mjs
 and git commit -m "chore(release): $NEW_VERSION"
 or exit $status
 

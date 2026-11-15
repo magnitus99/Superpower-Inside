@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -15,6 +15,7 @@ describe('생성물 저장 경계', () => {
     const bypasses: string[] = [];
     for (const path of paths) {
       if (
+        !existsSync(path) ||
         !path.endsWith('.ts') ||
         path.endsWith('.test.ts') ||
         path.endsWith('.d.ts') ||
