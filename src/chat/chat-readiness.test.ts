@@ -5,6 +5,7 @@ import {
   selectRagContextEngine,
 } from './chat-readiness';
 
+
 describe('질문을 보내기 위한 준비 조건', () => {
   it('연결이 없으면 질문을 보존한 채 연결 설정만 안내한다', () => {
     const snapshot = createChatReadinessSnapshot({
@@ -244,5 +245,22 @@ describe('검색 컨텍스트 엔진 경계', () => {
     expect(selectRagContextEngine(engine, 'preparing')).toBeNull();
     expect(selectRagContextEngine(engine, 'degraded')).toBeNull();
     expect(selectRagContextEngine(null, 'ready')).toBeNull();
+  });
+});
+
+describe('serving ready와 building 안내의 분리', () => {
+  const indexing = { phase: 'all', activity: 'indexing', servingAvailable: true, completedFiles: 1200, totalFiles: 4000, totalFilesKnown: true, currentFileEmbeddedChunks: null, currentFileTotalChunks: null, etaRemainingMs: null } as const;
+  const input = { enabledProviderCount: 1, availableModelCount: 1, selectedModel: 'example:model', retrieval: 'ready', indexing } as const;
+  it.each(['indexing', 'settling', 'partial', 'failed', 'paused', 'cancelled'] as const)('%s 안내가 있어도 ready 검색과 전송을 유지한다', activity => {
+    const snapshot = createChatReadinessSnapshot({ ...input, indexing: { ...indexing, activity } });
+    expect(snapshot).toMatchObject({ status: 'ready', blocksSend: false });
+    expect(snapshot.items).toHaveLength(1);
+    expect(snapshot.items[0].kind).toBe('rag');
+    expect(selectRagContextEngine(indexing, input.retrieval)).toBe(indexing);
+  });
+  it('building 숫자보다 연결·선택 모델 차단을 우선한다', () => {
+    expect(createChatReadinessSnapshot({ ...input, enabledProviderCount: 0 }).items.map(item => item.kind)).toEqual(['provider']);
+    expect(createChatReadinessSnapshot({ ...input, selectedModel: '' })).toMatchObject({ status: 'blocked', blocksSend: true });
+    expect(createChatReadinessSnapshot({ ...input, selectedModel: '' }).items.map(item => item.kind)).toEqual(['model']);
   });
 });

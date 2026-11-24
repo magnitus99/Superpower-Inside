@@ -1,14 +1,19 @@
 // 합성 검색 평가 지표. 입력은 어댑터와 무관한 {path, startLine, endLine, score} 결과만 받는다.
 // 골드는 문서(path)·구절(line range 겹침)·상충/복수 문서(모두 상위 k) 3단으로 채점한다.
 
-export function evaluateQuery(query, results, k = 8) {
-  const ranked = rankResults(results, k);
+// 직접 호출은 기존처럼 score를 거르지 않고, 요약의 cutoff는 순위 지표에만 적용한다.
+export function evaluateQuery(query, results, k = 8, minScore) {
+  const scoredResults = minScore === undefined
+    ? results
+    : results.filter((result) => (result.score ?? 1) >= minScore);
+  const ranked = rankResults(scoredResults, k);
   const paths = ranked.map((result) => result.path);
   const goldPaths = query.goldPaths ?? [];
   const foundGold = goldPaths.filter((path) => paths.includes(path));
   const firstRank = paths.findIndex((path) => goldPaths.includes(path));
+  const passages = scoredResults.slice(0, k);
   const passageHits = (query.goldPassages ?? []).filter((passage) =>
-    ranked.some((result) => result.path === passage.path && overlapsPassage(result, passage)),
+    passages.some((result) => result.path === passage.path && overlapsPassage(result, passage)),
   );
   return {
     id: query.id,
@@ -32,10 +37,23 @@ export function evaluateQuery(query, results, k = 8) {
       ? goldPaths.length > 1 && foundGold.length === goldPaths.length
       : null,
     noAnswerPass: query.expectNoAnswer ? ranked.length === 0 : null,
+    // hard 제외는 k/순위/관련성과 무관하게 반환 전체에서 검사합니다.
+    hardExclusionLeakage: results.some((result) => (query.hardExcludedPaths ?? []).includes(result.path)),
+    distractorLeakage: passages.some((result) => (query.forbiddenPassages ?? []).some((passage) => result.path === passage.path && overlapsPassage(result, passage))),
     forbiddenTop1: query.forbiddenPaths?.length
       ? ranked.length > 0 && query.forbiddenPaths.includes(ranked[0].path)
       : null,
   };
+}
+
+// 기존 소형 어댑터 회귀의 평균 하한을 CLI에도 적용하되 필수 사례 실패는 따로 막습니다.
+export function benchmarkGate(summary, update, stable) {
+  const overall = summary.overall;
+  return stable && overall.documentRecall >= 0.85 && overall.mrr >= 0.8 &&
+    overall.ndcg10 >= 0.7 && overall.passageHitRatio >= 0.5 &&
+    summary.rows.every((row) => row.documentRecall !== 0 && row.passageAllHit !== false && row.noAnswerPass !== false &&
+      row.multiGoldCovered !== false && row.conflictPairCovered !== false && !row.hardExclusionLeakage) &&
+    (!update.supported || (update.changedRetrievable && update.addedRetrievable && update.removedAbsent));
 }
 
 export function summarizeSearchEvaluation(queries, resultsByQueryId, options = {}) {
@@ -44,8 +62,9 @@ export function summarizeSearchEvaluation(queries, resultsByQueryId, options = {
   const rows = queries.map((query) =>
     evaluateQuery(
       query,
-      (resultsByQueryId.get(query.id) ?? []).filter((result) => (result.score ?? 1) >= minScore),
+      resultsByQueryId.get(query.id) ?? [],
       k,
+      minScore,
     ),
   );
   const byCategory = {};

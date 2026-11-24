@@ -468,8 +468,10 @@ describe('설정 화면 리디자인 구조', () => {
     const ragStart = renderSource.indexOf("bus.on('rag'");
     const ragEnd = renderSource.indexOf('bus.on(', ragStart + 1);
     const ragCallback = renderSource.slice(ragStart, ragEnd);
+    const progressGuard = 'if (this.plugin.isRagIndexing() || this.plugin.getSearchStatusSnapshot?.()?.indexing?.work)';
+    expect(ragCallback).toContain(progressGuard);
     expect(ragCallback.indexOf('this.refreshGeneralStatusSection()')).toBeLessThan(
-      ragCallback.indexOf('if (this.plugin.isRagIndexing())'),
+      ragCallback.indexOf(progressGuard),
     );
     expect(refreshSource).toContain('this.generalStatusBody');
     expect(refreshSource).toContain('statusBody.isConnected');
@@ -796,6 +798,10 @@ describe('설정 화면 리디자인 구조', () => {
     expect(styles).toMatch(
       /\.superpower-inside-rag-overview-progress-value\s*\{[^}]*font-variant-numeric:\s*tabular-nums;[^}]*overflow-wrap:\s*anywhere/s,
     );
+  });
+
+  it('공유 진행의 이전 오류 actions와 진행 행은 기존 display 규칙보다 우선해 숨긴다', () => {
+    expect(styles).toMatch(/\.superpower-inside-rag-overview-copy\s*>\s*\.superpower-inside-hidden\s*,\s*\.superpower-inside-rag-overview-actions\.superpower-inside-hidden\s*\{\s*display:\s*none;\s*\}/s);
   });
 
   it('RAG 상태 요약과 진행 갱신은 공유 readiness와 action 우선순위를 따른다', () => {

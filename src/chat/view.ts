@@ -79,8 +79,9 @@ import {
   isWholeVaultResearchRequest,
   isScopedVaultResearchRequest,
 } from '../agent/research-agent';
-import { reviewIndexedVault } from '../agent/indexed-vault-review';
-import { collectIndexedSearchSource } from '../search/indexed-search-deps';
+import { reviewIndexedVault, toModelIndexedEvidenceDossier } from '../agent/indexed-vault-review';
+import { withRuntimeLease } from '../rag/runtime-generation';
+import { collectIndexedSearchSource, acquirePluginSearchSnapshot } from '../search/indexed-search-deps';
 import { openPromptLibraryModal } from './prompt-library-modal';
 import { getEffectiveSystemPrompt } from './prompt-library';
 import { getPluginAwareServerNames } from './plugin-aware-context7';
@@ -111,6 +112,7 @@ import {
   type ComposerDraftSnapshot,
 } from './chat-composer';
 import { evaluateToolTrace } from './quality-evaluation';
+import { renderRagIndexingProgress } from '../rag/indexing-progress-view';
 import {
   createChatReadinessSnapshot,
   selectRagContextEngine,
@@ -627,7 +629,6 @@ export class ChatView extends ItemView {
 
     this.readinessEl = wrapper.createDiv({
       cls: 'superpower-inside-chat-readiness',
-      attr: { role: 'status', 'aria-live': 'polite' },
     });
 
     this.preparationErrorEl = wrapper.createDiv({
@@ -842,47 +843,68 @@ export class ChatView extends ItemView {
       window.clearTimeout(this.readinessTicker);
       this.readinessTicker = null;
     }
+    const searchStatus = this.plugin.getSearchStatusSnapshot?.();
+    // null은 현재 snapshot의 확정된 idle이며 이전 별칭 요약으로 대체하지 않습니다.
+    const indexing = searchStatus ? searchStatus.indexing : this.plugin.getRagIndexingProgressSummary?.() ?? null;
     const snapshot = createChatReadinessSnapshot({
       enabledProviderCount: this.getEnabledProviderCount(),
       availableModelCount: this.getAvailableModelCount(),
       selectedModel: this.modelSelectEl?.value ?? this.plugin.settings.chat.defaultModel,
-      retrieval: this.plugin.getRetrievalReadiness(),
-      indexing: this.plugin.getRagIndexingProgressSummary?.() ?? null,
+      retrieval: searchStatus ? searchStatus.readiness : this.plugin.getRetrievalReadiness(),
+      indexing,
     });
-    if (snapshot.status !== 'ready') {
+    if (snapshot.items.length > 0) {
       this.readinessTicker = window.setTimeout(() => {
         this.readinessTicker = null;
         this.renderChatReadiness();
       }, READINESS_REFRESH_INTERVAL_MS);
     }
-    this.readinessEl.empty();
     this.readinessEl.className = `superpower-inside-chat-readiness ${snapshot.status}`;
-    setHidden(this.readinessEl, snapshot.status === 'ready');
-    if (this.sendBtn && !this.isStreaming) {
-      this.sendBtn.disabled = snapshot.blocksSend;
+    setHidden(this.readinessEl, snapshot.items.length === 0);
+    if (this.sendBtn && !this.isStreaming) this.sendBtn.disabled = snapshot.blocksSend;
+    let list = this.readinessEl.querySelector<HTMLElement>('.superpower-inside-chat-readiness-items');
+    if (!list) list = this.readinessEl.createDiv({ cls: 'superpower-inside-chat-readiness-items' });
+    for (const row of Array.from(list.children)) {
+      const visible = snapshot.items.some(item => row.classList.contains(`superpower-inside-chat-readiness-${item.kind}`));
+      setHidden(row as HTMLElement, !visible);
     }
-    if (snapshot.items.length !== 1) {
-      this.readinessEl.createSpan({
-        cls: 'superpower-inside-chat-readiness-primary',
-        text: snapshot.primaryText,
-      });
-    }
-    if (snapshot.items.length === 0) return;
-    const list = this.readinessEl.createDiv({ cls: 'superpower-inside-chat-readiness-items' });
     for (const item of snapshot.items.slice(0, 3)) {
-      const row = list.createDiv({
-        cls: `superpower-inside-chat-readiness-item ${item.kind} severity-${item.severity} tone-${item.tone}`,
-      });
-      row.createSpan({ cls: 'superpower-inside-chat-readiness-label', text: item.label });
-      row.createSpan({ cls: 'superpower-inside-chat-readiness-detail', text: item.detail });
-      if (item.action) {
-        const action = row.createEl('button', {
-          cls: 'superpower-inside-chat-readiness-action',
-          text: this.getReadinessActionText(item),
-          attr: { type: 'button' },
-        });
-        action.addEventListener('click', () => void this.handleReadinessAction(item));
+      let row = list.querySelector<HTMLElement>(`.superpower-inside-chat-readiness-${item.kind}`);
+      if (!row) row = list.createDiv({ cls: `superpower-inside-chat-readiness-${item.kind}` });
+      row.className = `superpower-inside-chat-readiness-${item.kind} superpower-inside-chat-readiness-item ${item.kind} severity-${item.severity} tone-${item.tone}`;
+      if (item.kind === 'rag' && indexing) {
+        for (const child of Array.from(row.children)) {
+          if (!child.classList.contains('superpower-inside-indexing-progress')) setHidden(child as HTMLElement, true);
+        }
+        renderRagIndexingProgress(row, indexing);
+        const widget = row.querySelector<HTMLElement>('.superpower-inside-indexing-progress');
+        if (widget) setHidden(widget, false);
+        continue;
       }
+      const widget = row.querySelector<HTMLElement>('.superpower-inside-indexing-progress');
+      if (widget) setHidden(widget, true);
+      let label = row.querySelector<HTMLElement>('.superpower-inside-chat-readiness-label');
+      if (!label) label = row.createSpan({ cls: 'superpower-inside-chat-readiness-label', attr: { role: 'status', 'aria-live': 'polite' } });
+      setHidden(label, false);
+      if (label.textContent !== item.label) label.setText(item.label);
+      let detail = row.querySelector<HTMLElement>('.superpower-inside-chat-readiness-detail');
+      if (!detail) detail = row.createSpan({ cls: 'superpower-inside-chat-readiness-detail' });
+      setHidden(detail, false);
+      if (detail.textContent !== item.detail) detail.setText(item.detail);
+      let action = row.querySelector<HTMLButtonElement>('.superpower-inside-chat-readiness-action');
+      if (item.action) {
+        if (!action) {
+          action = row.createEl('button', { cls: 'superpower-inside-chat-readiness-action', attr: { type: 'button' } });
+          const button = action;
+          button.addEventListener('click', () => this.handleReadinessAction({ ...item,
+            action: button.getAttribute('data-action') === 'select-model' ? 'select-model' : 'configure-provider',
+          }));
+        }
+        action.setAttribute('data-action', item.action);
+        setHidden(action, false);
+        const text = this.getReadinessActionText(item);
+        if (action.textContent !== text) action.setText(text);
+      } else if (action) setHidden(action, true);
     }
   }
 
@@ -3281,7 +3303,9 @@ export class ChatView extends ItemView {
             app: this.app,
             ragEngine: this.plugin.ragEngine,
             documentCorpus: this.plugin.documentCorpus,
+            acquireSnapshot: () => acquirePluginSearchSnapshot(this.plugin),
             settings: this.plugin.settings,
+            getCurrentSettings: () => this.plugin.settings,
             getCandidateCount: () => this.plugin.getRagRuntimeState?.()?.ragStatus?.totalDocuments,
             isIndexing: () => isPluginSearching(this.plugin),
           },
@@ -3296,17 +3320,19 @@ export class ChatView extends ItemView {
             filters: mentionedTags.length > 0 ? { tags: mentionedTags } : undefined,
           } : undefined,
         );
+        const searchPolicy = JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]);
+        const isReviewCurrent = () =>
+          isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready' &&
+          JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]) === searchPolicy &&
+          searchSource?.isCurrent?.() !== false;
+        const researchResult = await withRuntimeLease(searchSource?.release, async () => {
         const indexedPaths = searchSource ? await searchSource.getIndexedPaths() : [];
         const reviewPaths = restrictedSearch
           ? indexedPaths
           : (searchSource?.reviewPaths ?? indexedPaths);
         const searchInventory = searchSource?.inventory;
-        const searchPolicy = JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]);
-        const isReviewCurrent = () =>
-          isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready' &&
-          JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]) === searchPolicy;
         let researchReasoning = '';
-        const researchResult = await reviewIndexedVault({
+        return reviewIndexedVault({
           question: text,
           indexedPaths: reviewPaths,
           scopes: mentionedFolders.map((folder) => folder.name),
@@ -3324,6 +3350,8 @@ export class ChatView extends ItemView {
           candidatesState: searchSource?.candidatesState,
           inventory: searchInventory,
           matchInventory: searchSource?.matchInventory,
+          literalQuery: searchSource?.literalQuery,
+          openLiteralInventory: searchSource?.openLiteralInventory,
           filters: mentionedTags.length > 0 ? { tags: mentionedTags } : undefined,
           revisionReader: searchSource?.revisionReader,
           sourceReader: searchSource?.sourceReader
@@ -3386,7 +3414,9 @@ export class ChatView extends ItemView {
             });
           },
         });
+        });
         if (!isChatRunActive(this.activeRun, run)) return;
+        if (!isReviewCurrent()) throw new Error(t('vaultResearchContractUnavailable'));
         contextMeta.indexedReviewDiagnostics = researchResult.diagnostics;
         contextMeta.indexedReviewNotice = researchResult.coverageNotice;
         contextMeta.indexedMatchInventory = researchResult.dossier.matchInventory;
@@ -3411,7 +3441,7 @@ export class ChatView extends ItemView {
             promptContext.systemPrompt,
             t('llmEvidenceDataBoundary'),
             JSON.stringify({
-              indexedEvidenceDossier: researchResult.dossier,
+              indexedEvidenceDossier: toModelIndexedEvidenceDossier(researchResult.dossier),
               verifiedSourcePassages: researchResult.citations,
             }),
           ]
@@ -5153,12 +5183,21 @@ export class ChatView extends ItemView {
         if (message.indexedReviewDiagnostics && explicitlyMentionedServers.length > 0) {
           await this.plugin.prepareRagForChat();
           if (!isChatRunActive(this.activeRun, run)) return;
+          const resumeFolderScopes = this.parseMentions(currentQuestion)
+            .filter((mention) => mention.type === 'folder')
+            .map((mention) => mention.name);
+          const resumeTags = this.parseMentions(currentQuestion)
+            .filter((mention) => mention.type === 'tag')
+            .map((mention) => mention.name);
+          const resumeRestricted = resumeFolderScopes.length > 0 || resumeTags.length > 0;
           const resumeSource = await collectIndexedSearchSource(
             {
               app: this.app,
               ragEngine: this.plugin.ragEngine,
               documentCorpus: this.plugin.documentCorpus,
+            acquireSnapshot: () => acquirePluginSearchSnapshot(this.plugin),
               settings: this.plugin.settings,
+            getCurrentSettings: () => this.plugin.settings,
               getCandidateCount: () =>
                 this.plugin.getRagRuntimeState?.()?.ragStatus?.totalDocuments,
               isIndexing: () => isPluginSearching(this.plugin),
@@ -5168,20 +5207,22 @@ export class ChatView extends ItemView {
             currentQuestion,
             true,
             12_000,
+            undefined,
+            resumeRestricted ? {
+              scopes: resumeFolderScopes,
+              filters: resumeTags.length > 0 ? { tags: resumeTags } : undefined,
+            } : undefined,
           );
+          const isResumeReviewCurrent = () =>
+            isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready' &&
+            resumeSource?.isCurrent?.() !== false;
+          const researchResult = await withRuntimeLease(resumeSource?.release, async () => {
           const indexedPaths = resumeSource ? await resumeSource.getIndexedPaths() : [];
-          const resumeFolderScopes = this.parseMentions(currentQuestion)
-            .filter((mention) => mention.type === 'folder')
-            .map((mention) => mention.name);
-          const resumeTags = this.parseMentions(currentQuestion)
-            .filter((mention) => mention.type === 'tag')
-            .map((mention) => mention.name);
-          const resumeRestricted = resumeFolderScopes.length > 0 || resumeTags.length > 0;
           const reviewPaths = resumeRestricted
             ? indexedPaths
             : (resumeSource?.reviewPaths ?? indexedPaths);
           const resumeInventory = resumeSource?.inventory;
-          const researchResult = await reviewIndexedVault({
+          return reviewIndexedVault({
             question: currentQuestion,
             indexedPaths: reviewPaths,
             scopes: resumeFolderScopes,
@@ -5192,6 +5233,8 @@ export class ChatView extends ItemView {
             candidatesState: resumeSource?.candidatesState,
             inventory: resumeInventory,
             matchInventory: resumeSource?.matchInventory,
+            literalQuery: resumeSource?.literalQuery,
+            openLiteralInventory: resumeSource?.openLiteralInventory,
             filters: resumeTags.length > 0 ? { tags: resumeTags } : undefined,
             revisionReader: resumeSource?.revisionReader,
             sourceReader: resumeSource?.sourceReader,
@@ -5205,8 +5248,7 @@ export class ChatView extends ItemView {
             deferAnswer: true,
             documentScope: 'all',
             exhaustiveReview: resumeRestricted ? false : resumeSource?.exhaustiveReview === true,
-            isCurrent: () =>
-              isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready',
+            isCurrent: isResumeReviewCurrent,
             signal: abortController.signal,
             onDiagnostics: (diagnostics) => {
               if (!isChatRunActive(this.activeRun, run)) return;
@@ -5214,7 +5256,9 @@ export class ChatView extends ItemView {
               this.markDirtyAndAutoSave();
             },
           });
+          });
           if (!isChatRunActive(this.activeRun, run)) return;
+          if (!isResumeReviewCurrent()) throw new Error(t('vaultResearchContractUnavailable'));
           message.indexedReviewNotice = researchResult.coverageNotice;
           message.indexedMatchInventory = researchResult.dossier.matchInventory;
           message.indexedReviewDiagnostics = researchResult.diagnostics;
@@ -5228,7 +5272,7 @@ export class ChatView extends ItemView {
             promptContext.systemPrompt,
             t('llmEvidenceDataBoundary'),
             JSON.stringify({
-              indexedEvidenceDossier: researchResult.dossier,
+              indexedEvidenceDossier: toModelIndexedEvidenceDossier(researchResult.dossier),
               verifiedSourcePassages: researchResult.citations,
             }),
           ]
@@ -5390,8 +5434,8 @@ export class ChatView extends ItemView {
 
   private getChatQueryEngine(
     observer: ChatView['retrievalObserver'] | null = this.retrievalObserver,
+    engine = this.plugin.ragEngine,
   ): ReturnType<typeof observeChatRetrieval> | null {
-    const engine = this.plugin.ragEngine;
     if (!engine) return null;
     if (!observer || !isChatRunActive(this.activeRun, observer.run)) return engine;
     return observeChatRetrieval(engine, observer.record);
@@ -5434,15 +5478,23 @@ export class ChatView extends ItemView {
       };
     }
 
+    let releaseRag: (() => void) | undefined;
+    let queryMinScore = this.plugin.settings.rag.minScore;
     const ragEngine: RagQueryLike | null = await resolveChatRagEngine(
       skipAutoRag ||
         pluginDocumentation !== null ||
         this.parseMentions(lastUserText).some((mention) => mention.type === 'tag'),
       () => this.plugin.prepareRagForChat(),
-      () => this.getChatQueryEngine(retrievalObserver),
+      () => {
+        const snapshot = acquirePluginSearchSnapshot(this.plugin);
+        releaseRag = snapshot.release;
+        queryMinScore = snapshot.queryMinScore ?? queryMinScore;
+        return this.getChatQueryEngine(retrievalObserver, snapshot.ragEngine);
+      },
     );
     // 준비 중에는 부분 색인을 근거로 컨텍스트를 만들지 않습니다. 호출부의
     // readiness 대기가 ready 전환 뒤 같은 실행을 이어갑니다.
+    return withRuntimeLease(releaseRag, async () => {
     const ragContextEngine = selectRagContextEngine(
       ragEngine,
       this.plugin.getRetrievalReadiness?.() ?? 'ready',
@@ -5466,7 +5518,7 @@ export class ChatView extends ItemView {
         ),
       ragEngine: ragContextEngine,
       mcpRegistry: this.plugin.mcpRegistry,
-      ragMinScore: this.plugin.settings.rag.minScore,
+      ragMinScore: queryMinScore,
       maxContextChars: provider?.contextBudget?.evidenceChars,
       deferImplicitFolderEvidenceToTools,
       explicitContextOnly: pluginDocumentation !== null,
@@ -5484,6 +5536,7 @@ export class ChatView extends ItemView {
       attachments: [...(pluginDocumentation?.attachments ?? []), ...context.attachments],
       systemPrompt: parts.length > 0 ? parts.join('\n') : null,
     };
+    });
   }
 
   private parseMentions(text: string): ParsedMention[] {

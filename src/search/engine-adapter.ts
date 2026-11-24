@@ -21,11 +21,17 @@ import {
   type RustIndexedEvidenceVerificationDocument,
 } from '../rag/rust-core';
 import { appLogger } from '../utils/logger';
+import type { SourceMetadata } from '../rag/source-access';
+import type { LiteralInventoryHandle } from '../rag/literal-inventory';
 
 const VERIFICATION_WINDOW_BYTES = 1024 * 1024;
 const verificationEncoder = new TextEncoder();
 
 export interface IndexedSearchSource {
+  literalQuery?: string;
+  openLiteralInventory?: (needles: readonly string[], signal?: AbortSignal, allowedPaths?: readonly string[]) => Promise<LiteralInventoryHandle>;
+  release?: () => void | Promise<void>;
+  isCurrent?: () => boolean;
   corpus: IndexedVaultCorpus;
   getIndexedPaths(): Promise<readonly string[]>;
   /** exhaustive BM25가 성공했을 때 실제 본문을 검증할 후보 경로입니다. */
@@ -47,12 +53,13 @@ export interface IndexedSearchSource {
   revisionReader?: (path: string) => Promise<string | null>;
   /** 답변 전에 채택 문서의 현재 원문을 다시 읽는 로컬 vault reader. */
   sourceReader?: (path: string, signal?: AbortSignal) => Promise<IndexedEvidenceSourceSnapshot>;
-  /** false면 현재 vault revision(mtime:size)만 대조하고 색인 quote의 현재 원문 재검증은 생략합니다. 검색 화면이 이 경로를 사용합니다. */
+  /** true는 reader 없는 검증도 실패 폐쇄합니다. false는 명시적인 legacy revision-only 경로입니다. */
   verifyCurrentSource?: boolean;
 }
 
 /** 현재 vault 원문과 그 revision입니다. 읽을 수 없으면 두 값 모두 null입니다. */
 export interface IndexedEvidenceSourceSnapshot {
+  sourceMetadata?: SourceMetadata;
   revision: string | null;
   text: string | null;
   contentHash?: string;
@@ -77,7 +84,8 @@ export function createIndexedSearchPort(
     }
     const { revisionReader } = source;
     // 현재 원문 리비전을 확인할 수 없으면 색인 사본을 verified 결과로 내보내지 않는다.
-    if (!revisionReader) return null;
+    if (!revisionReader || (source.verifyCurrentSource === true && !source.sourceReader)) return null;
+    request.signal?.throwIfAborted();
     const hasFilters = request.filters !== undefined;
     const indexedPaths = hasFilters
       ? await source.getIndexedPaths()
@@ -112,14 +120,15 @@ export function createIndexedSearchPort(
     const revisionMs = performance.now() - revisionStarted;
     const sourceStarted = performance.now();
     const current = source.verifyCurrentSource === false
-      ? { evidence: revision.evidence, staleDocuments: 0 }
+      ? { evidence: revision.evidence, staleDocuments: 0, incomplete: false }
       : source.sourceReader
       ? await keepCurrentSourceEvidence(
           revision.evidence,
           source.sourceReader,
           request.signal,
+          source.verifyCurrentSource === true,
         )
-      : { evidence: revision.evidence, staleDocuments: 0 };
+      : { evidence: revision.evidence, staleDocuments: 0, incomplete: false };
     const sourceMs = performance.now() - sourceStarted;
     const response = toSearchResponse({ ...result, evidence: current.evidence });
     response.staleDocuments = revision.staleDocuments + current.staleDocuments;
@@ -136,7 +145,7 @@ export function createIndexedSearchPort(
     response.diagnostics.selectedDocuments = new Set(
       current.evidence.map((item) => item.path),
     ).size;
-    if (response.staleDocuments > 0 && response.coverage.status === 'supported') {
+    if ((response.staleDocuments > 0 || current.incomplete) && response.coverage.status === 'supported') {
       response.coverage.status = 'incomplete';
     }
     return response;
@@ -165,12 +174,13 @@ function currentVerificationWindow(
   };
 }
 
-/** 현재 원문 검증이 켜진 경로에서 원문·절대 행·revision 경계를 확인합니다. 검색 화면은 verifyCurrentSource: false로 이 함수를 건너뛰고 revision 대조만 합니다. */
+/** 현재 원문·절대 행·revision 경계를 확인합니다. */
 async function keepCurrentSourceEvidence(
   evidence: readonly IndexedEvidenceItem[],
   reader: NonNullable<IndexedSearchSource['sourceReader']>,
   signal?: AbortSignal,
-): Promise<{ evidence: readonly IndexedEvidenceItem[]; staleDocuments: number }> {
+  strict = false,
+): Promise<{ evidence: readonly IndexedEvidenceItem[]; staleDocuments: number; incomplete?: boolean }> {
   if (evidence.length === 0) return { evidence, staleDocuments: 0 };
   const paths = [...new Set(evidence.map((item) => item.path))];
   const snapshots = await Promise.all(
@@ -189,6 +199,20 @@ async function keepCurrentSourceEvidence(
   const rejectedPaths = new Set<string>();
   for (const item of evidence) {
     const snapshot = byPath.get(item.path);
+    if (strict && (!snapshot || !('contentHash' in snapshot) || !snapshot.contentHash)) {
+      rejectedPaths.add(item.path);
+      continue;
+    }
+    if (snapshot && 'chunks' in snapshot && snapshot.chunks !== undefined) {
+      if (snapshot.revision === null || snapshot.chunks.length === 0) {
+        rejectedPaths.add(item.path);
+        continue;
+      }
+      for (const chunk of snapshot.chunks) {
+        documents.set(`${item.path}\u0000${chunk.startLine}`, { path: item.path, text: chunk.text, startLine: chunk.startLine, revision: snapshot.revision, indexed: true, reviewState: 'reviewed' });
+      }
+      continue;
+    }
     const document = snapshot ? currentVerificationWindow(item, snapshot) : null;
     if (!document) {
       rejectedPaths.add(item.path);
@@ -217,8 +241,14 @@ async function keepCurrentSourceEvidence(
     if (statuses.get(item.sourceId)?.status !== 'verified') rejectedPaths.add(item.path);
   }
   return {
-    evidence: candidates.filter((item) => !rejectedPaths.has(item.path)),
+    evidence: candidates.filter((item) => !rejectedPaths.has(item.path)).map((item) => {
+      const snapshot = byPath.get(item.path);
+      return snapshot && 'contentHash' in snapshot && snapshot.contentHash
+        ? { ...item, contentHash: snapshot.contentHash, revision: snapshot.revision }
+        : item;
+    }),
     staleDocuments: rejectedPaths.size,
+    incomplete: snapshots.some(([, snapshot]) => 'sourceMetadata' in snapshot && snapshot.sourceMetadata?.completeness?.status === 'partial'),
   };
 }
 
@@ -257,7 +287,7 @@ function createPendingSearchResponse(
 async function keepCurrentRevision(
   evidence: readonly IndexedEvidenceItem[],
   revisionReader: (path: string) => Promise<string | null>,
-): Promise<{ evidence: readonly IndexedEvidenceItem[]; staleDocuments: number }> {
+): Promise<{ evidence: readonly IndexedEvidenceItem[]; staleDocuments: number; incomplete?: boolean }> {
   const currentByPath = new Map<string, string | null>();
   await Promise.all(
     [...new Set(evidence.map((item) => item.path))].map(async (path) => {

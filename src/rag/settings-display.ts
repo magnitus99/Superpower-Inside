@@ -72,6 +72,9 @@ export interface ProviderReadinessState {
 
 export interface RagIndexingControlStateInput {
   hasIndexer: boolean;
+  canStartUpdate?: boolean;
+  canRebuild?: boolean;
+  isInitializing?: boolean;
   isIndexing: boolean;
   totalDocuments: number | null;
   updateRequiredCount: number | null;
@@ -90,7 +93,6 @@ export interface RagIndexingControlState {
   updatePending: RagIndexingButtonState;
   reindexAll: RagIndexingButtonState;
   cancel: RagIndexingButtonState;
-  resume: RagIndexingButtonState;
   reset: RagIndexingButtonState;
 }
 
@@ -116,11 +118,12 @@ export function resolveRagPerformanceSettings(
   }
   return {
     enabled: true,
-    maxEmbeddingBatchSize:
-      modelId === 'embeddinggemma-300m' ? 4 : embeddingStrategy === 'ollama' ? 1 : 32,
+    // 임베딩 호출은 배치 크기와 거의 무관하게 고정 비용이 커서, 큰 배치가 처리량을 좌우한다.
+    // Ollama는 입력당 1회 요청을 보내므로 배치 상한을 1로 유지한다.
+    maxEmbeddingBatchSize: embeddingStrategy === 'ollama' ? 1 : 32,
     indexingYieldMs: 0,
-    slowEventLoopThresholdMs: 24,
-    slowBatchThresholdMs: 1500,
+    slowEventLoopThresholdMs: 200,
+    slowBatchThresholdMs: 10_000,
   };
 }
 
@@ -170,8 +173,9 @@ export function resolveProviderReadiness(input: ProviderReadinessInput): Provide
 export function getRagIndexingControlState(
   input: RagIndexingControlStateInput,
 ): RagIndexingControlState {
-  const setupReason = input.hasIndexer ? null : t('ragIndexerNotInitializedBase');
-  const runningReason = input.isIndexing ? t('ragAutoUpdateAlreadyRunning') : null;
+  const updateSetupReason = (input.canStartUpdate ?? input.hasIndexer) ? null : t('ragIndexerNotInitializedBase');
+  const rebuildSetupReason = (input.canRebuild ?? input.hasIndexer) ? null : t('ragIndexerNotInitializedBase');
+  const runningReason = input.isIndexing || input.isInitializing ? t('ragAutoUpdateAlreadyRunning') : null;
   const pauseReason =
     input.guardMode !== 'paused'
       ? null
@@ -184,14 +188,10 @@ export function getRagIndexingControlState(
   const noDocumentsReason = input.totalDocuments === 0 ? t('ragNoDocuments') : null;
 
   return {
-    updatePending: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noUpdatesReason),
-    reindexAll: toButtonState(setupReason ?? runningReason ?? pauseReason ?? noDocumentsReason),
+    updatePending: toButtonState(updateSetupReason ?? runningReason ?? pauseReason ??
+      (input.autoRecoveryPausedByUser ? null : noUpdatesReason)),
+    reindexAll: toButtonState(rebuildSetupReason ?? runningReason ?? pauseReason ?? noDocumentsReason),
     cancel: toButtonState(input.isIndexing ? null : t('ragNoRunningIndexing')),
-    resume: toButtonState(
-      input.guardMode === 'paused' || input.autoRecoveryPausedByUser === true
-        ? null
-        : t('ragNotPerformancePaused'),
-    ),
     reset: toButtonState(runningReason),
   };
 }

@@ -1,14 +1,19 @@
 import type { TAbstractFile, TFile, Vault } from 'obsidian';
-import type { PdfReadOptions } from './pdf-worker-runtime';
-import { createContentHash } from './hash';
-import { isSourceRevisionCurrentRust, type RustSourceRevision } from './rust-core';
-import { readSourceText, type SourceTextSegment } from './source-access';
+import { isSourceRevisionCurrentRust, type RustSourceRevision, type RustSourceChunk, type RustSourceBodyPlan } from './rust-core';
+import { beginRagPreparedSourceProbe } from '../utils/vault';
+import { readSourceText, SourceReadError, type SourceTextSegment, type SourceMetadata, type SourceReadOptions } from './source-access';
 
 export interface SourceFileSnapshot {
+  bodyPlan?: RustSourceBodyPlan;
   file: TFile;
   content: string;
   segments: readonly SourceTextSegment[];
   revision: RustSourceRevision;
+  sourceMetadata: SourceMetadata;
+  sourceMetadataHash: string;
+  sourceMetadataBytes: number;
+  chargeBytes: number;
+  chunks?: readonly RustSourceChunk[];
 }
 
 /**
@@ -19,14 +24,25 @@ export interface SourceFileSnapshot {
 export async function readSourceFileSnapshot(
   vault: Vault,
   file: TFile,
-  options: PdfReadOptions = {},
+  options: SourceReadOptions = {},
 ): Promise<SourceFileSnapshot | null> {
   const snapshot = createSourceSnapshot(file);
-  const source = await readSourceText(vault, snapshot, options);
+  const publish = beginRagPreparedSourceProbe(vault, file);
+  let source;
+  try {
+    source = await readSourceText(vault, snapshot, { ...options, forceRefresh: options.forceRefresh ?? true, preparation: { ...options.preparation, path: snapshot.path } });
+  } catch (error) {
+    if (error instanceof SourceReadError) publish({ reason: error.reason });
+    else if (!(error instanceof Error && error.name === 'AbortError')) publish({ reason: 'read-failed' });
+    throw error;
+  }
+  options.signal?.throwIfAborted();
   const content = source.text;
   const current = vault.getAbstractFileByPath(snapshot.path);
   if (!isSourceFile(current)) return null;
-  const contentHash = createContentHash(content);
+  const prepared = source.prepared;
+  if (!prepared) throw new Error('Source worker preparation is unavailable.');
+  const contentHash = prepared.contentHash;
   const revision = {
     filePath: snapshot.path,
     sourceMtime: snapshot.stat.mtime,
@@ -42,14 +58,24 @@ export async function readSourceFileSnapshot(
     })
   )
     return null;
-  return { file: snapshot, content, segments: source.segments, revision };
+  const sourceMetadata: SourceMetadata = {
+    segments: source.segments,
+    ...(source.metadataParts ? { metadataParts: source.metadataParts } : {}),
+    ...(source.completeness ? { completeness: source.completeness } : {}),
+  };
+  // 명시적으로 추출 캐시를 허용한 읽기는 fresh byte verdict로 승격하지 않습니다.
+  if (options.forceRefresh !== false) publish({ text: content, contentHash, sourceMetadataHash: prepared.sourceMetadataHash });
+  return { file: snapshot, content, segments: source.segments, revision, sourceMetadata,
+    sourceMetadataHash: prepared.sourceMetadataHash, sourceMetadataBytes: prepared.sourceMetadataBytes,
+    chargeBytes: prepared.chargeBytes + snapshot.stat.size * 4,
+    ...(prepared.bodyPlan ? { bodyPlan: prepared.bodyPlan } : {}), ...(prepared.chunks ? { chunks: prepared.chunks } : {}) };
 }
 
 /**
  * 읽는 동안 바뀐 `stat`이 본문과 섞이지 않도록 값만 고정한 사본을 만듭니다.
  *
- * Obsidian `TFile`의 `cache()` 같은 인스턴스 메서드는 객체 스프레드로 복사되지 않는
- * 프로토타입 멤버라서, 프로토타입을 유지해야 `vault.cachedRead`가 실패하지 않습니다.
+ * Obsidian `TFile`의 `cache()` 같은 인스턴스 메서드는 객체 스프레드로 복사되지 않습니다.
+ * 호스트 API에 파일 인스턴스 계약을 그대로 전달하도록 프로토타입도 유지합니다.
  */
 function createSourceSnapshot(file: TFile): TFile {
   const snapshot: TFile = { ...file, stat: { ...file.stat } };

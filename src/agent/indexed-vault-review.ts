@@ -27,6 +27,7 @@ import {
   type RustIndexedReviewAnswerPlan,
 } from '../rag/rust-core';
 import type { FileIndexRecord, VectorEntry } from '../rag/store';
+import type { SourceMetadata } from '../rag/source-access';
 import type { SourceCitation, TurnUsageSnapshot } from '../chat/types';
 import type { IndexedEvidenceSourceSnapshot } from '../search/engine-adapter';
 import type { SearchCandidateState } from '../search/engine-port';
@@ -35,6 +36,8 @@ import { selectAnswerCitations } from './citation-selection';
 import { searchIndexedFollowup } from './indexed-vault-followup';
 import { enumerateIndexedDocuments } from './indexed-vault-enumeration';
 import type { VaultResearchProgress } from './research-agent';
+import { prepareLiteralReview, type IndexedLiteralInventory, type LiteralReviewPreparation } from './literal-review';
+import type { LiteralInventoryHandle, LiteralInventoryPage } from '../rag/literal-inventory';
 
 /** 색인 본문·리비전만으로 근거를 선별하는 엔진 연결(provider 미사용)입니다. */
 export type IndexedEvidenceItem = RustIndexedEvidencePassage;
@@ -110,6 +113,7 @@ export interface IndexedVaultSearchCoverage extends RustIndexedEvidenceCoverage 
 }
 
 export interface IndexedVaultSearchResult {
+  sourceDocuments?: Readonly<Record<string, SourceMetadata>>;
   plan: IndexedEvidencePlan;
   /** 구절·위치·리비전·스코프 검증을 통과한 근거만 담습니다. */
   evidence: readonly IndexedEvidenceItem[];
@@ -668,7 +672,7 @@ export async function searchIndexedVault(
   );
   const finalCoverage: RustIndexedEvidenceCoverage = {
     status:
-      unreviewedDocuments > 0 || (documentScope === 'all' && notIndexedDocuments > 0)
+      unreviewedDocuments > 0 || (documentScope === 'all' && notIndexedDocuments > 0) || records.some((record) => requestedPaths.includes(record.filePath) && record.sourceMetadata?.completeness?.status === 'partial')
         ? 'incomplete'
         : plan.coverage.status === 'budget-exhausted'
           ? 'budget-exhausted'
@@ -680,6 +684,7 @@ export async function searchIndexedVault(
   const resultPlan = { ...plan, coverage: finalCoverage };
   return {
     plan: resultPlan,
+    sourceDocuments: Object.fromEntries(records.filter((record) => record.sourceMetadata && plan.evidence.some((item) => item.path === record.filePath)).map((record) => [record.filePath, record.sourceMetadata!])),
     evidence: plan.evidence,
     rejected,
     coverage: {
@@ -734,6 +739,10 @@ export interface IndexedReviewDiagnostics {
 }
 
 export interface IndexedVaultReviewOptions {
+  literalQuery?: string;
+  literalInventory?: IndexedLiteralInventory;
+  literalInspectionPaths?: readonly string[];
+  openLiteralInventory?: (needles: readonly string[], signal?: AbortSignal, allowedPaths?: readonly string[]) => Promise<LiteralInventoryHandle>;
   question: string;
   indexedPaths: readonly string[];
   scopes: readonly string[];
@@ -762,6 +771,8 @@ export interface IndexedVaultReviewOptions {
   scoringQuestion?: string;
   queryVariants?: readonly string[];
   deferAnswer?: boolean;
+  /** 모델 후속 조사·답변을 모두 금지하며 결정적 발견·정책 재조회·열거는 유지합니다. */
+  executionMode?: 'engine-only';
   /** 검색 도중 재색인·corpus refresh가 시작되면 결과를 폐기합니다. */
   isCurrent?: () => boolean;
   signal?: AbortSignal;
@@ -774,6 +785,8 @@ export interface IndexedVaultReviewOptions {
 
 /** 엔진이 검증한 근거와 범위만 해석 모델에 전달하는 정규 계약입니다. */
 export interface IndexedEvidenceDossier {
+  literalInventory?: IndexedLiteralInventory;
+  sourceDocuments?: Readonly<Record<string, SourceMetadata>>;
   question: string;
   scoringQuestion: string;
   previousUserQuestions: readonly string[];
@@ -796,6 +809,34 @@ export interface IndexedEvidenceDossier {
   answerPlan?: RustIndexedReviewAnswerPlan;
 }
 
+/** 파일·요청 원장은 보존하고 기존 모델 전달용 요약만 투영합니다. */
+export function toModelIndexedEvidenceDossier(dossier: IndexedEvidenceDossier) {
+  return {
+    ...dossier,
+    // 파일 원장은 호출자에게 보존하되 거대한 셀 원장을 모델 프롬프트에 복제하지 않습니다.
+    sourceDocuments: undefined,
+    matchInventory: dossier.matchInventory?.map((inventory) => ({
+      query: inventory.query,
+      totalDocuments: inventory.totalDocuments,
+      totalChunks: inventory.totalChunks,
+      totalOccurrences: inventory.totalOccurrences,
+    })),
+    literalInventory: dossier.literalInventory?.status === 'complete' ? {
+      matchMode: dossier.literalInventory.summary.matchMode,
+      scope: 'indexed-policy-allowed-source-body',
+      needles: dossier.literalInventory.summary.needles,
+      discoveryPagesReadComplete: dossier.literalInventory.representativePages === dossier.literalInventory.summary.pageCount,
+    } : dossier.literalInventory,
+    coverage: {
+      documentScope: dossier.coverage.documentScope,
+      status: dossier.coverage.status,
+      reviewedDocuments: dossier.coverage.reviewedDocuments,
+      unreviewedDocuments: dossier.coverage.unreviewedDocuments,
+      notIndexedDocuments: dossier.coverage.notIndexedDocuments,
+    },
+  };
+}
+
 export type IndexedReviewOutcome =
   | 'answered'
   | 'evidence-only'
@@ -813,6 +854,8 @@ export interface IndexedDiscoveryPageRequest {
 }
 
 export interface IndexedVaultReviewResult {
+  readLiteralDiscoveryPage?: (index: number) => Promise<LiteralInventoryPage | null>;
+  closeLiteralDiscovery?: () => Promise<void>;
   /** 미검증 단서만 조회합니다. 실제 근거 채택에는 별도의 현재 원문 검증이 필요합니다. */
   readDiscoveryPage?: (request: IndexedDiscoveryPageRequest) => RustIndexedDiscoveryPage | null;
   outcome: IndexedReviewOutcome;
@@ -923,16 +966,41 @@ export async function reviewIndexedVault(
   const cancel = () => controller.abort();
   options.signal?.addEventListener('abort', cancel, { once: true });
   if (options.signal?.aborted) cancel();
+  let literal: LiteralReviewPreparation | undefined;
+  let returned = false;
   try {
-    const result = await runIndexedVaultReview(
-      { ...options, signal: controller.signal },
+    literal = await prepareLiteralReview(options);
+    let answer: string | undefined;
+    let completed: VaultResearchProgress | undefined;
+    let result = await runIndexedVaultReview(
+      { ...literal.options, signal: controller.signal,
+        ...(literal.handle ? { onAnswer: (content: string) => { answer = content; }, onProgress: (progress: VaultResearchProgress) => {
+          if (progress.phase === 'complete') completed = progress; else options.onProgress?.(progress);
+        } } : {}) },
       options.signal,
     );
+    const handle = literal.handle;
+    if (handle) await handle.getSummary();
+    options.signal?.throwIfAborted();
+    if (options.isCurrent?.() === false) {
+      await handle?.close();
+      if (handle) literal = { ...literal, handle: undefined, inventory: { status: 'failed', reason: 'source-literal-unavailable' } };
+      result = await runIndexedVaultReview({ ...literal.options, candidatesState: 'indexing', signal: controller.signal, onAnswer: undefined, onProgress: undefined, onDiagnostics: undefined }, options.signal);
+      answer = undefined; completed = undefined;
+    } else if (handle) {
+      result.readLiteralDiscoveryPage = (index) => handle.readPage(index);
+      result.closeLiteralDiscovery = () => handle.close();
+    }
+    if (literal.inventory) result.dossier.literalInventory = literal.inventory;
     // 엔진 진단과 결과 종류를 남겨야 후속 디버그 추적이 0건 원인을 설명할 수 있습니다.
     result.diagnostics.outcome = result.outcome;
     result.diagnostics.search = result.dossier.diagnostics ?? null;
+    if (answer !== undefined) options.onAnswer?.(answer);
+    if (completed) options.onProgress?.(completed);
+    returned = true;
     return result;
   } finally {
+    if (!returned) await literal?.handle?.close();
     controller.abort();
     options.signal?.removeEventListener('abort', cancel);
   }
@@ -1182,6 +1250,7 @@ async function runIndexedVaultReview(
           : options.discoveryPaths;
         check();
         const inspectedPaths: string[] = [];
+        const literalInspection = new Set(options.literalInspectionPaths ?? []);
         const inspected = new Set<string>();
         let offset = 0;
         for (
@@ -1196,9 +1265,9 @@ async function runIndexedVaultReview(
             originalPaths: options.discoveryPaths,
             originalScopes: options.scopes,
             allowedPaths,
-            reviewedPaths: search.coverage.plannedPaths,
+            reviewedPaths: search.coverage.plannedPaths.filter((path) => !literalInspection.has(path)),
             selectedPaths: search.evidence.map((item) => item.path),
-            failedPaths: search.coverage.unreviewedPaths,
+            failedPaths: search.coverage.unreviewedPaths.filter((path) => !literalInspection.has(path)),
             scopes: options.scopes,
             offset,
             limit: 96,
@@ -1277,6 +1346,7 @@ async function runIndexedVaultReview(
         revision: string;
         text: string;
         contentHash?: string;
+        sourceMetadata?: SourceMetadata;
         chunks?: readonly { text: string; startLine: number; endLine: number }[];
       }
     >();
@@ -1293,6 +1363,7 @@ async function runIndexedVaultReview(
               revision: snapshot.revision,
               text: snapshot.text,
               ...(snapshot.contentHash ? { contentHash: snapshot.contentHash } : {}),
+              ...(snapshot.sourceMetadata ? { sourceMetadata: snapshot.sourceMetadata } : {}),
               ...(snapshot.chunks ? { chunks: snapshot.chunks } : {}),
             });
           }
@@ -1341,7 +1412,11 @@ async function runIndexedVaultReview(
           rejectedPaths.add(item.path);
           return false;
         }
-        if (source.chunks && source.chunks.length > 0) {
+        if (source.chunks !== undefined) {
+          if (source.chunks.length === 0) {
+            rejectedPaths.add(item.path);
+            return false;
+          }
           for (const chunk of source.chunks) {
             verificationDocuments.set(
               `${item.path}\u0000${chunk.startLine}\u0000${chunk.text.length}`,
@@ -1649,7 +1724,7 @@ async function runIndexedVaultReview(
       ? await interruptible(enumerateIndexedDocuments(options, (request) => runIndexedVaultReview(request)))
       : undefined;
     check();
-    const hasIncompleteCoverage = search.coverage.status === 'incomplete' || stale.size > 0 || recoveryExcludedSegments > 0 || enumeration?.incomplete === true;
+    const hasIncompleteCoverage = search.coverage.status === 'incomplete' || stale.size > 0 || recoveryExcludedSegments > 0 || enumeration?.incomplete === true || [...currentSources.values()].some((source) => source.sourceMetadata?.completeness?.status === 'partial');
     const effectiveCoverage: IndexedVaultSearchCoverage = {
       ...search.coverage,
       status: hasIncompleteCoverage ? ('incomplete' as const) : search.coverage.status,
@@ -1712,7 +1787,9 @@ async function runIndexedVaultReview(
       allowedPaths: options.discoveryPaths ?? [], scopes: options.scopes, offset: 0, limit: 32,
       signal: options.signal,
     });
+    const sourceDocuments = { ...search.sourceDocuments, ...Object.fromEntries([...currentSources].filter(([, source]) => source.sourceMetadata).map(([path, source]) => [path, source.sourceMetadata!])) };
     const dossier: IndexedEvidenceDossier = {
+      ...(Object.keys(sourceDocuments).length > 0 ? { sourceDocuments } : {}),
       question: options.question,
       scoringQuestion: options.scoringQuestion ?? options.question,
       previousUserQuestions: options.previousUserQuestions ?? [],
@@ -1720,6 +1797,7 @@ async function runIndexedVaultReview(
       ...(discoveryPage ? { discoverySummary: discoveryPage.summary } : {}),
       ...(options.getFollowupPaths ? { followup: { status: followup.status, queries: followup.queries } } : {}),
       matchInventory: options.matchInventory,
+      literalInventory: options.literalInventory,
       ...(enumeration ? { enumeration } : {}),
       documentScope,
       evidence,
@@ -1792,7 +1870,7 @@ async function runIndexedVaultReview(
       );
       return finishAsEvidenceOnly(comparisonLimitations);
     }
-    if (options.deferAnswer || evidence.length === 0) {
+    if (options.executionMode === 'engine-only' || options.deferAnswer || evidence.length === 0) {
       const body =
         evidence.length === 0
           ? t('indexedReviewNoEvidence')
@@ -1838,22 +1916,7 @@ async function runIndexedVaultReview(
         {
           role: 'user',
           // 전체 경로 원장은 결과에 보존하고, 모델에는 집계와 검증 원문을 전달합니다.
-          content: JSON.stringify({
-            ...dossier,
-            matchInventory: dossier.matchInventory?.map((inventory) => ({
-              query: inventory.query,
-              totalDocuments: inventory.totalDocuments,
-              totalChunks: inventory.totalChunks,
-              totalOccurrences: inventory.totalOccurrences,
-            })),
-            coverage: {
-              documentScope: dossier.coverage.documentScope,
-              status: dossier.coverage.status,
-              reviewedDocuments: dossier.coverage.reviewedDocuments,
-              unreviewedDocuments: dossier.coverage.unreviewedDocuments,
-              notIndexedDocuments: dossier.coverage.notIndexedDocuments,
-            },
-          }),
+          content: JSON.stringify(toModelIndexedEvidenceDossier(dossier)),
         },
       ];
       if (previousAnswer !== undefined) {

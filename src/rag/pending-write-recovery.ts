@@ -1,6 +1,6 @@
 import type { TAbstractFile, TFile, Vault } from 'obsidian';
 import type { ChatConfig, RAGConfig } from '../settings';
-import { isRagFileExcluded } from '../utils/vault';
+import { getRagFileInventory, isRagFileExcluded, isRagFileMetadataExcluded, type RagFileInventory } from '../utils/vault';
 
 export interface PendingWriteRecoveryHost {
   getAbstractFileByPath(path: string): TAbstractFile | null;
@@ -37,12 +37,21 @@ export function createPendingWriteRecoveryHost(
   chatConfig: ChatConfig,
   scheduleFile: (file: TFile) => void,
   removeFile: (path: string) => Promise<unknown>,
+  inventory?: RagFileInventory,
 ): PendingWriteRecoveryHost {
+  let manifest: Promise<RagFileInventory> | undefined;
   return {
     getAbstractFileByPath: (path) => vault.getAbstractFileByPath(path),
-    isRagFileExcluded: (path) => {
+    isRagFileExcluded: async (path) => {
       const file = vault.getAbstractFileByPath(path);
-      if (!isCurrentVaultFile(file)) return Promise.resolve(true);
+      if (!isCurrentVaultFile(file)) return true;
+      manifest ??= inventory ? Promise.resolve(inventory) : getRagFileInventory(vault, ragConfig, chatConfig);
+      const current = await manifest;
+      const failure = current.failures.find((entry) => entry.file.path === path);
+      // 읽기 실패를 제외·orphan으로 바꾸어 내구 자료를 지우지 않습니다.
+      if (failure) throw new Error(`Source recovery blocked: ${failure.reason}`);
+      // 자동 admission은 원문을 probe하지 않고 YAML·읽기 실패 판정을 실제 indexer 준비에 맡깁니다.
+      if ('verification' in current && current.verification === 'metadata-only') return isRagFileMetadataExcluded(vault, file, ragConfig, chatConfig);
       return isRagFileExcluded(vault, file, ragConfig, chatConfig);
     },
     scheduleFile,

@@ -1,9 +1,39 @@
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { assetPaths, parseCliJson, resolvePreviewFile } from './obsidian-preview.mjs';
-import { Component, Events } from './obsidian-preview/host.mjs';
+import { Component, Events, installHost } from './obsidian-preview/host.mjs';
 
 describe('Obsidian 브라우저 검수 환경', () => {
+  it('DOM 생성 callback을 설정·부착된 실제 노드로 한 번 실행한다', () => {
+    let document;
+    class Element {
+      constructor(tag) { this.tag = tag; this.ownerDocument = document; this.children = []; }
+      appendChild(node) { this.children.push(node); node.parentElement = this; }
+      setAttribute(name, value) { this[name] = value; }
+    }
+    document = { createElement: tag => new Element(tag) };
+    vi.stubGlobal('window', {});
+    vi.stubGlobal('document', document);
+    vi.stubGlobal('HTMLElement', Element);
+    try {
+      installHost({});
+      const parent = new Element('main');
+      for (const method of ['createEl', 'createDiv', 'createSpan']) {
+        const callback = vi.fn(node => {
+          expect(parent.children.includes(node)).toBe(true);
+          expect(node.textContent).toBe('configured');
+          expect(node.className).toBe('fixture');
+          node.disabled = true;
+        });
+        const options = { cls: 'fixture', text: 'configured' };
+        const node = method === 'createEl' ? parent.createEl('button', options, callback) : parent[method](options, callback);
+        expect(callback.mock.calls).toHaveLength(1);
+        expect(callback.mock.calls[0][0] === node).toBe(true);
+        expect(node.disabled).toBe(true);
+      }
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('기본 CSS의 로컬 자산만 수집하고 외부 주소를 허용하지 않는다', () => {
     expect(assetPaths('a{src:url("public/fonts/a.woff2")}b{src:url(data:x)}')).toEqual([
       'public/fonts/a.woff2',

@@ -1021,14 +1021,14 @@ describe('buildChatContext UX reason metadata', () => {
       new Map([[folder.path, folder]]),
       new Set([unreadable.path]),
     );
-    const cachedRead = app.vault.cachedRead.bind(app.vault);
+    const readBinary = app.vault.readBinary.bind(app.vault);
     let policyRead = true;
-    app.vault.cachedRead = (file) => {
+    app.vault.readBinary = (file) => {
       if (file.path === unreadable.path && policyRead) {
         policyRead = false;
-        return Promise.resolve('unreadable');
+        return Promise.resolve(new TextEncoder().encode('unreadable').buffer);
       }
-      return cachedRead(file);
+      return readBinary(file);
     };
 
     const context = await buildChatContext('@[docs] summarize', {
@@ -1126,10 +1126,10 @@ function createApp(
     workspace: { getActiveFile: () => null, iterateAllLeaves: () => undefined },
     vault: {
       getAbstractFileByPath: (path: string) => files.get(path) ?? folders.get(path) ?? null,
-      cachedRead: (file: TFile & { content: string }) =>
+      readBinary: (file: TFile & { content: string }) =>
         readErrors.has(file.path)
           ? Promise.reject(new Error(`read failed: ${file.path}`))
-          : Promise.resolve(file.content),
+          : Promise.resolve(new TextEncoder().encode(file.content).buffer),
       getMarkdownFiles: () => [...files.values()],
       getFiles: () => [...files.values()],
     },

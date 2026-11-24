@@ -357,7 +357,7 @@ describe('검색 화면 구조', () => {
     await harness.view.onOpen();
     const root = contentOf(harness.view);
 
-    expect(root.querySelector('.superpower-inside-search-index')?.textContent).toBe(
+    expect(root.querySelector('.superpower-inside-search-index')?.textOf()).toBe(
       t('searchIndexEmpty'),
     );
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
@@ -380,8 +380,9 @@ describe('검색 화면 구조', () => {
     const root = contentOf(harness.view);
     const index = root.querySelector('.superpower-inside-search-index');
 
-    expect(index?.textContent).toBe(t('searchIndexProgress', { completed: 2, total: 5 }));
-    expect(index?.textContent).toContain('2/5');
+    expect(index?.querySelector('.superpower-inside-indexing-headline')?.textContent).toBe(t('chatReadinessRagIndexing'));
+    expect(index?.querySelector('.superpower-inside-indexing-value-completed')?.textContent).toBe('2 / 5');
+    expect(index?.querySelector('button')?.getAttribute('aria-expanded')).toBe('false');
     // 버튼을 비활성화하면 브라우저의 Enter 암시 제출도 막히므로 대기 등록은 허용합니다.
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
   });
@@ -405,8 +406,8 @@ describe('검색 화면 구조', () => {
     const root = contentOf(harness.view);
     const index = root.querySelector('.superpower-inside-search-index');
 
-    expect(index?.textContent).toContain(t('chatReadinessRagIndexing'));
-    expect(index?.textContent).toContain('1200');
+    expect(index?.textOf()).toContain(t('chatReadinessRagIndexing'));
+    expect(index?.textOf()).toContain('1,200');
     // 부분 색인을 정상 결과로 쓰지 않지만, 질의를 대기 등록할 수 있도록 제출은 엽니다.
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
   });
@@ -670,7 +671,7 @@ describe('검색 화면 구조', () => {
     await harness.view.onOpen();
     const root = contentOf(harness.view);
 
-    expect(root.querySelector('.superpower-inside-search-index')?.textContent).toContain(
+    expect(root.querySelector('.superpower-inside-search-index')?.textOf()).toContain(
       t('chatReadinessRagNotReady'),
     );
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
@@ -702,7 +703,7 @@ describe('검색 화면 구조', () => {
     await harness.view.onOpen();
     const root = contentOf(harness.view);
 
-    expect(root.querySelector('.superpower-inside-search-index')?.textContent).toBe(
+    expect(root.querySelector('.superpower-inside-search-index')?.textOf()).toBe(
       t('searchIndexMissing'),
     );
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(true);
@@ -713,7 +714,7 @@ describe('검색 화면 구조', () => {
     await harness.view.onOpen();
     const root = contentOf(harness.view);
 
-    expect(root.querySelector('.superpower-inside-search-index')?.textContent).toBe(
+    expect(root.querySelector('.superpower-inside-search-index')?.textOf()).toBe(
       t('searchIndexStale', { count: 3 }),
     );
     expect(root.querySelector('.superpower-inside-search-run')?.disabled).toBe(false);
@@ -904,5 +905,47 @@ describe('검색 화면 구조', () => {
     passages[1]?.dispatchEvent('keydown', { key: 'Enter' });
     await flush();
     expect(harness.opened).toEqual([{ path: 'Synthetic/Alpha.md', line: 8 }]);
+  });
+});
+
+describe('공유 진행 widget 수명', () => {
+  it('null 다음 복원·idle 다음 재작업을 같은 widget에 다시 표시한다', async () => {
+    const { view, setReadiness } = createHarness({ port: null, totalDocuments: 0, readiness: 'preparing', indexing: null });
+    await view.onOpen();
+    const root = view.containerEl.children[1] as unknown as TestElement;
+    const indexing: NonNullable<SearchStatusSnapshot['indexing']> = { phase: 'preparing', activity: 'preparing', completedFiles: 0, totalFiles: 0, currentFileEmbeddedChunks: null, currentFileTotalChunks: null, etaRemainingMs: null, work: { stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 41984, totalUnits: 135835, elapsedMs: 252000, lastProgressAgeMs: 1000, remainingMs: 540000, ratePerSecond: 166, confidence: 'low', etaReason: 'observed-rate' } };
+    setReadiness('preparing', indexing);
+    const widget = root.querySelector('.superpower-inside-indexing-progress')!;
+    expect(widget.textOf()).toContain('41,984 / 135,835');
+    expect(widget.textOf()).toContain('9m');
+    setReadiness('ready', null);
+    expect(widget.hasClass('superpower-inside-hidden')).toBe(true);
+    setReadiness('preparing', { ...indexing, work: { ...indexing.work!, processedUnits: 42112 } });
+    expect(root.querySelector('.superpower-inside-indexing-progress')).toBe(widget);
+    expect(widget.hasClass('superpower-inside-hidden')).toBe(false);
+    expect(widget.textOf()).toContain('42,112 / 135,835');
+    await view.onClose();
+  });
+  it('old serving ready에서 building 갱신·terminal에도 같은 버튼과 펼침을 유지한다', async () => {
+    const indexing: NonNullable<SearchStatusSnapshot['indexing']> = { phase: 'all', activity: 'indexing', servingAvailable: true, totalFilesKnown: true, completedFiles: 1200, totalFiles: 4000, currentFileEmbeddedChunks: null, currentFileTotalChunks: null, etaRemainingMs: null };
+    const { view, setReadiness } = createHarness({ port: null, totalDocuments: 1200, readiness: 'ready', indexing });
+    await view.onOpen();
+    const root = view.containerEl.children[1] as unknown as TestElement;
+    const widget = root.querySelector('.superpower-inside-indexing-progress');
+    expect(widget).not.toBeNull();
+    const button = widget?.querySelector('button');
+    expect(button?.getAttribute('aria-expanded')).toBe('false');
+    button?.focus(); button?.dispatchEvent('click');
+    setReadiness('ready', { ...indexing, completedFiles: 1201 });
+    expect(root.querySelector('.superpower-inside-indexing-progress')).toBe(widget);
+    expect(widget?.querySelector('button')).toBe(button);
+    expect(button?.focused).toBe(true);
+    expect(button?.getAttribute('aria-expanded')).toBe('true');
+    expect(widget?.textOf()).toContain('1,201 / 4,000');
+    setReadiness('ready', { ...indexing, activity: 'partial' });
+    expect(widget?.querySelector('button')).toBe(button);
+    expect(widget?.textOf()).toContain(t('ragSharedPartialDetail'));
+    expect(button?.getAttribute('aria-expanded')).toBe('true');
+    await view.onClose();
   });
 });

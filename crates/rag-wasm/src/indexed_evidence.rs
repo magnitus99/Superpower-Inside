@@ -1,6 +1,8 @@
 //! LLM 없이 질의 관련 원문 구절과 출처 상태를 결정적으로 선택·검증합니다.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use unicode_normalization::UnicodeNormalization;
 
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -400,6 +402,15 @@ fn normalize_phrase(text: &str) -> String {
         .to_lowercase()
 }
 
+/// 검색 비교만 `NFKC`·소문자·단일 공백으로 수렴시킵니다.
+fn normalize_search_phrase(text: &str) -> String {
+    crate::normalize_search_text(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
 /// 영문 `field:` 접두가 알려진 필드면 (필드명, 다음 위치)을 반환합니다.
 fn read_field_prefix(characters: &[char], start: usize) -> Option<(String, usize)> {
     let mut cursor = start;
@@ -459,7 +470,7 @@ fn push_phrase_tokens(
     }
     let phrase_index = phrases.len();
     phrases.push(QueryPhrase {
-        text: normalize_phrase(raw),
+        text: normalize_search_phrase(raw),
         negated,
         field: field.to_owned(),
         tokens: phrase_tokens.clone(),
@@ -508,6 +519,7 @@ fn push_run_tokens(
 
 /// 질의를 순서대로 스캔해 토큰·구문·부정·필드 신호를 만듭니다.
 fn parse_query(question: &str) -> (Vec<QueryToken>, Vec<QueryPhrase>) {
+    let question = crate::normalize_search_text(question);
     let characters = question.chars().collect::<Vec<char>>();
     let mut tokens = Vec::new();
     let mut phrases = Vec::new();
@@ -1040,7 +1052,7 @@ struct FieldTexts {
 }
 
 impl FieldTexts {
-    /// 문서 필드 원문을 소문자로 보존합니다.
+    /// 원문 필드와 별개인 검색 비교용 문자열을 만듭니다.
     fn new(
         path: &str,
         title: &str,
@@ -1050,13 +1062,13 @@ impl FieldTexts {
         code_blocks: &[String],
     ) -> Self {
         Self {
-            title: title.to_lowercase(),
-            path: path.to_lowercase(),
-            basename: path.rsplit('/').next().unwrap_or(path).to_lowercase(),
-            headings: headings.join("\n").to_lowercase(),
-            tags: tags.join("\n").to_lowercase(),
-            aliases: aliases.join("\n").to_lowercase(),
-            code: code_blocks.join("\n").to_lowercase(),
+            title: normalize_search_phrase(title),
+            path: normalize_search_phrase(path),
+            basename: normalize_search_phrase(path.rsplit('/').next().unwrap_or(path)),
+            headings: normalize_search_phrase(&headings.join("\n")),
+            tags: normalize_search_phrase(&tags.join("\n")),
+            aliases: normalize_search_phrase(&aliases.join("\n")),
+            code: normalize_search_phrase(&code_blocks.join("\n")),
         }
     }
 
@@ -1367,11 +1379,14 @@ fn navigation_factor(text: &str) -> f64 {
 
 /// 문서에서 긍정 구문이 처음 나타난 `byte` 위치 목록입니다.
 fn phrase_hit_offsets(document: &ScannedDocument, phrases: &[QueryPhrase]) -> Vec<usize> {
-    let haystack = document.text.to_lowercase();
-    phrases
+    let needles = phrases
         .iter()
         .filter(|phrase| !phrase.negated && !phrase.text.is_empty())
-        .filter_map(|phrase| haystack.find(&phrase.text))
+        .map(|phrase| phrase.text.clone())
+        .collect::<Vec<_>>();
+    search_match_ranges(&document.text, &needles)
+        .into_iter()
+        .map(|(start, _)| start)
         .collect()
 }
 
@@ -1774,8 +1789,7 @@ fn build_passage(
         .get(end..ceil_char_boundary(&document.text, end.saturating_add(PASSAGE_CONTEXT_BYTES)))
         .unwrap_or_default()
         .to_owned();
-    let lowered = quote.to_lowercase();
-    let normalized_quote = normalize_phrase(&quote);
+    let normalized_quote = normalize_search_phrase(&quote);
     let mut needles = score.matched.iter().cloned().collect::<Vec<_>>();
     needles.extend(
         phrases
@@ -1783,7 +1797,7 @@ fn build_passage(
             .filter(|phrase| !phrase.negated && !phrase.text.is_empty())
             .map(|phrase| phrase.text.clone()),
     );
-    let highlights = highlight_ranges(&lowered, &needles);
+    let highlights = highlight_ranges(&quote, &needles);
     let phrase_matches = phrases
         .iter()
         .filter(|phrase| {
@@ -2511,26 +2525,153 @@ fn plan_evidence(value: &Value) -> Option<Value> {
     Some(plan_report(&input, &tokens, &phrases, &summary, &evidence))
 }
 
-/// quote 안에서 질의 토큰·구문이 나타난 `UTF-16` 구간을 병합합니다.
-fn highlight_ranges(lowered: &str, needles: &[String]) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    for needle in needles {
-        let mut offset = 0_usize;
-        while let Some(found) = lowered.get(offset..).and_then(|tail| tail.find(needle)) {
-            let start = offset.saturating_add(found);
-            let end = start.saturating_add(needle.len());
-            if !lowered.is_char_boundary(start) || !lowered.is_char_boundary(end) {
-                break;
+/// 정규화 문자 하나가 참조하는 원문 byte 구간입니다.
+pub struct SearchCharacter {
+    /// 검색 문자열 안의 byte 시작점입니다.
+    pub(crate) normalized_byte: usize,
+    /// 원문에서 이 문자를 만든 첫 byte입니다.
+    pub(crate) original_start: usize,
+    /// 원문에서 이 문자를 만든 마지막 byte 다음입니다.
+    pub(crate) original_end: usize,
+    /// 원문의 UTF-16 시작점입니다.
+    pub(crate) original_start_utf16: usize,
+    /// 원문의 UTF-16 끝 다음입니다.
+    pub(crate) original_end_utf16: usize,
+}
+
+/// 라이브러리의 분해 결과를 원문 문자별 FIFO에 대응시킵니다.
+/// 동일 분해 문자의 순서는 정규화의 정준 재배열에서도 유지됩니다.
+fn search_projection(text: &str) -> Option<(String, Vec<SearchCharacter>)> {
+    project_search_characters(text, false)
+}
+
+/// 원문 literal은 공백을 압축하거나 양 끝에서 제거하지 않습니다.
+pub fn literal_projection(text: &str) -> Option<(String, Vec<SearchCharacter>)> {
+    project_search_characters(text, true)
+}
+
+/// 정준 분해 FIFO와 소문자 문맥 대응을 두 검색 경로가 공유합니다.
+fn project_search_characters(
+    text: &str,
+    preserve_whitespace: bool,
+) -> Option<(String, Vec<SearchCharacter>)> {
+    let mut origins = BTreeMap::<char, VecDeque<(usize, usize, usize, usize)>>::new();
+    let mut utf16 = 0;
+    for (start, character) in text.char_indices() {
+        for decomposed in character.nfkd() {
+            origins.entry(decomposed).or_default().push_back((
+                start,
+                start + character.len_utf8(),
+                utf16,
+                utf16 + character.len_utf16(),
+            ));
+        }
+        utf16 += character.len_utf16();
+    }
+    let normalized = crate::normalize_search_text(text);
+    // 전체 문자열 소문자화로 그리스어 final sigma 같은 문맥 규칙도 보존합니다.
+    let lowered = normalized.to_lowercase();
+    let mut lower_characters = lowered.chars();
+    let mut projection = String::new();
+    let mut mapping = Vec::new();
+    let mut whitespace: Option<(usize, usize, usize, usize)> = None;
+    for character in normalized.chars() {
+        let mut start = usize::MAX;
+        let mut end = 0;
+        let mut start_utf16 = usize::MAX;
+        let mut end_utf16 = 0;
+        for decomposed in character.nfd() {
+            let (left, right, left_utf16, right_utf16) =
+                origins.get_mut(&decomposed)?.pop_front()?;
+            start = start.min(left);
+            end = end.max(right);
+            start_utf16 = start_utf16.min(left_utf16);
+            end_utf16 = end_utf16.max(right_utf16);
+        }
+        for _ in character.to_lowercase() {
+            let lowered = lower_characters.next()?;
+            if !preserve_whitespace && lowered.is_whitespace() {
+                let previous = whitespace.unwrap_or((start, end, start_utf16, end_utf16));
+                whitespace = Some((
+                    previous.0.min(start),
+                    previous.1.max(end),
+                    previous.2.min(start_utf16),
+                    previous.3.max(end_utf16),
+                ));
+                continue;
             }
-            let start_utf16 = crate::text_len(lowered.get(..start).unwrap_or_default());
-            let end_utf16 = crate::text_len(lowered.get(..end).unwrap_or_default());
-            ranges.push((start_utf16, end_utf16));
-            if ranges.len() >= MAX_HIGHLIGHTS {
-                break;
+            if let Some((left, right, left_utf16, right_utf16)) =
+                whitespace.take().filter(|_| !projection.is_empty())
+            {
+                mapping.push(SearchCharacter {
+                    normalized_byte: projection.len(),
+                    original_start: left,
+                    original_end: right,
+                    original_start_utf16: left_utf16,
+                    original_end_utf16: right_utf16,
+                });
+                projection.push(' ');
             }
-            offset = end.max(start.saturating_add(1));
+            mapping.push(SearchCharacter {
+                normalized_byte: projection.len(),
+                original_start: start,
+                original_end: end,
+                original_start_utf16: start_utf16,
+                original_end_utf16: end_utf16,
+            });
+            projection.push(lowered);
         }
     }
+    Some((projection, mapping))
+}
+
+/// 검색 일치를 원문 byte 구간으로 돌려주며 정규화 byte를 원문 주소로 쓰지 않습니다.
+fn search_match_ranges(text: &str, needles: &[String]) -> Vec<(usize, usize)> {
+    if needles.is_empty() {
+        return Vec::new();
+    }
+    let Some((projection, mapping)) = search_projection(text) else {
+        return Vec::new();
+    };
+    let mut ranges = Vec::new();
+    for needle in needles.iter().filter(|needle| !needle.is_empty()) {
+        for (start, _) in projection.match_indices(needle).take(MAX_HIGHLIGHTS) {
+            let end = start + needle.len();
+            let first = mapping.partition_point(|entry| entry.normalized_byte < start);
+            let last = mapping.partition_point(|entry| entry.normalized_byte < end);
+            let Some(entries) = mapping
+                .get(first..last)
+                .filter(|entries| !entries.is_empty())
+            else {
+                continue;
+            };
+            let left = entries
+                .iter()
+                .map(|entry| entry.original_start)
+                .min()
+                .unwrap_or(0);
+            let right = entries
+                .iter()
+                .map(|entry| entry.original_end)
+                .max()
+                .unwrap_or(left);
+            ranges.push((left, right));
+        }
+    }
+    ranges
+}
+
+/// quote 안의 일치를 원문 `UTF-16` 구간으로 바꿔 병합합니다.
+fn highlight_ranges(quote: &str, needles: &[String]) -> Vec<(usize, usize)> {
+    let mut ranges = search_match_ranges(quote, needles)
+        .into_iter()
+        .map(|(start, end)| {
+            (
+                crate::text_len(quote.get(..start).unwrap_or_default()),
+                crate::text_len(quote.get(..end).unwrap_or_default()),
+            )
+        })
+        .collect::<Vec<_>>();
     ranges.sort_unstable();
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (start, end) in ranges {
@@ -3535,6 +3676,124 @@ mod tests {
     fn find_row<'a>(rows: &'a [Value], key: &str, expected: &str) -> Option<&'a Value> {
         rows.iter()
             .find(|row| get(row, key).as_str() == Some(expected))
+    }
+
+    /// 본문 비교만 정규화하고 구절·절대 행·현재 원문 검증은 그대로 둡니다.
+    #[test]
+    fn quality_normalization_evidence_original_coordinates() {
+        for (query, original) in [
+            ("radiance", "ＲＡＤＩＡＮＣＥ"),
+            ("ＲＡＤＩＡＮＣＥ", "radiance"),
+            ("ffinal", "ﬃnal"),
+            ("12", "①②"),
+            ("café", "cafe\u{301}"),
+        ] {
+            let body = format!("😀 prefix\n{original} routes east.\nException: stop at dusk.");
+            let document = json!({"path": "synthetic.md", "text": body, "startLine": 41, "revision": "current"});
+            let plan = plan_of(&json!({"question": query, "documents": [document]}));
+            let evidence = first_row(&plan, "evidence");
+            assert_eq!(get(&evidence, "quote"), &json!(body), "{query}: {plan}");
+            assert_eq!(get(&evidence, "startLine"), &json!(41));
+            assert_eq!(get(&evidence, "endLine"), &json!(43));
+            assert_eq!(
+                get(&evidence, "highlights"),
+                &json!([{"start": 10, "end": 10 + original.encode_utf16().count()}])
+            );
+            let verified = verify_of(&json!({"evidence": [evidence], "documents": [document]}));
+            assert_eq!(
+                get(&first_row(&verified, "statuses"), "status"),
+                &json!("verified")
+            );
+            let (occurrences, _, _) = super::scan_document(&body, 41);
+            let occurrence = occurrences
+                .iter()
+                .find(|entry| entry.token == crate::normalize_token(query));
+            assert_eq!(
+                occurrence.map(|entry| (entry.byte_start, entry.byte_end)),
+                Some((12, 12 + original.len()))
+            );
+        }
+    }
+
+    /// 길이가 변한 접두 뒤의 구문 anchor는 정규화 문자열의 byte 위치가 아닙니다.
+    #[test]
+    fn quality_normalization_phrase_anchor_and_highlight_mapping() {
+        let prefix = format!("{}\n", "ﬃ Ｒ Ｅ\u{301} 😀 ".repeat(180));
+        let original = "ＲＡＤＩＡＮＣＥ ﬃnal cafe\u{301}";
+        let body = format!("{prefix}{original}\n{}", "neutral ".repeat(700));
+        let (tokens, phrases) = super::parse_query("\"radiance ffinal café\"");
+        assert!(!tokens.is_empty());
+        let document =
+            scan_input_document(&json!({"path": "synthetic.md", "text": body, "startLine": 40}));
+        assert!(document.is_some());
+        let offsets = document
+            .as_ref()
+            .map(|document| super::phrase_hit_offsets(document, &phrases));
+        assert_eq!(offsets, Some(vec![prefix.len()]));
+        let plan = plan_of(
+            &json!({"question": "\"radiance ffinal café\"", "documents": [{"path": "synthetic.md", "text": body, "startLine": 40}]}),
+        );
+        let evidence = first_row(&plan, "evidence");
+        assert!(text(get(&evidence, "quote")).contains(original), "{plan}");
+        assert_eq!(get(&evidence, "phraseMatches"), &json!(1));
+        let verified = verify_of(
+            &json!({"evidence": [evidence], "documents": [{"path": "synthetic.md", "text": body, "startLine": 40}]}),
+        );
+        assert_eq!(
+            get(&first_row(&verified, "statuses"), "status"),
+            &json!("verified")
+        );
+        assert_eq!(
+            super::highlight_ranges(
+                "😀 ﬃ Ｒ cafe\u{301} İ ΟΣ",
+                &[
+                    "ffi".to_owned(),
+                    "r".to_owned(),
+                    "café".to_owned(),
+                    "i\u{307}".to_owned(),
+                    "ς".to_owned()
+                ]
+            ),
+            vec![(3, 4), (5, 6), (7, 12), (13, 14), (16, 17)]
+        );
+    }
+
+    /// 검색 필드·식별자의 정규화는 본문과 같고 인용 확인은 exact 원문입니다.
+    #[test]
+    fn quality_normalization_metadata_and_current_quote() {
+        for (field, value) in [
+            ("title", json!("ＲＡＤＩＡＮＣＥ")),
+            ("headings", json!(["ＲＡＤＩＡＮＣＥ"])),
+            ("tags", json!(["ＲＡＤＩＡＮＣＥ"])),
+            ("aliases", json!(["ＲＡＤＩＡＮＣＥ"])),
+        ] {
+            let mut document = json!({"path": "synthetic.md", "text": "Original condition and exception.", "revision": "current"});
+            document
+                .as_object_mut()
+                .map(|object| object.insert(field.to_owned(), value));
+            let query_field = if field == "headings" {
+                "heading"
+            } else if field == "tags" {
+                "tag"
+            } else {
+                field
+            };
+            let plan = plan_of(
+                &json!({"question": format!("{query_field}:radiance"), "documents": [document]}),
+            );
+            assert_eq!(rows(&plan, "evidence").len(), 1, "{field}: {plan}");
+        }
+        let document = json!({"path": "synthetic.md", "text": "ＲＡＤＩＡＮＣＥ routes east.", "revision": "current"});
+        let plan = plan_of(&json!({"question": "radiance", "documents": [document]}));
+        let mut evidence = first_row(&plan, "evidence");
+        evidence
+            .as_object_mut()
+            .map(|object| object.insert("quote".to_owned(), json!("RADIANCE routes east.")));
+        let verified = verify_of(&json!({"evidence": [evidence], "documents": [document]}));
+        assert_eq!(
+            get(&first_row(&verified, "statuses"), "status"),
+            &json!("quote-missing")
+        );
     }
 
     #[test]

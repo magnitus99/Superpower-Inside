@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EmbeddingProvider } from '../llm/embedding';
 import { IndexedDbBM25Index } from './bm25';
 import { RAGQueryEngine } from './query';
+import * as literalInventory from './literal-inventory';
+import { trackRagProviderOperations, retireRuntime, leaseRagQueryEngine } from './runtime-generation';
 import { MemoryVectorStore, type VectorEntry } from './store';
 
 const bm25DbNames = new Set<string>();
@@ -16,6 +18,75 @@ afterEach(async () => {
 });
 
 describe('RAGQueryEngine', () => {
+  it('literal capability 부재를 BM25나 embedding 숫자로 대체하지 않는다', async () => {
+    const embed = vi.fn(), embedBatch = vi.fn();
+    const provider = { embed, embedBatch } as unknown as EmbeddingProvider;
+    const engine = new RAGQueryEngine(null, provider);
+    await expect(engine.openLiteralInventory(['needle'])).rejects.toThrow('source-scope-unavailable');
+    expect(embed).not.toHaveBeenCalled(); expect(embedBatch).not.toHaveBeenCalled();
+  });
+  it('literal 요청은 전용 원문 adapter와 signal을 그대로 사용한다', async () => {
+    const handle = { getSummary: vi.fn(), readPage: vi.fn(), close: vi.fn() } as unknown as literalInventory.LiteralInventoryHandle;
+    const source = { corpus: {}, captureScope: vi.fn() } as unknown as literalInventory.LiteralInventorySource;
+    const opening = vi.spyOn(literalInventory, 'openLiteralInventory').mockResolvedValue(handle);
+    const controller = new AbortController();
+    const engine = new RAGQueryEngine(null, null, undefined, 1, 0, { literalInventorySource: source });
+    expect(await engine.openLiteralInventory([' needle  '], controller.signal)).toBe(handle);
+    expect(opening).toHaveBeenCalledWith(source, [' needle  '], controller.signal);
+  });
+  it.each(['resolve', 'reject'] as const)('query timeout → retire → provider late %s 전에 cache/store close를 하지 않는다', async (outcome) => {
+    const store = new MemoryVectorStore();
+    const bm25 = await createBm25([['synthetic.md', 'synthetic lexical']]);
+    let finish!: () => void;
+    const close = vi.fn();
+    const tracked = trackRagProviderOperations<EmbeddingProvider>({
+      embed: () => new Promise<number[]>((resolve, reject) => {
+        finish = () => outcome === 'resolve' ? resolve([1, 0]) : reject(new Error('synthetic late failure'));
+      }),
+      embedBatch: () => Promise.resolve([]),
+      close,
+    });
+    const engine = new RAGQueryEngine(store, tracked.provider, bm25, 1, 0, { queryEmbeddingTimeoutMs: 10 });
+    const results = await leaseRagQueryEngine(engine).query('synthetic lexical', 5, 0);
+    expect(results.map((result) => result.sourcePath)).toEqual(['synthetic.md']);
+    retireRuntime(engine, () => tracked.retire(close));
+    expect(close).not.toHaveBeenCalled();
+    finish();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('모델·인증 admission을 닫으면 old provider 호출 없이 lexical 검색을 계속한다', async () => {
+    const store = new MemoryVectorStore();
+    const entry = createEntry('synthetic-model.md', [1, 0], 'synthetic lexical evidence');
+    await store.add([entry]);
+    const embedding = createEmbeddingProvider([1, 0]);
+    const embed = vi.spyOn(embedding, 'embed');
+    const bm25 = await createBm25([]);
+    bm25.addCorpusDocument({ id: entry.id, sourcePath: entry.metadata.filePath, text: entry.metadata.text });
+    const engine = new RAGQueryEngine(store, embedding, bm25, 1, 0);
+    engine.setSemanticSearchAdmission(() => false);
+    const results = await engine.query('synthetic lexical', 2, 0);
+    expect(embed).not.toHaveBeenCalled();
+    expect(results.map(({ sourcePath }) => sourcePath)).toContain('synthetic-model.md');
+  });
+
+  it('이미 전송된 임베딩이 도착해도 admission 변경 뒤 old vector 검색에 대입하지 않는다', async () => {
+    const store = new MemoryVectorStore();
+    await store.add([createEntry('synthetic-model.md', [1, 0], 'synthetic')]);
+    const embedding = createEmbeddingProvider([1, 0]);
+    let finish = (_vector: number[]): void => undefined;
+    const embed = vi.spyOn(embedding, 'embed').mockImplementation(() => new Promise<number[]>((resolve) => { finish = resolve; }));
+    const engine = new RAGQueryEngine(store, embedding);
+    let allowed = true;
+    engine.setSemanticSearchAdmission(() => allowed);
+    const query = engine.query('synthetic', 2, 0);
+    await vi.waitFor(() => expect(embed).toHaveBeenCalledOnce());
+    allowed = false;
+    finish([1, 0]);
+    await expect(query).resolves.toEqual([]);
+  });
+
   it('복구에서 제외한 임베딩과 벡터는 다시 호출하지 않는다', async () => {
     const store = new MemoryVectorStore();
     const embedding = createEmbeddingProvider([1, 0]);

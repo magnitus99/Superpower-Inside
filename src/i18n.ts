@@ -348,6 +348,9 @@ export interface I18nKeys {
   validationTernlightUnknownModel: string;
   validationTernlightUnavailable: string;
   validationEmbeddingVectorInvalid: string;
+  embeddingOwnerClosed: string;
+  embeddingInitializationClosed: string;
+  embeddingRequestDispatchFailed: string;
 
   // RAG 제어
   indexingControls: string;
@@ -1069,7 +1072,6 @@ export interface I18nKeys {
   settingsAuto171: string;
   settingsAuto172: string;
   settingsAuto173: string;
-  settingsAuto174: string;
   settingsAuto175: string;
   settingsAuto176: string;
   settingsAuto177: string;
@@ -1480,6 +1482,67 @@ export interface I18nKeys {
   ragIndexingProgressEtaApprox: string;
   ragIndexingProgressEtaValue: string;
   ragIndexingProgressEtaCalculating: string;
+  ragSharedServing: string;
+  ragSharedFirstIndex: string;
+  ragSharedSettling: string;
+  ragSharedFailed: string;
+  ragSharedPartial: string;
+  ragSharedStopped: string;
+  ragSharedStoppedDetail: string;
+  ragSharedServingDetail: string;
+  ragSharedUnavailableDetail: string;
+  ragSharedPartialDetail: string;
+  ragSharedDetailsShow: string;
+  ragSharedDetailsHide: string;
+  ragWorkOpenStorage: string;
+  ragWorkRestoreCorpus: string;
+  ragWorkRestoreSnapshot: string;
+  ragWorkRestoreDocuments: string;
+  ragWorkLoadModel: string;
+  ragWorkPlanning: string;
+  ragWorkPrepareSource: string;
+  ragWorkLexical: string;
+  ragWorkEmbedding: string;
+  ragWorkSaveVectors: string;
+  ragWorkVerify: string;
+  ragWorkPublish: string;
+  ragWorkWaiting: string;
+  ragWorkCleanup: string;
+  ragWorkCountLabel: string;
+  ragWorkTimeLabel: string;
+  ragWorkStageLabel: string;
+  ragWorkEarlyEstimate: string;
+  ragWorkElapsed: string;
+  ragWorkRemaining: string;
+  ragWorkRecent: string;
+  ragWorkUnknownTotal: string;
+  ragWorkKnownTotal: string;
+  ragWorkFiles: string;
+  ragWorkDocuments: string;
+  ragWorkBytes: string;
+  ragWorkSteps: string;
+  ragWorkReasonStalled: string;
+  ragWorkReasonTotal: string;
+  ragWorkReasonAtomic: string;
+  ragWorkReasonSamples: string;
+  ragSharedStageLabel: string;
+  ragSharedStagePreparing: string;
+  ragSharedStageLexical: string;
+  ragSharedStageEmbedding: string;
+  ragSharedStageCommitting: string;
+  ragSharedStageSettled: string;
+  ragSharedCompletedLabel: string;
+  ragSharedProcessedLabel: string;
+  ragSharedFailedLabel: string;
+  ragSharedPartialLabel: string;
+  ragSharedSkippedLabel: string;
+  ragSharedPipelineEtaLabel: string;
+  ragSharedOverallEtaLabel: string;
+  ragSharedPipelineScope: string;
+  ragSharedUnknown: string;
+  ragSharedStoppedValue: string;
+  ragSharedFailedValue: string;
+  ragSharedPartialValue: string;
   ragSourcePageProgress: string;
   ragIndexingResult: string;
   ragPhaseFile: string;
@@ -1501,9 +1564,7 @@ export interface I18nKeys {
   ragNoPendingUpdatesNotice: string;
   ragNoDocumentsNotice: string;
   ragIndexCancelRequestedNotice: string;
-  ragIndexResumeRequestedNotice: string;
   ragNoRunningIndexing: string;
-  ragNotPerformancePaused: string;
   ragAutoRecoveryPausedByUser: string;
   embeddingDimensionsLabel: string;
   embeddingProviderModelDesc: string;
@@ -2247,6 +2308,9 @@ const ko: I18nKeys = {
   validationTernlightUnavailable: 'Ternlight 임베딩 엔진을 사용할 수 없습니다.',
   validationEmbeddingVectorInvalid:
     'Ternlight가 올바르지 않은 임베딩 벡터를 반환했습니다: {size}차원',
+  embeddingOwnerClosed: '닫힌 {owner} owner는 재사용할 수 없습니다.',
+  embeddingInitializationClosed: '{model} 초기화가 종료되었습니다.',
+  embeddingRequestDispatchFailed: '{model} 요청 전송에 실패했습니다.',
 
   // RAG Controls
   indexingControls: '인덱싱 제어',
@@ -3040,7 +3104,6 @@ const ko: I18nKeys = {
   settingsAuto171: '{v0}개 파일 재인덱싱 완료',
   settingsAuto172: '재인덱싱 실패: {v0}',
   settingsAuto173: '인덱싱 중단',
-  settingsAuto174: '지금 재개',
   settingsAuto175: '버튼 상태를 확인하는 중...',
   settingsAuto176: '임베딩 데이터 초기화',
   settingsAuto177: '모든 임베딩 데이터를 삭제하시겠습니까? 복구할 수 없습니다.',
@@ -3498,6 +3561,67 @@ const ko: I18nKeys = {
   ragIndexingProgressEtaApprox: '약 {eta}',
   ragIndexingProgressEtaValue: '{eta}',
   ragIndexingProgressEtaCalculating: '계산 중',
+  ragSharedServing: '기존 색인으로 검색 중',
+  ragSharedFirstIndex: '첫 색인을 만드는 중',
+  ragSharedSettling: '새 색인으로 전환 중',
+  ragSharedFailed: '업데이트하지 못했습니다',
+  ragSharedPartial: '일부 자료만 반영되었습니다',
+  ragSharedStopped: '업데이트를 중단했습니다',
+  ragSharedStoppedDetail: '자동으로 다시 시작하지 않습니다. 설정의 기존 시작 제어로 재개할 수 있습니다.',
+  ragSharedServingDetail: '업데이트가 끝나지 않아 일부 새 자료나 변경 내용이 반영되지 않을 수 있습니다.',
+  ragSharedUnavailableDetail: '아직 볼트 검색을 사용할 수 없습니다. 일반 대화는 가능합니다.',
+  ragSharedPartialDetail: '일부 자료는 누락되었거나 불완전합니다.',
+  ragSharedDetailsShow: '상세 펼치기',
+  ragSharedDetailsHide: '상세 접기',
+  ragWorkOpenStorage: '저장소 확인·열기',
+  ragWorkRestoreCorpus: '원문 코퍼스 복원',
+  ragWorkRestoreSnapshot: '키워드 색인 복원 · 저장 스냅샷 읽기',
+  ragWorkRestoreDocuments: '키워드 색인 복원 · 저장 문서 재적재',
+  ragWorkLoadModel: '모델·자산 준비',
+  ragWorkPlanning: '검색 대상 조사',
+  ragWorkPrepareSource: '원문 준비',
+  ragWorkLexical: '키워드 색인 저장',
+  ragWorkEmbedding: '임베딩 계산',
+  ragWorkSaveVectors: '벡터 저장',
+  ragWorkVerify: '전체 원문 검증',
+  ragWorkPublish: '검색 세대 게시·전환',
+  ragWorkWaiting: '작업 정착 대기',
+  ragWorkCleanup: '검색 준비 정리',
+  ragWorkCountLabel: '현재 작업량',
+  ragWorkTimeLabel: '시간',
+  ragWorkStageLabel: '현재 작업',
+  ragWorkEarlyEstimate: '초기 추정',
+  ragWorkElapsed: '경과 {elapsed}',
+  ragWorkRemaining: '이 단계 {eta}',
+  ragWorkRecent: '최근 진행 {age} 전',
+  ragWorkUnknownTotal: '{processed} {unit} 처리 · 전체 확인 중',
+  ragWorkKnownTotal: '{processed} / {total} {unit}',
+  ragWorkFiles: '파일',
+  ragWorkDocuments: '구간',
+  ragWorkBytes: 'bytes',
+  ragWorkSteps: '단계',
+  ragWorkReasonStalled: '계산 중 · 최근 진행 대기',
+  ragWorkReasonTotal: '계산 중 · 전체량 확인 중',
+  ragWorkReasonAtomic: '계산 중 · 단일 작업 완료 대기',
+  ragWorkReasonSamples: '계산 중 · 관측 표본 수집 중',
+  ragSharedStageLabel: '업데이트 단계',
+  ragSharedStagePreparing: '원문 준비',
+  ragSharedStageLexical: '단어 색인 저장',
+  ragSharedStageEmbedding: '의미 색인',
+  ragSharedStageCommitting: '저장·확인',
+  ragSharedStageSettled: '최종 확인',
+  ragSharedCompletedLabel: '저장 확인 문서',
+  ragSharedProcessedLabel: '처리 종료',
+  ragSharedFailedLabel: '실패',
+  ragSharedPartialLabel: '일부 저장',
+  ragSharedSkippedLabel: '건너뜀',
+  ragSharedPipelineEtaLabel: '색인 작업 예상',
+  ragSharedOverallEtaLabel: '전체 남은 시간',
+  ragSharedPipelineScope: '색인 작업만 예상합니다. 최종 검증·전환 시간은 포함하지 않습니다.',
+  ragSharedUnknown: '확인 중',
+  ragSharedStoppedValue: '중단됨',
+  ragSharedFailedValue: '작업 실패',
+  ragSharedPartialValue: '일부 완료',
   ragSourcePageProgress: 'PDF 읽는 중 · {page}/{total}페이지',
   ragIndexingResult: '{documents}개 문서, {vectors}개 벡터',
   ragPhaseFile: '변경 파일',
@@ -3524,9 +3648,7 @@ const ko: I18nKeys = {
   ragNoPendingUpdatesNotice: '이미 최신입니다.',
   ragNoDocumentsNotice: '인덱싱할 RAG 대상 문서가 없습니다.',
   ragIndexCancelRequestedNotice: '인덱싱 취소를 요청했습니다.',
-  ragIndexResumeRequestedNotice: '인덱싱을 재개했습니다.',
   ragNoRunningIndexing: '실행 중인 인덱싱이 없습니다.',
-  ragNotPerformancePaused: '성능 보호 대기 상태가 아닙니다.',
   ragAutoRecoveryPausedByUser:
     '사용자 중단으로 자동 복구가 멈춰 있습니다. 지금 재개를 누르면 다시 시작합니다.',
   embeddingDimensionsLabel: '{name} ({dimensions}차원)',
@@ -4390,6 +4512,9 @@ const en: I18nKeys = {
   validationTernlightUnavailable: 'The Ternlight embedding engine is unavailable.',
   validationEmbeddingVectorInvalid:
     'Ternlight returned an invalid embedding vector: {size} dimensions',
+  embeddingOwnerClosed: '{owner} owner is closed and cannot be reused.',
+  embeddingInitializationClosed: '{model} initialization was closed.',
+  embeddingRequestDispatchFailed: 'Failed to send the {model} request.',
 
   // RAG Controls
   indexingControls: 'Indexing Controls',
@@ -5187,7 +5312,6 @@ const en: I18nKeys = {
   settingsAuto171: 'Reindexed {v0} files',
   settingsAuto172: 'Reindexing failed: {v0}',
   settingsAuto173: 'Stop indexing',
-  settingsAuto174: 'Resume now',
   settingsAuto175: 'Checking button state...',
   settingsAuto176: 'Reset embedding data',
   settingsAuto177: 'Delete all embedding data? This cannot be undone.',
@@ -5661,6 +5785,67 @@ const en: I18nKeys = {
   ragIndexingProgressEtaApprox: 'About {eta}',
   ragIndexingProgressEtaValue: '{eta}',
   ragIndexingProgressEtaCalculating: 'Calculating',
+  ragSharedServing: 'Searching with the existing index',
+  ragSharedFirstIndex: 'Building the first index',
+  ragSharedSettling: 'Switching to the new index',
+  ragSharedFailed: 'The update could not finish',
+  ragSharedPartial: 'Some sources are only partially available',
+  ragSharedStopped: 'The update was stopped',
+  ragSharedStoppedDetail: 'The update does not restart automatically. Use the existing start control in settings to resume.',
+  ragSharedServingDetail: 'The update is not finished, so some new sources or changes may not be available yet.',
+  ragSharedUnavailableDetail: 'Vault search is not available yet. General chat is available.',
+  ragSharedPartialDetail: 'Some sources are missing or incomplete.',
+  ragSharedDetailsShow: 'Show details',
+  ragSharedDetailsHide: 'Hide details',
+  ragWorkOpenStorage: 'Checking and opening storage',
+  ragWorkRestoreCorpus: 'Restoring source corpus',
+  ragWorkRestoreSnapshot: 'Restoring keyword index · reading snapshot',
+  ragWorkRestoreDocuments: 'Restoring keyword index · reloading stored documents',
+  ragWorkLoadModel: 'Preparing model and assets',
+  ragWorkPlanning: 'Surveying search sources',
+  ragWorkPrepareSource: 'Preparing sources',
+  ragWorkLexical: 'Saving keyword index',
+  ragWorkEmbedding: 'Computing embeddings',
+  ragWorkSaveVectors: 'Saving vectors',
+  ragWorkVerify: 'Verifying all sources',
+  ragWorkPublish: 'Publishing and switching search generation',
+  ragWorkWaiting: 'Waiting for work to settle',
+  ragWorkCleanup: 'Cleaning up search preparation',
+  ragWorkCountLabel: 'Current work count',
+  ragWorkTimeLabel: 'Time',
+  ragWorkStageLabel: 'Current work',
+  ragWorkEarlyEstimate: 'early estimate',
+  ragWorkElapsed: 'Elapsed {elapsed}',
+  ragWorkRemaining: 'This stage {eta}',
+  ragWorkRecent: 'Last progress {age} ago',
+  ragWorkUnknownTotal: '{processed} {unit} processed · total unknown',
+  ragWorkKnownTotal: '{processed} / {total} {unit}',
+  ragWorkFiles: 'files',
+  ragWorkDocuments: 'documents',
+  ragWorkBytes: 'bytes',
+  ragWorkSteps: 'steps',
+  ragWorkReasonStalled: 'Calculating · waiting for progress',
+  ragWorkReasonTotal: 'Calculating · total unknown',
+  ragWorkReasonAtomic: 'Calculating · waiting for atomic operation',
+  ragWorkReasonSamples: 'Calculating · collecting observations',
+  ragSharedStageLabel: 'Update stage',
+  ragSharedStagePreparing: 'Preparing sources',
+  ragSharedStageLexical: 'Saving the keyword index',
+  ragSharedStageEmbedding: 'Preparing semantic search',
+  ragSharedStageCommitting: 'Saving and checking',
+  ragSharedStageSettled: 'Final checks',
+  ragSharedCompletedLabel: 'Verified stored files',
+  ragSharedProcessedLabel: 'Processed files',
+  ragSharedFailedLabel: 'Failed files',
+  ragSharedPartialLabel: 'Partially stored files',
+  ragSharedSkippedLabel: 'Skipped files',
+  ragSharedPipelineEtaLabel: 'Estimated indexing work',
+  ragSharedOverallEtaLabel: 'Total time remaining',
+  ragSharedPipelineScope: 'This estimates indexing work only. Final verification and cutover time are not included.',
+  ragSharedUnknown: 'Checking',
+  ragSharedStoppedValue: 'Stopped',
+  ragSharedFailedValue: 'Failed',
+  ragSharedPartialValue: 'Partial',
   ragSourcePageProgress: 'Reading PDF · page {page}/{total}',
   ragIndexingResult: '{documents} documents, {vectors} vectors',
   ragPhaseFile: 'Changed file',
@@ -5688,9 +5873,7 @@ const en: I18nKeys = {
   ragNoPendingUpdatesNotice: 'Already up to date.',
   ragNoDocumentsNotice: 'No RAG target documents to index.',
   ragIndexCancelRequestedNotice: 'Indexing cancellation was requested.',
-  ragIndexResumeRequestedNotice: 'Indexing resumed.',
   ragNoRunningIndexing: 'No indexing job is running.',
-  ragNotPerformancePaused: 'Performance guard is not paused.',
   ragAutoRecoveryPausedByUser:
     'Automatic recovery is paused after a user stop. Choose Resume now to start it again.',
   embeddingDimensionsLabel: '{name} ({dimensions} dimensions)',

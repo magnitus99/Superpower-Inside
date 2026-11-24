@@ -3,6 +3,7 @@ import {
   planRagAutomaticRecoveryRust,
   ragAutomaticRecoveryDelayMsRust,
   type RustRagAutomaticRecoveryFileInput,
+  type RagAutomaticRecoveryPendingState,
 } from './rust-core';
 
 export const AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY =
@@ -15,7 +16,8 @@ export type AutomaticRagRecoveryEvent =
   | 'progressed'
   | 'retrying'
   | 'current'
-  | 'exhausted';
+  | 'exhausted'
+  | 'deferred';
 
 export interface AutomaticRagRecoveryTimer {
   schedule(callback: () => void, delayMs: number): number;
@@ -28,7 +30,7 @@ export interface AutomaticRagRecoveryHost {
   writeCompletedFingerprint(fingerprint: string): Promise<void>;
   runPending(): Promise<void>;
   waitForIdle(): Promise<void>;
-  countPendingDocuments(): Promise<number>;
+  countPendingDocuments(): Promise<number | RagAutomaticRecoveryPendingState>;
   runHealthyMaintenance(
     fingerprint: string,
     force: boolean,
@@ -91,12 +93,17 @@ export class AutomaticRagRecoveryCoordinator {
   private async evaluateAndRecover(): Promise<void> {
     if (this.disposed || this.suspended) return;
     try {
-      const [files, completedFingerprint, pendingDocumentCount] = await Promise.all([
+      const [files, completedFingerprint, pending] = await Promise.all([
         this.host.listCandidateFiles(),
         this.host.readCompletedFingerprint(),
         this.host.countPendingDocuments(),
       ]);
       if (this.disposed || this.suspended) return;
+      const pendingDocumentCount = typeof pending === 'number' ? pending : pending.pendingDocumentCount;
+      if (typeof pending !== 'number' && pending.pendingDocumentCount > 0 && pending.actionableDocumentCount === 0) {
+        this.host.onEvent?.('deferred', pending);
+        return;
+      }
       const plan = planRagAutomaticRecoveryRust(
         files,
         completedFingerprint ?? '',
@@ -135,7 +142,13 @@ export class AutomaticRagRecoveryCoordinator {
       await this.host.runPending();
       await this.host.waitForIdle();
       if (this.disposed || this.suspended) return;
-      const pendingCount = await this.host.countPendingDocuments();
+      const pending = await this.host.countPendingDocuments();
+      if (this.disposed || this.suspended) return;
+      const pendingCount = typeof pending === 'number' ? pending : pending.pendingDocumentCount;
+      if (typeof pending !== 'number' && pending.pendingDocumentCount > 0 && pending.actionableDocumentCount === 0) {
+        this.host.onEvent?.('deferred', pending);
+        return;
+      }
       if (pendingCount !== 0) {
         if (pendingCount >= pendingBefore) {
           this.retryAfterFailure(
@@ -143,7 +156,8 @@ export class AutomaticRagRecoveryCoordinator {
           );
           return;
         }
-        this.attempt = Math.min(this.attempt + 1, 2);
+        // 진행이 있었던 기회는 재시도가 아니다. backoff를 쓰지 않고 다음 배치를 바로 잡는다.
+        this.attempt = 0;
         this.host.onEvent?.('progressed', { pendingDocumentCount: pendingCount });
         this.scheduleEvaluation();
         return;

@@ -16,6 +16,7 @@ import {
 import {
   reviewIndexedVault,
   searchIndexedVault,
+  toModelIndexedEvidenceDossier,
   type IndexedVaultCorpus,
   type IndexedVaultReviewOptions,
 } from './indexed-vault-review';
@@ -380,6 +381,65 @@ function reviewOptions(
 }
 
 describe('엔진 근거 기반 색인 검토', () => {
+  it.each([0, 2])('최소 DTO helper는 기존 provider payload와 대표 페이지 %s개 상태를 그대로 공유한다', async (pageCount) => {
+    const { provider, calls } = answerProvider();
+    const summary = {
+      matchMode: 'nfkc-unicode-lower-line-substring-v1' as const, generationId: 'synthetic-generation',
+      receipt: { version: 1 as const, incarnation: 'synthetic-incarnation', mutation: 'synthetic-mutation' },
+      sources: 2, needles: [{ needle: 'quartz', normalizedNeedle: 'quartz', documents: 1, matchingLines: 2, occurrences: 3 }], pageCount,
+    };
+    const result = await reviewIndexedVault(reviewOptions({ provider,
+      openLiteralInventory: () => Promise.resolve({ getSummary: () => Promise.resolve(summary),
+        readPage: (pageIndex) => Promise.resolve({ pageIndex, nextPage: pageIndex + 1 < pageCount ? pageIndex + 1 : null, references: [] }),
+        close: () => Promise.resolve() }),
+    }));
+    const dossier = result.dossier;
+    dossier.sourceDocuments = { [RELEVANT]: { segments: [{ label: '합성 비공개 원장', startLine: 0, endLine: 0 }] } };
+    const original = structuredClone(dossier);
+    const projected = toModelIndexedEvidenceDossier(dossier);
+    expect(JSON.parse(JSON.stringify(projected))).toEqual(JSON.parse(String(calls[0]?.[1]?.content)));
+    expect(projected.literalInventory).toEqual({ matchMode: summary.matchMode, scope: 'indexed-policy-allowed-source-body',
+      needles: summary.needles, discoveryPagesReadComplete: true });
+    expect(JSON.stringify(projected)).not.toContain('합성 비공개 원장');
+    expect(JSON.stringify(projected)).not.toMatch(/sourceDocuments|generationId|receipt|incarnation|mutation|pageCount|representativePages/);
+    expect(dossier).toEqual(original);
+  });
+
+  it.each(['unavailable', 'failed'] as const)('최소 DTO helper는 %s reason을 바꾸지 않는다', async (status) => {
+    const result = await reviewIndexedVault(reviewOptions({ deferAnswer: true }));
+    result.dossier.literalInventory = { status, reason: 'source-literal-unavailable' };
+    expect(toModelIndexedEvidenceDossier(result.dossier).literalInventory).toEqual(result.dossier.literalInventory);
+  });
+
+  it.each(['owner', 'signal'] as const)('마지막 literal summary await 도중 %s 무효화는 답변·완료를 게시하지 않는다', async (failure) => {
+    const { provider } = answerProvider();
+    const controller = new AbortController();
+    let current = true, calls = 0;
+    const summary = { matchMode: 'nfkc-unicode-lower-line-substring-v1' as const, generationId: 'synthetic', receipt: { version: 1 as const, incarnation: crypto.randomUUID(), mutation: crypto.randomUUID() }, sources: 2, needles: [], pageCount: 0 };
+    const close = vi.fn(() => Promise.resolve());
+    const onAnswer = vi.fn(), onProgress = vi.fn<NonNullable<IndexedVaultReviewOptions['onProgress']>>();
+    const reviewing = reviewIndexedVault(reviewOptions({ provider, signal: controller.signal, isCurrent: () => current, onAnswer, onProgress,
+      openLiteralInventory: () => Promise.resolve({ getSummary: () => { if (++calls === 2) { if (failure === 'signal') controller.abort(); else current = false; } return Promise.resolve(summary); }, readPage: () => Promise.resolve(null), close }),
+    }));
+    if (failure === 'signal') await expect(reviewing).rejects.toMatchObject({ name: 'AbortError' });
+    else { const result = await reviewing; expect(result.outcome).toBe('indexing'); expect(result.evidence).toEqual([]); expect(result.citations).toEqual([]); }
+    expect(calls).toBe(2);
+    expect(onAnswer).not.toHaveBeenCalled();
+    expect(onProgress.mock.calls.some(([progress]) => progress.phase === 'complete')).toBe(false);
+    expect(close).toHaveBeenCalledOnce();
+  });
+  it.each([false, true])('opener가 없는 filter=%s의 unavailable은 dossier와 모델 payload에서도 명시한다', async (filters) => {
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(reviewOptions({ provider, ...(filters ? { filters: {} } : {}),
+      matchInventory: [{ query: 'quartz', totalDocuments: 2, totalChunks: 2, totalOccurrences: 2, documents: [] }],
+    }));
+    const expected = { status: 'unavailable', reason: filters ? 'unsupported-filters' : 'source-literal-unavailable' };
+    expect(result.dossier.literalInventory).toEqual(expected);
+    expect(calls.length).toBeGreaterThan(0);
+    const payload = JSON.parse(String(calls[0][1].content)) as { literalInventory?: unknown; matchInventory?: unknown };
+    expect(payload.literalInventory).toEqual(expected);
+    expect(payload.matchInventory).toEqual([{ query: 'quartz', totalDocuments: 2, totalChunks: 2, totalOccurrences: 2 }]);
+  });
   it('실제 검색·원문 검증·생성·교정 단계와 제공된 추론만 전달하고 미검증 JSON은 숨긴다', async () => {
     const phases: string[] = [];
     const onReasoning = vi.fn();
@@ -2425,4 +2485,31 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(documents).toHaveLength(1);
     expect(documents[0]).not.toHaveProperty('modifiedAt');
   });
+});
+
+it('engine-only dossier는 deferAnswer와 별개로 후속·답변 모델을 0회로 유지한다', async () => {
+  const streamChat = vi.fn<LLMProvider['streamChat']>(() => Promise.reject(new Error('synthetic-sensitive-provider-error')));
+  const result = await reviewIndexedVault(reviewOptions({ executionMode: 'engine-only',
+    discoveryPaths: [RELEVANT, OTHER], discoveryCandidates: [{ path: RELEVANT, score: 1, rank: 1, source: 'bm25' }],
+    getFollowupPaths: () => Promise.resolve([RELEVANT, OTHER]), provider: { streamChat },
+  }));
+  expect(streamChat).not.toHaveBeenCalled();
+  expect(result.outcome).toBe('evidence-only');
+  expect(result.dossier.evidence.length).toBeGreaterThan(0);
+  expect(result.providerTransfer.sentFiles).toBe(0);
+});
+
+it('현재 큰 셀 원장은 dossier에 보존하지만 어떤 모델 요청에도 복제하지 않는다', async () => {
+  const { provider, calls } = answerProvider();
+  const marker = 'synthetic-cell-ledger-private-marker';
+  const cells = Array.from({ length: 1000 }, (_, index) => ({ address: `A${index + 1}`, value: marker }));
+  const sourceMetadata = { segments: [{ label: 'Table', startLine: 3, endLine: 4, locator: { cells } }] };
+  const result = await reviewIndexedVault(reviewOptions({ indexedPaths: [RELEVANT], provider,
+    sourceReader: () => Promise.resolve({ revision: '1:10', contentHash: 'hash-relevant',
+      text: 'one\ntwo\nQuartz restarts only after two cooling cycles.\nfour', sourceMetadata }),
+  }));
+  expect(result.dossier.sourceDocuments?.[RELEVANT]).toEqual(sourceMetadata);
+  expect(calls.length).toBeGreaterThan(0);
+  expect(JSON.stringify(calls)).not.toContain(marker);
+  expect(JSON.stringify(calls)).not.toContain('sourceDocuments');
 });

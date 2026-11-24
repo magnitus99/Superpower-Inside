@@ -161,6 +161,56 @@ describe('색인 활동 요약', () => {
   });
 });
 
+describe('serving과 building의 공유 진행', () => {
+  it('사용 가능한 serving이 있어도 building의 진행·실패·범위를 우선한다', () => {
+    const summary = summarizeRagActivity({
+      status: status({ progress: progress({ completedFiles: 39 }) }), keywordRestore: null,
+      generation: { availability: 'usable', building: { generation: null, status: 'building', indexing: status({ phase: 'all', progress: progress({ completedFiles: 12, processedFiles: 15, failedFiles: 1, partialFiles: 2, stage: 'embedding', currentFilePath: 'Synthetic/nonpublic-source.md', eta: eta(95000, 'medium') }) }) } },
+    });
+    expect(summary).toMatchObject({ completedFiles: 12, totalFiles: 40, totalFilesKnown: true, processedFiles: 15, failedFiles: 1, partialFiles: 2, stage: 'embedding', activity: 'indexing', servingAvailable: true, etaRemainingMs: 95000, etaConfidence: 'medium' });
+    expect(JSON.stringify(summary)).not.toContain('nonpublic-source');
+  });
+
+  it('전체 tail 미확인은 유지하고 색인 부분 추정은 별도 수치로 전달한다', () => {
+    const measured: RustRagIndexingEtaPlan = { ...eta(null, 'calculating'), lifecycle: 'running', pipelineRemainingMs: 2000, inferenceRemainingMs: 1200, pipelineConfidence: 'medium' };
+    expect(summarizeRagActivity({ status: null, keywordRestore: null,
+      generation: { availability: 'usable', building: { generation: null, status: 'building', indexing: status({ progress: progress({ eta: measured }) }) } },
+    })).toMatchObject({ etaRemainingMs: null, pipelineRemainingMs: 2000, pipelineConfidence: 'medium', inferenceRemainingMs: 1200 });
+  });
+
+  it('초기 building은 미확인 총량을 실제 0건 완료로 표시하지 않는다', () => {
+    expect(summarizeRagActivity({ status: null, keywordRestore: null,
+      generation: { availability: 'none', building: { generation: null, status: 'building', indexing: null } },
+    })).toMatchObject({ activity: 'preparing', totalFilesKnown: false, etaRemainingMs: null, servingAvailable: false });
+  });
+
+  it('scheduler 종료 후 manifest 확인 전에는 완료 ETA 대신 마무리 중을 게시한다', () => {
+    expect(summarizeRagActivity({ status: null, keywordRestore: null,
+      generation: { availability: 'usable', building: { generation: null, status: 'building', indexing: status({ running: false, lastResult: { indexed: 40, documents: Array.from({ length: 40 }, (_, index) => `Synthetic/final-${index}.md`), vectors: 4000, skipped: 0, durationMs: 1000 }, progress: progress({ completedFiles: 40, eta: eta(0, 'complete'), stage: 'settled' }) }) } },
+    })).toMatchObject({ activity: 'settling', stage: 'committing', etaRemainingMs: null, servingAvailable: true });
+  });
+
+  it.each(['partial', 'failed', 'cancelled'] as const)('종료된 building %s는 success나 0 ETA가 아니다', (terminal) => {
+    expect(summarizeRagActivity({ status: null, keywordRestore: null,
+      generation: { availability: 'usable', building: { generation: null, status: terminal, indexing: null } },
+    })).toMatchObject({ activity: terminal, etaRemainingMs: null, totalFilesKnown: false, servingAvailable: true });
+  });
+
+  it('사용자 중단은 종료 레코드의 cancelled와 구별하고 ETA를 지운다', () => {
+    expect(summarizeRagActivity({ status: null, keywordRestore: null, pausedByUser: true,
+      generation: { availability: 'usable', building: { generation: null, status: 'cancelled', indexing: null } },
+    })).toMatchObject({ activity: 'paused', pauseReason: 'user', etaRemainingMs: null, servingAvailable: true });
+  });
+});
+
+describe('공유 진행의 대기 원인', () => {
+  it('성능 보호 대기를 사용자 중단으로 표시하지 않는다', () => {
+    expect(summarizeRagActivity({ status: status({ phase: 'paused', running: false }), keywordRestore: null,
+      generation: { availability: 'usable', building: null }, pausedByUser: false,
+    })).toMatchObject({ activity: 'paused', pauseReason: 'performance' });
+  });
+});
+
 describe('남은 시간 표기', () => {
   it('1분 미만은 초로 표시한다', () => {
     expect(formatRagEtaDuration(0)).toBe('0s');
@@ -172,5 +222,16 @@ describe('남은 시간 표기', () => {
     expect(formatRagEtaDuration(95_000)).toBe('1m 35s');
     expect(formatRagEtaDuration(3_600_000)).toBe('1h');
     expect(formatRagEtaDuration(5_400_000)).toBe('1h 30m');
+  });
+});
+
+describe('runtime work canonical summary', () => {
+  it('building이 없고 serving이 있어도 복원 중 작업은 같은 canonical 요약에 남는다', () => {
+    const work = { stage: 'restoring-keyword-documents' as const, unit: 'documents' as const,
+      processedUnits: 128, totalUnits: 135835, elapsedMs: 1000.5, lastProgressAgeMs: 0,
+      remainingMs: 1060000, ratePerSecond: 128, confidence: 'low' as const, etaReason: 'observed-rate' };
+    const summary = summarizeRagActivity({ status: null, keywordRestore: null, generation: { availability: 'usable', building: null }, work });
+    expect(summary).toMatchObject({ phase: 'preparing', activity: 'preparing', servingAvailable: true, etaRemainingMs: null, work });
+    expect(summarizeRagActivity({ status: null, keywordRestore: null, generation: { availability: 'usable', building: null }, work: null })).toBeNull();
   });
 });

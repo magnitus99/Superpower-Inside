@@ -1,7 +1,8 @@
 import type { TFile } from 'obsidian';
 import { describe, expect, it, vi } from 'vitest';
-import { IndexingCancelledError, IndexingPerformancePausedError } from './indexer';
+import { IndexingCancelledError, IndexingPerformancePausedError, type IndexingOptions, type RagIndexingProgressSnapshot } from './indexer';
 import { RAGIndexingScheduler } from './indexing-scheduler';
+import * as rustCore from './rust-core';
 
 describe('RAGIndexingScheduler', () => {
   it('사전 준비를 취소하면 신호와 상태를 즉시 갱신하고 이전 정리가 새 준비를 지우지 않는다', () => {
@@ -756,3 +757,81 @@ function createResult(
     durationMs: 0,
   };
 }
+
+
+describe('scheduler pipeline 수명 경계', () => {
+  function observation(): RagIndexingProgressSnapshot {
+    return {
+      event: 'window-complete', startedAtMs: 0, nowMs: 100, totalFiles: 3, completedFiles: 1,
+      currentFileTotalChunks: 0, currentFileEmbeddedChunks: 0, totalEstimatedChunks: 3,
+      completedEstimatedChunks: 1, currentFileEstimatedChunks: 0, totalPlannedChunks: 3,
+      completedPlannedChunks: 1, currentFilePlannedChunks: 0, planningComplete: true,
+      indexed: 1, vectors: 1, skipped: 0, completedBatchDurationsMs: [], completedBatchChunkCounts: [],
+      completedFileDurationsMs: [], completedFileChunkCounts: [], completedFileEstimatedChunkCounts: [],
+      completedFileActualChunkCounts: [], completedFileOverheadDurationsMs: [],
+      historicalMsPerChunk: null, historicalChunkEstimateRatio: null, historicalVariance: null,
+      pipeline: { lifecycle: 'running', totalKnown: true, processedFiles: 1, failedFiles: 0, partialFiles: 0,
+        processedEstimatedChunks: 1, processedPlannedChunks: 1, observedAtMs: 100, backend: 'cpu',
+        windowSamples: [{ startedAtMs: 10, endedAtMs: 100, logicalChunks: 1, physicalWorkUnits: 1 }],
+        inferenceSamples: [{ backend: 'cpu', workUnits: 1, durationMs: 5, endedAtMs: 90 }] },
+    };
+  }
+
+  it('가짜 Rust 호출 입력 검사: heartbeat는 시계만 바꾸고 관측과 표본은 보존한다', async () => {
+    vi.useFakeTimers();
+    const planner = vi.spyOn(rustCore, 'planRagIndexingEtaRust').mockImplementation((input) => ({
+      totalFiles: 3, completedFiles: 1, currentFileProgress: 0, progressRatio: 1 / 3, elapsedMs: input.nowMs,
+      remainingMs: input.nowMs > 1000 ? null : 180, estimatedCompletionMs: input.nowMs > 1000 ? null : input.nowMs + 180,
+      confidence: 'low', basis: 'planned-chunks', lowerRemainingMs: null, upperRemainingMs: null,
+      confidenceReason: 'fake-data-only', etaConfidenceReason: 'fake-data-only', lifecycle: 'running',
+      pipelineRemainingMs: 180, inferenceRemainingMs: null, pipelineConfidence: 'low',
+    }));
+    let release = (): void => undefined;
+    const scheduler = new RAGIndexingScheduler({ debounceMs: 0,
+      indexFile: () => Promise.resolve(createResult()), removeFile: () => Promise.resolve(0),
+      indexPending: (options) => { options.onProgress?.(observation()); return new Promise((resolve) => { release = () => resolve(createResult()); }); },
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+    try {
+      const running = scheduler.indexPending();
+      const first = planner.mock.calls.at(-1)?.[0];
+      const published = scheduler.getStatus().progress;
+      if (published?.pipeline) {
+        Reflect.set(published.pipeline, 'observedAtMs', 9999);
+        Reflect.set(published.pipeline.inferenceSamples[0], 'workUnits', 9999);
+      }
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(planner).toHaveBeenCalledTimes(3);
+      const last = planner.mock.calls.at(-1)?.[0];
+      expect(last?.nowMs).toBeGreaterThan(first?.nowMs ?? 0);
+      expect(last?.pipeline).toEqual(first?.pipeline);
+      expect(last?.pipeline?.observedAtMs).toBe(100);
+      expect(last?.completedBatchDurationsMs).toEqual([]);
+      expect(scheduler.getStatus().progress?.eta?.remainingMs).toBeNull();
+      release(); await running; await scheduler.waitForIdle();
+    } finally { release(); vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+
+  it.each(['settled', 'cancelled', 'paused', 'owner-invalid'] as const)('외부 callback도 늦은 이전 실행을 차단한다 (%s)', async (scenario) => {
+    const captured: IndexingOptions[] = [];
+    const external = vi.fn();
+    const releases: Array<() => void> = [];
+    let current = true;
+    const scheduler = new RAGIndexingScheduler({ debounceMs: 0,
+      createIndexingOptions: (signal) => ({ signal, isCurrent: () => current, onProgress: external }),
+      indexFile: () => Promise.resolve(createResult()), removeFile: () => Promise.resolve(0),
+      indexPending: (options) => { captured.push(options); return new Promise((resolve, reject) => { releases.push(() => scenario === 'paused' && captured.length === 1 ? reject(new IndexingPerformancePausedError()) : resolve(createResult())); }); },
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+    const running = scheduler.indexPending();
+    const rejection = running.catch(() => undefined);
+    captured[0].onProgress?.(observation());
+    expect(external).toHaveBeenCalledTimes(1);
+    if (scenario === 'cancelled') scheduler.cancel();
+    if (scenario === 'owner-invalid') current = false;
+    if (scenario === 'settled' || scenario === 'paused') { releases[0](); await Promise.resolve(); await Promise.resolve(); }
+    captured[0].onProgress?.(observation());
+    expect(external).toHaveBeenCalledTimes(1);
+    scheduler.cancel(); releases[0](); await rejection;
+  });
+});

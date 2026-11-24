@@ -1,4 +1,6 @@
 import Dexie from 'dexie';
+import { DURABILITY_RECEIPT_KEY, readStoreMutationReceipt, stampStoreMutation, type StoreMutationReceipt } from './durability';
+import type { SourceMetadata } from './source-access';
 import {
   GeneratedArtifactDatabase,
   type GeneratedArtifactBinding,
@@ -47,6 +49,8 @@ export interface VectorEntry {
     sourceSize?: number;
     contentHash?: string;
     chunkHash?: string;
+    sourceSegment?: number;
+    sourceMetadataHash?: string;
     indexedAt?: number;
     embeddingProvider?: string;
     embeddingModel?: string;
@@ -54,6 +58,8 @@ export interface VectorEntry {
 }
 
 export interface FileIndexRecord {
+  sourceMetadata?: SourceMetadata;
+  sourceMetadataHash?: string;
   filePath: string;
   sourceMtime?: number;
   sourceSize?: number;
@@ -72,6 +78,12 @@ export interface VectorStoreStats {
   totalVectors: number;
   averageVectorsPerFile: number;
   lastUpdated: number | null;
+}
+
+export interface VectorStoreDurabilityCheckpoint {
+  receipt: StoreMutationReceipt | null;
+  pendingWrites: number;
+  recoveryPending: boolean;
 }
 
 export interface IndexedDbVectorStoreOptions {
@@ -157,12 +169,18 @@ export interface VectorSearchResult {
 }
 
 export interface VectorStore {
+  getDurabilityCheckpoint?(): Promise<VectorStoreDurabilityCheckpoint>;
+  initializeEmptyDurabilityReceipt?(): Promise<StoreMutationReceipt | null>;
   add(entries: VectorEntry[]): Promise<void>;
   replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void>;
+  /** 여러 파일의 벡터를 하나의 트랜잭션으로 교체합니다. */
+  replaceBatchFileEntries(
+    batches: readonly { filePath: string; entries: VectorEntry[]; sourceMetadata?: SourceMetadata; sourceMetadataHash?: string }[],
+  ): Promise<void>;
   markFileIndexedWithoutVectors(record: Omit<FileIndexRecord, 'vectorCount'>): Promise<void>;
   /** 내용은 같고 mtime/size만 변한 파일의 revision만 갱신하고 기존 벡터는 보존합니다. */
   refreshFileIndexRevision(
-    record: Pick<FileIndexRecord, 'filePath' | 'sourceMtime' | 'sourceSize' | 'contentHash'>,
+    record: Pick<FileIndexRecord, 'filePath' | 'sourceMtime' | 'sourceSize' | 'contentHash' | 'sourceMetadata' | 'sourceMetadataHash'>,
   ): Promise<boolean>;
   removeByFilePath(filePath: string): Promise<number>;
   query(vector: number[], topK: number, signal?: AbortSignal): Promise<VectorEntry[]>;
@@ -183,10 +201,12 @@ export interface VectorStore {
   setMetaValue?(key: string, value: unknown): Promise<void>;
   /** 중단된 파일 쓰기 원장을 읽고 내구 복구 요청으로 등록한 뒤 비웁니다. */
   probePendingFileWrites?(): Promise<string[]>;
+  /** corpus·lexical 쓰기 전에 복구 요청을 내구 등록합니다. */
+  beginPendingWriteRecovery?(filePaths: readonly string[], owner?: string): Promise<void>;
   /** 아직 완료되지 않은 내구 복구 요청입니다. */
   readPendingWriteRecovery?(): Promise<string[]>;
   /** 재색인·삭제가 끝난 경로를 복구 요청에서 제거합니다. */
-  completePendingWriteRecovery?(filePaths: readonly string[]): Promise<void>;
+  completePendingWriteRecovery?(filePaths: readonly string[], owner?: string): Promise<void>;
   close(): void;
 }
 
@@ -245,7 +265,7 @@ interface IndexedDbVectorRecord {
 interface VectorStoreMetaRecord {
   key: string;
   value: unknown;
-  updated: number;
+  updated?: number;
 }
 
 /** 파일 단위 벡터 쓰기의 시작/완료를 남기는 원장입니다. */
@@ -649,12 +669,42 @@ export class IndexedDbVectorStore implements VectorStore {
       options.vectorSearchWorkerFactory !== undefined || canUseVectorSearchWorker();
   }
 
+  getDurabilityCheckpoint(): Promise<VectorStoreDurabilityCheckpoint> {
+    return this.db.transaction('r', [this.db.meta, this.db.pendingWrites], async () => {
+      const [receipt, pendingWrites, requests, owners] = await Promise.all([
+        readStoreMutationReceipt(this.db.meta), this.db.pendingWrites.count(),
+        this.db.meta.get(VECTOR_WRITE_RECOVERY_KEY), this.db.meta.get(`${VECTOR_WRITE_RECOVERY_KEY}:owners`),
+      ]);
+      return {
+        receipt, pendingWrites,
+        recoveryPending: [requests, owners].some((record) => record !== undefined && (!Array.isArray(record.value) || record.value.length > 0)),
+      };
+    });
+  }
+
+  initializeEmptyDurabilityReceipt(): Promise<StoreMutationReceipt | null> {
+    return this.db.transaction('rw', [this.db.vectors, this.db.fileIndex, this.db.pendingWrites, this.db.meta], async () => {
+      const checkpoint = await this.getDurabilityCheckpoint();
+      if (checkpoint.receipt) return checkpoint.receipt;
+      if (checkpoint.pendingWrites || checkpoint.recoveryPending || await this.db.vectors.count() || await this.db.fileIndex.count()) return null;
+      return stampStoreMutation(this.db.meta);
+    });
+  }
+
+  private commitMutation<T>(operation: () => Promise<T>): Promise<T> {
+    return this.db.transaction('rw', [this.db.vectors, this.db.fileIndex, this.db.pendingWrites, this.db.meta], async () => {
+      const result = await operation();
+      await stampStoreMutation(this.db.meta);
+      return result;
+    });
+  }
+
   async add(newEntries: VectorEntry[]): Promise<void> {
     const now = Date.now();
     const filePaths = uniqueFilePaths(newEntries);
     const records = newEntries.map((entry) => vectorRecordFromEntry(entry, now));
     await this.beginFileWrites(filePaths, now);
-    await this.db.vectors.bulkPut(records);
+    await this.commitMutation(() => this.db.vectors.bulkPut(records));
     await this.upsertFileIndexRecords(newEntries, now);
     await this.finishFileWrites(filePaths);
     this.noteVectorMutation();
@@ -665,7 +715,7 @@ export class IndexedDbVectorStore implements VectorStore {
     const now = Date.now();
     const records = entries.map((entry) => vectorRecordFromEntry(entry, now));
     await this.beginFileWrites([filePath], now);
-    await this.db.transaction('rw', this.db.vectors, async () => {
+    await this.commitMutation(async () => {
       await this.db.vectors.where('filePath').equals(filePath).delete();
       if (records.length > 0) {
         await this.db.vectors.bulkPut(records);
@@ -674,12 +724,12 @@ export class IndexedDbVectorStore implements VectorStore {
     if (entries.length > 0) {
       const [record] = fileIndexRecordsFromRust(entries, now);
       if (record) {
-        await this.db.fileIndex.put(record);
+        await this.commitMutation(() => this.db.fileIndex.put(record));
       } else {
-        await this.db.fileIndex.delete(filePath);
+        await this.commitMutation(() => this.db.fileIndex.delete(filePath));
       }
     } else {
-      await this.db.fileIndex.delete(filePath);
+      await this.commitMutation(() => this.db.fileIndex.delete(filePath));
     }
     await this.finishFileWrites([filePath]);
     if (this.entriesCache) {
@@ -692,9 +742,45 @@ export class IndexedDbVectorStore implements VectorStore {
     this.invalidateRuntimeIndex();
   }
 
+  /** 여러 파일을 한 트랜잭션으로 교체해 파일마다 지불하던 커밋 비용을 나눕니다. */
+  async replaceBatchFileEntries(
+    batches: readonly { filePath: string; entries: VectorEntry[]; sourceMetadata?: SourceMetadata; sourceMetadataHash?: string }[],
+  ): Promise<void> {
+    if (batches.length === 0) return;
+    const now = Date.now();
+    const filePaths = batches.map((batch) => batch.filePath);
+    const records = batches.flatMap((batch) =>
+      batch.entries.map((entry) => vectorRecordFromEntry(entry, now)),
+    );
+    await this.commitMutation(
+      async () => {
+        await this.db.pendingWrites.bulkPut(filePaths.map((filePath) => ({ filePath, updated: now })));
+        await this.db.vectors.where('filePath').anyOf([...filePaths]).delete();
+        if (records.length > 0) await this.db.vectors.bulkPut(records);
+        const fileRecords = batches.flatMap((batch) =>
+          batch.entries.length > 0 ? fileIndexRecordsFromRust(batch.entries, now).map((record) => ({ ...record, ...(batch.sourceMetadata ? { sourceMetadata: batch.sourceMetadata, sourceMetadataHash: batch.sourceMetadataHash } : {}) })) : [],
+        );
+        if (fileRecords.length > 0) await this.db.fileIndex.bulkPut(fileRecords);
+        const written = new Set(fileRecords.map((record) => record.filePath));
+        const emptyByFile = filePaths.filter((filePath) => !written.has(filePath));
+        if (emptyByFile.length > 0) await this.db.fileIndex.bulkDelete(emptyByFile);
+        await this.db.pendingWrites.bulkDelete([...filePaths]);
+      },
+    );
+    if (this.entriesCache) {
+      const replaced = new Set(filePaths);
+      this.entriesCache = [
+        ...this.entriesCache.filter((entry) => !replaced.has(entry.metadata.filePath)),
+        ...copyEntries(batches.flatMap((batch) => batch.entries)),
+      ];
+    }
+    this.noteVectorMutation();
+    this.invalidateRuntimeIndex();
+  }
+
   async markFileIndexedWithoutVectors(record: Omit<FileIndexRecord, 'vectorCount'>): Promise<void> {
     await this.beginFileWrites([record.filePath], Date.now());
-    await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
+    await this.commitMutation(async () => {
       await this.db.vectors.where('filePath').equals(record.filePath).delete();
       await this.db.fileIndex.put({ ...record, vectorCount: 0 });
     });
@@ -709,12 +795,12 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   async refreshFileIndexRevision(
-    record: Pick<FileIndexRecord, 'filePath' | 'sourceMtime' | 'sourceSize' | 'contentHash'>,
+    record: Pick<FileIndexRecord, 'filePath' | 'sourceMtime' | 'sourceSize' | 'contentHash' | 'sourceMetadata' | 'sourceMetadataHash'>,
   ): Promise<boolean> {
     const existing = await this.db.fileIndex.get(record.filePath);
     if (!existing) return false;
     const updated = Date.now();
-    await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
+    await this.commitMutation(async () => {
       await this.db.vectors
         .where('filePath')
         .equals(record.filePath)
@@ -732,6 +818,7 @@ export class IndexedDbVectorStore implements VectorStore {
         sourceMtime: record.sourceMtime,
         sourceSize: record.sourceSize,
         contentHash: record.contentHash,
+        ...(record.sourceMetadata ? { sourceMetadata: record.sourceMetadata, sourceMetadataHash: record.sourceMetadataHash } : {}),
         updated,
       });
     });
@@ -756,9 +843,9 @@ export class IndexedDbVectorStore implements VectorStore {
 
   async removeByFilePath(filePath: string): Promise<number> {
     await this.beginFileWrites([filePath], Date.now());
-    const removed = await this.db.vectors.where('filePath').equals(filePath).delete();
+    const removed = await this.commitMutation(() => this.db.vectors.where('filePath').equals(filePath).delete());
     const removedFileIndex = (await this.db.fileIndex.get(filePath)) !== undefined;
-    await this.db.fileIndex.delete(filePath);
+    await this.commitMutation(() => this.db.fileIndex.delete(filePath));
     await this.finishFileWrites([filePath]);
     if (this.entriesCache) {
       this.entriesCache = this.entriesCache.filter((entry) => entry.metadata.filePath !== filePath);
@@ -843,7 +930,7 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   async clear(): Promise<void> {
-    await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
+    await this.commitMutation(async () => {
       await this.db.vectors.clear();
       await this.db.fileIndex.clear();
     });
@@ -1035,7 +1122,7 @@ export class IndexedDbVectorStore implements VectorStore {
     if (!deleteVectorIds) throw new Error('Rust vector record batch planning failed');
     state.cursor = records.at(-1)?.id ?? state.cursor;
     if (deleteVectorIds.length > 0) {
-      await this.db.vectors.bulkDelete(deleteVectorIds);
+      await this.commitMutation(() => this.db.vectors.bulkDelete(deleteVectorIds));
       this.invalidateRuntimeCache();
     }
     const complete = records.length < pageSize;
@@ -1050,7 +1137,8 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   async setMetaValue(key: string, value: unknown): Promise<void> {
-    await this.db.meta.put({ key, value, updated: Date.now() });
+    if (key === DURABILITY_RECEIPT_KEY) throw new Error('rag-durability-reserved-key');
+    await this.commitMutation(() => this.db.meta.put({ key, value, updated: Date.now() }));
   }
 
   async persist(): Promise<void> {
@@ -1321,20 +1409,40 @@ export class IndexedDbVectorStore implements VectorStore {
     this.invalidateRuntimeIndex();
   }
 
+  private async assertRecoveryLedgerReadable(): Promise<void> {
+    const [requests, owners] = await this.db.meta.bulkGet([VECTOR_WRITE_RECOVERY_KEY, `${VECTOR_WRITE_RECOVERY_KEY}:owners`]);
+    if (requests !== undefined) {
+      if (!Array.isArray(requests.value)) throw new Error('rag-vector-recovery-invalid');
+      const entries: unknown[] = requests.value;
+      for (const entry of entries) {
+        if (typeof entry !== 'string') throw new Error('rag-vector-recovery-invalid');
+      }
+    }
+    if (owners !== undefined) {
+      if (!Array.isArray(owners.value)) throw new Error('rag-vector-recovery-invalid');
+      const entries: unknown[] = owners.value;
+      const paths = new Set<string>();
+      for (const entry of entries) {
+        if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || typeof entry[1] !== 'string' || paths.has(entry[0])) throw new Error('rag-vector-recovery-invalid');
+        paths.add(entry[0]);
+      }
+    }
+  }
+
   /**
    * 파일 쓰기 전에 원장에 시작을 남깁니다. 완료 기록 없이 재시작되면 그 파일은 재색인 대상입니다.
    * 완료 기록은 성공 경로에서만 지우므로 중단·실패가 남습니다.
    */
   private async beginFileWrites(filePaths: readonly string[], updated: number): Promise<void> {
     if (filePaths.length === 0) return;
-    await this.db.pendingWrites.bulkPut(
+    await this.commitMutation(() => this.db.pendingWrites.bulkPut(
       filePaths.map((filePath) => ({ filePath, updated })),
-    );
+    ));
   }
 
   private async finishFileWrites(filePaths: readonly string[]): Promise<void> {
     if (filePaths.length === 0) return;
-    await this.db.pendingWrites.bulkDelete([...filePaths]);
+    await this.commitMutation(() => this.db.pendingWrites.bulkDelete([...filePaths]));
   }
 
   /**
@@ -1342,14 +1450,16 @@ export class IndexedDbVectorStore implements VectorStore {
    * 요청 기록이 먼저 성공해야 원장을 지우므로, 중간에 죽어도 복구 대상이 사라지지 않습니다.
    */
   async probePendingFileWrites(): Promise<string[]> {
-    const records = await this.db.pendingWrites.toArray();
-    if (records.length === 0) return [];
-    const interrupted = [...new Set(records.map((record) => record.filePath))].sort((a, b) =>
-      a.localeCompare(b),
-    );
-    await this.persistWriteRecoveryRequests(interrupted);
-    await this.db.pendingWrites.clear();
-    return interrupted;
+    return this.db.transaction('rw', [this.db.pendingWrites, this.db.meta], async () => {
+      await this.assertRecoveryLedgerReadable();
+      const records = await this.db.pendingWrites.toArray();
+      if (records.length === 0) return [];
+      const interrupted = [...new Set(records.map((record) => record.filePath))].sort((a, b) => a.localeCompare(b));
+      await this.persistWriteRecoveryRequests(interrupted);
+      await this.db.pendingWrites.bulkDelete(interrupted);
+      await stampStoreMutation(this.db.meta);
+      return interrupted;
+    });
   }
 
   /** 테스트에서 복구 요청 기록 실패를 주입할 수 있게 분리한 기록입니다. */
@@ -1363,6 +1473,19 @@ export class IndexedDbVectorStore implements VectorStore {
     });
   }
 
+  async beginPendingWriteRecovery(filePaths: readonly string[], owner?: string): Promise<void> {
+    await this.commitMutation(async () => {
+      await this.assertRecoveryLedgerReadable();
+      await this.persistWriteRecoveryRequests(filePaths);
+      const stored = await this.db.meta.get(`${VECTOR_WRITE_RECOVERY_KEY}:owners`);
+      const owners = new Map<string, string>(Array.isArray(stored?.value) ? stored.value as [string, string][] : []);
+      for (const path of filePaths) {
+        if (owner) owners.set(path, owner);
+      }
+      await this.db.meta.put({ key: `${VECTOR_WRITE_RECOVERY_KEY}:owners`, value: [...owners], updated: Date.now() });
+    });
+  }
+
   async readPendingWriteRecovery(): Promise<string[]> {
     const stored = await this.db.meta.get(VECTOR_WRITE_RECOVERY_KEY);
     const value = stored?.value;
@@ -1370,9 +1493,15 @@ export class IndexedDbVectorStore implements VectorStore {
     return value.filter((entry): entry is string => typeof entry === 'string');
   }
 
-  async completePendingWriteRecovery(filePaths: readonly string[]): Promise<void> {
+  async completePendingWriteRecovery(filePaths: readonly string[], owner?: string): Promise<void> {
     if (filePaths.length === 0) return;
-    const completed = new Set(filePaths);
+    await this.commitMutation(async () => {
+    await this.assertRecoveryLedgerReadable();
+    const stored = await this.db.meta.get(`${VECTOR_WRITE_RECOVERY_KEY}:owners`);
+    const owners = new Map<string, string>(Array.isArray(stored?.value) ? stored.value as [string, string][] : []);
+    const completed = new Set(filePaths.filter((path) => owners.get(path) === owner));
+    for (const path of completed) owners.delete(path);
+    await this.db.meta.put({ key: `${VECTOR_WRITE_RECOVERY_KEY}:owners`, value: [...owners], updated: Date.now() });
     const remaining = (await this.readPendingWriteRecovery()).filter(
       (filePath) => !completed.has(filePath),
     );
@@ -1384,6 +1513,7 @@ export class IndexedDbVectorStore implements VectorStore {
       key: VECTOR_WRITE_RECOVERY_KEY,
       value: remaining,
       updated: Date.now(),
+    });
     });
   }
 
@@ -1415,7 +1545,7 @@ export class IndexedDbVectorStore implements VectorStore {
   ): Promise<void> {
     const records = fileIndexRecordsFromRust(entries, updated);
     if (records.length > 0) {
-      await this.db.fileIndex.bulkPut(records);
+      await this.commitMutation(() => this.db.fileIndex.bulkPut(records));
     }
   }
 
@@ -1435,7 +1565,7 @@ export class IndexedDbVectorStore implements VectorStore {
         firstRecord.updated,
       );
       if (fileRecord) {
-        await this.db.fileIndex.put({ ...fileRecord, vectorCount });
+        await this.commitMutation(() => this.db.fileIndex.put({ ...fileRecord, vectorCount }));
       }
       filePathCursor = firstRecord.filePath;
       await yieldToEventLoop();
@@ -1474,7 +1604,7 @@ export class IndexedDbVectorStore implements VectorStore {
 
   private async deleteFilePaths(filePaths: readonly string[]): Promise<void> {
     if (filePaths.length === 0) return;
-    await this.db.transaction('rw', this.db.vectors, this.db.fileIndex, async () => {
+    await this.commitMutation(async () => {
       await this.db.vectors
         .where('filePath')
         .anyOf([...filePaths])
@@ -1565,6 +1695,7 @@ async function statVaultPath(adapter: DataAdapter, path: string) {
 /** 간단한 인메모리 벡터 저장소 (테스트/폴백용) */
 export class MemoryVectorStore implements VectorStore {
   private entries: VectorEntry[];
+  private readonly sourceMetadataRecords = new Map<string, Pick<FileIndexRecord, 'sourceMetadata' | 'sourceMetadataHash'>>();
   private readonly emptyFileRecords = new Map<string, FileIndexRecord>();
   private runtimeIndex: RustVectorRuntimeIndex | null = null;
   private ivfRuntimeIndexes = new BoundedLruCache<string, RustIvfRuntimeIndex>(
@@ -1594,6 +1725,7 @@ export class MemoryVectorStore implements VectorStore {
 
   replaceFileEntries(filePath: string, entries: VectorEntry[]): Promise<void> {
     this.emptyFileRecords.delete(filePath);
+    this.sourceMetadataRecords.delete(filePath);
     this.entries = applyVectorStoreMutationPlan(
       this.entries,
       entries,
@@ -1607,8 +1739,18 @@ export class MemoryVectorStore implements VectorStore {
     return Promise.resolve();
   }
 
+  async replaceBatchFileEntries(
+    batches: readonly { filePath: string; entries: VectorEntry[]; sourceMetadata?: SourceMetadata; sourceMetadataHash?: string }[],
+  ): Promise<void> {
+    for (const batch of batches) {
+      await this.replaceFileEntries(batch.filePath, batch.entries);
+      if (batch.sourceMetadata) this.sourceMetadataRecords.set(batch.filePath, { sourceMetadata: batch.sourceMetadata, sourceMetadataHash: batch.sourceMetadataHash });
+    }
+  }
+
   removeByFilePath(filePath: string): Promise<number> {
     this.emptyFileRecords.delete(filePath);
+    this.sourceMetadataRecords.delete(filePath);
     const plan = planVectorStoreRemoveFileRust(
       this.entries.map((entry) => entry.metadata.filePath),
       filePath,
@@ -1626,8 +1768,9 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   refreshFileIndexRevision(
-    record: Pick<FileIndexRecord, 'filePath' | 'sourceMtime' | 'sourceSize' | 'contentHash'>,
+    record: Pick<FileIndexRecord, 'filePath' | 'sourceMtime' | 'sourceSize' | 'contentHash' | 'sourceMetadata' | 'sourceMetadataHash'>,
   ): Promise<boolean> {
+    if (record.sourceMetadata) this.sourceMetadataRecords.set(record.filePath, { sourceMetadata: record.sourceMetadata, sourceMetadataHash: record.sourceMetadataHash });
     const emptyRecord = this.emptyFileRecords.get(record.filePath);
     let found = false;
     if (emptyRecord) {
@@ -1636,6 +1779,7 @@ export class MemoryVectorStore implements VectorStore {
         sourceMtime: record.sourceMtime,
         sourceSize: record.sourceSize,
         contentHash: record.contentHash,
+        ...(record.sourceMetadata ? { sourceMetadata: record.sourceMetadata, sourceMetadataHash: record.sourceMetadataHash } : {}),
         updated: Date.now(),
       });
       found = true;
@@ -1679,6 +1823,7 @@ export class MemoryVectorStore implements VectorStore {
   async clear(): Promise<void> {
     this.entries = [];
     this.emptyFileRecords.clear();
+    this.sourceMetadataRecords.clear();
     this.invalidateRuntimeIndex();
     return Promise.resolve();
   }
@@ -1735,7 +1880,7 @@ export class MemoryVectorStore implements VectorStore {
     const records = fileIndexRecordsFromRust(this.entries, Date.now());
     const vectorPaths = new Set(records.map((record) => record.filePath));
     return Promise.resolve([
-      ...records,
+      ...records.map((record) => ({ ...record, ...this.sourceMetadataRecords.get(record.filePath) })),
       ...[...this.emptyFileRecords.values()].filter((record) => !vectorPaths.has(record.filePath)),
     ]);
   }

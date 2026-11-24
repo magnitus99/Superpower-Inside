@@ -1,16 +1,39 @@
 import type { RagIndexingSchedulerStatus } from './indexing-scheduler';
 import type { RustRagIndexingEtaPlan } from './rust-core';
+import type { RagGenerationSnapshot } from './runtime-generation';
+
+import type { RagRuntimeWorkProgress } from './runtime-work-progress';
+export type { RagRuntimeWorkProgress } from './runtime-work-progress';
+
+export type RagIndexingActivity = 'preparing' | 'indexing' | 'settling' | 'paused' | 'partial' | 'cancelled' | 'failed';
 
 /** 채팅·검색 화면이 진행 상황을 보여 줄 때 쓰는 색인 요약입니다. */
 export interface RagIndexingProgressSummary {
+  work?: RagRuntimeWorkProgress | null;
   phase: RagIndexingSchedulerStatus['phase'];
   completedFiles: number;
   totalFiles: number;
   currentFileEmbeddedChunks: number | null;
   currentFileTotalChunks: number | null;
   etaRemainingMs: number | null;
+  activity?: RagIndexingActivity;
+  pauseReason?: 'user' | 'performance' | 'unknown';
+  servingAvailable?: boolean;
+  totalFilesKnown?: boolean;
+  processedFiles?: number | null;
+  failedFiles?: number | null;
+  partialFiles?: number | null;
+  skippedFiles?: number | null;
+  stage?: NonNullable<RagIndexingSchedulerStatus['progress']>['stage'];
+  etaConfidence?: RustRagIndexingEtaPlan['confidence'];
+  etaReason?: string;
+  etaLowerRemainingMs?: number | null;
+  etaUpperRemainingMs?: number | null;
+  pipelineRemainingMs?: number | null;
+  inferenceRemainingMs?: number | null;
+  pipelineConfidence?: RustRagIndexingEtaPlan['confidence'];
   /** 키워드 색인을 IndexedDB에서 다시 읽는 중이면 그 진행입니다. */
-  keywordRestore?: { processedDocuments: number; expectedDocuments: number } | null;
+  keywordRestore?: { processedDocuments: number; expectedDocuments: number | null } | null;
 }
 
 /**
@@ -20,7 +43,19 @@ export interface RagIndexingProgressSummary {
  */
 export function summarizeRagActivity(input: {
   status: RagIndexingSchedulerStatus | null;
-  keywordRestore: { processedDocuments: number; expectedDocuments: number } | null;
+  keywordRestore: { processedDocuments: number; expectedDocuments: number | null } | null;
+  generation?: Pick<RagGenerationSnapshot, 'availability' | 'building'>;
+  work?: RagRuntimeWorkProgress | null;
+  pausedByUser?: boolean;
+}): RagIndexingProgressSummary | null {
+  const summary = input.generation || input.pausedByUser ? summarizeGenerationActivity(input) : summarizeLegacyActivity(input);
+  if (!input.work) return summary;
+  return { ...(summary ?? { phase: 'preparing', completedFiles: 0, totalFiles: 0, currentFileEmbeddedChunks: null, currentFileTotalChunks: null, etaRemainingMs: null, activity: 'preparing', totalFilesKnown: false }), servingAvailable: input.generation?.availability === 'usable', work: input.work };
+}
+
+function summarizeLegacyActivity(input: {
+  status: RagIndexingSchedulerStatus | null;
+  keywordRestore: { processedDocuments: number; expectedDocuments: number | null } | null;
 }): RagIndexingProgressSummary | null {
   const indexing = summarizeRagIndexingProgress(input.status);
   if (indexing) return indexing;
@@ -45,6 +80,10 @@ export function summarizeRagIndexingProgress(
   status: RagIndexingSchedulerStatus | null,
 ): RagIndexingProgressSummary | null {
   if (!status?.running) return null;
+  return summarizeProgress(status);
+}
+
+function summarizeProgress(status: Pick<RagIndexingSchedulerStatus, 'phase' | 'progress'>): RagIndexingProgressSummary {
   const progress = status.progress;
   if (!progress) {
     return {
@@ -66,6 +105,54 @@ export function summarizeRagIndexingProgress(
     currentFileTotalChunks:
       progress.currentFileTotalChunks > 0 ? progress.currentFileTotalChunks : null,
     etaRemainingMs: reliableEtaRemainingMs(progress.eta),
+  };
+}
+
+function summarizeGenerationActivity(input: {
+  status: RagIndexingSchedulerStatus | null;
+  keywordRestore: { processedDocuments: number; expectedDocuments: number | null } | null;
+  generation?: Pick<RagGenerationSnapshot, 'availability' | 'building'>;
+  pausedByUser?: boolean;
+}): RagIndexingProgressSummary | null {
+  const building = input.generation?.building;
+  const pendingBuilding = building && building.status !== 'complete' ? building : null;
+  const status = pendingBuilding ? pendingBuilding.indexing : input.status;
+  const paused = input.pausedByUser || pendingBuilding?.status === 'paused' || status?.phase === 'paused';
+  let activity: RagIndexingActivity;
+  let summary: RagIndexingProgressSummary | null;
+  if (paused || pendingBuilding) {
+    if (paused) activity = 'paused';
+    else if (pendingBuilding?.status === 'partial' || pendingBuilding?.status === 'failed' || pendingBuilding?.status === 'cancelled') activity = pendingBuilding.status;
+    else activity = status?.progress?.pipeline?.lifecycle === 'finalizing' ? 'settling'
+      : status?.running ? 'indexing' : status?.lastResult ? 'settling' : 'preparing';
+    summary = summarizeProgress(status ?? { phase: 'preparing', progress: null });
+  } else {
+    summary = summarizeRagActivity({ status, keywordRestore: input.keywordRestore });
+    activity = summary?.keywordRestore || !status?.progress ? 'preparing' : 'indexing';
+  }
+  if (!summary) return null;
+  const progress = summary.keywordRestore ? null : status?.progress;
+  const estimate = activity === 'indexing' ? progress?.eta : null;
+  const showEta = summary.etaRemainingMs !== null && estimate !== null && estimate !== undefined;
+  return {
+    ...summary,
+    activity,
+    pauseReason: paused ? input.pausedByUser ? 'user' : status?.phase === 'paused' ? 'performance' : 'unknown' : undefined,
+    servingAvailable: input.generation?.availability === 'usable',
+    totalFilesKnown: progress?.pipeline?.totalKnown ?? !!progress,
+    processedFiles: progress?.processedFiles ?? null,
+    failedFiles: progress?.failedFiles ?? null,
+    partialFiles: progress?.partialFiles ?? null,
+    skippedFiles: progress?.skipped ?? null,
+    stage: activity === 'settling' ? 'committing' : progress?.stage ?? 'preparing',
+    etaRemainingMs: showEta ? summary.etaRemainingMs : null,
+    etaConfidence: showEta ? estimate.confidence : 'calculating',
+    etaReason: activity === 'settling' ? 'awaiting-generation-commit' : activity === 'indexing' ? estimate?.confidenceReason ?? activity : activity,
+    etaLowerRemainingMs: showEta ? estimate.lowerRemainingMs : null,
+    etaUpperRemainingMs: showEta ? estimate.upperRemainingMs : null,
+    pipelineRemainingMs: estimate?.pipelineRemainingMs ?? null,
+    inferenceRemainingMs: estimate?.inferenceRemainingMs ?? null,
+    pipelineConfidence: estimate?.pipelineConfidence ?? 'calculating',
   };
 }
 

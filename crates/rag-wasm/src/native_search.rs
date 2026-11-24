@@ -505,7 +505,9 @@ fn matching_passages(
                 if exact {
                     line.contains(query)
                 } else if match_mode == "phrase" {
-                    line.to_lowercase().contains(&query.to_lowercase())
+                    super::normalize_search_text(line)
+                        .to_lowercase()
+                        .contains(&super::normalize_search_text(query).to_lowercase())
                 } else {
                     super::count_keyword_matches(&primary, line) > 0
                 }

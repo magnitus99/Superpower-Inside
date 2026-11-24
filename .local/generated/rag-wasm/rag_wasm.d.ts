@@ -143,6 +143,54 @@ export class IvfRuntimeIndex {
 }
 
 /**
+ * 완전한 source summary만 받는 작은 checked reducer입니다.
+ */
+export class LiteralInventoryTotals {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * 완전 summary를 UTF-16 path 오름차순으로 한 번만 수락합니다.
+     */
+    append_source_json(summary_json: string): boolean;
+    /**
+     * expectedSources와 수락한 수가 같을 때만 완전 총계입니다.
+     */
+    finish_json(): string;
+    /**
+     * needle identity와 expectedSources를 고정합니다.
+     */
+    constructor(input_json: string);
+}
+
+/**
+ * 개별 source의 fail-closed literal scanner이며 reference는 verified citation이 아닙니다.
+ */
+export class LiteralSourceScanner {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * 순서·주소·codepoint 경계가 연속하는 원문 블록만 추가합니다.
+     */
+    append_block_json(input_json: string): boolean;
+    /**
+     * v1 header와 needle을 검사하고 원문 하나를 예약합니다.
+     */
+    constructor(input_json: string);
+    /**
+     * 최대 256건·1MiB 페이지이며 미수록 reference의 cursor는 전진하지 않습니다.
+     */
+    next_page_json(max_matches: number, max_bytes: number): string;
+    /**
+     * 모든 블록·실제 길이·hash·charge가 맞아야 scan을 허용합니다.
+     */
+    seal_input(): boolean;
+    /**
+     * 완전히 배출한 source에만 집계 성공을 반환합니다.
+     */
+    summary_json(): string;
+}
+
+/**
  * JS wrapper가 재사용할 수 있는 normalized vector runtime index.
  */
 export class VectorRuntimeIndex {
@@ -176,6 +224,10 @@ export class VectorRuntimeIndex {
 export class XlsxSourceText {
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * 본문 없는 part 원장은 인용 구간과 별도로 전달합니다.
+     */
+    metadata_parts_json(): string;
     /**
      * ZIP XML을 순차적으로 읽어 전체 본문을 만들거나 명시적인 실패를 반환합니다.
      */
@@ -273,6 +325,12 @@ export function create_entries_fingerprint(entry_ids_json: string, content_hashe
  * Creates a collision-resistant deterministic key for one namespaced `IndexedDB` record.
  */
 export function create_indexed_db_record_key(namespace: string, value: string): string;
+
+/**
+ * 바이트를 검증하며 probe에서는 본문을 wire에 복제하지 않는다.
+ * 빈 바이트와 실제 크기를 넘기면 호스트 I/O 전에 메모리 예산을 확인할 수 있다.
+ */
+export function decode_source_bytes_json(bytes: Uint8Array, include_text: boolean, source_size: number): string;
 
 /**
  * Derives a conservative coverage receipt from successful native-vault tool result payloads.
@@ -701,6 +759,12 @@ export function plan_indexed_review_segments_json(input: string, max_chars: numb
 export function plan_indexed_search_queries_json(input: string): string;
 
 /**
+ * 다음 로컬 BG 배치와 추론 중 source 한 개의 추가 admission만 계산한다.
+ * baseline 실행의 중단·물리 슬롯 해제·작업자 증설 권한은 반환하지 않는다.
+ */
+export function plan_local_rag_admission_json(input_json: string): string;
+
+/**
  * MCP server 후보 순서를 Rust에서 계산한다.
  */
 export function plan_mcp_server_candidates_json(preferred_server_names_json: string, enabled_server_names_json: string, connection_statuses_json: string): string;
@@ -855,9 +919,19 @@ export function plan_rag_file_type_summary_json(files_json: string, no_extension
 export function plan_rag_indexing_eta_json(input_json: string): string;
 
 /**
+ * 본문 판정 이전의 명시적 색인 계획입니다. 후보를 검증 완료로 해석하지 않습니다.
+ */
+export function plan_rag_indexing_manifest_json(files_json: string, exclude_paths_json: string, exclude_exts_json: string): string;
+
+/**
  * Plans one performance-guard state transition from deterministic JSON input.
  */
 export function plan_rag_performance_guard_json(input_json: string): string;
+
+/**
+ * 실제 단위 관측의 단계 ETA이며 미관측 후속 작업을 추정하지 않습니다.
+ */
+export function plan_rag_runtime_work_eta_json(payload: string): string;
 
 /**
  * RAG index status summary와 update 대상 document plan을 만든다.
@@ -945,6 +1019,11 @@ export function plan_retired_artifacts_json(raw: string): string;
 export function plan_session_title_json(messages_json: string, generated_title: string): string;
 
 /**
+ * 원문 본문의 비중첩 블록 계획이며 실패에 본문을 넣지 않습니다.
+ */
+export function plan_source_body_json(text: string): string;
+
+/**
  * 현재 내용 기반 청크 ID와 일치하는 저장 벡터의 이관 인덱스를 반환합니다.
  */
 export function plan_source_chunk_import_indices_json(input_json: string): string;
@@ -968,6 +1047,11 @@ export function plan_source_processing_json(input_json: string): string;
  * assistant 답변에서 출처 참조와 path alias plan을 `JSON` 문자열로 만든다.
  */
 export function plan_source_references_json(content: string): string;
+
+/**
+ * 0부터 시작하는 비중첩 구간을 검증하고 1부터 시작하는 절대 행 청크를 반환합니다.
+ */
+export function plan_source_segment_chunks_json(path: string, extension: string, content: string, max_size: number, overlap: number, segments_json: string): string;
 
 /**
  * source validation에 필요한 verified citation과 vault alias probe 입력을 `JSON` 문자열로 만든다.
@@ -1073,6 +1157,17 @@ export function plan_vector_store_replace_file_json(existing_file_paths_json: st
  * vector store stats와 indexed file path plan을 `JSON` 문자열로 만든다.
  */
 export function plan_vector_store_stats_json(file_paths_json: string, now: number): string;
+
+/**
+ * 실제 바이너리는 평문 64MiB 한도를 적용하기 전에 구조 추출기로 보냅니다.
+ * PDF의 입력은 worker가 소유한 같은 buffer를 PDF worker에 이동해야 합니다.
+ */
+export function prepare_source_bytes_json(extension: string, bytes: Uint8Array, preparation_json: string): string;
+
+/**
+ * PDF 추출·완전성 및 캐시 결과도 동일한 Rust 준비 계약으로 계산합니다.
+ */
+export function prepare_source_text_json(extension: string, source_json: string, preparation_json: string): string;
 
 /**
  * Returns the Rust-owned delay for a recovery attempt, or zero when the session is exhausted.
@@ -1221,6 +1316,8 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_bm25runtimeindex_free: (a: number, b: number) => void;
     readonly __wbg_ivfruntimeindex_free: (a: number, b: number) => void;
+    readonly __wbg_literalinventorytotals_free: (a: number, b: number) => void;
+    readonly __wbg_literalsourcescanner_free: (a: number, b: number) => void;
     readonly __wbg_vectorruntimeindex_free: (a: number, b: number) => void;
     readonly __wbg_xlsxsourcetext_free: (a: number, b: number) => void;
     readonly analyze_retrieval_sources: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
@@ -1260,6 +1357,7 @@ export interface InitOutput {
     readonly create_context_preview: (a: number, b: number) => [number, number];
     readonly create_entries_fingerprint: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly create_indexed_db_record_key: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly decode_source_bytes_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly derive_native_tool_coverage_receipt_json: (a: number, b: number) => [number, number];
     readonly derive_research_coverage_receipt_json: (a: number, b: number) => [number, number];
     readonly embedding_gemma_inputs_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1289,6 +1387,14 @@ export interface InitOutput {
     readonly ivfruntimeindex_new: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly ivfruntimeindex_query: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly ivfruntimeindex_row_count: (a: number) => number;
+    readonly literalinventorytotals_append_source_json: (a: number, b: number, c: number) => number;
+    readonly literalinventorytotals_finish_json: (a: number) => [number, number];
+    readonly literalinventorytotals_new: (a: number, b: number) => number;
+    readonly literalsourcescanner_append_block_json: (a: number, b: number, c: number) => number;
+    readonly literalsourcescanner_new: (a: number, b: number) => number;
+    readonly literalsourcescanner_next_page_json: (a: number, b: number, c: number) => [number, number];
+    readonly literalsourcescanner_seal_input: (a: number) => number;
+    readonly literalsourcescanner_summary_json: (a: number) => [number, number];
     readonly local_model_range_matches: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly merge_indexed_evidence_plans_json: (a: number, b: number) => [number, number];
     readonly migrate_stored_mcp_servers_json: (a: number, b: number) => [number, number];
@@ -1345,6 +1451,7 @@ export interface InitOutput {
     readonly plan_indexed_review_inventory_json: (a: number, b: number) => [number, number];
     readonly plan_indexed_review_segments_json: (a: number, b: number, c: number) => [number, number];
     readonly plan_indexed_search_queries_json: (a: number, b: number) => [number, number];
+    readonly plan_local_rag_admission_json: (a: number, b: number) => [number, number];
     readonly plan_mcp_server_candidates_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_merged_retrieval_candidates: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_merged_retrieval_candidates_by_entry_id: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
@@ -1374,7 +1481,9 @@ export interface InitOutput {
     readonly plan_rag_file_indexability_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_rag_file_type_summary_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_rag_indexing_eta_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_indexing_manifest_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly plan_rag_performance_guard_json: (a: number, b: number) => [number, number];
+    readonly plan_rag_runtime_work_eta_json: (a: number, b: number) => [number, number];
     readonly plan_rag_status_json: (a: number, b: number) => [number, number];
     readonly plan_rag_storage_health_json: (a: number, b: number) => [number, number];
     readonly plan_reference_file_indices_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1391,11 +1500,13 @@ export interface InitOutput {
     readonly plan_research_summary_batches_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_retired_artifacts_json: (a: number, b: number) => [number, number];
     readonly plan_session_title_json: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly plan_source_body_json: (a: number, b: number) => [number, number];
     readonly plan_source_chunk_import_indices_json: (a: number, b: number) => [number, number];
     readonly plan_source_chunks_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_source_metadata_json: (a: number, b: number) => [number, number];
     readonly plan_source_processing_json: (a: number, b: number) => [number, number];
     readonly plan_source_references_json: (a: number, b: number) => [number, number];
+    readonly plan_source_segment_chunks_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly plan_source_validation_inputs_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_source_validation_warnings_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly plan_stale_index_source_paths_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
@@ -1417,6 +1528,8 @@ export interface InitOutput {
     readonly plan_vector_store_remove_file_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly plan_vector_store_replace_file_json: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly plan_vector_store_stats_json: (a: number, b: number, c: number) => [number, number];
+    readonly prepare_source_bytes_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly prepare_source_text_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly rag_automatic_recovery_delay_ms: (a: number) => number;
     readonly rank_top_k_pairs: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly recall_at_k: (a: number, b: number, c: number, d: number, e: number) => number;
@@ -1448,6 +1561,7 @@ export interface InitOutput {
     readonly vectorruntimeindex_rank_top_k_filtered: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly vectorruntimeindex_row_count: (a: number) => number;
     readonly verify_indexed_evidence_json: (a: number, b: number) => [number, number];
+    readonly xlsxsourcetext_metadata_parts_json: (a: number) => [number, number];
     readonly xlsxsourcetext_new: (a: number, b: number) => number;
     readonly xlsxsourcetext_reason: (a: number) => [number, number];
     readonly xlsxsourcetext_segments_json: (a: number) => [number, number];

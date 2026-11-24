@@ -28,9 +28,15 @@ const formats = new Set([
   'pdf',
   'epub',
   'docx',
+  'dotx',
   'odt',
+  'odp',
+  'ods',
   'pptx',
+  'potx',
+  'ppsx',
   'xlsx',
+  'xltx',
   'hwpx',
   'md',
   'txt',
@@ -65,7 +71,7 @@ for (const entry of await readdir(directory, { withFileTypes: true })) {
     const source =
       extension === 'pdf'
         ? await extractPdf(bytes)
-        : extension === 'xlsx'
+        : extension === 'xlsx' || extension === 'xltx'
           ? await extractXlsx(bytes)
           : core.isExtractableSourceExtensionRust(extension)
             ? core.extractSourceTextRust(extension, bytes)

@@ -82,4 +82,4 @@ Obsidian 데스크톱 플러그인. 제품 의도·경계·품질 요구의 정�
 - PR CI는 `dev` 기능 PR에서 범위 검사를, `main` 릴리스 PR에서 `security:full` 전체 검사를 실행합니다. 태그 릴리스 workflow는 `dev`→`main` squash merge·버전·자산을 검증한 뒤 초안 Release를 만들고 전체 테스트를 중복 실행하지 않습니다.
 - UI/DOM/CSS/카피 배치·상태·모션·접근성 변경은 `npm run preview:verify`로 헤드리스 Chrome 고정 뷰포트 스크린샷과 DOM 계약을 `.thinkrail/context/screens/obsidian-preview/`에 남기고 직접 확인합니다. 정상·접힘/펼침·빈 상태·오류·disabled·진행 중·좁은 폭·테마·focus·대비를 포함합니다.
 - Patina 온라인 검사는 사용자가 명시적으로 실행을 요청할 때만 수행합니다. 기본 `npm run copy:check`는 오프라인이며, 온라인은 실행 시점에 `PATINA_PI_MODEL`·`PATINA_PI_THINKING`을 입력받습니다. 훅·CI·릴리스 자동화에는 넣지 않습니다.
-- 로컬 검사는 설치된 의존성·생성물을 사용하며 모델과 네트워크를 호출하지 않습니다. Rust는 `--frozen`으로 검사합니다. 완료 보고에는 실제 실행한 명령·종료 상태·미실행 항목을 포함합니다.
+- 로컬 검사는 설치된 의존성·생성물을 사용하며 네트워크·모델 호출·자산 준비를 임의 추가하거나 폴백하지 않습니다. 기존 검사에 포함된 설치 모델 smoke와 보안·배포 명령의 실행 범위는 `engineering-contract`를 따르고, Rust 로컬 검사는 `--frozen`을 사용합니다. 완료 보고에는 실제 실행한 명령·종료 상태·미실행 항목을 포함합니다.

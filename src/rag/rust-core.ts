@@ -1,3 +1,6 @@
+import * as ragWasm from '../../.local/generated/rag-wasm/rag_wasm';
+import { isRustSourceBodyPlan, type RustSourceBodyPlan } from './source-body';
+export type { RustSourceBodyPlan, RustSourceBodyBlockRange } from './source-body';
 import type {
   ArtifactRecord,
   RetiredArtifactContext,
@@ -37,8 +40,10 @@ import {
   plan_tool_result_summary_json,
   plan_chat_unique_result_indices_json,
   plan_source_chunks_json,
+  plan_source_segment_chunks_json,
   plan_source_chunk_import_indices_json,
   extract_source_text_json,
+  decode_source_bytes_json,
   is_extractable_source_extension,
   plan_source_processing_json,
   find_reusable_prompt,
@@ -974,6 +979,29 @@ export interface RustRagAutomaticRecoveryFileInput {
   size: number;
 }
 
+export interface RustRagRecoveryPartialRecord {
+  mtime?: number;
+  size?: number;
+  contentHash?: string;
+  sourceMetadataHash?: string;
+  partial: boolean;
+  hasCompleteMetadata: boolean;
+}
+
+export interface RustRagAutomaticRecoveryBatchFileInput extends RustRagAutomaticRecoveryFileInput {
+  invalidated?: boolean;
+  contentHash?: string;
+  sourceMetadataHash?: string;
+  corpusRecord?: RustRagRecoveryPartialRecord;
+  vectorRecord?: RustRagRecoveryPartialRecord;
+}
+
+export interface RagAutomaticRecoveryPendingState {
+  pendingDocumentCount: number;
+  actionableDocumentCount: number;
+  deferredDocumentCount: number;
+}
+
 export interface RustRagAutomaticRecoveryPlan {
   fingerprint: string;
   requiresRecovery: boolean;
@@ -983,7 +1011,8 @@ export interface RustRagAutomaticRecoveryPlan {
   fileCount: number;
 }
 
-export interface RustRagAutomaticRecoveryBatchPlan {
+export interface RustRagAutomaticRecoveryBatchPlan extends RagAutomaticRecoveryPendingState {
+  deferredIndices: number[];
   eligibleIndices: number[];
   batchIndices: number[];
   selectedSourceBytes: number;
@@ -1044,9 +1073,11 @@ export interface RustRagStatusFileInput {
   path: string;
   mtime: number;
   size: number;
+  failureReason?: string;
 }
 
 export interface RustRagStatusRecordInput {
+  sourceIncomplete?: boolean;
   filePath: string;
   sourceMtime?: number;
   sourceSize?: number;
@@ -1088,6 +1119,7 @@ export interface RustRagStatusPlan {
   missingDocuments: number;
   staleDocuments: number;
   unknownDocuments: number;
+  failedDocuments: number;
   excludedDocuments: number;
   totalVectors: number;
   updateRequiredDocuments: RustRagDocumentUpdatePlan[];
@@ -1104,6 +1136,36 @@ export type RustRagIndexingEtaBasis =
   | 'calibrated-estimate'
   | 'batch-rate'
   | 'elapsed-rate';
+
+export type RustRagIndexingEtaLifecycle = 'unknown' | 'running' | 'finalizing' | 'paused' | 'cancelled' | 'failed' | 'partial' | 'complete';
+
+export interface RustRagIndexingEtaWindowSample {
+  readonly startedAtMs: number;
+  readonly endedAtMs: number;
+  readonly logicalChunks: number;
+  readonly physicalWorkUnits: number | null;
+}
+
+export interface RustRagIndexingEtaInferenceSample {
+  readonly backend: 'cpu' | 'webgpu';
+  readonly workUnits: number;
+  readonly durationMs: number;
+  readonly endedAtMs: number;
+}
+
+export interface RustRagIndexingEtaPipelineInput {
+  readonly lifecycle: RustRagIndexingEtaLifecycle;
+  readonly totalKnown: boolean;
+  readonly processedFiles: number;
+  readonly failedFiles: number;
+  readonly partialFiles: number;
+  readonly processedEstimatedChunks: number;
+  readonly processedPlannedChunks: number;
+  readonly observedAtMs: number;
+  readonly backend: 'cpu' | 'webgpu' | 'remote' | 'unknown';
+  readonly windowSamples: readonly RustRagIndexingEtaWindowSample[];
+  readonly inferenceSamples: readonly RustRagIndexingEtaInferenceSample[];
+}
 
 export interface RustRagIndexingEtaInput {
   nowMs: number;
@@ -1128,6 +1190,7 @@ export interface RustRagIndexingEtaInput {
   historicalMsPerChunk: number | null;
   historicalChunkEstimateRatio: number | null;
   historicalVariance: number | null;
+  pipeline?: RustRagIndexingEtaPipelineInput;
 }
 
 export interface RustRagIndexingEtaPlan {
@@ -1144,6 +1207,10 @@ export interface RustRagIndexingEtaPlan {
   upperRemainingMs: number | null;
   confidenceReason: string;
   etaConfidenceReason: string;
+  lifecycle: RustRagIndexingEtaLifecycle;
+  pipelineRemainingMs: number | null;
+  inferenceRemainingMs: number | null;
+  pipelineConfidence: RustRagIndexingEtaConfidence;
 }
 
 export interface RustRagFileTypeInput {
@@ -1259,11 +1326,16 @@ export interface RustRagFileTextProbeInput {
   index: number;
   readable: boolean;
   sample: string;
+  textValid?: boolean;
+  reason?: string;
 }
 
 export interface RustRagFileIndexabilityPlan {
   candidateIndices: number[];
   summaryInputs: RustRagFileTypeInput[];
+  failures: { index: number; reason: string }[];
+  policyExcludedIndices: number[];
+  unsupportedIndices: number[];
 }
 
 export interface RustSourceReferencePlan {
@@ -2400,14 +2472,14 @@ export function planRagAutomaticRecoveryRust(
 }
 
 export function planRagAutomaticRecoveryBatchRust(
-  files: readonly RustRagAutomaticRecoveryFileInput[],
+  files: readonly RustRagAutomaticRecoveryBatchFileInput[],
 ): RustRagAutomaticRecoveryBatchPlan | null {
   if (!files.every(isRagAutomaticRecoveryFileInput) || !ensureRustCore()) return null;
   try {
     const raw = plan_rag_automatic_recovery_batch_json(JSON.stringify(files));
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isRagAutomaticRecoveryBatchPlan(parsed) ? parsed : null;
+    return isRagAutomaticRecoveryBatchPlan(parsed, files.length) ? parsed : null;
   } catch {
     return null;
   }
@@ -2435,6 +2507,138 @@ export function ragAutomaticRecoveryDelayMsRust(attempt: number): number | null 
   } catch {
     return null;
   }
+}
+
+export interface RustLocalRagAdmissionState {
+  backend: 'cpu' | 'webgpu';
+  /** 직전 호출의 안전 상한이다. 현재 batch가 상한 이하여도 모든 축소를 감지한다. */
+  maxBatchSize: number;
+  batchSize: number;
+  healthySamples: number;
+  previousRate: number | null;
+  trialBaseRate: number | null;
+  lastSampleEndedAtMs: number | null;
+  lastLagMs: number | null;
+}
+
+/** 로컬 실제 miss 표본과 물리 원장만 받으며 원문·모델·설정은 다루지 않는다. */
+export interface RustLocalRagAdmissionInput {
+  backend: 'cpu' | 'webgpu';
+  maxBatchSize: number;
+  targetBatchMs: number;
+  maxLagMs: number;
+  sourceBudgetBytes: number;
+  nowMs: number;
+  foregroundPending: number;
+  physicalSourceCount: number;
+  physicalInferenceCount: number;
+  reservedSourceBytes: number;
+  plannedSourceBytes: number;
+  state: RustLocalRagAdmissionState | null;
+  sample: {
+    endedAtMs: number | null;
+    workUnits: number | null;
+    durationMs: number | null;
+    lagMs: number | null;
+    rssBytes: number | null;
+    availableBytes: number | null;
+  } | null;
+}
+
+/** 추가 최적화만 제어한다. baseline 중단이나 물리 작업 해제 명령은 아니다. */
+export interface RustLocalRagAdmissionPlan {
+  state: RustLocalRagAdmissionState;
+  nextBatchSize: number;
+  admitSourcePrefetch: boolean;
+}
+
+export function planLocalRagAdmissionRust(
+  input: RustLocalRagAdmissionInput,
+): RustLocalRagAdmissionPlan | null {
+  try {
+    if (!isLocalRagAdmissionInput(input) || !ensureRustCore()) return null;
+    const planner = resolveRustStringExport('plan_local_rag_admission_json');
+    if (!planner) return null;
+    const raw = planner(JSON.stringify(input));
+    if (typeof raw !== 'string' || raw.length === 0) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isStringRecordValueMap(parsed) || !isLocalRagAdmissionState(parsed.state)) return null;
+    return parsed.state.backend === input.backend &&
+      parsed.state.maxBatchSize === input.maxBatchSize &&
+      parsed.state.batchSize <= input.maxBatchSize &&
+      parsed.nextBatchSize === parsed.state.batchSize &&
+      typeof parsed.admitSourcePrefetch === 'boolean' &&
+      (parsed.state.lastSampleEndedAtMs === null || parsed.state.lastSampleEndedAtMs <= input.nowMs)
+      ? (parsed as unknown as RustLocalRagAdmissionPlan)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+// 아래 검증은 wire 타입·범위만 검사하며 admission 계산을 대신하지 않는다.
+function isLocalAdmissionNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+}
+
+function isLocalAdmissionU32(value: unknown): value is number {
+  return isValidNonNegativeInteger(value) && value <= 0xffff_ffff;
+}
+
+function isLocalAdmissionBytes(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isLocalRagAdmissionState(value: unknown): value is RustLocalRagAdmissionState {
+  if (!isStringRecordValueMap(value)) return false;
+  const nullableNumber = (number: unknown): boolean =>
+    number === null || isLocalAdmissionNumber(number);
+  const nullableRate = (rate: unknown): boolean =>
+    rate === null || (isLocalAdmissionNumber(rate) && rate > 0);
+  return (
+    (value.backend === 'cpu' || value.backend === 'webgpu') &&
+    isLocalAdmissionU32(value.maxBatchSize) && value.maxBatchSize > 0 &&
+    isLocalAdmissionU32(value.batchSize) && value.batchSize > 0 &&
+    value.batchSize <= value.maxBatchSize &&
+    isLocalAdmissionU32(value.healthySamples) && value.healthySamples <= 1 &&
+    nullableRate(value.previousRate) && nullableRate(value.trialBaseRate) &&
+    nullableNumber(value.lastSampleEndedAtMs) && nullableNumber(value.lastLagMs) &&
+    (value.trialBaseRate === null || (value.batchSize > 1 && value.previousRate !== null)) &&
+    ((value.healthySamples === 0 && value.batchSize === 1) || value.previousRate !== null) &&
+    (value.lastLagMs === null || value.lastSampleEndedAtMs !== null) &&
+    (value.previousRate === null ||
+      (value.lastSampleEndedAtMs !== null && value.lastLagMs !== null)) &&
+    (value.trialBaseRate === null ||
+      (value.healthySamples === 0 && value.trialBaseRate === value.previousRate))
+  );
+}
+
+function isLocalRagAdmissionInput(value: unknown): value is RustLocalRagAdmissionInput {
+  if (!isStringRecordValueMap(value)) return false;
+  if (
+    (value.backend !== 'cpu' && value.backend !== 'webgpu') ||
+    !isLocalAdmissionU32(value.maxBatchSize) || value.maxBatchSize === 0 ||
+    !isLocalAdmissionNumber(value.targetBatchMs) || value.targetBatchMs === 0 ||
+    !isLocalAdmissionNumber(value.maxLagMs) || value.maxLagMs === 0 ||
+    !isLocalAdmissionNumber(value.nowMs) || !isLocalAdmissionBytes(value.sourceBudgetBytes) ||
+    !isLocalAdmissionU32(value.foregroundPending) ||
+    !isLocalAdmissionU32(value.physicalSourceCount) ||
+    !isLocalAdmissionU32(value.physicalInferenceCount) ||
+    !isLocalAdmissionBytes(value.reservedSourceBytes) ||
+    !isLocalAdmissionBytes(value.plannedSourceBytes) ||
+    (value.state !== null && !isLocalRagAdmissionState(value.state))
+  ) return false;
+  if (value.sample === null) return true;
+  if (!isStringRecordValueMap(value.sample)) return false;
+  const sample = value.sample;
+  return (
+    (sample.endedAtMs === null || isLocalAdmissionNumber(sample.endedAtMs)) &&
+    (sample.workUnits === null || isLocalAdmissionU32(sample.workUnits)) &&
+    (sample.durationMs === null || isLocalAdmissionNumber(sample.durationMs)) &&
+    (sample.lagMs === null || isLocalAdmissionNumber(sample.lagMs)) &&
+    (sample.rssBytes === null || isLocalAdmissionBytes(sample.rssBytes)) &&
+    (sample.availableBytes === null || isLocalAdmissionBytes(sample.availableBytes))
+  );
 }
 
 export function planRagPerformanceGuardRust(
@@ -3075,7 +3279,9 @@ export function planRagFileIndexabilityRust(
     !files.every(isValidRagFileEligibilityInput) ||
     !excludePaths.every(isStringValue) ||
     !excludeExts.every(isStringValue) ||
-    !textProbes.every(isValidRagFileTextProbeInput)
+    !textProbes.every(isValidRagFileTextProbeInput) ||
+    textProbes.some((probe) => probe.index >= files.length) ||
+    new Set(textProbes.map((probe) => probe.index)).size !== textProbes.length
   ) {
     return null;
   }
@@ -3090,7 +3296,7 @@ export function planRagFileIndexabilityRust(
     );
     if (raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isRagFileIndexabilityPlan(parsed) ? parsed : null;
+    return isRagFileIndexabilityPlan(parsed, files.length) ? parsed : null;
   } catch {
     return null;
   }
@@ -6020,8 +6226,161 @@ export function planSourceProcessingRust(
   }
 }
 
-export interface RustSourceTextSegment {
+export const TEXT_DECODER_VERSION = 'strict-bytes-v4-body-blocks';
+
+export interface SourcePreparationConfig {
+  path: string;
+  chunkSize?: number;
+  overlap?: number;
+  maxChargeBytes?: number;
+  maxPreparedChunks?: number;
+}
+export interface RustPreparedSource {
+  bodyPlan?: RustSourceBodyPlan;
+  contentHash: string;
+  sourceMetadataHash: string;
+  sourceMetadataBytes: number;
+  chargeBytes: number;
+  chunks?: RustSourceChunk[];
+}
+export interface RustSourceReadResult extends RustSourceTextExtraction {
+  binary?: true;
+  prepared?: RustPreparedSource;
+}
+
+// 구 생성물은 명시적으로 실패합니다. 생성 glue를 수동 수정하거나 TS 계산으로 대체하지 않습니다.
+export interface SourcePreparationCore {
+  prepare_source_bytes_json(extension: string, bytes: Uint8Array, preparation: string): string;
+  prepare_source_text_json(extension: string, source: string, preparation: string): string;
+  plan_rag_indexing_manifest_json(files: string, paths: string, extensions: string): string;
+  plan_source_body_json(text: string): string;
+}
+const preparationCore = ragWasm as unknown as SourcePreparationCore;
+
+export interface LiteralSourceScannerCore {
+  append_block_json(input: string): boolean;
+  seal_input(): boolean;
+  next_page_json(maxMatches: number, maxBytes: number): string;
+  summary_json(): string;
+  free(): void;
+}
+export interface LiteralInventoryTotalsCore {
+  append_source_json(input: string): boolean;
+  finish_json(): string;
+  free(): void;
+}
+interface LiteralInventoryCore {
+  LiteralSourceScanner?: new (input: string) => LiteralSourceScannerCore;
+  LiteralInventoryTotals?: new (input: string) => LiteralInventoryTotalsCore;
+}
+export function createLiteralSourceScannerRust(input: unknown): LiteralSourceScannerCore | null {
+  if (!ensureRustCore()) return null;
+  const constructor = (ragWasm as unknown as LiteralInventoryCore).LiteralSourceScanner;
+  if (!constructor) return null;
+  try { return new constructor(JSON.stringify(input)); } catch { return null; }
+}
+export function createLiteralInventoryTotalsRust(input: unknown): LiteralInventoryTotalsCore | null {
+  if (!ensureRustCore()) return null;
+  const constructor = (ragWasm as unknown as LiteralInventoryCore).LiteralInventoryTotals;
+  if (!constructor) return null;
+  try { return new constructor(JSON.stringify(input)); } catch { return null; }
+}
+
+export function planSourceBodyRust(text: string): RustSourceBodyPlan | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const value: unknown = JSON.parse(preparationCore.plan_source_body_json(text));
+    return isRustSourceBodyPlan(value, text) ? value : null;
+  } catch { return null; }
+}
+
+export function prepareSourceBytesRust(extension: string, bytes: Uint8Array, preparation?: SourcePreparationConfig): RustSourceReadResult | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const result: unknown = JSON.parse(preparationCore.prepare_source_bytes_json(extension, bytes, preparation ? JSON.stringify(preparation) : ''));
+    return isRustSourceReadResult(result, preparation) ? result : null;
+  } catch { return null; }
+}
+export function prepareSourceTextRust(extension: string, source: RustSourceTextExtraction, preparation: SourcePreparationConfig): RustSourceReadResult | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const result: unknown = JSON.parse(preparationCore.prepare_source_text_json(extension, JSON.stringify(source), JSON.stringify(preparation)));
+    return isRustSourceReadResult(result, preparation) ? result : null;
+  } catch { return null; }
+}
+export function isRustSourceReadResult(value: unknown, preparation?: SourcePreparationConfig): value is RustSourceReadResult {
+  if (!isRustSourceTextExtraction(value)) return false;
+  const result = value as RustSourceReadResult;
+  if (result.ok ? result.reason !== null : (!result.reason || result.text !== '' || result.segments.length > 0 || result.prepared !== undefined)) return false;
+  if (result.binary !== undefined && (result.binary !== true || !result.ok || result.format !== 'pdf' || result.text !== '' || result.segments.length > 0 || result.prepared !== undefined)) return false;
+  const p = result.prepared;
+  if (p !== undefined && (!p || typeof p !== 'object' || Array.isArray(p))) return false;
+  return p === undefined || (result.ok && typeof p.contentHash === 'string' && typeof p.sourceMetadataHash === 'string' && /^[0-9a-f]{8}$/.test(p.contentHash) && /^[0-9a-f]{8}$/.test(p.sourceMetadataHash) &&
+    Number.isSafeInteger(p.sourceMetadataBytes) && p.sourceMetadataBytes >= 0 && Number.isSafeInteger(p.chargeBytes) && p.chargeBytes >= p.sourceMetadataBytes &&
+    (preparation?.maxChargeBytes === undefined || (Number.isSafeInteger(preparation.maxChargeBytes) && preparation.maxChargeBytes >= 0 && preparation.maxChargeBytes <= 1024 * 1024 * 1024 && p.chargeBytes <= preparation.maxChargeBytes)) &&
+    (preparation?.maxPreparedChunks === undefined || (Number.isSafeInteger(preparation.maxPreparedChunks) && preparation.maxPreparedChunks >= 0 && preparation.maxPreparedChunks <= 0xffff_ffff && (p.chunks?.length ?? 0) <= preparation.maxPreparedChunks)) &&
+    (p.bodyPlan === undefined || isRustSourceBodyPlan(p.bodyPlan, result.text)) &&
+    (p.chunks === undefined || (isChunkArray(p.chunks) && p.chunks.every((chunk) => typeof chunk.id === 'string' && typeof chunk.chunkHash === 'string' && /^[0-9a-f]{16}$/.test(chunk.chunkHash) &&
+      chunk.text.length > 0 && chunk.metadata.startLine >= 1 && chunk.metadata.endLine >= chunk.metadata.startLine &&
+      chunk.id.startsWith(`${chunk.metadata.filePath}::chunk::${chunk.chunkHash}::`) &&
+      (chunk.metadata.sourceSegment === undefined || (isValidNonNegativeInteger(chunk.metadata.sourceSegment) && chunk.metadata.sourceSegment < result.segments.length))))));
+}
+
+export function planRagIndexingManifestRust(files: readonly RustRagFileEligibilityInput[], excludePaths: readonly string[], excludeExts: readonly string[]): RustRagFileIndexabilityPlan | null {
+  if (!files.every(isValidRagFileEligibilityInput) || !excludePaths.every(isStringValue) || !excludeExts.every(isStringValue) || !ensureRustCore()) return null;
+  try {
+    const result: unknown = JSON.parse(preparationCore.plan_rag_indexing_manifest_json(JSON.stringify(files), JSON.stringify(excludePaths), JSON.stringify(excludeExts)));
+    return isRagFileIndexabilityPlan(result, files.length) ? result : null;
+  } catch { return null; }
+}
+
+export interface RustSourceByteDecoding {
+  ok: boolean;
+  text: string;
+  encoding: string | null;
+  reason: string | null;
+  basis: 'bom' | 'strict-unicode' | 'legacy-estimate' | null;
+  selectionReason: 'byte-order-mark' | 'zero-lane' | 'utf8' | 'iso-2022-jp-escape' | 'chardetng' | null;
+}
+
+/** 디코딩·형식 판정은 Rust에서만 수행하고 wire가 손상되면 닫습니다. */
+export function decodeSourceBytesRust(
+  bytes: Uint8Array,
+  includeText = true,
+  sourceSize = bytes.byteLength,
+): RustSourceByteDecoding | null {
+  if (!Number.isSafeInteger(sourceSize) || sourceSize < 0 || !ensureRustCore()) return null;
+  try {
+    const value: unknown = JSON.parse(decode_source_bytes_json(bytes, includeText, sourceSize));
+    if (
+      !isStringRecordValueMap(value) ||
+      typeof value.ok !== 'boolean' ||
+      typeof value.text !== 'string'
+    )
+      return null;
+    if (value.ok) {
+      if (typeof value.encoding !== 'string' || value.reason !== null ||
+          !((value.basis === 'bom' && value.selectionReason === 'byte-order-mark') ||
+            (value.basis === 'strict-unicode' && (value.selectionReason === 'zero-lane' || value.selectionReason === 'utf8')) ||
+            (value.basis === 'legacy-estimate' && (value.selectionReason === 'chardetng' || value.selectionReason === 'iso-2022-jp-escape')))) return null;
+      if (!includeText && value.text !== '') return null;
+    } else if (value.encoding !== null || typeof value.reason !== 'string' || value.reason.length === 0 ||
+        value.text !== '' || value.basis !== null || value.selectionReason !== null) {
+      return null;
+    }
+    return value as unknown as RustSourceByteDecoding;
+  } catch {
+    return null;
+  }
+}
+
+export interface RustSourceMetadataPart {
   label: string;
+  sourcePart?: string;
+  locator?: Record<string, unknown>;
+}
+
+export interface RustSourceTextSegment extends RustSourceMetadataPart {
   startLine: number;
   endLine: number;
 }
@@ -6030,7 +6389,8 @@ export interface RustSourceTextExtraction {
   ok: boolean;
   format: string;
   text: string;
-  segments: RustSourceTextSegment[];
+  segments: readonly RustSourceTextSegment[];
+  metadataParts?: readonly RustSourceMetadataPart[];
   reason: string | null;
 }
 
@@ -6058,7 +6418,7 @@ export function extractSourceTextRust(
   }
 }
 
-function isRustSourceTextExtraction(value: unknown): value is RustSourceTextExtraction {
+export function isRustSourceTextExtraction(value: unknown): value is RustSourceTextExtraction {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<RustSourceTextExtraction>;
   return (
@@ -6067,17 +6427,31 @@ function isRustSourceTextExtraction(value: unknown): value is RustSourceTextExtr
     typeof candidate.text === 'string' &&
     (candidate.reason === null || typeof candidate.reason === 'string') &&
     Array.isArray(candidate.segments) &&
-    candidate.segments.every(isRustSourceTextSegment)
+    candidate.segments.every(isRustSourceTextSegment) &&
+    (candidate.metadataParts === undefined || isSourceMetadataParts(candidate.metadataParts))
   );
 }
 
-function isRustSourceTextSegment(value: unknown): value is RustSourceTextSegment {
+export function isSourceMetadataParts(value: unknown): value is RustSourceMetadataPart[] {
+  return Array.isArray(value) && value.length <= 100_000 && value.every((part: unknown) =>
+    isSourceMetadataPart(part) && !('startLine' in part) && !('endLine' in part));
+}
+
+function isSourceMetadataPart(value: unknown): value is RustSourceMetadataPart {
+  if (!value || typeof value !== 'object') return false;
+  const part = value as Partial<RustSourceMetadataPart>;
+  return typeof part.label === 'string' && part.label.length <= 4096 &&
+    (part.sourcePart === undefined || typeof part.sourcePart === 'string') &&
+    (part.locator === undefined || (!!part.locator && typeof part.locator === 'object' && !Array.isArray(part.locator)));
+}
+
+export function isRustSourceTextSegment(value: unknown): value is RustSourceTextSegment {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<RustSourceTextSegment>;
   return (
-    typeof candidate.label === 'string' &&
-    Number.isSafeInteger(candidate.startLine) &&
-    Number.isSafeInteger(candidate.endLine)
+    isSourceMetadataPart(value) &&
+    Number.isSafeInteger(candidate.startLine) && candidate.startLine! >= 0 &&
+    Number.isSafeInteger(candidate.endLine) && candidate.endLine! >= candidate.startLine!
   );
 }
 
@@ -6097,6 +6471,57 @@ export function planSourceChunksRust(
     for (const chunk of parsed) {
       if (!('id' in chunk) || typeof chunk.id !== 'string') return null;
       if (!('chunkHash' in chunk) || typeof chunk.chunkHash !== 'string') return null;
+    }
+    return parsed as RustSourceChunk[];
+  } catch {
+    return null;
+  }
+}
+
+/** 구간 경계·절대 좌표 계산은 Rust가 전담합니다. */
+export function planSourceSegmentChunksRust(
+  path: string,
+  extension: string,
+  content: string,
+  maxChunkSize: number,
+  overlapChars: number,
+  segments: readonly RustSourceTextSegment[],
+): RustSourceChunk[] | null {
+  if (!ensureRustCore()) return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      plan_source_segment_chunks_json(
+        path,
+        extension,
+        content,
+        maxChunkSize,
+        overlapChars,
+        // 셀 원장은 파일에 한 번 보존하고 청킹 IPC에는 좌표·라벨만 전달합니다.
+        JSON.stringify(segments.map(({ label, startLine, endLine }) => ({ label, startLine, endLine }))),
+      ),
+    );
+    if (!isChunkArray(parsed)) return null;
+    for (const chunk of parsed) {
+      if (!('id' in chunk) || typeof chunk.id !== 'string') return null;
+      if (
+        !('chunkHash' in chunk) ||
+        typeof chunk.chunkHash !== 'string' ||
+        !/^[0-9a-f]{16}$/.test(chunk.chunkHash)
+      )
+        return null;
+      const prefix = `${path}::chunk::${chunk.chunkHash}::`;
+      if (!chunk.id.startsWith(prefix)) return null;
+      const ordinal = chunk.id.slice(prefix.length);
+      if (!/^(0|[1-9][0-9]*)$/.test(ordinal) || !Number.isSafeInteger(Number(ordinal))) return null;
+      if (chunk.metadata.filePath !== path || chunk.text.length === 0) return null;
+      if (chunk.metadata.sourceSegment !== undefined && (!isValidNonNegativeInteger(chunk.metadata.sourceSegment) || chunk.metadata.sourceSegment >= segments.length)) return null;
+      if (
+        !isValidNonNegativeInteger(chunk.metadata.startLine) ||
+        chunk.metadata.startLine < 1 ||
+        !isValidNonNegativeInteger(chunk.metadata.endLine) ||
+        chunk.metadata.endLine < chunk.metadata.startLine
+      )
+        return null;
     }
     return parsed as RustSourceChunk[];
   } catch {
@@ -7534,7 +7959,7 @@ function isRagAutomaticRecoveryFileInput(value: RustRagAutomaticRecoveryFileInpu
   return (
     isStringValue(value.path) &&
     value.path.trim().length > 0 &&
-    isValidNonNegativeInteger(value.mtime) &&
+    Number.isFinite(value.mtime) && value.mtime >= 0 && value.mtime <= Number.MAX_SAFE_INTEGER &&
     isValidNonNegativeInteger(value.size)
   );
 }
@@ -7555,14 +7980,24 @@ function isRagAutomaticRecoveryPlan(value: unknown): value is RustRagAutomaticRe
 
 function isRagAutomaticRecoveryBatchPlan(
   value: unknown,
+  fileCount: number,
 ): value is RustRagAutomaticRecoveryBatchPlan {
   if (!value || typeof value !== 'object') return false;
   const plan = value as Partial<RustRagAutomaticRecoveryBatchPlan>;
   return (
+    isValidNonNegativeInteger(plan.pendingDocumentCount) && plan.pendingDocumentCount === fileCount &&
+    isValidNonNegativeInteger(plan.actionableDocumentCount) &&
+    isValidNonNegativeInteger(plan.deferredDocumentCount) &&
+    plan.actionableDocumentCount + plan.deferredDocumentCount === plan.pendingDocumentCount &&
+    Array.isArray(plan.deferredIndices) &&
     Array.isArray(plan.eligibleIndices) &&
-    plan.eligibleIndices.every(isValidNonNegativeInteger) &&
     Array.isArray(plan.batchIndices) &&
-    plan.batchIndices.every(isValidNonNegativeInteger) &&
+    [plan.deferredIndices, plan.eligibleIndices, plan.batchIndices].every((indices) =>
+      Array.from(indices).every((index) => isValidNonNegativeInteger(index) && index < fileCount) && new Set(indices).size === indices.length) &&
+    plan.deferredIndices.length === plan.deferredDocumentCount &&
+    plan.eligibleIndices.length === plan.actionableDocumentCount &&
+    new Set([...plan.deferredIndices, ...plan.eligibleIndices]).size === fileCount &&
+    plan.batchIndices.every((index) => plan.eligibleIndices!.includes(index)) &&
     isValidNonNegativeInteger(plan.selectedSourceBytes)
   );
 }
@@ -7703,12 +8138,14 @@ function isVectorStoreIndexPlan(value: unknown, maxExclusive: number): value is 
 }
 
 function isValidRagStatusFileInput(input: RustRagStatusFileInput): boolean {
-  return isStringValue(input.path) && Number.isFinite(input.mtime) && Number.isFinite(input.size);
+  return isStringValue(input.path) && Number.isFinite(input.mtime) && Number.isFinite(input.size) &&
+    (input.failureReason === undefined || (isStringValue(input.failureReason) && input.failureReason.length > 0));
 }
 
 function isValidRagStatusRecordInput(input: RustRagStatusRecordInput): boolean {
   return (
     isStringValue(input.filePath) &&
+    (input.sourceIncomplete === undefined || typeof input.sourceIncomplete === 'boolean') &&
     (input.sourceMtime === undefined || Number.isFinite(input.sourceMtime)) &&
     (input.sourceSize === undefined || Number.isFinite(input.sourceSize)) &&
     (input.contentHash === undefined || isStringValue(input.contentHash)) &&
@@ -7740,6 +8177,9 @@ function isRagStatusPlan(value: unknown): value is RustRagStatusPlan {
     isValidNonNegativeInteger(plan.missingDocuments) &&
     isValidNonNegativeInteger(plan.staleDocuments) &&
     isValidNonNegativeInteger(plan.unknownDocuments) &&
+    isValidNonNegativeInteger(plan.failedDocuments) &&
+    (plan.failedDocuments ?? 0) <= (plan.unknownDocuments ?? 0) &&
+    plan.totalDocuments === (plan.healthyDocuments ?? 0) + (plan.missingDocuments ?? 0) + (plan.staleDocuments ?? 0) + (plan.unknownDocuments ?? 0) &&
     isValidNonNegativeInteger(plan.excludedDocuments) &&
     isValidNonNegativeInteger(plan.totalVectors) &&
     Array.isArray(plan.updateRequiredDocuments) &&
@@ -7800,8 +8240,71 @@ function isValidRagIndexingEtaInput(input: RustRagIndexingEtaInput): boolean {
     input.completedFileOverheadDurationsMs.every(Number.isFinite) &&
     isNullableFiniteNonNegativeNumber(input.historicalMsPerChunk) &&
     isNullableFiniteNonNegativeNumber(input.historicalChunkEstimateRatio) &&
-    isNullableFiniteNonNegativeNumber(input.historicalVariance)
+    isNullableFiniteNonNegativeNumber(input.historicalVariance) &&
+    (input.pipeline === undefined || isRagEtaPipelineInput(input.pipeline, input))
   );
+}
+
+function isEtaTime(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+}
+
+function isBoundedEtaArray(value: unknown, validate: (entry: unknown) => boolean): value is unknown[] {
+  if (!Array.isArray(value) || value.length > 64) return false;
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index) || !validate(value[index])) return false;
+  }
+  return true;
+}
+
+function isRagEtaLifecycle(value: unknown): value is RustRagIndexingEtaLifecycle {
+  return value === 'unknown' || value === 'running' || value === 'finalizing' || value === 'paused' ||
+    value === 'cancelled' || value === 'failed' || value === 'partial' || value === 'complete';
+}
+
+function isRagEtaPipelineInput(value: unknown, input: RustRagIndexingEtaInput): value is RustRagIndexingEtaPipelineInput {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const pipeline = value as Partial<RustRagIndexingEtaPipelineInput>;
+  if (!isRagEtaLifecycle(pipeline.lifecycle) || typeof pipeline.totalKnown !== 'boolean' ||
+    !isValidNonNegativeInteger(pipeline.processedFiles) || !isValidNonNegativeInteger(pipeline.failedFiles) ||
+    !isValidNonNegativeInteger(pipeline.partialFiles) || !isValidNonNegativeInteger(pipeline.processedEstimatedChunks) ||
+    !isValidNonNegativeInteger(pipeline.processedPlannedChunks) || !isEtaTime(input.nowMs) || !isEtaTime(input.startedAtMs) ||
+    !isEtaTime(pipeline.observedAtMs) || pipeline.observedAtMs < input.startedAtMs || pipeline.observedAtMs > input.nowMs ||
+    (pipeline.backend !== 'cpu' && pipeline.backend !== 'webgpu' && pipeline.backend !== 'remote' && pipeline.backend !== 'unknown')) return false;
+  if (input.completedFiles + pipeline.failedFiles + pipeline.partialFiles > pipeline.processedFiles ||
+    input.currentFileEmbeddedChunks > input.currentFileTotalChunks || input.completedEstimatedChunks > pipeline.processedEstimatedChunks ||
+    input.completedPlannedChunks > pipeline.processedPlannedChunks ||
+    (pipeline.totalKnown && (pipeline.processedFiles > input.totalFiles || pipeline.processedEstimatedChunks > input.totalEstimatedChunks)) ||
+    (input.planningComplete && pipeline.processedPlannedChunks > input.totalPlannedChunks)) return false;
+  if (pipeline.lifecycle === 'complete' && (!pipeline.totalKnown || pipeline.failedFiles !== 0 || pipeline.partialFiles !== 0 ||
+    input.completedFiles !== input.totalFiles || pipeline.processedFiles !== input.totalFiles ||
+    pipeline.processedEstimatedChunks !== input.totalEstimatedChunks || input.completedEstimatedChunks !== input.totalEstimatedChunks ||
+    (input.planningComplete && (pipeline.processedPlannedChunks !== input.totalPlannedChunks || input.completedPlannedChunks !== input.totalPlannedChunks)))) return false;
+  const duration = (entry: unknown): boolean => isNullableFiniteNonNegativeNumber(entry) && entry !== null;
+  if (![input.completedBatchDurationsMs, input.completedFileDurationsMs, input.completedFileOverheadDurationsMs]
+    .every((entries) => isBoundedEtaArray(entries, duration)) ||
+    ![input.completedBatchChunkCounts, input.completedFileChunkCounts, input.completedFileEstimatedChunkCounts, input.completedFileActualChunkCounts]
+      .every((entries) => isBoundedEtaArray(entries, isValidNonNegativeInteger))) return false;
+  const observedAtMs = pipeline.observedAtMs;
+  let previousEnd = input.startedAtMs;
+  if (!isBoundedEtaArray(pipeline.windowSamples, (entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const sample = entry as Partial<RustRagIndexingEtaWindowSample>;
+    if (!isEtaTime(sample.startedAtMs) || !isEtaTime(sample.endedAtMs) || sample.startedAtMs < previousEnd ||
+      sample.endedAtMs <= sample.startedAtMs || sample.endedAtMs > observedAtMs ||
+      !isValidNonNegativeInteger(sample.logicalChunks) || sample.logicalChunks === 0 ||
+      !(sample.physicalWorkUnits === null || isValidNonNegativeInteger(sample.physicalWorkUnits))) return false;
+    previousEnd = sample.endedAtMs;
+    return true;
+  })) return false;
+  return isBoundedEtaArray(pipeline.inferenceSamples, (entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const sample = entry as Partial<RustRagIndexingEtaInferenceSample>;
+    return (pipeline.backend === 'cpu' || pipeline.backend === 'webgpu') && sample.backend === pipeline.backend &&
+      isValidNonNegativeInteger(sample.workUnits) && sample.workUnits > 0 && typeof sample.durationMs === 'number' &&
+      Number.isFinite(sample.durationMs) && sample.durationMs > 0 && isEtaTime(sample.endedAtMs) &&
+      sample.endedAtMs <= input.nowMs && sample.endedAtMs - sample.durationMs >= input.startedAtMs;
+  });
 }
 
 function isRagIndexingEtaPlan(value: unknown): value is RustRagIndexingEtaPlan {
@@ -7831,7 +8334,20 @@ function isRagIndexingEtaPlan(value: unknown): value is RustRagIndexingEtaPlan {
     isNullableFiniteNonNegativeNumber(plan.lowerRemainingMs) &&
     isNullableFiniteNonNegativeNumber(plan.upperRemainingMs) &&
     isStringValue(plan.confidenceReason) &&
-    isStringValue(plan.etaConfidenceReason)
+    isStringValue(plan.etaConfidenceReason) &&
+    isRagEtaLifecycle(plan.lifecycle) &&
+    isNullableFiniteNonNegativeNumber(plan.pipelineRemainingMs) &&
+    isNullableFiniteNonNegativeNumber(plan.inferenceRemainingMs) &&
+    isRagIndexingEtaConfidence(plan.pipelineConfidence) &&
+    plan.completedFiles <= plan.totalFiles &&
+    (plan.remainingMs !== null || (plan.estimatedCompletionMs === null && plan.lowerRemainingMs === null && plan.upperRemainingMs === null)) &&
+    (plan.lifecycle === 'complete'
+      ? plan.confidence === 'complete' && plan.completedFiles === plan.totalFiles && plan.estimatedCompletionMs !== null &&
+        plan.remainingMs === 0 && plan.pipelineRemainingMs === 0 && plan.pipelineConfidence === 'complete' && plan.lowerRemainingMs === 0 && plan.upperRemainingMs === 0
+      : plan.confidence !== 'complete' && plan.pipelineConfidence !== 'complete' &&
+        (plan.lifecycle === 'unknown'
+          ? plan.pipelineRemainingMs === null && plan.inferenceRemainingMs === null && plan.pipelineConfidence === 'calculating'
+          : plan.remainingMs === null && plan.confidence === 'calculating'))
   );
 }
 
@@ -7884,7 +8400,10 @@ function isValidRagFileTextProbeInput(input: RustRagFileTextProbeInput): boolean
   return (
     isValidNonNegativeInteger(input.index) &&
     typeof input.readable === 'boolean' &&
-    isStringValue(input.sample)
+    (input.readable || input.textValid !== true) &&
+    isStringValue(input.sample) &&
+    (input.textValid === undefined || typeof input.textValid === 'boolean') &&
+    (input.reason === undefined || (isStringValue(input.reason) && input.reason.length > 0 && input.textValid !== true))
   );
 }
 
@@ -7892,14 +8411,27 @@ function isNonNegativeIntegerArray(value: unknown): value is number[] {
   return Array.isArray(value) && value.every(isValidNonNegativeInteger);
 }
 
-function isRagFileIndexabilityPlan(value: unknown): value is RustRagFileIndexabilityPlan {
+function isRagFileIndexabilityPlan(value: unknown, fileCount: number): value is RustRagFileIndexabilityPlan {
   if (!value || typeof value !== 'object') return false;
   const plan = value as Partial<RustRagFileIndexabilityPlan>;
   return (
     isNonNegativeIntegerArray(plan.candidateIndices) &&
     Array.isArray(plan.summaryInputs) &&
-    plan.summaryInputs.every(isValidRagFileTypeInput)
+    plan.summaryInputs.every(isValidRagFileTypeInput) &&
+    isNonNegativeIntegerArray(plan.policyExcludedIndices) &&
+    isNonNegativeIntegerArray(plan.unsupportedIndices) &&
+    Array.isArray(plan.failures) &&
+    plan.failures.every((failure) => failure && isValidNonNegativeInteger(failure.index) &&
+      isStringValue(failure.reason) && failure.reason.length > 0) &&
+    validInventoryIndices(plan, fileCount)
   );
+}
+
+function validInventoryIndices(plan: Partial<RustRagFileIndexabilityPlan>, fileCount: number): boolean {
+  const indices = [...(plan.candidateIndices ?? []), ...(plan.policyExcludedIndices ?? []),
+    ...(plan.unsupportedIndices ?? []), ...(plan.failures ?? []).map((failure) => failure.index)];
+  return indices.length === fileCount && new Set(indices).size === indices.length &&
+    indices.every((index) => index < fileCount);
 }
 
 function isRagFileTypeSummary(value: unknown): value is RustRagFileTypeSummary {
@@ -8519,4 +9051,45 @@ function decodeBase64ToBytes(base64: string): Uint8Array {
   }
 
   return Uint8Array.from(Buffer.from(base64, 'base64'));
+}
+
+export interface RustRagRuntimeWorkEtaInput {
+  terminal?: boolean;
+  startedAtMs: number;
+  nowMs: number;
+  processedUnits: number | null;
+  totalUnits: number | null;
+  samples: readonly { atMs: number; units: number }[];
+}
+export interface RustRagRuntimeWorkEtaPlan {
+  elapsedMs: number;
+  lastProgressAgeMs: number | null;
+  remainingMs: number | null;
+  ratePerSecond: number | null;
+  confidence: 'calculating' | 'low' | 'medium' | 'high';
+  etaReason: string;
+}
+
+/** 구 생성물에서도 공통 UI 모듈 로딩은 보존하고 새 계산만 닫습니다. */
+export function planRagRuntimeWorkEtaRust(input: RustRagRuntimeWorkEtaInput): RustRagRuntimeWorkEtaPlan | null {
+  const clock = (value: number): boolean => Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+  const count = (value: number | null): boolean => value === null || (Number.isSafeInteger(value) && value >= 0);
+  if ((input.terminal !== undefined && typeof input.terminal !== 'boolean') || !clock(input.startedAtMs) || !clock(input.nowMs) || !count(input.processedUnits) || !count(input.totalUnits) ||
+      input.samples.length > 64 || !input.samples.every((sample) => clock(sample.atMs) && count(sample.units))) return null;
+  if (!ensureRustCore()) return null;
+  try {
+    const wire = (ragWasm as unknown as { plan_rag_runtime_work_eta_json?: (payload: string) => string }).plan_rag_runtime_work_eta_json;
+    if (!wire) return null;
+    const parsed: unknown = JSON.parse(wire(JSON.stringify(input)));
+    if (!parsed || typeof parsed !== 'object') return null;
+    const result = parsed as Record<string, unknown>;
+    if (typeof result.elapsedMs !== 'number' || !Number.isFinite(result.elapsedMs) || result.elapsedMs < 0) return null;
+    for (const key of ['lastProgressAgeMs', 'remainingMs', 'ratePerSecond']) {
+      const value = result[key];
+      if (value !== null && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) return null;
+    }
+    if (!['calculating', 'low', 'medium', 'high'].includes(String(result.confidence)) ||
+        !['insufficient-samples', 'stalled', 'observed-rate', 'unknown-total', 'awaiting-settlement', 'interrupted'].includes(String(result.etaReason))) return null;
+    return result as unknown as RustRagRuntimeWorkEtaPlan;
+  } catch { return null; }
 }

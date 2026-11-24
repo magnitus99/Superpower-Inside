@@ -27,12 +27,30 @@ export interface BM25WorkerAggregateQuery {
   limit: number;
 }
 
+export interface BM25WorkerMutationContext {
+  revision: number;
+  part?: number;
+  finalPart?: boolean;
+}
+
+export interface BM25WorkerCheckpoint {
+  snapshot: string;
+  sessionId: string;
+  appliedRevision: number;
+  pendingRevision: number | null;
+}
+
 export interface BM25WorkerRequest {
   id: number;
+  sessionId: string;
+  revision: number;
+  part: number;
+  finalPart: boolean;
   operation:
     | 'initialize'
     | 'rebuild'
     | 'add'
+    | 'replace-source'
     | 'remove-doc'
     | 'remove-source'
     | 'clear'
@@ -48,6 +66,7 @@ export interface BM25WorkerRequest {
   documents?: readonly BM25WorkerDocument[];
   document?: BM25WorkerDocument;
   target?: string;
+  removeFirst?: boolean;
   query?: string;
   limit?: number;
   allowedPaths?: readonly string[];
@@ -57,6 +76,10 @@ export interface BM25WorkerRequest {
 
 export interface BM25WorkerResponse {
   id: number;
+  sessionId: string | null;
+  appliedRevision: number | null;
+  pendingRevision: number | null;
+  nextPart: number;
   ready?: boolean;
   tokenizerCurrent?: boolean;
   totalDocs?: number;
@@ -98,22 +121,42 @@ export interface BM25WorkerHandle {
 
 export type BM25WorkerFactory = () => BM25WorkerHandle;
 
+type RequestInput = Omit<
+  BM25WorkerRequest,
+  'id' | 'sessionId' | 'revision' | 'part' | 'finalPart'
+> &
+  Partial<BM25WorkerMutationContext>;
+
+function isMutation(operation: BM25WorkerRequest['operation']): boolean {
+  return ['rebuild', 'add', 'replace-source', 'remove-doc', 'remove-source', 'clear'].includes(
+    operation,
+  );
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
 /** 전체 색인 복원·직렬화는 수십 초가 걸릴 수 있어 기본 한도의 배수로 늘립니다. */
 const RESTORE_TIMEOUT_MULTIPLIER = 5;
 
 export class BM25WorkerRuntime {
+  public readonly sessionId = crypto.randomUUID();
+  private appliedRevisionValue: number | null = null;
+  private pendingRevisionValue: number | null = null;
+  private nextPart = 0;
+  private issuedRevision = 0;
+  private faulted = false;
   private readonly worker: BM25WorkerAdapter;
   private readonly disposeWorker: () => void;
   private readonly pending = new Map<number, PendingRequest>();
   private nextRequestId = 1;
+  private lastInitializeRequestId = 0;
   private activeRequestId: number | null = null;
   private closed = false;
-  private hydration: { processedDocuments: number; expectedDocuments: number } | null = null;
+  private hydration: { processedDocuments: number; expectedDocuments: number | null } | null = null;
 
   constructor(
     createWorker: BM25WorkerFactory = createBrowserWorker,
     private readonly requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    private readonly onHydrationProgress?: (progress: { processedDocuments: number; expectedDocuments: number | null }) => void,
   ) {
     const handle = createWorker();
     this.worker = handle.worker;
@@ -130,6 +173,7 @@ export class BM25WorkerRuntime {
     sinceOrder?: number,
     expectedDocs?: number,
   ): Promise<BM25WorkerResponse> {
+    this.issuedRevision = 0;
     return this.request(
       {
         operation: 'initialize',
@@ -141,37 +185,91 @@ export class BM25WorkerRuntime {
       },
       undefined,
       this.requestTimeoutMs * RESTORE_TIMEOUT_MULTIPLIER,
-      expectedDocs,
+      snapshot.trim().length > 0 ? undefined : expectedDocs,
     );
   }
 
-  async serialize(): Promise<string> {
+  async serializeCheckpoint(): Promise<BM25WorkerCheckpoint> {
     const response = await this.request(
       { operation: 'serialize' },
       undefined,
       this.requestTimeoutMs * RESTORE_TIMEOUT_MULTIPLIER,
     );
-    return response.snapshot ?? '';
+    if (this.closed || this.faulted || response.id < this.lastInitializeRequestId)
+      throw new Error('BM25 worker checkpoint is no longer current.');
+    if (
+      typeof response.snapshot !== 'string' ||
+      response.appliedRevision === null ||
+      response.sessionId !== this.sessionId
+    ) {
+      this.invalidate(new Error('Invalid BM25 worker checkpoint.'));
+      throw new Error('Invalid BM25 worker checkpoint.');
+    }
+    return {
+      snapshot: response.snapshot,
+      sessionId: response.sessionId,
+      appliedRevision: response.appliedRevision,
+      pendingRevision: response.pendingRevision,
+    };
   }
 
-  rebuild(documents: readonly BM25WorkerDocument[]): Promise<BM25WorkerResponse> {
-    return this.request({ operation: 'rebuild', documents });
+  async serialize(): Promise<string> {
+    return (await this.serializeCheckpoint()).snapshot;
   }
 
-  add(document: BM25WorkerDocument): Promise<BM25WorkerResponse> {
-    return this.request({ operation: 'add', document });
+  get appliedRevision(): number | null {
+    return this.appliedRevisionValue;
+  }
+  get pendingRevision(): number | null {
+    return this.pendingRevisionValue;
   }
 
-  removeDocument(target: string): Promise<BM25WorkerResponse> {
-    return this.request({ operation: 'remove-doc', target });
+  private mutate(
+    request: RequestInput,
+    context?: BM25WorkerMutationContext,
+  ): Promise<BM25WorkerResponse> {
+    const revision = context?.revision ?? this.issuedRevision + 1;
+    return this.request({
+      ...request,
+      revision,
+      part: context?.part ?? 0,
+      finalPart: context?.finalPart ?? true,
+    });
   }
 
-  removeSource(target: string): Promise<BM25WorkerResponse> {
-    return this.request({ operation: 'remove-source', target });
+  rebuild(
+    documents: readonly BM25WorkerDocument[],
+    context?: BM25WorkerMutationContext,
+  ): Promise<BM25WorkerResponse> {
+    return this.mutate({ operation: 'rebuild', documents }, context);
   }
 
-  clear(): Promise<BM25WorkerResponse> {
-    return this.request({ operation: 'clear' });
+  add(
+    document: BM25WorkerDocument,
+    context?: BM25WorkerMutationContext,
+  ): Promise<BM25WorkerResponse> {
+    return this.mutate({ operation: 'add', document }, context);
+  }
+
+  replaceSource(
+    target: string,
+    documents: readonly BM25WorkerDocument[],
+    removeFirst = true,
+    context?: BM25WorkerMutationContext,
+  ): Promise<BM25WorkerResponse> {
+    return this.mutate({ operation: 'replace-source', target, documents, removeFirst }, context);
+  }
+
+  removeDocument(target: string, context?: BM25WorkerMutationContext): Promise<BM25WorkerResponse> {
+    return this.mutate({ operation: 'remove-doc', target }, context);
+  }
+
+  removeSource(target: string, context?: BM25WorkerMutationContext): Promise<BM25WorkerResponse> {
+    return this.mutate({ operation: 'remove-source', target }, context);
+  }
+
+  clear(context?: BM25WorkerMutationContext): Promise<BM25WorkerResponse> {
+    return this.mutate({ operation: 'clear' }, context);
   }
 
   async searchTop(query: string, limit: number, signal?: AbortSignal): Promise<BM25WorkerHit[]> {
@@ -180,8 +278,16 @@ export class BM25WorkerRuntime {
   }
 
   /** 점수 없이 센 질의 일치 인벤토리 JSON을 받아옵니다. 해석은 호출자가 검증해 합니다. */
-  async aggregate(query: string, limit: number, signal?: AbortSignal, allowedPaths?: readonly string[]): Promise<string> {
-    const response = await this.request({ operation: 'aggregate', query, limit, allowedPaths }, signal);
+  async aggregate(
+    query: string,
+    limit: number,
+    signal?: AbortSignal,
+    allowedPaths?: readonly string[],
+  ): Promise<string> {
+    const response = await this.request(
+      { operation: 'aggregate', query, limit, allowedPaths },
+      signal,
+    );
     return response.aggregateJson ?? '';
   }
 
@@ -202,6 +308,9 @@ export class BM25WorkerRuntime {
   close(reason = new Error('BM25 worker was closed.')): void {
     if (this.closed) return;
     this.closed = true;
+    this.hydration = null;
+    this.appliedRevisionValue = null;
+    this.pendingRevisionValue = null;
     this.worker.terminate();
     this.disposeWorker();
     for (const request of this.pending.values()) {
@@ -217,18 +326,25 @@ export class BM25WorkerRuntime {
     return this.closed;
   }
 
+  private publishHydration(): void {
+    if (!this.hydration) return;
+    try { this.onHydrationProgress?.({ ...this.hydration }); } catch { /* 관측 오류는 실제 ACK 정착을 막지 않습니다. */ }
+  }
+
   /** 색인 복원 중이면 지금까지 읽은 문서 수와 기대 문서 수를 알려줍니다. */
-  get hydrationProgress(): { processedDocuments: number; expectedDocuments: number } | null {
+  get hydrationProgress(): { processedDocuments: number; expectedDocuments: number | null } | null {
     return this.hydration;
   }
 
   private request(
-    request: Omit<BM25WorkerRequest, 'id'>,
+    request: RequestInput,
     signal?: AbortSignal,
     timeoutMs = this.requestTimeoutMs,
     expectedDocuments?: number,
   ): Promise<BM25WorkerResponse> {
     if (this.closed) return Promise.reject(new Error('BM25 worker is closed.'));
+    if (this.faulted && request.operation !== 'initialize')
+      return Promise.reject(new Error('BM25 worker requires initialization.'));
     if (signal?.aborted) {
       return Promise.reject(new DOMException('BM25 worker request cancelled.', 'AbortError'));
     }
@@ -251,12 +367,21 @@ export class BM25WorkerRuntime {
       this.pending.set(id, {
         resolve,
         reject,
-        message: { id, ...request },
+        message: {
+          id,
+          sessionId: this.sessionId,
+          revision: 0,
+          part: 0,
+          finalPart: true,
+          ...request,
+        },
         timeoutMs,
         expectedDocuments,
         lastProcessedDocuments: 0,
         removeAbortListener: () => signal?.removeEventListener('abort', abort),
       });
+      if (isMutation(request.operation) && request.revision !== undefined)
+        this.issuedRevision = request.revision;
       this.dispatchNext();
     });
   }
@@ -268,6 +393,16 @@ export class BM25WorkerRuntime {
     if (!next) return;
     const [id, request] = next;
     this.activeRequestId = id;
+    if (request.message.operation === 'initialize') {
+      this.lastInitializeRequestId = id;
+      this.appliedRevisionValue = null;
+      this.pendingRevisionValue = null;
+      this.nextPart = 0;
+      this.hydration = { processedDocuments: 0, expectedDocuments: request.expectedDocuments ?? null };
+      this.publishHydration();
+    } else if (!isMutation(request.message.operation)) {
+      request.message.revision = this.appliedRevisionValue ?? 0;
+    }
     request.timeoutId = window.setTimeout(() => {
       this.close(new Error('BM25 worker request timed out.'));
     }, request.timeoutMs);
@@ -279,10 +414,45 @@ export class BM25WorkerRuntime {
   }
 
   private handleMessage(response: BM25WorkerResponse): void {
+    if (this.closed) return;
+    if (
+      typeof response !== 'object' ||
+      response === null ||
+      !Number.isSafeInteger(response.id) ||
+      response.id < 1
+    ) {
+      this.invalidate(new Error('Invalid BM25 worker response.'));
+      return;
+    }
     const request = this.pending.get(response.id);
-    if (!request || response.id !== this.activeRequestId) return;
+    if (!request) return;
+    if (response.id !== this.activeRequestId) {
+      this.invalidate(new Error('Out-of-order BM25 worker acknowledgement.'));
+      return;
+    }
+    if (!this.validState(response) || response.sessionId !== this.sessionId) {
+      this.invalidate(new Error('Invalid BM25 worker acknowledgement.'));
+      return;
+    }
+    if (response.error !== undefined) {
+      this.invalidate(
+        new Error(typeof response.error === 'string' ? response.error : 'BM25 worker failed.'),
+      );
+      return;
+    }
     const processedDocuments = response.progress?.processedDocuments;
-    if (processedDocuments !== undefined) {
+    if (response.progress !== undefined) {
+      if (
+        response.appliedRevision !== this.appliedRevisionValue ||
+        response.pendingRevision !== this.pendingRevisionValue ||
+        response.nextPart !== this.nextPart ||
+        typeof processedDocuments !== 'number' ||
+        !Number.isSafeInteger(processedDocuments) ||
+        processedDocuments < 0
+      ) {
+        this.invalidate(new Error('Invalid BM25 worker progress.'));
+        return;
+      }
       if (
         Number.isSafeInteger(processedDocuments) &&
         processedDocuments > request.lastProcessedDocuments
@@ -290,8 +460,9 @@ export class BM25WorkerRuntime {
         request.lastProcessedDocuments = processedDocuments;
         this.hydration = {
           processedDocuments,
-          expectedDocuments: request.expectedDocuments ?? processedDocuments,
+          expectedDocuments: request.expectedDocuments ?? null,
         };
+        this.publishHydration();
         window.clearTimeout(request.timeoutId);
         request.timeoutId = window.setTimeout(() => {
           const error = new Error('BM25 worker request timed out.');
@@ -300,16 +471,83 @@ export class BM25WorkerRuntime {
       }
       return;
     }
+    if (!this.validAcknowledgement(request.message, response)) {
+      this.invalidate(new Error('Invalid BM25 worker applied prefix.'));
+      return;
+    }
+    this.appliedRevisionValue = response.appliedRevision;
+    this.pendingRevisionValue = response.pendingRevision;
+    this.nextPart = response.nextPart;
+    if (request.message.operation === 'initialize') { this.faulted = false; this.hydration = null; }
     this.pending.delete(response.id);
     window.clearTimeout(request.timeoutId);
     request.removeAbortListener();
     this.activeRequestId = null;
-    if (response.error) {
-      request.reject(new Error(response.error));
-    } else {
-      request.resolve(response);
-    }
+    request.resolve(response);
     this.dispatchNext();
+  }
+
+  private validState(response: BM25WorkerResponse): boolean {
+    const revision = (value: unknown): boolean =>
+      value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0);
+    return (
+      revision(response.appliedRevision) &&
+      revision(response.pendingRevision) &&
+      Number.isSafeInteger(response.nextPart) &&
+      response.nextPart >= 0 &&
+      (response.pendingRevision === null
+        ? response.nextPart === 0
+        : response.appliedRevision !== null &&
+          response.pendingRevision === response.appliedRevision + 1 &&
+          response.nextPart > 0)
+    );
+  }
+
+  private validAcknowledgement(request: BM25WorkerRequest, response: BM25WorkerResponse): boolean {
+    if (request.operation === 'initialize')
+      return (
+        response.appliedRevision === 0 &&
+        response.pendingRevision === null &&
+        response.nextPart === 0
+      );
+    if (!isMutation(request.operation))
+      return (
+        (request.operation !== 'serialize' || typeof response.snapshot === 'string') &&
+        response.appliedRevision === this.appliedRevisionValue &&
+        response.pendingRevision === this.pendingRevisionValue &&
+        response.nextPart === this.nextPart
+      );
+    if (
+      this.appliedRevisionValue === null ||
+      request.revision !== this.appliedRevisionValue + 1 ||
+      request.part !== this.nextPart ||
+      !Number.isSafeInteger(request.revision) ||
+      !Number.isSafeInteger(request.part)
+    )
+      return false;
+    return request.finalPart
+      ? response.appliedRevision === request.revision &&
+          response.pendingRevision === null &&
+          response.nextPart === 0
+      : response.appliedRevision === this.appliedRevisionValue &&
+          response.pendingRevision === request.revision &&
+          response.nextPart === request.part + 1;
+  }
+
+  /** 실패 뒤 늦은 응답은 폐기하고 정식 초기화만 새 증명을 발행할 수 있습니다. */
+  private invalidate(reason: Error): void {
+    this.faulted = true;
+    this.hydration = null;
+    this.appliedRevisionValue = null;
+    this.pendingRevisionValue = null;
+    this.nextPart = 0;
+    for (const request of this.pending.values()) {
+      window.clearTimeout(request.timeoutId);
+      request.removeAbortListener();
+      request.reject(reason);
+    }
+    this.pending.clear();
+    this.activeRequestId = null;
   }
 }
 

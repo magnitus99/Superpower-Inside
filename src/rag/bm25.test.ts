@@ -12,12 +12,27 @@ import type {
 } from './bm25-worker-runtime';
 import { RustBm25RuntimeIndex } from './rust-core';
 import { TOKENIZER_VERSION } from './tokenizer-version';
+import { isStoreMutationReceipt } from './durability';
 
 const dbNames = new Set<string>();
+const scriptedPrefixes = new Map<string, { appliedRevision: number; pendingRevision: number | null; nextPart: number }>();
+
+function applyScriptedPrefix(message: BM25WorkerRequest, succeeded = true) {
+  const state = scriptedPrefixes.get(message.sessionId) ?? { appliedRevision: 0, pendingRevision: null, nextPart: 0 };
+  if (succeeded && message.operation === 'initialize') Object.assign(state, { appliedRevision: 0, pendingRevision: null, nextPart: 0 });
+  else if (succeeded && ['add', 'rebuild', 'replace-source', 'remove-doc', 'remove-source', 'clear'].includes(message.operation)) {
+    if (message.revision !== (state.pendingRevision ?? state.appliedRevision + 1) || message.part !== state.nextPart) throw new Error('Synthetic worker prefix mismatch.');
+    if (message.finalPart) Object.assign(state, { appliedRevision: message.revision, pendingRevision: null, nextPart: 0 });
+    else Object.assign(state, { pendingRevision: message.revision, nextPart: message.part + 1 });
+  }
+  scriptedPrefixes.set(message.sessionId, state);
+  return { sessionId: message.sessionId, ...state };
+}
 
 afterEach(async () => {
   await Promise.all([...dbNames].map((name) => Dexie.delete(name)));
   dbNames.clear();
+  scriptedPrefixes.clear();
 });
 
 describe('BM25 문서 필드', () => {
@@ -77,6 +92,388 @@ describe('BM25 tokenizer', () => {
 });
 
 describe('IndexedDbBM25Index', () => {
+  it('snapshot 없는 worker 복원은 실제 원 DB.count를 expectedDocs에 전달한다', async () => {
+    const name = createDbName();
+    const seed = new IndexedDbBM25Index(name);
+    await seed.load();
+    seed.addDocument('synthetic-a', 'alpha', 'a.md');
+    seed.addDocument('synthetic-b', 'beta', 'b.md');
+    await seed.flush(); seed.close();
+    const worker = createScriptedWorker('');
+    const reopened = new IndexedDbBM25Index(name, undefined, undefined, { workerFactory: worker.factory });
+    const progress = vi.fn();
+    try {
+      await reopened.load(progress);
+      expect(worker.requests.find((request) => request.operation === 'initialize')).toMatchObject({ expectedDocs: 2, snapshot: '' });
+      expect(progress).toHaveBeenCalledWith({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 0, totalUnits: 2 });
+    } finally { reopened.close(); }
+  });
+
+  it('BM25 receipt는 읽기/빈 load로 인증하지 않으며 명시 초기화·재열기·재생성을 구분한다', async () => {
+    const name = createDbName();
+    const index = new IndexedDbBM25Index(name);
+    await index.load();
+    expect(await index.getDurabilityReceipt()).toBeNull();
+    await index.flush();
+    expect(await index.getDurabilityReceipt()).toBeNull();
+    const first = await index.initializeEmptyDurabilityReceipt();
+    expect(isStoreMutationReceipt(first)).toBe(true);
+    expect(await index.initializeEmptyDurabilityReceipt()).toEqual(first);
+    index.close();
+    const reopened = new IndexedDbBM25Index(name);
+    await reopened.load();
+    expect(await reopened.getDurabilityReceipt()).toEqual(first);
+    reopened.close();
+    await Dexie.delete(name);
+    const recreated = new IndexedDbBM25Index(name);
+    await recreated.load();
+    const next = await recreated.initializeEmptyDurabilityReceipt();
+    expect(isStoreMutationReceipt(next)).toBe(true);
+    expect(next?.incarnation).not.toBe(first?.incarnation);
+    recreated.close();
+  });
+
+  it('BM25 v3 원문은 migration과 load만으로 receipt를 만들거나 지우지 않는다', async () => {
+    const name = createDbName();
+    const legacy = new Dexie(name);
+    legacy.version(3).stores({ meta: 'key', documents: 'id, sourcePath, updated, order', mutations: 'id, kind, target, updated, order', removals: 'order, target', snapshotBlocks: 'key' });
+    await legacy.table('documents').put({ id: 'a', text: 'synthetic legacy', sourcePath: 'a.md', updated: 1, order: 7 });
+    legacy.close();
+    const index = new IndexedDbBM25Index(name);
+    await index.load();
+    expect(await index.getDurabilityReceipt()).toBeNull();
+    expect(await index.initializeEmptyDurabilityReceipt()).toBeNull();
+    expect([...index.search('synthetic').keys()]).toEqual(['a']);
+    expect((await index.getCorpusDocumentsByIds(['a']))[0]?.text).toBe('synthetic legacy');
+    expect(await index.getDurabilityReceipt()).toBeNull();
+    index.close();
+  });
+
+  it('BM25 저장 순서는 다른 connection과 역행한 clock에서도 DB-local로 증가한다', async () => {
+    const name = createDbName();
+    const a = new IndexedDbBM25Index(name);
+    await a.load();
+    a.addDocument('a', 'alpha', 'a.md');
+    await a.flush();
+    const b = new IndexedDbBM25Index(name);
+    await b.load();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1);
+    try {
+      b.addDocument('b', 'beta', 'b.md');
+      await b.flush();
+      a.addDocument('c', 'gamma', 'c.md');
+      await a.flush();
+      const records = await a['db'].documents.bulkGet(['a', 'b', 'c']);
+      expect(records[1]?.order).toBeGreaterThan(records[0]?.order ?? 0);
+      expect(records[2]?.order).toBeGreaterThan(records[1]?.order ?? 0);
+      expect((await a['db'].durability.get('bm25-order-v1'))?.value).toBe(records[2]?.order);
+    } finally { clock.mockRestore(); a.close(); b.close(); }
+  });
+
+  it('BM25 같은 count 본문·metadata·삭제의 실제 commit은 다른 mutation을 남긴다', async () => {
+    const index = new IndexedDbBM25Index(createDbName());
+    await index.load();
+    index.addDocument('a', 'alpha', 'a.md');
+    await index.flush();
+    let previous = await index.getDurabilityReceipt();
+    expect(isStoreMutationReceipt(previous)).toBe(true);
+    for (const mutate of [
+      async () => { index.addDocument('a', 'beta', 'a.md'); await index.flush(); },
+      async () => { expect(await index.refreshSourceRevision('a.md', { sourceMtime: 2, sourceSize: 4, contentHash: 'synthetic' })).toBe(1); },
+      async () => { index.removeDocument('a'); await index.flush(); },
+      () => index.clear(),
+    ]) {
+      await mutate();
+      const current = await index.getDurabilityReceipt();
+      expect(isStoreMutationReceipt(current)).toBe(true);
+      expect(current?.incarnation).toBe(previous?.incarnation);
+      expect(current?.mutation).not.toBe(previous?.mutation);
+      previous = current;
+    }
+    index.close();
+  });
+
+  it('BM25 receipt 기록 실패는 본문과 DB-local order를 함께 rollback한다', async () => {
+    const index = new IndexedDbBM25Index(createDbName());
+    await index.load();
+    index.addDocument('a', 'alpha', 'a.md');
+    await index.flush();
+    const before = await index.getDurabilityReceipt();
+    const db = index['db'];
+    const order = await db.durability.get('bm25-order-v1');
+    vi.spyOn(db.durability, 'put').mockRejectedValueOnce(new Error('Synthetic BM25 receipt failure.'));
+    index.addDocument('b', 'beta', 'b.md');
+    await expect(index.flush()).rejects.toThrow('Synthetic BM25 receipt failure.');
+    expect(await index.getDurabilityReceipt()).toEqual(before);
+    expect(await db.durability.get('bm25-order-v1')).toEqual(order);
+    expect(await db.documents.count()).toBe(1);
+    await index.flush();
+    expect(await db.documents.count()).toBe(2);
+    expect((await index.getDurabilityReceipt())?.mutation).not.toBe(before?.mutation);
+    index.close();
+  });
+
+  it('BM25 metadata revision의 noop는 head를 바꾸지 않는다', async () => {
+    const index = new IndexedDbBM25Index(createDbName());
+    await index.load();
+    index.addCorpusDocument({ id: 'a', text: 'alpha', sourcePath: 'a.md', sourceMtime: 1, sourceSize: 5, contentHash: 'synthetic' });
+    await index.flush();
+    const before = await index.getDurabilityReceipt();
+    expect(await index.refreshSourceRevision('a.md', { sourceMtime: 1, sourceSize: 5, contentHash: 'synthetic' })).toBe(0);
+    expect(await index.getDurabilityReceipt()).toEqual(before);
+    index.close();
+  });
+
+  it('BM25 checkpoint는 동일 session의 저장·적용 revision이 같을 때만 proof를 준다', async () => {
+    const index = new IndexedDbBM25Index(createDbName());
+    await index.load();
+    expect((await index.getCheckpoint()).applied).toBeNull();
+    const initial = await index.initializeEmptyDurabilityReceipt();
+    expect((await index.getCheckpoint()).applied).toMatchObject({ receipt: initial, revision: 0 });
+    index.addDocument('a', 'alpha', 'a.md');
+    const pending = await index.getCheckpoint();
+    expect(pending.pendingOperations).toBe(1);
+    expect(pending.applied).toBeNull();
+    await index.flush();
+    const committed = await index.getCheckpoint();
+    expect(committed.applied).toMatchObject({ receipt: committed.receipt, revision: 1 });
+    expect(committed.applied?.sessionId).toMatch(/^[0-9a-f-]{36}$/u);
+    const receipt = committed.receipt;
+    await index.getCheckpoint();
+    expect(await index.getDurabilityReceipt()).toEqual(receipt);
+    index.close();
+  });
+
+  it('BM25 빈 초기화 호출로 다른 owner의 기존 head를 자기 빈 runtime에 바인딩하지 않는다', async () => {
+    const name = createDbName();
+    const a = new IndexedDbBM25Index(name);
+    const b = new IndexedDbBM25Index(name);
+    await a.load(); await b.load();
+    b.addDocument('foreign', 'synthetic foreign', 'foreign.md');
+    await b.flush();
+    expect(await a.initializeEmptyDurabilityReceipt()).toEqual(await b.getDurabilityReceipt());
+    expect(a.totalDocs).toBe(0);
+    expect((await a.getCheckpoint()).applied).toBeNull();
+    a.close(); b.close();
+  });
+
+  it('BM25 다른 owner의 변경 뒤 자기 delta만 적용해 전체 DB를 인증하지 않는다', async () => {
+    const name = createDbName();
+    const a = new IndexedDbBM25Index(name);
+    await a.load();
+    await a.initializeEmptyDurabilityReceipt();
+    a.addDocument('a', 'alpha', 'a.md');
+    await a.flush();
+    expect((await a.getCheckpoint()).applied).not.toBeNull();
+    const b = new IndexedDbBM25Index(name);
+    await b.load();
+    expect((await b.getCheckpoint()).applied).not.toBeNull();
+    b.addDocument('b', 'beta', 'b.md');
+    await b.flush();
+    expect((await a.getCheckpoint()).applied).toBeNull();
+    a.addDocument('c', 'gamma', 'c.md');
+    await a.flush();
+    expect((await a.getCheckpoint()).applied).toBeNull();
+    await a.rebuild([{ id: 'complete', text: 'synthetic replacement', sourcePath: 'complete.md' }]);
+    expect((await a.getCheckpoint()).applied).not.toBeNull();
+    a.close(); b.close();
+  });
+
+  it('BM25 NoWorker hydration 중 새 변경을 잃거나 hydration 이전 ACK로 인증하지 않는다', async () => {
+    const name = createDbName();
+    const original = new IndexedDbBM25Index(name);
+    await original.load();
+    original.addDocument('a', 'alpha', 'a.md');
+    await original.flush();
+    original.close();
+    const index = new IndexedDbBM25Index(name);
+    const loadSnapshot = index['loadSnapshot'].bind(index);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    index['loadSnapshot'] = async () => { entered(); await gate; return loadSnapshot(); };
+    const loading = index.load();
+    const observed = loading.catch((error: unknown) => error);
+    try {
+      await started;
+      index.addDocument('b', 'beta', 'b.md');
+      expect((await index.getCheckpoint()).applied).toBeNull();
+      release();
+      await loading;
+      await index.flush();
+      expect([...index.search('alpha').keys()]).toEqual(['a']);
+      expect([...index.search('beta').keys()]).toEqual(['b']);
+      expect(await index.getCorpusDocumentsByIds(['a', 'b'])).toHaveLength(2);
+      expect((await index.getCheckpoint()).applied).not.toBeNull();
+    } finally { release(); await observed; index.close(); }
+  });
+
+  it.each(['worker', 'NoWorker'] as const)('BM25 %s hydration 중 다른 DB commit은 적용 proof를 만들지 않는다', async (mode) => {
+    const name = createDbName();
+    const seed = new IndexedDbBM25Index(name);
+    await seed.load(); seed.addDocument('a', 'alpha', 'a.md'); await seed.flush(); seed.close();
+    const a = new IndexedDbBM25Index(name, undefined, undefined, mode === 'worker' ? { workerFactory: createScriptedWorker('').factory } : {});
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const sweep = a['sweepOrphanSnapshotBlocks'].bind(a);
+    a['sweepOrphanSnapshotBlocks'] = async () => { await sweep(); entered(); await gate; };
+    const loading = a.load();
+    const observed = loading.catch((error: unknown) => error);
+    const b = new IndexedDbBM25Index(name);
+    try {
+      await started;
+      await b.load(); b.addDocument('b', 'beta', 'b.md'); await b.flush();
+      release(); await loading;
+      expect((await a.getCheckpoint()).applied).toBeNull();
+      a.addDocument('c', 'gamma', 'c.md'); await a.flush();
+      expect((await a.getCheckpoint()).applied).toBeNull();
+    } finally { release(); await observed; a.close(); b.close(); }
+  });
+
+  it.each(['worker', 'NoWorker'] as const)('BM25 %s의 늦은 이전 load 실패는 새 session을 덮지 않는다', async (mode) => {
+    const name = createDbName();
+    const seed = new IndexedDbBM25Index(name);
+    await seed.load();
+    seed.addDocument('synthetic', 'synthetic ready input', 'synthetic.md');
+    await seed.flush();
+    seed.close();
+    const index = new IndexedDbBM25Index(name, undefined, undefined, mode === 'worker' ? { workerFactory: createScriptedWorker('').factory } : {});
+    const sweep = index['sweepOrphanSnapshotBlocks'].bind(index);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let first = true;
+    index['sweepOrphanSnapshotBlocks'] = async () => { if (first) { first = false; entered(); await gate; } else await sweep(); };
+    const loading = index.load();
+    const observed = loading.catch((error: unknown) => error);
+    try {
+      await started;
+      await index.load();
+      expect(index.isReady).toBe(true);
+      release();
+      await expect(loading).rejects.toThrow('rag-bm25-session-retired');
+      expect(index.isReady).toBe(true);
+    } finally { release(); await observed; index.close(); }
+  });
+
+  it.each(['rebuild', 'replace-source'] as const)('BM25 %s의 저장 완료는 마지막 실제 ACK 전 적용 proof가 아니다', async (mode) => {
+    const name = createDbName();
+    const sent: BM25WorkerRequest[] = [];
+    let respond: ((event: MessageEvent<BM25WorkerResponse>) => void) | undefined;
+    const index = new IndexedDbBM25Index(name, undefined, undefined, { workerFactory: () => ({ worker: {
+      postMessage: (message) => {
+        sent.push(message);
+        if (message.operation === 'initialize') queueMicrotask(() => respond?.({ data: { id: message.id, ...applyScriptedPrefix(message), ready: true, tokenizerCurrent: true, totalDocs: 0 } } as MessageEvent<BM25WorkerResponse>));
+      }, terminate: vi.fn(), setOnMessage: (handler) => { respond = handler; }, setOnError: vi.fn(),
+    }, dispose: vi.fn() }) });
+    await index.load();
+    await index.initializeEmptyDurabilityReceipt();
+    const documents = Array.from({ length: mode === 'rebuild' ? 1 : 129 }, (_, i) => ({ id: `a::${i}`, text: `synthetic ${i}`, sourcePath: 'a.md' }));
+    let operation: Promise<void>;
+    if (mode === 'rebuild') operation = index.rebuild(documents);
+    else { index.replaceSourceDocuments('a.md', documents); operation = index.flush(); }
+    const observed = operation.catch((error: unknown) => error);
+    try {
+      await vi.waitFor(async () => { expect(sent).toHaveLength(2); expect(await index['db'].documents.count()).toBe(documents.length); });
+      expect((await index.getCheckpoint()).applied).toBeNull();
+      if (mode === 'replace-source') {
+        const first = sent[1];
+        respond?.({ data: { id: first.id, ...applyScriptedPrefix(first), ready: true, tokenizerCurrent: true, totalDocs: 128 } } as MessageEvent<BM25WorkerResponse>);
+        await vi.waitFor(() => expect(sent).toHaveLength(3));
+        expect(index['workerRuntime']?.appliedRevision).toBe(0);
+        expect(index['workerRuntime']?.pendingRevision).toBe(1);
+        expect((await index.getCheckpoint()).applied).toBeNull();
+      }
+      const last = sent.at(-1);
+      if (!last) throw new Error('Synthetic final request missing.');
+      respond?.({ data: { id: last.id, ...applyScriptedPrefix(last), ready: true, tokenizerCurrent: true, totalDocs: documents.length } } as MessageEvent<BM25WorkerResponse>);
+      await operation;
+      const checkpoint = await index.getCheckpoint();
+      expect(checkpoint.applied).toMatchObject({ receipt: checkpoint.receipt, revision: 1 });
+    } finally { index.close(); await observed; }
+  });
+
+  it('외부 배치의 flush는 hydration ready와 달리 내구 커밋 뒤 worker ACK까지 기다린다', async () => {
+    const name = createDbName();
+    let respond: ((event: MessageEvent<BM25WorkerResponse>) => void) | undefined;
+    const sent: BM25WorkerRequest[] = [];
+    const index = new IndexedDbBM25Index(name, undefined, undefined, { workerFactory: () => ({ worker: {
+      postMessage: (message) => { sent.push(message); if (message.operation === 'initialize') queueMicrotask(() => respond?.({ data: { id: message.id, ...applyScriptedPrefix(message), ready: true, tokenizerCurrent: true, totalDocs: 0 } } as MessageEvent<BM25WorkerResponse>)); },
+      terminate: vi.fn(), setOnMessage: (handler) => { respond = handler; }, setOnError: vi.fn(),
+    }, dispose: vi.fn() }) });
+    await index.load();
+    try {
+      await index.withBatch(async () => {
+        index.replaceSourceDocuments('a.md', [{ id: 'a', text: 'alpha', sourcePath: 'a.md' }]);
+        let settled = false;
+        const flushing = index.flush().then(() => { settled = true; });
+        await vi.waitFor(() => expect(sent).toHaveLength(2));
+        const persisted = new Dexie(name);
+        await persisted.open();
+        try { await vi.waitFor(async () => expect(await persisted.table('documents').count()).toBe(1)); }
+        finally { persisted.close(); }
+        expect(index.isReady).toBe(true);
+        expect(settled).toBe(false);
+        respond?.({ data: { id: sent[1].id, ...applyScriptedPrefix(sent[1]), ready: true, tokenizerCurrent: true, totalDocs: 1 } } as MessageEvent<BM25WorkerResponse>);
+        await flushing;
+        expect(settled).toBe(true);
+      });
+    } finally { index.close(); }
+  });
+
+  it('외부 배치 안의 flush는 실제 내구 checkpoint를 만들고 다음 변경도 잃지 않는다', async () => {
+    const name = createDbName();
+    const index = new IndexedDbBM25Index(name);
+    await index.load();
+    try {
+      await index.withBatch(async () => {
+        index.addDocument('a', 'alpha', 'a.md');
+        await index.persist();
+        expect(await index.getCorpusDocumentsByIds(['a'])).toEqual([]);
+        await index.flush();
+        expect(await index.getCorpusDocumentsByIds(['a'])).toHaveLength(1);
+        index.addDocument('b', 'beta', 'b.md');
+        await Promise.all([index.flush(), index.flush()]);
+        expect(await index.getCorpusDocumentsByIds(['a', 'b'])).toHaveLength(2);
+      });
+      index.replaceSourceDocuments('a.md', [{ id: 'c', text: 'gamma', sourcePath: 'a.md' }]);
+      await index.flush();
+      expect([...index.search('alpha').keys()]).toEqual([]);
+      expect([...index.search('gamma').keys()]).toEqual(['c']);
+    } finally {
+      index.close();
+    }
+    const restored = new IndexedDbBM25Index(name);
+    try {
+      await restored.load();
+      expect([...restored.search('beta').keys()]).toEqual(['b']);
+      expect([...restored.search('gamma').keys()]).toEqual(['c']);
+    } finally { restored.close(); }
+  });
+
+  it('실패한 외부 배치는 자동 저장하지 않고 원래 오류와 다음 checkpoint의 원장을 보존한다', async () => {
+    const name = createDbName();
+    const index = new IndexedDbBM25Index(name);
+    await index.load();
+    try {
+      await expect(index.withBatch(async () => {
+        index.addDocument('a', 'alpha');
+        await index.persist();
+        throw new Error('original-error');
+      })).rejects.toThrow('original-error');
+      const persisted = new Dexie(name);
+      await persisted.open();
+      try { expect(await persisted.table('documents').count()).toBe(0); }
+      finally { persisted.close(); }
+      await index.flush();
+      expect(await index.getCorpusDocumentsByIds(['a'])).toHaveLength(1);
+    } finally { index.close(); }
+  });
+
   it('위치 없는 snapshot과 저장 원문이 있으면 비 worker 시작도 원문에서 자동 복구한다', async () => {
     const dbName = createDbName();
     const index = new IndexedDbBM25Index(dbName);
@@ -491,7 +888,7 @@ describe('IndexedDbBM25Index', () => {
           postMessage: (message) =>
             queueMicrotask(() =>
               respond?.({
-                data: { id: message.id, ready: true, tokenizerCurrent: true, totalDocs: 1 },
+                data: { id: message.id, ...applyScriptedPrefix(message), ready: true, tokenizerCurrent: true, totalDocs: 1 },
               } as MessageEvent<BM25WorkerResponse>),
             ),
           terminate: vi.fn(),
@@ -536,8 +933,8 @@ describe('IndexedDbBM25Index', () => {
               respond?.({
                 data:
                   attempt === 2
-                    ? { id: message.id, error: '합성 재초기화 실패' }
-                    : { id: message.id, ready: true, tokenizerCurrent: true, totalDocs: 1 },
+                    ? { id: message.id, ...applyScriptedPrefix(message, false), error: '합성 재초기화 실패' }
+                    : { id: message.id, ...applyScriptedPrefix(message), ready: true, tokenizerCurrent: true, totalDocs: 1 },
               } as MessageEvent<BM25WorkerResponse>),
             ),
           terminate: vi.fn(),
@@ -584,6 +981,7 @@ describe('IndexedDbBM25Index', () => {
                 {
                   data: {
                     id: message.id,
+                    ...applyScriptedPrefix(message),
                     ready: true,
                     tokenizerCurrent: true,
                     totalDocs: 1,
@@ -628,6 +1026,7 @@ describe('IndexedDbBM25Index', () => {
             respond?.({
               data: {
                 id: message.id,
+                ...applyScriptedPrefix(message),
                 ready: true,
                 tokenizerCurrent: true,
                 totalDocs: 0,
@@ -673,6 +1072,7 @@ describe('IndexedDbBM25Index', () => {
     const operations: string[] = [];
     const workerControl: {
       initializeRequestId?: number;
+      initializeRequest?: BM25WorkerRequest;
       onMessage?: (event: MessageEvent<BM25WorkerResponse>) => void;
     } = {};
     const workerFactory: BM25WorkerFactory = () => ({
@@ -681,12 +1081,14 @@ describe('IndexedDbBM25Index', () => {
           operations.push(message.operation);
           if (message.operation === 'initialize') {
             workerControl.initializeRequestId = message.id;
+            workerControl.initializeRequest = message;
             return;
           }
           queueMicrotask(() => {
             workerControl.onMessage?.({
               data: {
                 id: message.id,
+                ...applyScriptedPrefix(message),
                 ready: true,
                 tokenizerCurrent: true,
                 totalDocs: 2,
@@ -733,12 +1135,13 @@ describe('IndexedDbBM25Index', () => {
 
     const initializeRequestId = workerControl.initializeRequestId;
     const onMessage = workerControl.onMessage;
-    if (initializeRequestId === undefined || onMessage === undefined) {
+    if (initializeRequestId === undefined || onMessage === undefined || !workerControl.initializeRequest) {
       throw new Error('BM25 worker initialize request was not captured.');
     }
     onMessage({
       data: {
         id: initializeRequestId,
+        ...applyScriptedPrefix(workerControl.initializeRequest),
         ready: true,
         tokenizerCurrent: true,
         totalDocs: 1,
@@ -938,6 +1341,93 @@ describe('IndexedDbBM25Index', () => {
     failing.close();
   });
 
+  it('BM25 capture 대기 중 reload는 이전 진행 플래그를 버리고 새 capture를 허용한다', async () => {
+    const name = createDbName();
+    const gated = createScriptedWorker('{"docs":[]}', { holdSerialize: true });
+    const index = new IndexedDbBM25Index(name, undefined, undefined, { workerFactory: gated.factory, snapshotMinOrders: 1, snapshotIntervalMs: 0 });
+    await index.load();
+    index.addDocument('a', 'alpha', 'a.md');
+    const saving = index.flush();
+    const observed = saving.catch((error: unknown) => error);
+    try {
+      await waitForRequest(gated.requests, 'serialize');
+      await index.load();
+      await observed;
+      gated.releaseSerialize();
+      expect(index['snapshotCaptureInFlight']).toBe(false);
+      expect((await index.getCheckpoint()).applied).not.toBeNull();
+      index.addDocument('b', 'beta', 'b.md');
+      await index.flush();
+      expect((await readSnapshotState(name)).manifest).not.toBeNull();
+      expect((await index.getCheckpoint()).applied).not.toBeNull();
+    } finally { gated.releaseSerialize(); index.close(); await observed; }
+  });
+
+  it('BM25 실제 cold worker는 다른 NoWorker owner의 삭제·source 교체를 snapshot delta로 복원한다', async () => {
+    const previousSelf = Object.getOwnPropertyDescriptor(globalThis, 'self');
+    let deliver: ((event: MessageEvent<BM25WorkerResponse>) => void) | undefined;
+    const scope: { onmessage: ((event: MessageEvent<BM25WorkerRequest>) => void) | null; postMessage(response: BM25WorkerResponse): void } = {
+      onmessage: null, postMessage: (response) => deliver?.({ data: response } as MessageEvent<BM25WorkerResponse>),
+    };
+    Object.defineProperty(globalThis, 'self', { configurable: true, writable: true, value: scope });
+    await import('./bm25-worker-entry');
+    const factory: BM25WorkerFactory = () => ({ worker: {
+      postMessage: (message) => scope.onmessage?.({ data: message } as MessageEvent<BM25WorkerRequest>),
+      terminate: vi.fn(), setOnMessage: (handler) => { deliver = handler; }, setOnError: vi.fn(),
+    }, dispose: vi.fn() });
+    try {
+      for (const operation of ['remove-doc', 'remove-source', 'replace-source'] as const) {
+        const name = createDbName();
+        const a = new IndexedDbBM25Index(name);
+        const b = new IndexedDbBM25Index(name, undefined, undefined, { workerFactory: factory, snapshotMinOrders: 1, snapshotIntervalMs: 60_000 });
+        let c: IndexedDbBM25Index | undefined;
+        try {
+          await a.load(); await b.load();
+          b.addDocument('a', 'synthetic alpha', 'a.md'); await b.flush();
+          expect((await readSnapshotState(name)).manifest).not.toBeNull();
+          b.close();
+          if (operation === 'remove-doc') a.removeDocument('a');
+          else if (operation === 'remove-source') a.removeDocumentsBySource('a.md');
+          else a.replaceSourceDocuments('a.md', []);
+          await a.flush();
+          expect(await a['db'].documents.count()).toBe(0);
+          c = new IndexedDbBM25Index(name, undefined, undefined, { workerFactory: factory });
+          await c.load();
+          expect(await c.searchTopWithSources('alpha', 5)).toEqual([]);
+          expect(c.totalDocs).toBe(0);
+          expect((await c.getCheckpoint()).applied).not.toBeNull();
+        } finally { a.close(); b.close(); c?.close(); }
+      }
+    } finally {
+      if (previousSelf) Object.defineProperty(globalThis, 'self', previousSelf);
+      else Reflect.deleteProperty(globalThis, 'self');
+    }
+  });
+
+  it('BM25 serialize 중 다른 owner가 commit하면 그 prefix의 snapshot을 발행하지 않는다', async () => {
+    const name = createDbName();
+    const gated = createScriptedWorker('{"docs":[]}', { holdSerialize: true });
+    const a = new IndexedDbBM25Index(name, undefined, undefined, { workerFactory: gated.factory, snapshotMinOrders: 1, snapshotIntervalMs: 60_000 });
+    await a.load();
+    a.addDocument('a', 'alpha', 'a.md');
+    const saving = a.flush();
+    const observed = saving.catch((error: unknown) => error);
+    const b = new IndexedDbBM25Index(name);
+    try {
+      await waitForRequest(gated.requests, 'serialize');
+      await b.load();
+      b.addDocument('b', 'beta', 'b.md');
+      await b.flush();
+      const foreign = await b.getDurabilityReceipt();
+      gated.releaseSerialize();
+      await saving;
+      expect((await readSnapshotState(name)).manifest).toBeNull();
+      expect(await a.getDurabilityReceipt()).toEqual(foreign);
+      expect((await a.getCheckpoint()).applied).toBeNull();
+      expect(a.isReady).toBe(true);
+    } finally { gated.releaseSerialize(); await observed; a.close(); b.close(); }
+  });
+
   it('스냅샷 직렬화 중 들어온 변경은 다음 델타로 남겨 유실하지 않는다', async () => {
     const dbName = createDbName();
     const gated = createScriptedWorker('{"docs":[]}', { holdSerialize: true });
@@ -965,30 +1455,40 @@ describe('IndexedDbBM25Index', () => {
     bm25.close();
   });
 
-  it('토크나이저 계약이 바뀐 스냅샷은 쓰지 않고 폐기한다', async () => {
+  it('다른 토크나이저의 스냅샷은 적용하지 않되 새 완료본 전까지 블록·원장 순서를 보존한다', async () => {
     const dbName = createDbName();
-    await seedSnapshotManifest(dbName, {
-      generation: 'legacy-generation',
-      tokenizerVersion: 1,
-      lastOrder: 100,
-      docCount: 1,
-      byteLength: 8,
-      blockCount: 1,
-    });
-
+    const manifest = { generation: 'legacy-generation', tokenizerVersion: 1, lastOrder: 100, docCount: 1, byteLength: 8, blockCount: 1 };
+    await seedSnapshotManifest(dbName, manifest);
+    await seedOrphanSnapshotBlock(dbName, manifest.generation, 'old-data');
     const worker = createScriptedWorker('{"docs":[]}');
     const bm25 = new IndexedDbBM25Index(dbName, createAdapter(), undefined, {
-      workerFactory: worker.factory,
-      snapshotMinOrders: 1,
-      snapshotIntervalMs: 60_000,
+      workerFactory: worker.factory, snapshotMinOrders: 1000, snapshotIntervalMs: 60_000,
     });
-    await bm25.load();
+    try {
+      await bm25.load();
+      const initialize = worker.requests.find((request) => request.operation === 'initialize');
+      expect(initialize?.snapshot).toBe('');
+      expect(bm25.recoveryMode).toBe('full');
+      expect((await readSnapshotState(dbName)).manifest).toEqual(manifest);
+      expect(await readSnapshotBlockKeys(dbName)).toEqual([`${manifest.generation}:0`]);
+      bm25.addDocument('new', 'new source', 'new.md');
+      await bm25.flush();
+      expect(await readDocumentOrder(dbName, 'new')).toBeGreaterThan(manifest.lastOrder);
+      expect((await readSnapshotState(dbName)).manifest).toEqual(manifest);
+    } finally { bm25.close(); }
+  });
 
-    const initialize = worker.requests.find((request) => request.operation === 'initialize');
-    expect(initialize?.snapshot).toBe('');
-    expect(bm25.recoveryMode).toBe('full');
-    expect((await readSnapshotState(dbName)).manifest).toBeNull();
-    bm25.close();
+  it('소유 manifest가 손상되었으면 블록을 고아로 간주해 일괄 삭제하지 않는다', async () => {
+    const dbName = createDbName();
+    const manifest = { generation: '', tokenizerVersion: TOKENIZER_VERSION, lastOrder: 100, docCount: 1, byteLength: 8, blockCount: 1 };
+    await seedSnapshotManifest(dbName, manifest);
+    await seedOrphanSnapshotBlock(dbName, 'unknown-owner', 'old-data');
+    const bm25 = new IndexedDbBM25Index(dbName, createAdapter(), undefined, { workerFactory: createScriptedWorker('{"docs":[]}').factory });
+    try {
+      await bm25.load();
+      expect((await readSnapshotState(dbName)).manifest).toEqual(manifest);
+      expect(await readSnapshotBlockKeys(dbName)).toEqual(['unknown-owner:0']);
+    } finally { bm25.close(); }
   });
 
   it('재시작 sweep은 활성 세대가 아닌 고아 스냅샷 블록만 지운다', async () => {
@@ -1196,6 +1696,7 @@ function createScriptedWorker(
         const deliver = async (): Promise<void> => {
           let response: BM25WorkerResponse = {
             id: message.id,
+            ...applyScriptedPrefix(message),
             ready: true,
             tokenizerCurrent: true,
             totalDocs: message.snapshot ? 1 : 2,
@@ -1259,12 +1760,13 @@ interface StoredSnapshotMeta {
 
 function openSnapshotDb(dbName: string): Dexie {
   const db = new Dexie(dbName);
-  db.version(3).stores({
+  db.version(4).stores({
     meta: 'key',
     documents: 'id, sourcePath, updated, order',
     mutations: 'id, kind, target, updated, order',
     removals: 'order, target',
     snapshotBlocks: 'key',
+    durability: 'key',
   });
   return db;
 }

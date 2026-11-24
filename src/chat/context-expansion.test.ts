@@ -135,7 +135,8 @@ function createApp(files: (TFile & { content: string })[]): App {
   return {
     vault: {
       getAbstractFileByPath: (path: string) => byPath.get(path) ?? null,
-      cachedRead: (file: TFile & { content: string }) => Promise.resolve(file.content),
+      readBinary: (file: TFile & { content: string }) =>
+        Promise.resolve(new TextEncoder().encode(file.content).buffer),
       getMarkdownFiles: () => files,
     },
     metadataCache: {

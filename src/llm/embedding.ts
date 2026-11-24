@@ -8,10 +8,11 @@ import { t } from '../i18n';
 import { createIndexedDbRecordKeyRust, planIndexedDbBoundedRetentionRust } from '../rag/rust-core';
 import { assertValidEmbeddingBatch } from './embedding-validation';
 import { EmbeddingGemmaRuntime } from './embeddinggemma-runtime';
-import { embeddingGemmaInputsRust } from '../rag/rust-core';
+import { embeddingGemmaInputsRust, type RustLocalRagAdmissionPlan } from '../rag/rust-core';
+import type { LocalAdmissionSource } from './local-embedding-admission';
 import {
-  closeTernlightRuntime,
-  embedTernlightBatch,
+  TernlightRuntime,
+  waitForEmbeddingOperation,
   type TernlightRuntimeOptions,
 } from './ternlight-runtime';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
@@ -52,10 +53,25 @@ export interface EmbeddingProvider {
   embed(text: string, options?: EmbeddingOptions): Promise<number[]>;
   embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]>;
   close?(): void;
+  // 호출자가 신규 작업을 막은 뒤 소비자 Promise와 별개인 물리 작업까지 기다린다.
+  waitForIdle?(): Promise<void>;
+  planLocalAdmission?(source: LocalAdmissionSource): RustLocalRagAdmissionPlan | null;
+}
+
+/** 선택된 로컬 miss의 실행 roundtrip wall 관측이며 CPU/전체 pipeline 시간이 아니다. */
+export interface EmbeddingInferenceSample {
+  readonly backend: 'cpu' | 'webgpu';
+  readonly workUnits: number;
+  readonly durationMs: number;
+  readonly endedAtMs: number;
 }
 
 export interface EmbeddingOptions {
   signal?: AbortSignal;
+  priority?: 'foreground' | 'background';
+  // 실제 cache-miss post 뒤에만 호출하는 비권위 알림이다. 원격/캐시 경계에서는 호출하지 않는다.
+  onInferenceDispatch?: () => void;
+  onInferenceSample?: (sample: EmbeddingInferenceSample) => void;
 }
 
 export class EmbeddingGemmaProvider implements EmbeddingProvider {
@@ -75,6 +91,12 @@ export class EmbeddingGemmaProvider implements EmbeddingProvider {
   close(): void {
     this.runtime.close();
   }
+  waitForIdle(): Promise<void> {
+    return this.runtime.waitForIdle();
+  }
+  planLocalAdmission(source: LocalAdmissionSource): RustLocalRagAdmissionPlan | null {
+    return this.runtime.planLocalAdmission(source);
+  }
   private async embedInputs(
     texts: string[],
     kind: 'query' | 'document',
@@ -82,7 +104,13 @@ export class EmbeddingGemmaProvider implements EmbeddingProvider {
   ): Promise<number[][]> {
     const inputs = embeddingGemmaInputsRust(texts, kind);
     if (!inputs) throw new Error('EmbeddingGemma input preparation requires the Rust core.');
-    const vectors = await this.runtime.embed(inputs, options?.signal);
+    const vectors = await this.runtime.embed(
+      inputs,
+      options?.signal,
+      options?.priority ?? (kind === 'query' ? 'foreground' : 'background'),
+      options?.onInferenceDispatch,
+      options?.onInferenceSample,
+    );
     assertValidEmbeddingBatch(vectors, texts.length, 'EmbeddingGemma embedding batch');
     return vectors;
   }
@@ -103,21 +131,29 @@ export interface EmbeddingProviderRuntimeOptions {
 
 export class TernlightEmbeddingProvider implements EmbeddingProvider {
   private logger: ScopedLogger;
+  private readonly runtime: TernlightRuntime;
 
   constructor(
     private readonly model: string,
-    private readonly runtime: TernlightRuntimeOptions,
+    runtime: TernlightRuntimeOptions,
     options: Pick<EmbeddingProviderRuntimeOptions, 'logger'> = {},
   ) {
     if (model !== 'ternlight-base') {
       throw new Error(`Unsupported Ternlight embedding model: ${model}`);
     }
     this.logger = createScopedEmbeddingLogger(options.logger, 'embedding.ternlight');
+    this.runtime = new TernlightRuntime(runtime);
   }
 
   async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
     throwIfAborted(options?.signal);
-    const [vector] = await embedTernlightBatch(this.runtime, [text], options?.signal);
+    const [vector] = await this.runtime.embed(
+      [text],
+      options?.signal,
+      options?.priority ?? 'foreground',
+      options?.onInferenceDispatch,
+      options?.onInferenceSample,
+    );
     throwIfAborted(options?.signal);
     return vector;
   }
@@ -127,7 +163,13 @@ export class TernlightEmbeddingProvider implements EmbeddingProvider {
     this.logger.debug('Ternlight embedding batch started.', {
       data: { model: this.model, batchSize: texts.length },
     });
-    const vectors = await embedTernlightBatch(this.runtime, texts, options?.signal);
+    const vectors = await this.runtime.embed(
+      texts,
+      options?.signal,
+      options?.priority ?? 'background',
+      options?.onInferenceDispatch,
+      options?.onInferenceSample,
+    );
     throwIfAborted(options?.signal);
     assertValidEmbeddingBatch(vectors, texts.length, 'Ternlight embedding batch');
     this.logger.debug('Ternlight embedding batch completed.', {
@@ -137,7 +179,14 @@ export class TernlightEmbeddingProvider implements EmbeddingProvider {
   }
 
   close(): void {
-    closeTernlightRuntime();
+    this.runtime.close();
+  }
+
+  waitForIdle(): Promise<void> {
+    return this.runtime.waitForIdle();
+  }
+  planLocalAdmission(source: LocalAdmissionSource): RustLocalRagAdmissionPlan | null {
+    return this.runtime.planLocalAdmission(source);
   }
 }
 
@@ -629,6 +678,7 @@ export interface CachedEmbeddingProviderOptions {
 }
 
 export class CachedEmbeddingProvider implements EmbeddingProvider {
+  readonly planLocalAdmission?: (source: LocalAdmissionSource) => RustLocalRagAdmissionPlan | null;
   private inner: EmbeddingProvider;
   private memoryCache: Map<string, number[]>;
   private cacheNamespace: string;
@@ -641,6 +691,8 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   private readonly now: () => number;
   private readonly persistentAccessTouchTimes = new Map<string, number>();
   private writesSincePrune = 0;
+  private closed = false;
+  private readonly operations = new Set<Promise<unknown>>();
 
   constructor(
     inner: EmbeddingProvider,
@@ -648,6 +700,9 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     options: CachedEmbeddingProviderOptions = {},
   ) {
     this.inner = inner;
+    if (inner.planLocalAdmission) {
+      this.planLocalAdmission = (source) => this.closed ? null : inner.planLocalAdmission!(source);
+    }
     this.memoryCache = new Map();
     this.cacheKeys = [];
     this.cacheNamespace = cacheNamespace;
@@ -678,7 +733,32 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     this.now = options.now ?? Date.now;
   }
 
+  private assertOpen(signal?: AbortSignal): void {
+    if (this.closed) throw new Error(t('embeddingOwnerClosed', { owner: 'Embedding cache' }));
+    throwIfAborted(signal);
+  }
+
+  private run<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (this.closed)
+      return Promise.reject(new Error(t('embeddingOwnerClosed', { owner: 'Embedding cache' })));
+    const pending = operation();
+    this.operations.add(pending);
+    void pending.then(
+      () => this.operations.delete(pending),
+      () => this.operations.delete(pending),
+    );
+    return waitForEmbeddingOperation(pending, signal);
+  }
+
+  async waitForIdle(): Promise<void> {
+    do {
+      await Promise.allSettled([...this.operations]);
+      await this.inner.waitForIdle?.();
+    } while (this.operations.size > 0);
+  }
+
   private setCache(hash: string, vector: number[]): void {
+    this.assertOpen();
     if (this.memoryCache.has(hash)) {
       this.memoryCache.set(hash, vector);
       return;
@@ -700,29 +780,35 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     );
   }
 
-  async embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
-    throwIfAborted(options?.signal);
+  embed(text: string, options?: EmbeddingOptions): Promise<number[]> {
+    return this.run(() => this.embedInput(text, options), options?.signal);
+  }
+
+  private async embedInput(text: string, options?: EmbeddingOptions): Promise<number[]> {
+    this.assertOpen(options?.signal);
     const hash = this.computeHash(text, 'query');
-    throwIfAborted(options?.signal);
+    this.assertOpen(options?.signal);
     const mem = this.memoryCache.get(hash);
     if (mem) {
       await this.touchPersistentCache([hash]);
+      this.assertOpen(options?.signal);
       return mem;
     }
 
     const cached = await this.db?.embeddings.get(hash);
-    throwIfAborted(options?.signal);
+    this.assertOpen(options?.signal);
     if (cached) {
       const cachedVector = embeddingVectorFromRecord(cached);
       if (cachedVector.length > 0) {
         this.setCache(hash, cachedVector);
         await this.touchPersistentCache([hash]);
+        this.assertOpen(options?.signal);
         return cachedVector;
       }
     }
 
     const vector = await this.inner.embed(text, options);
-    throwIfAborted(options?.signal);
+    this.assertOpen(options?.signal);
     this.setCache(hash, vector);
     const updated = this.now();
     if (this.db) {
@@ -734,15 +820,20 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
       this.persistentAccessTouchTimes.set(hash, updated);
       await this.prunePersistentCacheIfNeeded(1);
     }
+    this.assertOpen(options?.signal);
     return vector;
   }
 
-  async embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]> {
-    throwIfAborted(options?.signal);
+  embedBatch(texts: string[], options?: EmbeddingOptions): Promise<number[][]> {
+    return this.run(() => this.embedInputs(texts, options), options?.signal);
+  }
+
+  private async embedInputs(texts: string[], options?: EmbeddingOptions): Promise<number[][]> {
+    this.assertOpen(options?.signal);
     const hashes: string[] = [];
     for (const t of texts) {
       hashes.push(this.computeHash(t, 'document'));
-      throwIfAborted(options?.signal);
+      this.assertOpen(options?.signal);
     }
     const results: (number[] | null)[] = new Array(texts.length).fill(null) as (number[] | null)[];
     const dbLookupIndices: number[] = [];
@@ -763,7 +854,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     const cachedRecords = this.db
       ? await this.db.embeddings.bulkGet(dbLookupHashes)
       : new Array<EmbeddingRecord | undefined>(dbLookupHashes.length).fill(undefined);
-    throwIfAborted(options?.signal);
+    this.assertOpen(options?.signal);
     const missingIndexGroups = new Map<string, number[]>();
     const missingHashes: string[] = [];
     const missingTexts: string[] = [];
@@ -791,10 +882,11 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     }
 
     await this.touchPersistentCache(cacheHitHashes);
+    this.assertOpen(options?.signal);
 
     if (missingTexts.length > 0) {
       const newVectors = await this.inner.embedBatch(missingTexts, options);
-      throwIfAborted(options?.signal);
+      this.assertOpen(options?.signal);
       const now = this.now();
       const bulkRecords: EmbeddingRecord[] = [];
       const accessRecords: EmbeddingAccessRecord[] = [];
@@ -819,13 +911,18 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
         }
         await this.prunePersistentCacheIfNeeded(bulkRecords.length);
       }
-      throwIfAborted(options?.signal);
+      this.assertOpen(options?.signal);
     }
 
+    this.assertOpen(options?.signal);
     return results as number[][];
   }
 
-  async clearCache(): Promise<void> {
+  clearCache(): Promise<void> {
+    return this.run(() => this.clearCacheEntries());
+  }
+
+  private async clearCacheEntries(): Promise<void> {
     this.memoryCache.clear();
     this.cacheKeys = [];
     this.persistentAccessTouchTimes.clear();
@@ -838,7 +935,11 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     }
   }
 
-  async deleteDatabase(): Promise<void> {
+  deleteDatabase(): Promise<void> {
+    return this.run(() => this.deleteCacheDatabase());
+  }
+
+  private async deleteCacheDatabase(): Promise<void> {
     this.memoryCache.clear();
     this.cacheKeys = [];
     this.persistentAccessTouchTimes.clear();
@@ -850,6 +951,8 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.memoryCache.clear();
     this.cacheKeys = [];
     this.persistentAccessTouchTimes.clear();
@@ -861,7 +964,14 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     return this.db !== null;
   }
 
-  async prunePersistentCacheBatch(): Promise<{ deleted: number; remainingWork: boolean }> {
+  prunePersistentCacheBatch(): Promise<{ deleted: number; remainingWork: boolean }> {
+    return this.run(() => this.prunePersistentCacheEntries());
+  }
+
+  private async prunePersistentCacheEntries(): Promise<{
+    deleted: number;
+    remainingWork: boolean;
+  }> {
     const db = this.db;
     if (!db) return { deleted: 0, remainingWork: false };
     const totalRecordCount = await db.embeddings.count();

@@ -15,11 +15,74 @@ const MAX_SESSION_ATTEMPTS: u32 = 3;
 /// Quiet startup delay followed by bounded retry backoff.
 const RETRY_DELAYS_MS: [u32; 3] = [2_000, 30_000, 120_000];
 /// Automatic recovery never takes more than this many files in one opportunity.
-const MAX_AUTOMATIC_BATCH_FILES: usize = 32;
-/// Automatic recovery keeps each opportunity small enough to remain background work.
-const MAX_AUTOMATIC_BATCH_SOURCE_BYTES: u64 = 512 * 1024;
-/// Larger sources remain available to explicit indexing but never monopolize quiet recovery.
-const MAX_AUTOMATIC_FILE_BYTES: u64 = 512 * 1024;
+/// 사용자가 본 대기열이 큰 볼트에서 기회당 대기 문서를 실제로 소진하도록 넉넉히 잡는다.
+const MAX_AUTOMATIC_BATCH_FILES: usize = 256;
+/// Automatic recovery keeps each opportunity bounded while allowing one large source.
+const MAX_AUTOMATIC_BATCH_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// JavaScript wire가 정확히 표현하는 가장 큰 정수입니다.
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+/// Hash8 형식이 없는 legacy 행은 자동 재시도 억제 근거가 아닙니다.
+fn valid_hash(value: &str) -> bool {
+    value.len() == 8
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// byte 계수와 달리 원문 시각의 소수를 버리면 다른 revision을 같은 것으로 볼 수 있습니다.
+fn source_mtime(value: &JsonValue) -> Option<f64> {
+    let mtime = value.as_f64()?;
+    (mtime.is_finite() && (0.0..=9_007_199_254_740_991.0).contains(&mtime))
+        .then_some(mtime.max(0.0))
+}
+
+/// 새 wire는 알려진 scalar만 받고 byte는 정수, 시각은 유한 소수로 검증합니다.
+fn valid_recovery_record(value: &JsonValue, source: bool) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let required = if source {
+        ["path", "mtime", "size"].as_slice()
+    } else {
+        ["partial", "hasCompleteMetadata"].as_slice()
+    };
+    required.iter().all(|key| object.contains_key(*key))
+        && object.iter().all(|(key, value)| match key.as_str() {
+            "path" => source && value.as_str().is_some_and(|path| !path.trim().is_empty()),
+            "mtime" => source_mtime(value).is_some(),
+            "size" => value
+                .as_u64()
+                .is_some_and(|number| number <= MAX_SAFE_INTEGER),
+            "contentHash" | "sourceMetadataHash" => value.is_string(),
+            "invalidated" => source && value.is_boolean(),
+            "partial" | "hasCompleteMetadata" => !source && value.is_boolean(),
+            "corpusRecord" | "vectorRecord" => source && valid_recovery_record(value, false),
+            _ => false,
+        })
+}
+
+/// cold cache 부재는 변경 증거나 현재 원문 proof가 아닌 stat 기반 억제 힌트입니다.
+fn defers_partial(file: &JsonValue, record: &JsonValue) -> bool {
+    file.get("invalidated").and_then(JsonValue::as_bool) != Some(true)
+        && record.get("partial").and_then(JsonValue::as_bool) == Some(true)
+        && record
+            .get("hasCompleteMetadata")
+            .and_then(JsonValue::as_bool)
+            == Some(true)
+        && record.get("mtime").and_then(source_mtime) == file.get("mtime").and_then(source_mtime)
+        && record.get("size") == file.get("size")
+        && ["contentHash", "sourceMetadataHash"].iter().all(|key| {
+            record
+                .get(*key)
+                .and_then(JsonValue::as_str)
+                .is_some_and(valid_hash)
+                && file
+                    .get(*key)
+                    .is_none_or(|hash| Some(hash) == record.get(*key))
+        })
+}
 
 /// Selects the files eligible for quiet recovery and one bounded smallest/oldest-first batch.
 #[must_use]
@@ -31,24 +94,33 @@ pub fn plan_rag_automatic_recovery_batch_json(files_json: &str) -> String {
     let Some(records) = value.as_array() else {
         return String::new();
     };
-    let mut eligible = Vec::<(usize, String, u64, u64)>::new();
-    for (index, record) in records.iter().enumerate() {
-        let Some(object) = record.as_object() else {
-            return String::new();
-        };
-        let Some(path) = object.get("path").and_then(JsonValue::as_str) else {
-            return String::new();
-        };
-        let Some(mtime) = object.get("mtime").and_then(JsonValue::as_u64) else {
-            return String::new();
-        };
-        let Some(size) = object.get("size").and_then(JsonValue::as_u64) else {
-            return String::new();
-        };
-        if path.trim().is_empty() {
+    let mut eligible = Vec::<(usize, String, f64, u64)>::new();
+    let mut deferred_indices = Vec::new();
+    let mut paths = std::collections::BTreeSet::new();
+    for (index, file) in records.iter().enumerate() {
+        if !valid_recovery_record(file, true) {
             return String::new();
         }
-        if size <= MAX_AUTOMATIC_FILE_BYTES {
+        let Some(path) = file.get("path").and_then(JsonValue::as_str) else {
+            return String::new();
+        };
+        let Some(mtime) = file.get("mtime").and_then(source_mtime) else {
+            return String::new();
+        };
+        let Some(size) = file.get("size").and_then(JsonValue::as_u64) else {
+            return String::new();
+        };
+        if !paths.insert(path) {
+            return String::new();
+        }
+        // lexical-first corpus가 있으면 이전 vector partial로 새 corpus 실패를 가리지 않습니다.
+        if file
+            .get("corpusRecord")
+            .or_else(|| file.get("vectorRecord"))
+            .is_some_and(|record| defers_partial(file, record))
+        {
+            deferred_indices.push(index);
+        } else {
             eligible.push((index, path.to_owned(), mtime, size));
         }
     }
@@ -56,8 +128,8 @@ pub fn plan_rag_automatic_recovery_batch_json(files_json: &str) -> String {
     eligible.sort_by(|left, right| {
         left.3
             .cmp(&right.3)
-            .then_with(|| left.2.cmp(&right.2))
-            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.total_cmp(&right.2))
+            .then_with(|| left.1.encode_utf16().cmp(right.1.encode_utf16()))
     });
     let mut selected_source_bytes = 0_u64;
     let mut batch_indices = Vec::new();
@@ -65,6 +137,7 @@ pub fn plan_rag_automatic_recovery_batch_json(files_json: &str) -> String {
         if batch_indices.len() >= MAX_AUTOMATIC_BATCH_FILES {
             break;
         }
+        // 첫 파일은 크기와 무관하게 넣어 큰 문서가 차례를 영영 못 잡지 않게 한다.
         if !batch_indices.is_empty()
             && selected_source_bytes.saturating_add(size) > MAX_AUTOMATIC_BATCH_SOURCE_BYTES
         {
@@ -75,6 +148,10 @@ pub fn plan_rag_automatic_recovery_batch_json(files_json: &str) -> String {
     }
 
     json!({
+        "pendingDocumentCount": records.len(),
+        "actionableDocumentCount": eligible_indices.len(),
+        "deferredDocumentCount": deferred_indices.len(),
+        "deferredIndices": deferred_indices,
         "eligibleIndices": eligible_indices,
         "batchIndices": batch_indices,
         "selectedSourceBytes": selected_source_bytes,
@@ -186,15 +263,18 @@ pub fn plan_rag_storage_health_json(health_json: &str) -> String {
 }
 
 /// Parses and path-sorts a unique eligible-file snapshot.
-fn parse_file_snapshot(payload: &str) -> Option<BTreeMap<String, (u64, u64)>> {
+fn parse_file_snapshot(payload: &str) -> Option<BTreeMap<String, (f64, u64)>> {
     let values = serde_json::from_str::<JsonValue>(payload).ok()?;
     let records = values.as_array()?;
     let mut files = BTreeMap::new();
     for record in records {
         let object = record.as_object()?;
         let path = object.get("path")?.as_str()?.trim();
-        let mtime = object.get("mtime")?.as_u64()?;
-        let size = object.get("size")?.as_u64()?;
+        let mtime = object.get("mtime").and_then(source_mtime)?;
+        let size = object
+            .get("size")?
+            .as_u64()
+            .filter(|size| *size <= MAX_SAFE_INTEGER)?;
         if path.is_empty() || files.insert(path.to_owned(), (mtime, size)).is_some() {
             return None;
         }
@@ -203,7 +283,7 @@ fn parse_file_snapshot(payload: &str) -> Option<BTreeMap<String, (u64, u64)>> {
 }
 
 /// Hashes canonical file metadata without reading note content.
-fn snapshot_fingerprint(files: &BTreeMap<String, (u64, u64)>) -> String {
+fn snapshot_fingerprint(files: &BTreeMap<String, (f64, u64)>) -> String {
     let mut owned_parts = Vec::with_capacity(1 + files.len() * 3);
     owned_parts.push("rag-automatic-recovery-v1".to_owned());
     for (path, (mtime, size)) in files {
@@ -338,12 +418,160 @@ mod tests {
     }
 
     #[test]
-    fn automatic_batches_are_bounded_and_leave_large_sources_for_explicit_indexing() {
+    fn recovery_preserves_fractional_source_clock_without_rounding_counts() {
+        let files = json!([{"path": "fractional.pdf", "mtime": 1.25, "size": 10, "corpusRecord": {"mtime": 1.25, "size": 10, "contentHash": "1234abcd", "sourceMetadataHash": "abcd1234", "partial": true, "hasCompleteMetadata": true}}]);
+        let batch: JsonValue =
+            serde_json::from_str(&plan_rag_automatic_recovery_batch_json(&files.to_string()))
+                .unwrap_or_default();
+        assert_eq!(batch.get("deferredIndices"), Some(&json!([0])));
+        let first: JsonValue = serde_json::from_str(&plan_rag_automatic_recovery_json(
+            &files.to_string(),
+            "",
+            0,
+            1,
+        ))
+        .unwrap_or_default();
+        let changed = json!([{"path": "fractional.pdf", "mtime": 1.5, "size": 10}]);
+        let next: JsonValue = serde_json::from_str(&plan_rag_automatic_recovery_json(
+            &changed.to_string(),
+            "",
+            0,
+            1,
+        ))
+        .unwrap_or_default();
+        assert!(first.get("fingerprint").is_some());
+        assert!(next.get("fingerprint").is_some());
+        assert_ne!(first.get("fingerprint"), next.get("fingerprint"));
+        let fractional_size = json!([{"path": "fractional.pdf", "mtime": 1.5, "size": 1.5}]);
+        assert!(plan_rag_automatic_recovery_batch_json(&fractional_size.to_string()).is_empty());
+    }
+
+    #[test]
+    fn corpus_partial_is_deferred_without_completing_coverage_debt() {
+        let record = json!({"mtime": 1, "size": 10, "contentHash": "1234abcd", "sourceMetadataHash": "abcd1234", "partial": true, "hasCompleteMetadata": true});
+        let file = json!({"path": "partial.pdf", "mtime": 1, "size": 10, "corpusRecord": record});
+        let plan: JsonValue = serde_json::from_str(&plan_rag_automatic_recovery_batch_json(
+            &json!([file]).to_string(),
+        ))
+        .unwrap_or_default();
+        assert_eq!(plan.get("deferredIndices"), Some(&json!([0])));
+        assert_eq!(plan.get("batchIndices"), Some(&json!([])));
+        assert_eq!(plan.get("pendingDocumentCount"), Some(&json!(1)));
+        assert_eq!(plan.get("actionableDocumentCount"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn partial_hints_allow_changes_and_uncertified_legacy() {
+        let base = json!({"path": "partial.pdf", "mtime": 1, "size": 10, "corpusRecord": {"mtime": 1, "size": 10, "contentHash": "1234abcd", "sourceMetadataHash": "abcd1234", "partial": true, "hasCompleteMetadata": true}});
+        let cases = [
+            ("", JsonValue::Null, true),
+            ("mtime", json!(2), false),
+            ("size", json!(11), false),
+            ("invalidated", json!(true), false),
+            ("contentHash", json!("8765abcd"), false),
+            ("sourceMetadataHash", json!("abcd4321"), false),
+            ("contentHash", json!("1234abcd"), true),
+            ("corpusRecord.sourceMetadataHash", json!(""), false),
+            ("corpusRecord.contentHash", json!("malformed"), false),
+            ("corpusRecord.partial", json!(false), false),
+            ("corpusRecord.hasCompleteMetadata", json!(false), false),
+            ("corpusRecord.mtime", json!(2), false),
+        ];
+        for (key, value, deferred) in cases {
+            let mut file = base.clone();
+            if let Some((parent, child)) = key.split_once('.') {
+                if let Some(object) = file.get_mut(parent).and_then(JsonValue::as_object_mut) {
+                    object.insert(child.to_owned(), value);
+                }
+            } else if !key.is_empty()
+                && let Some(object) = file.as_object_mut()
+            {
+                object.insert(key.to_owned(), value);
+            }
+            let plan: JsonValue = serde_json::from_str(&plan_rag_automatic_recovery_batch_json(
+                &json!([file]).to_string(),
+            ))
+            .unwrap_or_default();
+            assert_eq!(
+                plan.get("deferredIndices"),
+                Some(&if deferred { json!([0]) } else { json!([]) }),
+                "{key}"
+            );
+            assert_eq!(plan.get("pendingDocumentCount"), Some(&json!(1)), "{key}");
+        }
+        let legacy = json!([{"path": "legacy.pdf", "mtime": 1, "size": 10, "vectorRecord": {"mtime": 1, "size": 10, "partial": true, "hasCompleteMetadata": true, "contentHash": "1234abcd"}}]);
+        let plan: JsonValue =
+            serde_json::from_str(&plan_rag_automatic_recovery_batch_json(&legacy.to_string()))
+                .unwrap_or_default();
+        assert_eq!(plan.get("eligibleIndices"), Some(&json!([0])));
+        let vector_partial = json!({"mtime": 1, "size": 10, "contentHash": "1234abcd", "sourceMetadataHash": "abcd1234", "partial": true, "hasCompleteMetadata": true});
+        let files = json!([
+            {"path": "vector.pdf", "mtime": 1, "size": 10, "vectorRecord": vector_partial},
+            {"path": "new-complete.pdf", "mtime": 1, "size": 10, "vectorRecord": vector_partial, "corpusRecord": {"mtime": 1, "size": 10, "contentHash": "1234abcd", "sourceMetadataHash": "abcd4321", "partial": false, "hasCompleteMetadata": true}}
+        ]);
+        let plan: JsonValue =
+            serde_json::from_str(&plan_rag_automatic_recovery_batch_json(&files.to_string()))
+                .unwrap_or_default();
+        assert_eq!(plan.get("deferredIndices"), Some(&json!([0])));
+        assert_eq!(plan.get("eligibleIndices"), Some(&json!([1])));
+    }
+
+    #[test]
+    fn batch_wire_is_strict_and_ties_use_utf16_paths() {
+        for input in [
+            r"[null]",
+            r"[{}]",
+            r#"[{"path":"a","mtime":1,"size":1.5}]"#,
+            r#"[{"path":"a","mtime":1,"size":9007199254740992}]"#,
+            r#"[{"path":"a","mtime":1,"size":1,"unknown":true}]"#,
+            r#"[{"path":"a","mtime":1,"size":1,"corpusRecord":{"partial":"partial","hasCompleteMetadata":true}}]"#,
+            r#"[{"path":"a","mtime":1,"size":1},{"path":"a","mtime":2,"size":2}]"#,
+        ] {
+            assert!(
+                plan_rag_automatic_recovery_batch_json(input).is_empty(),
+                "{input}"
+            );
+        }
+        let files = json!([{"path": "\u{E000}.pdf", "mtime": 1, "size": 1}, {"path": "😀.pdf", "mtime": 1, "size": 1}]);
+        let plan: JsonValue =
+            serde_json::from_str(&plan_rag_automatic_recovery_batch_json(&files.to_string()))
+                .unwrap_or_default();
+        assert_eq!(plan.get("batchIndices"), Some(&json!([1, 0])));
+    }
+
+    #[test]
+    fn automatic_batches_are_bounded_and_include_large_supported_sources() {
         let files = r#"[{"path":"large.md","mtime":1,"size":600000},{"path":"new.md","mtime":3,"size":100},{"path":"old.md","mtime":2,"size":200}]"#;
         let plan = plan_rag_automatic_recovery_batch_json(files);
         let plan: JsonValue = serde_json::from_str(&plan).unwrap_or_default();
-        assert_eq!(plan.get("eligibleIndices"), Some(&json!([1, 2])));
-        assert_eq!(plan.get("batchIndices"), Some(&json!([1, 2])));
-        assert_eq!(plan.get("selectedSourceBytes"), Some(&json!(300)));
+        // 큰 문서도 대기열에 남겨 영구 미색인으로 끝나지 않게 한다.
+        assert_eq!(plan.get("eligibleIndices"), Some(&json!([0, 1, 2])));
+        assert_eq!(plan.get("batchIndices"), Some(&json!([1, 2, 0])));
+        assert_eq!(plan.get("selectedSourceBytes"), Some(&json!(600_300)));
+    }
+
+    #[test]
+    fn automatic_batches_drain_a_large_backlog_per_opportunity() {
+        let mut records = Vec::new();
+        for index in 0..600 {
+            records.push(json!({
+                "path": format!("notes/{index:04}.md"),
+                "mtime": index,
+                "size": 1_000,
+            }));
+        }
+        let plan = plan_rag_automatic_recovery_batch_json(&JsonValue::Array(records).to_string());
+        let plan: JsonValue = serde_json::from_str(&plan).unwrap_or_default();
+        assert_eq!(
+            plan.get("batchIndices")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len),
+            Some(256),
+            "한 기회에 처리하는 파일 수를 넉넉히 늘린다"
+        );
+        assert_eq!(
+            plan.get("selectedSourceBytes").and_then(JsonValue::as_u64),
+            Some(256_000)
+        );
     }
 }

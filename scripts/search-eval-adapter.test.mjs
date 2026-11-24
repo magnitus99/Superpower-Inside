@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createSyntheticCorpus } from './search-eval/corpus.mjs';
-import { buildEnginePlanInput, createSearchAdapter, isEnginePlannerAvailable } from './search-eval/adapters.mjs';
+import { buildEnginePlanInput, createSearchAdapter, isEnginePlannerAvailable, loadGeneratedWasm } from './search-eval/adapters.mjs';
 import { summarizeSearchEvaluation } from './search-eval/metrics.mjs';
 
 // 일반 CI용 소형 결정적 평가: 합성 240문서(질의 28개)로 골드 계약과 어댑터 갱신을 확인한다.
@@ -42,6 +42,20 @@ async function evaluateBaseline(target = corpus) {
 }
 
 describe('BM25 WASM 기준선 어댑터(Node 단위 평가, 제품 DB/IO 아님)', () => {
+  it('동시 생성도 같은 WASM 모듈·초기화와 독립 인덱스를 유지한다', async () => {
+    const pending = loadGeneratedWasm();
+    expect(loadGeneratedWasm()).toBe(pending);
+    const adapters = await Promise.all([createSearchAdapter('baseline'), createSearchAdapter('baseline')]);
+    try {
+      await adapters[0].build(corpus.documents.slice(0, 1));
+      expect(adapters[0].stats().chunkCount).toBe(corpus.documents[0].chunks.length);
+      expect(adapters[1].stats().chunkCount).toBe(0);
+      expect(await loadGeneratedWasm()).toBe(await pending);
+    } finally {
+      for (const adapter of adapters) adapter.free();
+    }
+  });
+
   it('문서·구절·상충쌍·no-answer 골드를 결정적으로 채점한다', async () => {
     const first = await evaluateBaseline();
     const second = await evaluateBaseline();

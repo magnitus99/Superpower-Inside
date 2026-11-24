@@ -430,6 +430,144 @@ export class IvfRuntimeIndex {
 if (Symbol.dispose) IvfRuntimeIndex.prototype[Symbol.dispose] = IvfRuntimeIndex.prototype.free;
 
 /**
+ * 완전한 source summary만 받는 작은 checked reducer입니다.
+ */
+export class LiteralInventoryTotals {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        LiteralInventoryTotalsFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_literalinventorytotals_free(ptr, 0);
+    }
+    /**
+     * 완전 summary를 UTF-16 path 오름차순으로 한 번만 수락합니다.
+     * @param {string} summary_json
+     * @returns {boolean}
+     */
+    append_source_json(summary_json) {
+        const ptr0 = passStringToWasm0(summary_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.literalinventorytotals_append_source_json(this.__wbg_ptr, ptr0, len0);
+        return ret !== 0;
+    }
+    /**
+     * expectedSources와 수락한 수가 같을 때만 완전 총계입니다.
+     * @returns {string}
+     */
+    finish_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.literalinventorytotals_finish_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * needle identity와 expectedSources를 고정합니다.
+     * @param {string} input_json
+     */
+    constructor(input_json) {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.literalinventorytotals_new(ptr0, len0);
+        this.__wbg_ptr = ret;
+        LiteralInventoryTotalsFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) LiteralInventoryTotals.prototype[Symbol.dispose] = LiteralInventoryTotals.prototype.free;
+
+/**
+ * 개별 source의 fail-closed literal scanner이며 reference는 verified citation이 아닙니다.
+ */
+export class LiteralSourceScanner {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        LiteralSourceScannerFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_literalsourcescanner_free(ptr, 0);
+    }
+    /**
+     * 순서·주소·codepoint 경계가 연속하는 원문 블록만 추가합니다.
+     * @param {string} input_json
+     * @returns {boolean}
+     */
+    append_block_json(input_json) {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.literalsourcescanner_append_block_json(this.__wbg_ptr, ptr0, len0);
+        return ret !== 0;
+    }
+    /**
+     * v1 header와 needle을 검사하고 원문 하나를 예약합니다.
+     * @param {string} input_json
+     */
+    constructor(input_json) {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.literalsourcescanner_new(ptr0, len0);
+        this.__wbg_ptr = ret;
+        LiteralSourceScannerFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * 최대 256건·1MiB 페이지이며 미수록 reference의 cursor는 전진하지 않습니다.
+     * @param {number} max_matches
+     * @param {number} max_bytes
+     * @returns {string}
+     */
+    next_page_json(max_matches, max_bytes) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.literalsourcescanner_next_page_json(this.__wbg_ptr, max_matches, max_bytes);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * 모든 블록·실제 길이·hash·charge가 맞아야 scan을 허용합니다.
+     * @returns {boolean}
+     */
+    seal_input() {
+        const ret = wasm.literalsourcescanner_seal_input(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * 완전히 배출한 source에만 집계 성공을 반환합니다.
+     * @returns {string}
+     */
+    summary_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.literalsourcescanner_summary_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) LiteralSourceScanner.prototype[Symbol.dispose] = LiteralSourceScanner.prototype.free;
+
+/**
  * JS wrapper가 재사용할 수 있는 normalized vector runtime index.
  */
 export class VectorRuntimeIndex {
@@ -519,6 +657,22 @@ export class XlsxSourceText {
     free() {
         const ptr = this.__destroy_into_raw();
         wasm.__wbg_xlsxsourcetext_free(ptr, 0);
+    }
+    /**
+     * 본문 없는 part 원장은 인용 구간과 별도로 전달합니다.
+     * @returns {string}
+     */
+    metadata_parts_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.xlsxsourcetext_metadata_parts_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
     }
     /**
      * ZIP XML을 순차적으로 읽어 전체 본문을 만들거나 명시적인 실패를 반환합니다.
@@ -902,6 +1056,29 @@ export function create_indexed_db_record_key(namespace, value) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * 바이트를 검증하며 probe에서는 본문을 wire에 복제하지 않는다.
+ * 빈 바이트와 실제 크기를 넘기면 호스트 I/O 전에 메모리 예산을 확인할 수 있다.
+ * @param {Uint8Array} bytes
+ * @param {boolean} include_text
+ * @param {number} source_size
+ * @returns {string}
+ */
+export function decode_source_bytes_json(bytes, include_text, source_size) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.decode_source_bytes_json(ptr0, len0, include_text, source_size);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -2572,6 +2749,27 @@ export function plan_indexed_search_queries_json(input) {
 }
 
 /**
+ * 다음 로컬 BG 배치와 추론 중 source 한 개의 추가 admission만 계산한다.
+ * baseline 실행의 중단·물리 슬롯 해제·작업자 증설 권한은 반환하지 않는다.
+ * @param {string} input_json
+ * @returns {string}
+ */
+export function plan_local_rag_admission_json(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_local_rag_admission_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * MCP server 후보 순서를 Rust에서 계산한다.
  * @param {string} preferred_server_names_json
  * @param {string} enabled_server_names_json
@@ -3232,6 +3430,32 @@ export function plan_rag_indexing_eta_json(input_json) {
 }
 
 /**
+ * 본문 판정 이전의 명시적 색인 계획입니다. 후보를 검증 완료로 해석하지 않습니다.
+ * @param {string} files_json
+ * @param {string} exclude_paths_json
+ * @param {string} exclude_exts_json
+ * @returns {string}
+ */
+export function plan_rag_indexing_manifest_json(files_json, exclude_paths_json, exclude_exts_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(files_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(exclude_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(exclude_exts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_rag_indexing_manifest_json(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Plans one performance-guard state transition from deterministic JSON input.
  * @param {string} input_json
  * @returns {string}
@@ -3243,6 +3467,26 @@ export function plan_rag_performance_guard_json(input_json) {
         const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.plan_rag_performance_guard_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 실제 단위 관측의 단계 ETA이며 미관측 후속 작업을 추정하지 않습니다.
+ * @param {string} payload
+ * @returns {string}
+ */
+export function plan_rag_runtime_work_eta_json(payload) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(payload, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_rag_runtime_work_eta_json(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -3610,6 +3854,26 @@ export function plan_session_title_json(messages_json, generated_title) {
 }
 
 /**
+ * 원문 본문의 비중첩 블록 계획이며 실패에 본문을 넣지 않습니다.
+ * @param {string} text
+ * @returns {string}
+ */
+export function plan_source_body_json(text) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_source_body_json(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * 현재 내용 기반 청크 ID와 일치하는 저장 벡터의 이관 인덱스를 반환합니다.
  * @param {string} input_json
  * @returns {string}
@@ -3714,6 +3978,37 @@ export function plan_source_references_json(content) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 0부터 시작하는 비중첩 구간을 검증하고 1부터 시작하는 절대 행 청크를 반환합니다.
+ * @param {string} path
+ * @param {string} extension
+ * @param {string} content
+ * @param {number} max_size
+ * @param {number} overlap
+ * @param {string} segments_json
+ * @returns {string}
+ */
+export function plan_source_segment_chunks_json(path, extension, content, max_size, overlap, segments_json) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(extension, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(segments_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_source_segment_chunks_json(ptr0, len0, ptr1, len1, ptr2, len2, max_size, overlap, ptr3, len3);
+        deferred5_0 = ret[0];
+        deferred5_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
     }
 }
 
@@ -4217,6 +4512,59 @@ export function plan_vector_store_stats_json(file_paths_json, now) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * 실제 바이너리는 평문 64MiB 한도를 적용하기 전에 구조 추출기로 보냅니다.
+ * PDF의 입력은 worker가 소유한 같은 buffer를 PDF worker에 이동해야 합니다.
+ * @param {string} extension
+ * @param {Uint8Array} bytes
+ * @param {string} preparation_json
+ * @returns {string}
+ */
+export function prepare_source_bytes_json(extension, bytes, preparation_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(extension, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(preparation_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.prepare_source_bytes_json(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * PDF 추출·완전성 및 캐시 결과도 동일한 Rust 준비 계약으로 계산합니다.
+ * @param {string} extension
+ * @param {string} source_json
+ * @param {string} preparation_json
+ * @returns {string}
+ */
+export function prepare_source_text_json(extension, source_json, preparation_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(extension, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(source_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(preparation_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.prepare_source_text_json(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 
@@ -4788,6 +5136,12 @@ const Bm25RuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefined
 const IvfRuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_ivfruntimeindex_free(ptr, 1));
+const LiteralInventoryTotalsFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_literalinventorytotals_free(ptr, 1));
+const LiteralSourceScannerFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_literalsourcescanner_free(ptr, 1));
 const VectorRuntimeIndexFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_vectorruntimeindex_free(ptr, 1));

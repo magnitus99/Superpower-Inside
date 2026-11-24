@@ -8,7 +8,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createSyntheticCorpus, SEARCH_EVAL_SCALES } from './corpus.mjs';
-import { latencySummary, summarizeSearchEvaluation } from './metrics.mjs';
+import { benchmarkGate, latencySummary, summarizeSearchEvaluation } from './metrics.mjs';
 import { createSearchAdapter, SEARCH_EVAL_SCOPE } from './adapters.mjs';
 
 const args = process.argv.slice(2);
@@ -101,6 +101,9 @@ async function main() {
   const baselinePath = option('--baseline');
   if (baselinePath) report.comparison = await compareWithBaseline(path.resolve(baselinePath), report);
 
+  const passed = benchmarkGate(metrics, update, stabilityIdentical);
+  report.gate = { passed };
+  if (!passed) process.exitCode = 1;
   adapter.free?.();
   const serialized = `${JSON.stringify(report, null, 2)}\n`;
   const output = option('--json');
@@ -225,6 +228,7 @@ async function compareWithBaseline(baselinePath, report) {
 function reportSummary(report) {
   return {
     adapter: report.adapter,
+    gate: report.gate,
     scope: report.evaluationScope,
     corpus: report.corpus,
     metrics: report.metrics.overall,

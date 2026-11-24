@@ -680,6 +680,16 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toMatchObject({ modelId: 'embed', profile: { id: 'usable' } });
   });
 
+  it('provider embedding binding nonce만 정규화하여 유지하고 legacy에는 증거를 만들지 않는다', () => {
+    const nonce = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const base = { id: 'synthetic-binding', name: '', strategy: 'openai' as const, apiKey: '', enabled: true, models: [] };
+    for (const [value, expected] of [[nonce, nonce], ['not-a-nonce', undefined], [undefined, undefined]] as const) {
+      const migrated = migrateLegacyProviderProfiles({ ...DEFAULT_SETTINGS,
+        providerProfiles: [{ ...base, embeddingBindingRevision: value }] });
+      expect(migrated.providerProfiles.find((profile) => profile.id === base.id)?.embeddingBindingRevision).toBe(expected);
+    }
+  });
+
   it('untouched default RAG settings create the built-in Ternlight embedding profile', () => {
     const migrated = migrateLegacyProviderProfiles({
       ...DEFAULT_SETTINGS,
@@ -784,7 +794,7 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toEqual(gemma.verification);
     expect(resolveRagPerformanceSettings('ternlight', 'embeddinggemma-300m')).toMatchObject({
       enabled: true,
-      maxEmbeddingBatchSize: 4,
+      maxEmbeddingBatchSize: 32,
     });
   });
 
@@ -1153,23 +1163,24 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(DEFAULT_SETTINGS.rag.slowBatchThresholdMs).toBe(3000);
   });
 
-  it('내장 Ternlight는 페이싱 없이, 원격 프로바이더는 배치 제한과 함께 인덱싱한다', () => {
+  it('내장 Ternlight는 페이싱 없이, 원격 프로바이더는 큰 임베딩 배치로 인덱싱한다', () => {
     expect(resolveRagPerformanceSettings('ternlight')).toEqual({ enabled: false });
 
     expect(resolveRagPerformanceSettings('openai')).toEqual({
       enabled: true,
       maxEmbeddingBatchSize: 32,
       indexingYieldMs: 0,
-      slowEventLoopThresholdMs: 24,
-      slowBatchThresholdMs: 1500,
+      slowEventLoopThresholdMs: 200,
+      slowBatchThresholdMs: 10_000,
     });
 
+    // Ollama는 입력당 1회 요청을 보내므로 배치 상한을 올리지 않는다.
     expect(resolveRagPerformanceSettings('ollama')).toEqual({
       enabled: true,
       maxEmbeddingBatchSize: 1,
       indexingYieldMs: 0,
-      slowEventLoopThresholdMs: 24,
-      slowBatchThresholdMs: 1500,
+      slowEventLoopThresholdMs: 200,
+      slowBatchThresholdMs: 10_000,
     });
   });
 
@@ -1226,6 +1237,27 @@ describe('RAG 설정 표시 헬퍼', () => {
     ).toBe('업데이트가 필요한 문서가 없습니다.');
   });
 
+  it('명시 시작 capability는 기존 인덱서 유무와 독립적이며 설정과 초기화 보호를 따른다', () => {
+    const input = {
+      hasIndexer: false,
+      canStartUpdate: true,
+      canRebuild: true,
+      isIndexing: false,
+      totalDocuments: null,
+      updateRequiredCount: null,
+      guardMode: null,
+      guardRemainingPauseMs: null,
+    };
+    const state = getRagIndexingControlState(input);
+    expect(state.updatePending.disabled).toBe(false);
+    expect(state.reindexAll.disabled).toBe(false);
+    expect(input.hasIndexer).toBe(false);
+    expect(getRagIndexingControlState({ ...input, isInitializing: true }).updatePending.disabled).toBe(true);
+    expect(getRagIndexingControlState({ ...input, hasIndexer: true, canStartUpdate: false }).updatePending.disabled).toBe(true);
+    expect(getRagIndexingControlState({ ...input, updateRequiredCount: 0 }).updatePending.disabled).toBe(true);
+    expect(getRagIndexingControlState({ ...input, updateRequiredCount: 0, autoRecoveryPausedByUser: true }).updatePending.disabled).toBe(false);
+  });
+
   it('전체 재인덱싱은 업데이트 대상이 없어도 전체 문서가 있으면 활성화한다', () => {
     const state = getRagIndexingControlState({
       hasIndexer: true,
@@ -1241,7 +1273,7 @@ describe('RAG 설정 표시 헬퍼', () => {
     expect(state.reindexAll.reason).toBeNull();
   });
 
-  it('사용자 중단 뒤에는 성능 보호 일시정지가 아니어도 재개를 제공한다', () => {
+  it('사용자 중단 뒤 재개는 업데이트 시작 하나로 처리하고 별도 재개 제어를 두지 않는다', () => {
     const state = getRagIndexingControlState({
       hasIndexer: true,
       isIndexing: false,
@@ -1252,22 +1284,11 @@ describe('RAG 설정 표시 헬퍼', () => {
       autoRecoveryPausedByUser: true,
     });
 
-    expect(state.resume.disabled).toBe(false);
+    expect(Object.keys(state).sort()).toEqual(
+      ['cancel', 'reindexAll', 'reset', 'updatePending'].sort(),
+    );
+    expect(state.updatePending.disabled).toBe(false);
     expect(state.cancel.disabled).toBe(true);
-  });
-
-  it('keeps recovery available when a paused guard has no usable deadline', () => {
-    const state = getRagIndexingControlState({
-      hasIndexer: true,
-      isIndexing: true,
-      totalDocuments: 10,
-      updateRequiredCount: 1,
-      guardMode: 'paused',
-      guardRemainingPauseMs: null,
-    });
-
-    expect(state.resume.disabled).toBe(false);
-    expect(state.cancel.disabled).toBe(false);
   });
 
   it('RAG 상태 계산은 런타임이 없으면 명시 초기화를 먼저 시도한다', async () => {
@@ -1286,7 +1307,7 @@ describe('RAG 설정 표시 헬퍼', () => {
         vault: {
           configDir: '.obsidian',
           getFiles: vi.fn(() => [file]),
-          cachedRead: vi.fn(() => Promise.resolve('문서 내용')),
+          readBinary: vi.fn(() => Promise.resolve(new TextEncoder().encode('문서 내용').buffer)),
         },
       },
       settings: {
@@ -1865,6 +1886,8 @@ class RagOverviewTestElement {
   textContent = '';
   hidden = false;
   setTextCalls = 0;
+  isConnected = true;
+  private readonly events = new Map<string, Array<() => void>>();
   private readonly classes = new Set<string>();
   readonly classList = {
     add: (...names: string[]): void => {
@@ -1874,11 +1897,22 @@ class RagOverviewTestElement {
       for (const name of names) this.classes.delete(name);
     },
     contains: (name: string): boolean => this.classes.has(name),
+    toggle: (name: string, force: boolean): boolean => { if (force) this.classes.add(name); else this.classes.delete(name); return force; },
   };
 
-  constructor(cls = '') {
+  constructor(cls = '', readonly ownerDocument: { activeElement: RagOverviewTestElement | null } = { activeElement: null }) {
     this.classList.add(...cls.split(' ').filter(Boolean));
   }
+
+  get className(): string { return [...this.classes].join(' '); }
+  set className(value: string) { this.classes.clear(); this.classList.add(...value.split(' ').filter(Boolean)); }
+  getAttribute(name: string): string | null { return this.attrs[name] ?? null; }
+  toggleClass(name: string, force: boolean): void { if (force) this.classList.add(name); else this.classList.remove(name); }
+  focus(): void { this.ownerDocument.activeElement = this; }
+  addEventListener(name: string, callback: () => void): void { this.events.set(name, [...(this.events.get(name) ?? []), callback]); }
+  click(): void { for (const callback of this.events.get('click') ?? []) callback(); }
+  createDiv(options: { cls?: string; text?: string; attr?: Record<string, string> } = {}): RagOverviewTestElement { return this.createEl('div', options); }
+  createSpan(options: { cls?: string; text?: string; attr?: Record<string, string> } = {}): RagOverviewTestElement { return this.createEl('span', options); }
 
   setText(value: string): void {
     this.setTextCalls += 1;
@@ -1891,10 +1925,11 @@ class RagOverviewTestElement {
 
   createEl(
     _tagName: string,
-    options: { cls?: string; text?: string } = {},
+    options: { cls?: string; text?: string; attr?: Record<string, string> } = {},
   ): RagOverviewTestElement {
-    const child = new RagOverviewTestElement(options.cls);
+    const child = new RagOverviewTestElement(options.cls, this.ownerDocument);
     child.textContent = options.text ?? '';
+    Object.assign(child.attrs, options.attr);
     this.children.push(child);
     return child;
   }
@@ -2006,6 +2041,125 @@ describe('RAG indexing preparation label', () => {
 });
 
 describe('RAG indexing progress panel', () => {
+  it.each(['ko', 'en'] as const)('설정도 canonical snapshot과 고정 DOM을 쓰고 통계·오류 갱신에 펼침/포커스를 잃지 않는다 (%s)', async (language) => {
+    setLanguage(language);
+    const initial: import('./rag/indexing-progress').RagIndexingProgressSummary = {
+      phase: 'all', activity: 'indexing', servingAvailable: true, totalFilesKnown: true,
+      completedFiles: 1200, totalFiles: 4000, processedFiles: 1500, failedFiles: 100, partialFiles: 200, skippedFiles: 0,
+      stage: 'embedding', currentFileTotalChunks: null, currentFileEmbeddedChunks: null,
+      etaRemainingMs: null, pipelineRemainingMs: 120000, pipelineConfidence: 'medium',
+    };
+    let indexing: typeof initial | null = null;
+    const snapshot = vi.fn(() => ({ readiness: 'ready', keywordIndex: 'ready', ragStatus: null, indexing }));
+    const alias = vi.fn(() => initial);
+    const plugin = {
+      settings: { ...structuredClone(DEFAULT_SETTINGS), rag: { ...DEFAULT_SETTINGS.rag, autoUpdateEnabled: false } },
+      getSearchStatusSnapshot: snapshot, getRagIndexingProgressSummary: alias,
+      getRagRuntimeState: () => ({ ragStatus: null, ragIndexingStatus: { running: true, phase: 'all', progress: { totalFiles: 9999, completedFiles: 9998 } } }),
+      isRagIndexing: () => true, getRetrievalReadiness: () => 'ready', getRagPerformanceGuardState: () => null,
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const grid = new RagOverviewTestElement();
+    const action = new RagOverviewTestElement();
+    const timestamp = new RagOverviewTestElement();
+    const status = { totalDocuments: 4000, healthyDocuments: 4000, missingDocuments: 0, staleDocuments: 0, unknownDocuments: 0, excludedDocuments: 0, totalVectors: 4000, lastCalculatedAt: 1, updateRequiredDocuments: [] };
+    Object.assign(tab, { ragStatusGrid: grid, ragStatusAction: action, ragStatusTimestamp: timestamp, ragStatusDetails: new RagOverviewTestElement(),
+      getRagSetupWarning: () => null, getRagStatus: () => Promise.resolve(status), updateRagStatsSection: () => undefined, updateRagUpdateList: () => undefined });
+    const methods = tab as unknown as { updateRagIndexingProgress(): void; renderRagStatusSummary(value: typeof status): void; renderRagUnavailableState(detail: string): void };
+    methods.renderRagUnavailableState('synthetic-previous-view-error');
+    const previousActions = grid.querySelector('.superpower-inside-rag-overview-actions');
+    if (!previousActions) throw new Error('이전 오류의 복구 제어가 필요합니다.');
+    const previousCopy = grid.querySelector('.superpower-inside-rag-overview-copy');
+    const previousProgress = previousCopy?.createEl('ul', { cls: 'superpower-inside-rag-overview-progress' });
+    indexing = initial;
+    snapshot.mockClear();
+    methods.updateRagIndexingProgress();
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(alias).not.toHaveBeenCalled();
+    expect(grid.querySelector('.superpower-inside-rag-overview-actions')).toBe(previousActions);
+    expect(previousActions.classList.contains('superpower-inside-hidden')).toBe(true);
+    expect(previousProgress?.classList.contains('superpower-inside-hidden')).toBe(true);
+    const root = grid.querySelector('.superpower-inside-indexing-progress');
+    const button = root?.querySelector('.superpower-inside-indexing-toggle');
+    const value = root?.querySelector('.superpower-inside-indexing-value-completed');
+    if (!root || !button || !value) throw new Error('공유 상태가 설정에 렌더되어야 합니다.');
+    expect(value.textContent).toBe('1,200 / 4,000');
+    expect(root.querySelector('.superpower-inside-indexing-value-overallEta')?.textContent).toBe(t('ragIndexingProgressEtaCalculating'));
+    button.click(); button.focus();
+    indexing = { ...initial, completedFiles: 1201, processedFiles: 1501 };
+    snapshot.mockClear();
+    methods.updateRagIndexingProgress();
+    expect(snapshot).toHaveBeenCalledOnce();
+    for (const refresh of [() => methods.renderRagStatusSummary(status), () => methods.renderRagUnavailableState('synthetic-stale-view-error')]) {
+      snapshot.mockClear(); refresh();
+      expect(snapshot).toHaveBeenCalledOnce();
+      expect(grid.querySelector('.superpower-inside-indexing-progress')).toBe(root);
+      expect(root.querySelector('.superpower-inside-indexing-toggle')).toBe(button);
+      expect(root.querySelector('.superpower-inside-indexing-value-completed')).toBe(value);
+      expect(button.getAttribute('aria-expanded')).toBe('true');
+      expect(grid.ownerDocument.activeElement).toBe(button);
+      expect(value.textContent).toBe('1,201 / 4,000');
+      expect(root.querySelector('.superpower-inside-indexing-detail')?.textContent).not.toContain('synthetic-stale-view-error');
+    }
+    tab.updateRagStats();
+    await vi.waitFor(() => expect(timestamp.textContent).toContain('1970'));
+    expect(grid.querySelector('.superpower-inside-indexing-progress')).toBe(root);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(grid.ownerDocument.activeElement).toBe(button);
+    indexing = null;
+    methods.updateRagIndexingProgress();
+    expect(grid.querySelector('.superpower-inside-rag-shared-progress-host')?.hidden).toBe(true);
+    expect(alias).not.toHaveBeenCalled();
+    const legacy = grid.querySelector('.superpower-inside-rag-overview-progress');
+    expect(legacy?.hidden ?? true).toBe(true);
+  });
+
+  it('scheduler 없는 복원은 통계 await 전에 설정에 표시한다', () => {
+    const work = { stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 41984, totalUnits: 135835, elapsedMs: 252000, lastProgressAgeMs: 1000, remainingMs: 540000, ratePerSecond: 166, confidence: 'low', etaReason: 'warming-up' } as const;
+    const indexing = { phase: 'preparing', activity: 'preparing', work, completedFiles: 0, totalFiles: 0, currentFileTotalChunks: null, currentFileEmbeddedChunks: null, etaRemainingMs: null } as const;
+    const alias = vi.fn(() => null);
+    const plugin = { settings: structuredClone(DEFAULT_SETTINGS), getSearchStatusSnapshot: () => ({ readiness: 'preparing', indexing }), getRagIndexingProgressSummary: alias, getRagRuntimeState: () => ({ ragStatus: null, ragIndexingStatus: null }), isRagIndexing: () => false, getRagPerformanceGuardState: () => null, getRetrievalReadiness: () => 'preparing' };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const grid = new RagOverviewTestElement();
+    Object.assign(tab, { ragStatusGrid: grid, updateRagControlStates: () => {} });
+    tab.updateRagStats();
+    expect(grid.querySelector('.superpower-inside-indexing-value-workCount')?.textContent).toContain('41,984 / 135,835');
+    expect(grid.querySelector('.superpower-inside-indexing-value-workTime')?.textContent).toContain('9m');
+    expect(alias).not.toHaveBeenCalled();
+  });
+
+  it.each(['restoring-keyword-documents', 'verifying', 'cleanup'])('실제 rag 수신부의 %s 진행 pulse는 전체 조사를 재실행하지 않는다', async (stage) => {
+    const { RefreshBus } = await import('./utils/refresh-bus');
+    const bus = new RefreshBus();
+    let active = true;
+    const plugin = { settings: structuredClone(DEFAULT_SETTINGS), refreshBus: bus, isRagIndexing: () => false,
+      getSearchStatusSnapshot: () => ({ indexing: active ? { work: { stage } } : null }),
+    };
+    const tab = new SuperpowerInsideSettingTab({} as never, plugin as never);
+    const stop = new Error('synthetic-settings-layout-boundary');
+    const progress = vi.fn();
+    const stats = vi.fn();
+    const grid = vi.fn();
+    const fileTypes = vi.fn();
+    Object.assign(tab, { containerEl: { setAttribute: () => {}, empty: () => {}, addClass: () => { throw stop; } },
+      resetRagDomReferences: () => {}, registerQuotaRefreshEvents: () => {}, refreshGeneralStatusSection: () => {},
+      updateRagIndexingProgress: progress, updateRagStats: stats, refreshStatsGrid: grid, refreshFileTypeSummary: fileTypes,
+    });
+    try {
+      expect(() => tab.display()).toThrow(stop);
+      for (let pulse = 0; pulse < 5; pulse++) bus.emit('rag', { status: 'partial' });
+      expect(progress).toHaveBeenCalledTimes(5);
+      expect(stats).not.toHaveBeenCalled();
+      expect(grid).not.toHaveBeenCalled();
+      expect(fileTypes).not.toHaveBeenCalled();
+      active = false;
+      bus.emit('rag', { status: 'partial' });
+      expect(stats).toHaveBeenCalledOnce();
+      expect(grid).toHaveBeenCalledOnce();
+      expect(fileTypes).toHaveBeenCalledOnce();
+    } finally { bus.destroy(); }
+  });
+
   it('중단과 재시작 전환은 통계 조회나 패널 연결을 기다리지 않고 모든 제어를 갱신한다', () => {
     let running = true;
     const plugin = {
@@ -2023,7 +2177,6 @@ describe('RAG indexing progress panel', () => {
       updatePendingButton: button(),
       reindexAllButton: button(),
       cancelIndexingButton: button(),
-      resumeIndexingButton: button(),
       resetIndexButton: button(),
     };
     Object.assign(tab, buttons);
@@ -2038,7 +2191,6 @@ describe('RAG indexing progress panel', () => {
       expect(buttons.reindexAllButton.disabled).toBe(running);
       expect(buttons.resetIndexButton.disabled).toBe(running);
       expect(buttons.cancelIndexingButton.hidden).toBe(!running);
-      expect(buttons.resumeIndexingButton.hidden).toBe(true);
     }
   });
 

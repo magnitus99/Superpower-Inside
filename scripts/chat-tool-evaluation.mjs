@@ -67,6 +67,10 @@ export function syntheticVault(runtime, test) {
         getMarkdownFiles: () => files,
         getAbstractFileByPath: (value) =>
           find(value) ?? folders.find((folder) => folder.path === value) ?? null,
+        readBinary: async (file) => {
+          if (file.unreadable) throw new Error('평가용 읽기 실패');
+          return new TextEncoder().encode(file.content).buffer;
+        },
         cachedRead: async (file) => {
           if (file.unreadable) throw new Error('평가용 읽기 실패');
           return file.content;

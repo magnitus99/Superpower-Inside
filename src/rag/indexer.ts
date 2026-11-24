@@ -1,32 +1,43 @@
 import type { MetadataCache, TAbstractFile, TFile, Vault } from 'obsidian';
-import type { EmbeddingProvider } from '../llm/embedding';
+import type { EmbeddingInferenceSample, EmbeddingProvider } from '../llm/embedding';
 import { assertValidEmbeddingBatch } from '../llm/embedding-validation';
 import type { VectorStore, VectorEntry, FileIndexRecord } from './store';
 import {
-  getRagCandidateFiles,
+  getRagIndexingManifest,
+  getRagPreparedSourceRevision,
+  getRagUnverifiedIndexingFiles,
+  isRagFileMetadataExcluded,
+  getRagPreparedContentVerdict,
+  recordRagIndexingVerdict,
+  type RagFileInventory,
+  type RagFileFailure,
   isExcludedPath,
   isExcludedExt,
   isRagIndexableFile,
   isRagFileExcluded,
+  isRagFileExcludedWithContent,
 } from '../utils/vault';
 import type { RAGConfig, ChatConfig } from '../settings';
 import { calculateRagStatus } from './status';
 import { getBM25DocumentFields, type IndexedDbBM25Index } from './bm25';
-import { createContentHash } from './hash';
 import {
   planEmptyFileIndexRecordRust,
   planIndexPendingFilesRust,
   planRagAutomaticRecoveryBatchRust,
   isSourceRevisionCurrentRust,
   planEmbeddingInputsRust,
+  type RustSourceChunk,
+  type RustRagRecoveryPartialRecord,
+  type RustRagIndexingEtaPipelineInput,
+  type RustRagIndexingEtaWindowSample,
 } from './rust-core';
 import type { PerformanceGuardState } from './performance-guard';
 import { appLogger, type AppLogger, type ScopedLogger } from '../utils/logger';
 import { normalizeRustIndices } from '../utils/rust-index-plan';
-import { chunkSourceFile, chunkSourceDocument, buildSearchText } from './source-document';
+import { buildSourceDocuments, buildSearchText, type SourceDocument } from './source-document';
 import type { VaultDocumentCorpus } from './vault-document-corpus';
-import { readSourceFileSnapshot } from './source-snapshot';
-import { readSourceText } from './source-access';
+import { readSourceFileSnapshot, type SourceFileSnapshot } from './source-snapshot';
+import { SourceReadError, type SourceTextSegment } from './source-access';
 export { chunkMarkdown, chunkPlainText, buildSearchText, type Chunk } from './source-document';
 
 export class IndexingCancelledError extends Error {
@@ -53,6 +64,10 @@ export interface IndexingOptions {
   onProgress?: (progress: RagIndexingProgressSnapshot) => void;
   getPerformanceGuardState?: () => PerformanceGuardState | null;
   automaticRecovery?: boolean;
+  /** 같은 실행의 corpus·상태·pending 계획이 재사용하는 후보 원장입니다. */
+  inventory?: RagFileInventory;
+  /** 세대·lease 소유자가 늦은 게시를 차단하는 호스트 경계입니다. */
+  isCurrent?: () => boolean;
 }
 
 export type RagIndexingProgressEvent =
@@ -60,9 +75,15 @@ export type RagIndexingProgressEvent =
   | 'file-start'
   | 'file-chunks'
   | 'batch-complete'
-  | 'file-complete';
+  | 'file-complete'
+  | 'window-complete';
 
 export interface RagIndexingProgressSnapshot {
+  pipeline?: RustRagIndexingEtaPipelineInput;
+  processedFiles?: number;
+  failedFiles?: number;
+  partialFiles?: number;
+  stage?: 'preparing' | 'lexical' | 'embedding' | 'committing' | 'settled';
   sourcePage?: number;
   sourcePageCount?: number;
   event: RagIndexingProgressEvent;
@@ -96,7 +117,50 @@ export interface RagIndexingProgressSnapshot {
   historicalVariance: number | null;
 }
 
+interface PreparedSource {
+  readonly snapshot: SourceFileSnapshot;
+  readonly originalFile: TFile;
+  readonly owner: symbol;
+  readonly recoveryOwner: string;
+  readonly documents: SourceDocument[];
+  readonly mtime: number;
+  readonly size: number;
+  readonly text: string;
+  readonly segments: readonly SourceTextSegment[];
+  readonly chunks: readonly RustSourceChunk[];
+  readonly contentHash: string;
+}
+
+interface SourceLookahead {
+  file: TFile;
+  controller: AbortController;
+  snapshot: Promise<SourceFileSnapshot | null>;
+}
+
+type PipelineObservations = { -readonly [Key in keyof RustRagIndexingEtaPipelineInput]: RustRagIndexingEtaPipelineInput[Key] };
+
+interface PipelineWindow {
+  startedAtMs: number;
+  valid: boolean;
+  open: boolean;
+  dispatchCount: number;
+  sampleCount: number;
+  physicalWorkUnits: number;
+  logicalChunks: number;
+  pendingSamples: EmbeddingInferenceSample[];
+  resetBoundary: boolean;
+}
+
 interface IndexingProgressTracker {
+  pipeline: PipelineObservations;
+  processedFilePaths: Set<string>;
+  activeWindow?: PipelineWindow;
+  nextWindowStartedAtMs?: number;
+  onInferenceSample?: (sample: EmbeddingInferenceSample) => void;
+  processedFiles: number;
+  failedFiles: number;
+  partialFiles: number;
+  stage: NonNullable<RagIndexingProgressSnapshot['stage']>;
   sourcePage?: number;
   sourcePageCount?: number;
   startedAtMs: number;
@@ -114,6 +178,10 @@ interface IndexingProgressTracker {
   currentFilePlannedChunks: number;
   planningComplete: boolean;
   plannedChunkCountsByPath: Map<string, number>;
+  preparedSources: Map<string, PreparedSource>;
+  onInferenceDispatch?: () => void;
+  existingRecordsByPath: Map<string, FileIndexRecord> | null;
+  prefetchedVectorsByText: Map<string, number[]>;
   indexed: number;
   vectors: number;
   skipped: number;
@@ -130,24 +198,33 @@ interface IndexingProgressTracker {
   historicalVariance: number | null;
 }
 
-interface RagEtaCalibrationSummary {
-  version: 1;
-  embeddingProvider: string;
-  embeddingModel: string;
-  chunkSize: number;
-  overlap: number;
-  msPerChunk: number;
-  chunkEstimateRatio: number;
-  variance: number;
-  sampleCount: number;
-  updatedAt: number;
+/** 계획 단계가 길어도 라벨이 멈추지 않도록 진행 이벤트를 주기적으로 보냅니다. */
+const PREPARED_WINDOW_BYTES = 8 * 1024 * 1024;
+const PREPARED_WINDOW_CHUNKS = 4096;
+/** 진행 스냅샷 직렬화 비용을 O(1)로 유지하기 위한 최근 샘플 슬라이딩 윈도우 크기입니다. */
+const MAX_ETA_TRACKED_SAMPLES = 64;
+/** 다중 파일 색인 시 교차 파일 임베딩 배치를 구성하는 파일 윈도우 크기입니다. */
+const PREPARED_WINDOW_INPUT_BYTES = 4 * 1024 * 1024;
+
+function pushBoundedSample<T>(samples: T[], value: T): void {
+  if (samples.length >= MAX_ETA_TRACKED_SAMPLES) {
+    samples.shift();
+  }
+  samples.push(value);
 }
 
-const RAG_ETA_CALIBRATION_META_PREFIX = 'rag-indexing-eta-calibration:v1';
-/** 계획 단계가 길어도 라벨이 멈추지 않도록 진행 이벤트를 주기적으로 보냅니다. */
-const PLAN_PROGRESS_EMIT_INTERVAL = 100;
+function recordBatchSample(
+  tracker: IndexingProgressTracker,
+  durationMs: number,
+  chunkCount: number,
+): void {
+  pushBoundedSample(tracker.completedBatchDurationsMs, durationMs);
+  pushBoundedSample(tracker.completedBatchChunkCounts, chunkCount);
+}
 
 export interface IndexingResult {
+  partial?: number;
+  failed?: number;
   indexed: number;
   vectors: number;
   skipped: number;
@@ -163,8 +240,8 @@ export function isIndexingCancelledError(error: unknown): boolean {
   );
 }
 
-function throwIfIndexingCancelled(signal?: AbortSignal): void {
-  if (signal?.aborted) {
+function throwIfIndexingCancelled(signal?: AbortSignal, isCurrent?: () => boolean): void {
+  if (signal?.aborted || isCurrent?.() === false) {
     throw new IndexingCancelledError();
   }
 }
@@ -215,117 +292,6 @@ function isTFileLike(file: unknown): file is TFile {
   );
 }
 
-function ragEtaCalibrationMetaKey(ragConfig: RAGConfig): string {
-  return [
-    RAG_ETA_CALIBRATION_META_PREFIX,
-    ragConfig.embeddingProvider,
-    ragConfig.embeddingModel,
-    String(Math.floor(ragConfig.chunkSize)),
-    String(Math.floor(ragConfig.overlap)),
-  ].join(':');
-}
-
-function isMatchingRagEtaCalibrationSummary(
-  value: unknown,
-  ragConfig: RAGConfig,
-): value is RagEtaCalibrationSummary {
-  if (!isRecord(value)) return false;
-  return (
-    value.version === 1 &&
-    value.embeddingProvider === ragConfig.embeddingProvider &&
-    value.embeddingModel === ragConfig.embeddingModel &&
-    value.chunkSize === Math.floor(ragConfig.chunkSize) &&
-    value.overlap === Math.floor(ragConfig.overlap) &&
-    typeof value.msPerChunk === 'number' &&
-    Number.isFinite(value.msPerChunk) &&
-    value.msPerChunk > 0 &&
-    typeof value.chunkEstimateRatio === 'number' &&
-    Number.isFinite(value.chunkEstimateRatio) &&
-    value.chunkEstimateRatio > 0 &&
-    typeof value.variance === 'number' &&
-    Number.isFinite(value.variance) &&
-    value.variance >= 0 &&
-    typeof value.sampleCount === 'number' &&
-    Number.isInteger(value.sampleCount) &&
-    value.sampleCount > 0 &&
-    typeof value.updatedAt === 'number' &&
-    Number.isFinite(value.updatedAt)
-  );
-}
-
-function createRagEtaCalibrationSummary(
-  tracker: IndexingProgressTracker,
-  ragConfig: RAGConfig,
-): RagEtaCalibrationSummary | null {
-  const totalBatchDurationMs = tracker.completedBatchDurationsMs.reduce(
-    (total, durationMs) => total + Math.max(0, durationMs),
-    0,
-  );
-  const totalBatchChunks = tracker.completedBatchChunkCounts.reduce(
-    (total, chunkCount) => total + Math.max(0, chunkCount),
-    0,
-  );
-  if (totalBatchDurationMs <= 0 || totalBatchChunks <= 0) return null;
-  const chunkEstimateRatio = observedChunkEstimateRatio(
-    tracker.completedFileEstimatedChunkCounts,
-    tracker.completedFileActualChunkCounts,
-  );
-  if (chunkEstimateRatio === null) return null;
-  const msPerChunk = totalBatchDurationMs / totalBatchChunks;
-  return {
-    version: 1,
-    embeddingProvider: ragConfig.embeddingProvider,
-    embeddingModel: ragConfig.embeddingModel,
-    chunkSize: Math.floor(ragConfig.chunkSize),
-    overlap: Math.floor(ragConfig.overlap),
-    msPerChunk,
-    chunkEstimateRatio,
-    variance: observedBatchRateVariance(
-      tracker.completedBatchDurationsMs,
-      tracker.completedBatchChunkCounts,
-      msPerChunk,
-    ),
-    sampleCount: tracker.completedBatchChunkCounts.length,
-    updatedAt: Date.now(),
-  };
-}
-
-function observedChunkEstimateRatio(
-  estimatedChunkCounts: readonly number[],
-  actualChunkCounts: readonly number[],
-): number | null {
-  let estimatedTotal = 0;
-  let actualTotal = 0;
-  for (let index = 0; index < estimatedChunkCounts.length; index++) {
-    const estimated = estimatedChunkCounts[index] ?? 0;
-    const actual = actualChunkCounts[index] ?? 0;
-    if (estimated <= 0 || actual <= 0) continue;
-    estimatedTotal += estimated;
-    actualTotal += actual;
-  }
-  if (estimatedTotal <= 0 || actualTotal <= 0) return null;
-  return actualTotal / estimatedTotal;
-}
-
-function observedBatchRateVariance(
-  durationsMs: readonly number[],
-  chunkCounts: readonly number[],
-  meanMsPerChunk: number,
-): number {
-  if (meanMsPerChunk <= 0) return 1;
-  const rates: number[] = [];
-  for (let index = 0; index < durationsMs.length; index++) {
-    const durationMs = durationsMs[index] ?? 0;
-    const chunkCount = chunkCounts[index] ?? 0;
-    if (!Number.isFinite(durationMs) || durationMs <= 0 || chunkCount <= 0) continue;
-    rates.push(durationMs / chunkCount);
-  }
-  if (rates.length <= 1) return 1;
-  const variance =
-    rates.reduce((total, rate) => total + (rate - meanMsPerChunk) ** 2, 0) / rates.length;
-  return variance / (meanMsPerChunk * meanMsPerChunk);
-}
-
 function createEmptyIndexingResult(startedAt: number): IndexingResult {
   return {
     indexed: 0,
@@ -348,15 +314,118 @@ function finishIndexingResult(
   };
 }
 
+function createPipelineObservations(observedAtMs = performance.now()): PipelineObservations {
+  return {
+    lifecycle: 'running', totalKnown: false, processedFiles: 0, failedFiles: 0, partialFiles: 0,
+    processedEstimatedChunks: 0, processedPlannedChunks: 0, observedAtMs,
+    backend: 'unknown', windowSamples: [], inferenceSamples: [],
+  };
+}
+
+function copyPipelineObservations(pipeline: RustRagIndexingEtaPipelineInput): RustRagIndexingEtaPipelineInput {
+  return { ...pipeline, windowSamples: pipeline.windowSamples.map((sample) => ({ ...sample })),
+    inferenceSamples: pipeline.inferenceSamples.map((sample) => ({ ...sample })) };
+}
+
+function beginPipelineWindow(tracker: IndexingProgressTracker, options: IndexingOptions): PipelineWindow {
+  const window: PipelineWindow = {
+    startedAtMs: tracker.nextWindowStartedAtMs ?? performance.now(), valid: true, open: true,
+    dispatchCount: 0, sampleCount: 0, physicalWorkUnits: 0, logicalChunks: 0, pendingSamples: [], resetBoundary: false,
+  };
+  tracker.activeWindow = window;
+  tracker.pipeline.lifecycle = 'running';
+  const isLive = (): boolean => {
+    if (!window.open || tracker.activeWindow !== window) return false;
+    if (options.signal?.aborted || options.isCurrent?.() === false || options.getPerformanceGuardState?.()?.mode === 'paused') {
+      window.valid = false;
+      window.resetBoundary = true;
+      window.pendingSamples = [];
+      tracker.pipeline.windowSamples = [];
+      tracker.pipeline.inferenceSamples = [];
+      return false;
+    }
+    return true;
+  };
+  tracker.onInferenceDispatch = () => { if (isLive()) window.dispatchCount++; };
+  tracker.onInferenceSample = (sample) => {
+    if (!isLive()) return;
+    if ((sample.backend !== 'cpu' && sample.backend !== 'webgpu') || !Number.isSafeInteger(sample.workUnits) || sample.workUnits <= 0 ||
+      !Number.isFinite(sample.durationMs) || sample.durationMs <= 0 || !Number.isFinite(sample.endedAtMs)) {
+      window.valid = false;
+      return;
+    }
+    if (tracker.pipeline.backend !== 'unknown' && tracker.pipeline.backend !== sample.backend) {
+      window.valid = false;
+      window.resetBoundary = true;
+      window.pendingSamples = [];
+      tracker.pipeline.windowSamples = [];
+      tracker.pipeline.inferenceSamples = [];
+    }
+    tracker.pipeline.backend = sample.backend;
+    window.sampleCount++;
+    window.physicalWorkUnits += sample.workUnits;
+    pushBoundedSample(window.pendingSamples, {
+      backend: sample.backend, workUnits: sample.workUnits, durationMs: sample.durationMs, endedAtMs: sample.endedAtMs,
+    });
+  };
+  return window;
+}
+
+function finishPipelineWindow(tracker: IndexingProgressTracker, options: IndexingOptions, window: PipelineWindow, settled: boolean): void {
+  window.open = false;
+  tracker.activeWindow = undefined;
+  tracker.onInferenceDispatch = undefined;
+  tracker.onInferenceSample = undefined;
+  const endedAtMs = performance.now();
+  tracker.nextWindowStartedAtMs = window.resetBoundary ? undefined : endedAtMs;
+  tracker.pipeline.observedAtMs = endedAtMs;
+  const live = !options.signal?.aborted && options.isCurrent?.() !== false && options.getPerformanceGuardState?.()?.mode !== 'paused';
+  if (settled && live && window.valid && window.logicalChunks > 0 && Number.isFinite(endedAtMs) && endedAtMs > window.startedAtMs) {
+    // dispatch가 없다는 사실만으로 로컬 완전 계측이나 물리 작업 0을 증명할 수 없습니다.
+    const matched = window.dispatchCount > 0 && window.sampleCount === window.dispatchCount;
+    const sample: RustRagIndexingEtaWindowSample = { startedAtMs: window.startedAtMs, endedAtMs,
+      logicalChunks: window.logicalChunks, physicalWorkUnits: matched ? window.physicalWorkUnits : null };
+    const windows = [...tracker.pipeline.windowSamples];
+    pushBoundedSample(windows, sample);
+    tracker.pipeline.windowSamples = windows;
+    if (matched) {
+      const inference = [...tracker.pipeline.inferenceSamples];
+      for (const pending of window.pendingSamples) pushBoundedSample(inference, pending);
+      tracker.pipeline.inferenceSamples = inference;
+    }
+  }
+  window.pendingSamples = [];
+  if (!live || !settled) {
+    tracker.pipeline.windowSamples = [];
+    tracker.pipeline.inferenceSamples = [];
+    tracker.nextWindowStartedAtMs = undefined;
+  }
+  tracker.pipeline.lifecycle = options.signal?.aborted || options.isCurrent?.() === false ? 'cancelled'
+    : options.getPerformanceGuardState?.()?.mode === 'paused' ? 'paused'
+    : !settled || tracker.failedFiles > 0 ? 'failed' : tracker.partialFiles > 0 ? 'partial' : 'running';
+  emitIndexingProgress(options, tracker, 'window-complete');
+}
+
+function finalizePipeline(tracker: IndexingProgressTracker): void {
+  tracker.pipeline.lifecycle = tracker.failedFiles > 0 ? 'failed' : tracker.partialFiles > 0 ? 'partial' : 'finalizing';
+}
+
 function createProgressTracker(
   files: readonly TFile[],
   ragConfig: RAGConfig,
   skipped = 0,
 ): IndexingProgressTracker {
+  const startedAtMs = performance.now();
   return {
-    startedAtMs: performance.now(),
+    pipeline: createPipelineObservations(startedAtMs),
+    processedFilePaths: new Set(),
+    startedAtMs,
     totalFiles: files.length,
     completedFiles: 0,
+    processedFiles: 0,
+    failedFiles: 0,
+    partialFiles: 0,
+    stage: 'preparing',
     currentFileTotalChunks: 0,
     currentFileEmbeddedChunks: 0,
     totalEstimatedChunks: estimateFilesChunkCount(files, ragConfig),
@@ -367,6 +436,9 @@ function createProgressTracker(
     currentFilePlannedChunks: 0,
     planningComplete: false,
     plannedChunkCountsByPath: new Map(),
+    preparedSources: new Map(),
+    existingRecordsByPath: null,
+    prefetchedVectorsByText: new Map(),
     indexed: 0,
     vectors: 0,
     skipped,
@@ -390,6 +462,19 @@ function resetProgressTrackerPlan(
   ragConfig: RAGConfig,
   skipped = tracker.skipped,
 ): void {
+  tracker.pipeline = createPipelineObservations();
+  tracker.pipeline.totalKnown = true;
+  if (tracker.activeWindow) tracker.activeWindow.open = false;
+  tracker.activeWindow = undefined;
+  tracker.processedFilePaths.clear();
+  tracker.processedFiles = 0;
+  tracker.completedFiles = 0;
+  tracker.failedFiles = 0;
+  tracker.partialFiles = 0;
+  tracker.completedEstimatedChunks = 0;
+  tracker.nextWindowStartedAtMs = undefined;
+  tracker.onInferenceDispatch = undefined;
+  tracker.onInferenceSample = undefined;
   tracker.totalFiles = files.length;
   tracker.totalEstimatedChunks = estimateFilesChunkCount(files, ragConfig);
   tracker.totalPlannedChunks = 0;
@@ -397,6 +482,8 @@ function resetProgressTrackerPlan(
   tracker.currentFilePlannedChunks = 0;
   tracker.planningComplete = false;
   tracker.plannedChunkCountsByPath.clear();
+  tracker.preparedSources.clear();
+  tracker.prefetchedVectorsByText.clear();
   tracker.historicalMsPerChunk = null;
   tracker.historicalChunkEstimateRatio = null;
   tracker.historicalVariance = null;
@@ -415,37 +502,48 @@ function estimateFileChunkCount(file: TFile, ragConfig: RAGConfig): number {
   return Math.max(1, Math.ceil(size / stride));
 }
 
-function countPlannedChunks(file: TFile, content: string, ragConfig: RAGConfig): number {
-  const chunks = chunkSourceFile(file, content, ragConfig);
-  return Math.max(1, chunks.length);
-}
-
 function completeProgressFile(
   tracker: IndexingProgressTracker,
   durationMs: number,
   actualChunkCount: number,
+  outcome: 'completed' | 'skipped' | 'partial' | 'failed',
 ): void {
+  if (tracker.currentFilePath) {
+    if (tracker.processedFilePaths.has(tracker.currentFilePath)) return;
+    tracker.processedFilePaths.add(tracker.currentFilePath);
+  }
   const estimatedChunks = Math.max(1, tracker.currentFileEstimatedChunks);
   const actualChunks = Math.max(0, Math.floor(actualChunkCount));
-  const plannedChunks = Math.max(
-    1,
-    tracker.currentFilePlannedChunks || actualChunks || estimatedChunks,
-  );
-  tracker.completedFiles += 1;
-  tracker.completedEstimatedChunks = Math.min(
-    tracker.totalEstimatedChunks,
-    tracker.completedEstimatedChunks + estimatedChunks,
-  );
-  tracker.completedPlannedChunks = tracker.planningComplete
-    ? Math.min(tracker.totalPlannedChunks, tracker.completedPlannedChunks + plannedChunks)
-    : tracker.completedPlannedChunks + plannedChunks;
-  tracker.completedFileDurationsMs.push(durationMs);
-  tracker.completedFileChunkCounts.push(actualChunks);
-  tracker.completedFileEstimatedChunkCounts.push(estimatedChunks);
-  tracker.completedFileActualChunkCounts.push(actualChunks);
-  tracker.completedFileOverheadDurationsMs.push(
-    Math.max(0, durationMs - tracker.currentFileBatchDurationMs),
-  );
+  const plannedChunks = tracker.currentFilePlannedChunks;
+  tracker.processedFiles += 1;
+  tracker.pipeline.processedFiles = tracker.processedFiles;
+  tracker.pipeline.processedEstimatedChunks += estimatedChunks;
+  tracker.pipeline.processedPlannedChunks += plannedChunks;
+  tracker.pipeline.observedAtMs = performance.now();
+  if (outcome === 'completed') {
+    tracker.completedFiles += 1;
+    tracker.completedEstimatedChunks = Math.min(tracker.totalEstimatedChunks, tracker.completedEstimatedChunks + estimatedChunks);
+    tracker.completedPlannedChunks = tracker.planningComplete
+      ? Math.min(tracker.totalPlannedChunks, tracker.completedPlannedChunks + plannedChunks)
+      : tracker.completedPlannedChunks + plannedChunks;
+    if (tracker.activeWindow) tracker.activeWindow.logicalChunks += actualChunks;
+  } else {
+    if (tracker.activeWindow) tracker.activeWindow.valid = false;
+    if (outcome === 'failed') tracker.failedFiles += 1;
+    if (outcome === 'partial') tracker.partialFiles += 1;
+  }
+  tracker.pipeline.failedFiles = tracker.failedFiles;
+  tracker.pipeline.partialFiles = tracker.partialFiles;
+  if (outcome === 'completed' && actualChunks > 0) {
+    pushBoundedSample(tracker.completedFileDurationsMs, durationMs);
+    pushBoundedSample(tracker.completedFileChunkCounts, actualChunks);
+    pushBoundedSample(tracker.completedFileEstimatedChunkCounts, estimatedChunks);
+    pushBoundedSample(tracker.completedFileActualChunkCounts, actualChunks);
+    pushBoundedSample(
+      tracker.completedFileOverheadDurationsMs,
+      Math.max(0, durationMs - tracker.currentFileBatchDurationMs),
+    );
+  }
   tracker.currentFileBatchDurationMs = 0;
   // 완료한 파일의 청크는 누적 작업량에만 포함합니다.
   tracker.currentFileTotalChunks = 0;
@@ -460,7 +558,8 @@ function emitIndexingProgress(
   event: RagIndexingProgressEvent,
 ): void {
   if (!tracker || !options.onProgress) return;
-  options.onProgress({
+  try { options.onProgress({
+    pipeline: copyPipelineObservations(tracker.pipeline),
     sourcePage: tracker.sourcePage,
     sourcePageCount: tracker.sourcePageCount,
     event,
@@ -468,6 +567,10 @@ function emitIndexingProgress(
     nowMs: performance.now(),
     totalFiles: tracker.totalFiles,
     completedFiles: tracker.completedFiles,
+    processedFiles: tracker.processedFiles,
+    failedFiles: tracker.failedFiles,
+    partialFiles: tracker.partialFiles,
+    stage: tracker.stage,
     currentFilePath: tracker.currentFilePath,
     currentFileIndex: tracker.currentFileIndex,
     currentFileTotalChunks: tracker.currentFileTotalChunks,
@@ -492,7 +595,7 @@ function emitIndexingProgress(
     historicalMsPerChunk: tracker.historicalMsPerChunk,
     historicalChunkEstimateRatio: tracker.historicalChunkEstimateRatio,
     historicalVariance: tracker.historicalVariance,
-  });
+  }); } catch { /* 관측자 실패는 실제 저장·취소 정착을 바꾸지 않습니다. */ }
 }
 
 async function pauseAfterBatch(ms: number, signal?: AbortSignal): Promise<void> {
@@ -513,8 +616,19 @@ async function pauseAfterBatch(ms: number, signal?: AbortSignal): Promise<void> 
 
 /** 볼트 인덱서 */
 export class VaultIndexer {
-  private readonly failedFiles = new Map<string, { mtime: number; size: number }>();
+  private readonly failedFiles = new Map<string, { mtime: number; size: number; reason?: string }>();
   private readonly fileOwners = new Map<string, symbol>();
+  private readonly invalidatedRecoveryPaths = new Set<string>();
+  private recoverySourceEpoch = 0;
+
+  invalidateAutomaticRecoverySource(path: string): void {
+    this.invalidatedRecoveryPaths.add(path);
+    this.recoverySourceEpoch++;
+  }
+
+  getAutomaticRecoveryInvalidatedPaths(): readonly string[] {
+    return [...this.invalidatedRecoveryPaths];
+  }
 
   getFailedFilePaths(): string[] {
     return [...this.failedFiles]
@@ -540,6 +654,45 @@ export class VaultIndexer {
       })
       .map(([path]) => path);
   }
+  getFailedFileReasons(): { path: string; reason: string }[] {
+    return this.getFailedFilePaths().map((path) => ({
+      path, reason: this.failedFiles.get(path)?.reason ?? 'indexing-failed',
+    }));
+  }
+
+  private recordInventoryFailures(inventory: RagFileInventory): void {
+    const allowed = new Set([...inventory.candidates, ...inventory.failures.map(({ file }) => file)].map((file) => file.path));
+    for (const path of this.failedFiles.keys()) {
+      if (!allowed.has(path)) this.failedFiles.delete(path);
+    }
+    for (const { file, reason } of inventory.failures) {
+      this.fileOwners.set(file.path, Symbol(file.path));
+      this.failedFiles.set(file.path, { mtime: file.stat.mtime, size: file.stat.size, reason });
+      this.logger.warn('Source inventory read failed.', { data: { path: file.path, reason } });
+    }
+  }
+
+  private completeInventoryFailures(
+    failures: readonly RagFileFailure[],
+    options: IndexingOptions,
+    tracker: IndexingProgressTracker,
+  ): void {
+    tracker.totalFiles += failures.length;
+    tracker.skipped += failures.length;
+    for (let index = 0; index < failures.length; index++) {
+      // 실패는 파일 처리 수만 채우며 청크 완료량·추론 속도 표본을 늘리지 않는다.
+      const file = failures[index].file;
+      tracker.currentFilePath = file.path;
+      const estimated = estimateFileChunkCount(file, this.ragConfig);
+      tracker.totalEstimatedChunks += estimated;
+      tracker.totalPlannedChunks += estimated;
+      tracker.currentFileEstimatedChunks = estimated;
+      tracker.currentFilePlannedChunks = estimated;
+      completeProgressFile(tracker, 0, 0, 'failed');
+      emitIndexingProgress(options, tracker, 'file-complete');
+    }
+  }
+
   private vault: Vault;
   private vectorStore: VectorStore;
   private embeddingProvider: EmbeddingProvider;
@@ -555,7 +708,10 @@ export class VaultIndexer {
     chatConfig: ChatConfig,
     private bm25Index?: IndexedDbBM25Index,
     logger?: AppLogger | ScopedLogger,
-    private readonly documentCorpus?: Pick<VaultDocumentCorpus, 'refreshFile' | 'removeFile'>,
+    private readonly documentCorpus?: Pick<
+      VaultDocumentCorpus,
+      'refreshFile' | 'removeFile' | 'replaceBatchFileDocuments'
+    > & Partial<Pick<VaultDocumentCorpus, 'getFileIndexRecords'>>,
     private readonly metadataCache?: Pick<MetadataCache, 'getFileCache'>,
   ) {
     this.chatConfig = chatConfig;
@@ -572,18 +728,22 @@ export class VaultIndexer {
 
   async indexVault(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
-    throwIfIndexingCancelled(options.signal);
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
     const progressTracker = createProgressTracker(this.vault.getFiles(), this.ragConfig);
     emitIndexingProgress(options, progressTracker, 'plan');
-    const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
-    throwIfIndexingCancelled(options.signal);
+    const inventory = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
+    options = { ...options, inventory };
+    const files = inventory.candidates;
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    this.recordInventoryFailures(inventory);
     this.logger.info('Vault indexing started.', { data: { fileCount: files.length } });
     resetProgressTrackerPlan(progressTracker, files, this.ragConfig);
     emitIndexingProgress(options, progressTracker, 'plan');
-    await this.planProgressChunks(files, options, progressTracker);
+    this.planProgressChunks(files, options, progressTracker);
     emitIndexingProgress(options, progressTracker, 'plan');
 
-    return this.indexFiles(files, startedAt, options, progressTracker);
+    this.completeInventoryFailures(inventory.failures, options, progressTracker);
+    return this.indexFiles(files, startedAt, options, progressTracker, inventory.failures);
   }
 
   private async indexFiles(
@@ -591,15 +751,21 @@ export class VaultIndexer {
     startedAt: number,
     options: IndexingOptions,
     progressTracker: IndexingProgressTracker,
+    failures: readonly RagFileFailure[] = [],
   ): Promise<IndexingResult> {
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
+      batchResult.skipped = failures.length;
+      if (failures.length > 0) batchResult.failed = failures.length;
+      batchResult.documents.push(...failures.map(({ file }) => file.path));
       await this.indexBatchFiles(files, batchResult, options, progressTracker);
       return batchResult;
     });
     const finished = finishIndexingResult(
       {
         indexed: result.indexed,
+        ...(result.partial ? { partial: result.partial } : {}),
+        ...(result.failed ? { failed: result.failed } : {}),
         vectors: result.vectors,
         skipped: result.skipped,
         documents: result.documents,
@@ -607,15 +773,23 @@ export class VaultIndexer {
       startedAt,
       options,
     );
-    this.logger.notice('Vault indexing completed.', {
-      data: {
-        indexed: finished.indexed,
-        vectors: finished.vectors,
-        skipped: finished.skipped,
-        durationMs: Math.round(finished.durationMs),
+    const incomplete = failures.length > 0 || (finished.failed ?? 0) > 0 || (finished.partial ?? 0) > 0;
+    this.logger[incomplete ? 'warn' : 'notice'](
+      incomplete
+        ? 'Vault indexing finished with source failures.'
+        : 'Vault indexing completed.',
+      {
+        data: {
+          indexed: finished.indexed,
+          vectors: finished.vectors,
+          skipped: finished.skipped,
+          sourceFailures: failures.length,
+          failed: finished.failed ?? 0,
+          partial: finished.partial ?? 0,
+          durationMs: Math.round(finished.durationMs),
+        },
       },
-    });
-    await this.saveEtaCalibration(progressTracker);
+    );
     return finished;
   }
 
@@ -630,104 +804,263 @@ export class VaultIndexer {
     options: IndexingOptions,
     progressTracker: IndexingProgressTracker,
   ): Promise<void> {
-    for (let i = 0; i < files.length; i++) {
-      throwIfIndexingCancelled(options.signal);
-      const file = files[i];
-      let fileResult: IndexingResult;
+    if (!progressTracker.existingRecordsByPath) {
+      const existingRecords = await this.vectorStore.getFileIndexRecords().catch(() => []);
+      progressTracker.existingRecordsByPath = new Map(
+        existingRecords.map((record) => [record.filePath, record]),
+      );
+    }
+    let offset = 0;
+    let canPrefetch = true;
+    let canPrepareAhead = true;
+    const lookahead: { current: SourceLookahead | null } = { current: null };
+    while (offset < files.length) {
+      throwIfIndexingCancelled(options.signal, options.isCurrent);
+      throwIfPerformanceGuardPaused(options);
+      let residentBytes = 0;
+      let chunkCount = 0;
+      const observationWindow = beginPipelineWindow(progressTracker, options);
+      const windowStartedAt = performance.now();
+      const window: TFile[] = [];
+      const preparationFailures = new Map<string, unknown>();
+      const preparationSkips = new Set<string>();
+      let windowSettled = false;
+      let windowOpen = true;
       try {
-        fileResult = await this.indexFile(file, options, progressTracker, i);
-      } catch (error) {
-        if (
-          error instanceof IndexingCancelledError ||
-          error instanceof IndexingPerformancePausedError
-        )
-          throw error;
-        batchResult.skipped += 1;
-        batchResult.documents.push(file.path);
-        completeProgressFile(progressTracker, 0, 0);
-        emitIndexingProgress(options, progressTracker, 'file-complete');
-        this.logger.warn('File indexing skipped after a read failure.', {
-          data: { path: file.path },
-          error,
-        });
-        continue;
-      }
-      throwIfIndexingCancelled(options.signal);
-      batchResult.indexed += fileResult.indexed;
-      batchResult.vectors += fileResult.vectors;
-      batchResult.skipped += fileResult.skipped;
-      batchResult.documents.push(...fileResult.documents);
-      if (i > 0 && i % 5 === 0) {
-        await pauseAfterBatch(0, options.signal).catch(() => {});
+        const staged = lookahead.current;
+        lookahead.current = null;
+        const preloaded = await staged?.snapshot;
+        while (offset < files.length) {
+          const file = files[offset];
+          if (window.length > 0 && (residentBytes + file.stat.size * 4 > PREPARED_WINDOW_BYTES ||
+            residentBytes >= PREPARED_WINDOW_INPUT_BYTES || chunkCount >= PREPARED_WINDOW_CHUNKS || performance.now() - windowStartedAt >= 12)) break;
+          offset++;
+          window.push(file);
+          try {
+            this.fileOwners.set(file.path, Symbol(file.path));
+            progressTracker.stage = 'preparing';
+            progressTracker.currentFilePath = file.path;
+            progressTracker.currentFileIndex = offset - 1;
+            emitIndexingProgress(options, progressTracker, 'plan');
+            const prepared = await this.prepareSource(file, options, progressTracker, staged?.file === file ? preloaded : undefined);
+            if (prepared) {
+              residentBytes += prepared.snapshot.chargeBytes + prepared.documents.reduce((sum, doc) => sum + doc.text.length * 2, 0);
+              chunkCount += prepared.chunks.length;
+            } else preparationSkips.add(file.path);
+          } catch (error) {
+            throwIfIndexingCancelled(options.signal, options.isCurrent);
+            if (isIndexingCancelledError(error) || error instanceof IndexingPerformancePausedError) throw error;
+            progressTracker.preparedSources.delete(file.path);
+            preparationFailures.set(file.path, error);
+            const unsupported = error instanceof SourceReadError && error.reason === 'binary';
+            recordRagIndexingVerdict(options.inventory, file, unsupported ? { kind: 'unsupported' } : { kind: 'failed', reason: error instanceof SourceReadError ? error.reason : 'preparation-failed' });
+            if (!unsupported) this.failedFiles.set(file.path, { mtime: file.stat.mtime, size: file.stat.size, reason: error instanceof SourceReadError ? error.reason : error instanceof Error ? error.message : 'preparation-failed' });
+          }
+        }
+        // 이 윈도의 원문과 lexical checkpoint가 내구 반영된 뒤에만 임베딩을 시작합니다.
+        progressTracker.planningComplete = offset === files.length;
+        emitIndexingProgress(options, progressTracker, 'plan');
+        const countDispatch = progressTracker.onInferenceDispatch;
+        progressTracker.onInferenceDispatch = () => {
+          countDispatch?.();
+          if (!windowOpen || !canPrepareAhead || lookahead.current || offset >= files.length || residentBytes >= PREPARED_WINDOW_BYTES || chunkCount >= PREPARED_WINDOW_CHUNKS || options.signal?.aborted || options.isCurrent?.() === false || options.getPerformanceGuardState?.()?.mode === 'paused') return;
+          const controller = new AbortController();
+          const staged: SourceLookahead = { file: files[offset], controller, snapshot: Promise.resolve(null) };
+          lookahead.current = staged;
+          const plannedSourceBytes = PREPARED_WINDOW_BYTES - residentBytes;
+          const preparedBudgetBytes = plannedSourceBytes - staged.file.stat.size * 4;
+          if (!Number.isSafeInteger(preparedBudgetBytes) || preparedBudgetBytes <= 0) { lookahead.current = null; return; }
+          try {
+            const plan = this.embeddingProvider.planLocalAdmission?.({ sourceBudgetBytes: PREPARED_WINDOW_BYTES, reservedSourceBytes: residentBytes, plannedSourceBytes });
+            if (!plan?.admitSourcePrefetch) { lookahead.current = null; return; }
+            const abort = (): void => controller.abort();
+            options.signal?.addEventListener('abort', abort, { once: true });
+            if (options.signal?.aborted) abort();
+            staged.snapshot = readSourceFileSnapshot(this.vault, staged.file, {
+              signal: controller.signal, priority: 'background', forceRefresh: true,
+              preparation: { path: staged.file.path, chunkSize: this.ragConfig.chunkSize, overlap: this.ragConfig.overlap,
+                maxChargeBytes: preparedBudgetBytes, maxPreparedChunks: PREPARED_WINDOW_CHUNKS - chunkCount },
+            }).then((snapshot) => {
+              if (!snapshot) observationWindow.valid = false;
+              if (snapshot && (!Number.isSafeInteger(snapshot.chargeBytes) || snapshot.chargeBytes > plannedSourceBytes)) { observationWindow.valid = false; canPrepareAhead = false; return null; }
+              return snapshot;
+            }).catch(() => {
+              observationWindow.valid = false;
+              canPrepareAhead = false;
+              return null;
+            }).finally(() => options.signal?.removeEventListener('abort', abort));
+          } catch {
+            observationWindow.valid = false;
+            canPrepareAhead = false;
+            lookahead.current = null;
+          }
+        };
+        if (canPrefetch) {
+          try { await this.prefetchCrossFileEmbeddings(window, options, progressTracker); }
+          catch (error) {
+            throwIfIndexingCancelled(options.signal, options.isCurrent);
+            if (isIndexingCancelledError(error) || error instanceof IndexingPerformancePausedError) throw error;
+            throwIfPerformanceGuardPaused(options);
+            observationWindow.valid = false;
+            canPrefetch = false;
+            progressTracker.prefetchedVectorsByText.clear();
+            this.logger.warn('Cross-file embedding prefetch failed; continuing per-file.');
+          }
+        }
+        for (const file of window) {
+          progressTracker.currentFilePath = file.path;
+          progressTracker.currentFileEstimatedChunks = estimateFileChunkCount(file, this.ragConfig);
+          progressTracker.currentFilePlannedChunks = progressTracker.plannedChunkCountsByPath.get(file.path) ?? estimateFileChunkCount(file, this.ragConfig);
+          throwIfIndexingCancelled(options.signal, options.isCurrent);
+          try {
+            if (preparationFailures.has(file.path)) throw preparationFailures.get(file.path);
+            if (preparationSkips.has(file.path)) {
+              batchResult.skipped++;
+              batchResult.documents.push(file.path);
+              progressTracker.skipped++;
+              completeProgressFile(progressTracker, 0, 0, 'skipped');
+              emitIndexingProgress(options, progressTracker, 'file-complete');
+              continue;
+            }
+            const result = await this.indexFile(file, options, progressTracker, files.indexOf(file));
+            batchResult.partial = (batchResult.partial ?? 0) + (result.partial ?? 0);
+            batchResult.indexed += result.indexed;
+            batchResult.vectors += result.vectors;
+            batchResult.skipped += result.skipped;
+            batchResult.documents.push(...result.documents);
+          } catch (error) {
+            if (isIndexingCancelledError(error) || error instanceof IndexingPerformancePausedError || options.signal?.aborted) throw error;
+            batchResult.skipped++;
+            batchResult.documents.push(file.path);
+            progressTracker.skipped++;
+            const unsupported = error instanceof SourceReadError && error.reason === 'binary';
+            completeProgressFile(progressTracker, 0, 0, unsupported ? 'skipped' : 'failed');
+            if (!unsupported) batchResult.failed = (batchResult.failed ?? 0) + 1;
+            emitIndexingProgress(options, progressTracker, 'file-complete');
+            this.logger.warn('File indexing failed.', { data: { path: file.path }, error });
+          } finally {
+            progressTracker.preparedSources.delete(file.path);
+          }
+        }
+        windowSettled = true;
+      } finally {
+        windowOpen = false;
+        progressTracker.onInferenceDispatch = undefined;
+        if (!windowSettled) lookahead.current?.controller.abort();
+        await lookahead.current?.snapshot;
+        finishPipelineWindow(progressTracker, options, observationWindow, windowSettled);
+        // 실패·중단 시 성공 flush 없이 큰 본문·청크·벡터 참조만 해제합니다.
+        progressTracker.preparedSources.clear();
+        progressTracker.prefetchedVectorsByText.clear();
       }
     }
+    progressTracker.planningComplete = true;
+    progressTracker.stage = 'settled';
+    finalizePipeline(progressTracker);
+    emitIndexingProgress(options, progressTracker, 'plan');
   }
 
-  private async planProgressChunks(
-    files: readonly TFile[],
-    options: IndexingOptions,
-    tracker: IndexingProgressTracker,
-  ): Promise<void> {
-    await this.loadEtaCalibration(tracker);
-    tracker.plannedChunkCountsByPath.clear();
-    let totalPlannedChunks = 0;
-    for (const [index, file] of files.entries()) {
-      throwIfIndexingCancelled(options.signal);
-      tracker.currentFilePath = file.path;
-      tracker.currentFileIndex = index;
-      if (index === 0) emitIndexingProgress(options, tracker, 'plan');
-      let plannedChunks = 1;
-      try {
-        const source = await readSourceText(this.vault, file, {
-          signal: options.signal,
-          onProgress: (page, pageCount) => {
-            tracker.sourcePage = page;
-            tracker.sourcePageCount = pageCount;
-            emitIndexingProgress(options, tracker, 'plan');
-          },
-        });
-        throwIfIndexingCancelled(options.signal);
-        plannedChunks = countPlannedChunks(file, source.text, this.ragConfig);
-      } catch (error) {
-        throwIfIndexingCancelled(options.signal);
-        if (
-          error instanceof IndexingCancelledError ||
-          error instanceof IndexingPerformancePausedError
-        )
-          throw error;
-        this.logger.debug('Source planning read failed.', {
-          data: { path: file.path },
-          error,
-        });
-      }
-      tracker.sourcePage = undefined;
-      tracker.sourcePageCount = undefined;
-      tracker.plannedChunkCountsByPath.set(file.path, plannedChunks);
-      totalPlannedChunks += plannedChunks;
-      if ((index + 1) % PLAN_PROGRESS_EMIT_INTERVAL === 0) {
-        emitIndexingProgress(options, tracker, 'plan');
-      }
+  private async prepareSource(file: TFile, options: IndexingOptions, tracker: IndexingProgressTracker, preloaded?: SourceFileSnapshot | null): Promise<PreparedSource | null> {
+    tracker.stage = 'preparing';
+    emitIndexingProgress(options, tracker, 'plan');
+    const sourceEpoch = this.recoverySourceEpoch;
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    throwIfPerformanceGuardPaused(options);
+    const current = this.vault.getAbstractFileByPath(file.path);
+    if (!isCurrentVaultFile(current)) return null;
+    if (isRagFileMetadataExcluded(this.vault, current, this.ragConfig, this.chatConfig)) {
+      recordRagIndexingVerdict(options.inventory, current, { kind: 'policy-excluded' });
+      await this.removeFile(file.path);
+      return null;
     }
-    tracker.totalPlannedChunks = totalPlannedChunks;
+    const owner = this.fileOwners.get(file.path) ?? Symbol(file.path);
+    this.fileOwners.set(file.path, owner);
+    const invalidated = this.invalidatedRecoveryPaths.has(current.path);
+    const reusable = !invalidated && current === file && preloaded?.revision.filePath === current.path && preloaded.revision.sourceMtime === current.stat.mtime && preloaded.revision.sourceSize === current.stat.size;
+    const snapshot = reusable ? preloaded : await readSourceFileSnapshot(this.vault, current, { signal: options.signal, priority: 'background', preparation: { path: current.path, chunkSize: this.ragConfig.chunkSize, overlap: this.ragConfig.overlap }, forceRefresh: options.automaticRecovery !== true || invalidated,
+      onProgress: (page, pageCount) => {
+        tracker.sourcePage = page;
+        tracker.sourcePageCount = pageCount;
+        emitIndexingProgress(options, tracker, 'plan');
+      },
+    });
+    if (!snapshot) return null;
+    const verdict = getRagPreparedContentVerdict(this.vault, current, snapshot.content, this.ragConfig, this.chatConfig);
+    recordRagIndexingVerdict(options.inventory, current, verdict);
+    if (verdict.kind === 'failed') throw new SourceReadError(verdict.reason ?? 'frontmatter-unreadable');
+    if (verdict.kind === 'policy-excluded') {
+      throwIfIndexingCancelled(options.signal, options.isCurrent);
+      if (this.fileOwners.get(file.path) === owner && this.vault.getAbstractFileByPath(file.path) === current && current.stat.mtime === snapshot.revision.sourceMtime && current.stat.size === snapshot.revision.sourceSize) await this.removeFile(file.path);
+      return null;
+    }
+    tracker.sourcePage = undefined;
+    tracker.sourcePageCount = undefined;
+    const chunks = snapshot.chunks;
+    if (!chunks) throw new Error('Prepared source chunks are unavailable.');
+    const documents = buildSourceDocuments(snapshot.file, snapshot.content, this.ragConfig, snapshot.segments, this.metadataCache?.getFileCache(current), chunks, snapshot.revision.contentHash);
+    const prepared: PreparedSource = {
+      snapshot, originalFile: current, owner, recoveryOwner: crypto.randomUUID(), documents, chunks,
+      mtime: snapshot.revision.sourceMtime, size: snapshot.revision.sourceSize,
+      text: snapshot.content, segments: snapshot.segments, contentHash: snapshot.revision.contentHash,
+    };
+    tracker.stage = 'lexical';
+    emitIndexingProgress(options, tracker, 'plan');
+    tracker.preparedSources.set(file.path, prepared);
+    tracker.totalPlannedChunks += chunks.length - (tracker.plannedChunkCountsByPath.get(file.path) ?? estimateFileChunkCount(file, this.ragConfig));
+    tracker.plannedChunkCountsByPath.set(file.path, chunks.length);
+    // 독립 DB와 파일시스템을 한 원자 트랜잭션으로 간주하지 않습니다.
+    if (!(await this.isPreparedCurrent(prepared, options, false))) throw new Error('Source changed before recovery registration.');
+    await this.vectorStore.beginPendingWriteRecovery?.([file.path], prepared.recoveryOwner);
+    if (!(await this.isPreparedCurrent(prepared, options, false))) throw new Error('Source changed before lexical commit.');
+    await this.documentCorpus?.replaceBatchFileDocuments([{ filePath: file.path, documents, sourceMetadata: snapshot.sourceMetadata, sourceMetadataHash: snapshot.sourceMetadataHash, sourceRevision: snapshot.revision,
+      ...(snapshot.bodyPlan ? { sourceBody: { text: snapshot.content, plan: snapshot.bodyPlan } } : {}) }]);
+    this.bm25Index?.replaceSourceDocuments(file.path, documents);
+    await this.bm25Index?.flush();
+    if (!(await this.isPreparedCurrent(prepared, options, false))) throw new Error('Source changed during lexical commit.');
+    if (sourceEpoch === this.recoverySourceEpoch) this.invalidatedRecoveryPaths.delete(file.path);
+    return prepared;
+  }
+
+  private async isPreparedCurrent(prepared: PreparedSource, options: IndexingOptions, reread = true): Promise<boolean> {
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    throwIfPerformanceGuardPaused(options);
+    const path = prepared.snapshot.revision.filePath;
+    const current = this.vault.getAbstractFileByPath(path);
+    if (this.fileOwners.get(path) !== prepared.owner || current !== prepared.originalFile || !isCurrentVaultFile(current)) return false;
+    if (isRagFileMetadataExcluded(this.vault, current, this.ragConfig, this.chatConfig)) return false;
+    if (!reread) return current.stat.mtime === prepared.mtime && current.stat.size === prepared.size &&
+      !isRagFileExcludedWithContent(this.vault, current, prepared.text, this.ragConfig, this.chatConfig);
+    // stat가 같아도 현재 바이트와 구절의 해시는 다시 읽습니다.
+    const fresh = await readSourceFileSnapshot(this.vault, current, { signal: options.signal, forceRefresh: true });
+    return !!fresh && this.fileOwners.get(path) === prepared.owner && this.vault.getAbstractFileByPath(path) === current &&
+      isSourceRevisionCurrentRust(prepared.snapshot.revision, fresh.revision) && prepared.snapshot.sourceMetadataHash === fresh.sourceMetadataHash &&
+      !isRagFileExcludedWithContent(this.vault, fresh.file, fresh.content, this.ragConfig, this.chatConfig);
+  }
+
+  private async prefetchCrossFileEmbeddings(files: readonly TFile[], options: IndexingOptions, tracker: IndexingProgressTracker): Promise<void> {
+    const inputs: string[] = [];
+    let eligible = 0;
+    for (const file of files) {
+      const prepared = tracker.preparedSources.get(file.path);
+      if (!prepared) continue;
+      const existing = tracker.existingRecordsByPath?.get(file.path);
+      if (existing && isCurrentFileIndexRecord(existing, prepared.contentHash, this.ragConfig)) continue;
+      eligible++;
+      for (const chunk of prepared.chunks) inputs.push(buildSearchText(file, chunk));
+    }
+    if (eligible < 2 || inputs.length < 2) return;
+    const vectors = await this.embedTextsInBatches(inputs, options, tracker);
+    for (let index = 0; index < inputs.length; index++) tracker.prefetchedVectorsByText.set(inputs[index], vectors[index]);
+  }
+
+  private planProgressChunks(files: readonly TFile[], options: IndexingOptions, tracker: IndexingProgressTracker): void {
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    tracker.plannedChunkCountsByPath.clear();
+    tracker.preparedSources.clear();
+    tracker.totalPlannedChunks = files.reduce((sum, file) => sum + estimateFileChunkCount(file, this.ragConfig), 0);
     tracker.completedPlannedChunks = 0;
     tracker.currentFilePlannedChunks = 0;
-    tracker.planningComplete = true;
-  }
-
-  private async loadEtaCalibration(tracker: IndexingProgressTracker): Promise<void> {
-    const summary = await this.vectorStore.getMetaValue?.<RagEtaCalibrationSummary>(
-      ragEtaCalibrationMetaKey(this.ragConfig),
-    );
-    if (!isMatchingRagEtaCalibrationSummary(summary, this.ragConfig)) return;
-    tracker.historicalMsPerChunk = summary.msPerChunk;
-    tracker.historicalChunkEstimateRatio = summary.chunkEstimateRatio;
-    tracker.historicalVariance = summary.variance;
-  }
-
-  private async saveEtaCalibration(tracker: IndexingProgressTracker): Promise<void> {
-    const summary = createRagEtaCalibrationSummary(tracker, this.ragConfig);
-    if (!summary) return;
-    await this.vectorStore.setMetaValue?.(ragEtaCalibrationMetaKey(this.ragConfig), summary);
+    tracker.planningComplete = false;
   }
 
   async indexFile(
@@ -737,33 +1070,66 @@ export class VaultIndexer {
     fileIndex = 0,
   ): Promise<IndexingResult> {
     const path = file.path;
-    const owner = Symbol(path);
+    const owner = progressTracker?.preparedSources.get(path)?.owner ?? Symbol(path);
     const revision = { mtime: file.stat.mtime, size: file.stat.size };
     this.fileOwners.set(path, owner);
+    const tracker = progressTracker ?? createProgressTracker([file], this.ragConfig);
+    if (!progressTracker) tracker.pipeline.totalKnown = true;
+    if (!progressTracker) {
+      emitIndexingProgress(options, tracker, 'plan');
+      this.planProgressChunks([file], options, tracker);
+      tracker.currentFileEstimatedChunks = estimateFileChunkCount(file, this.ragConfig);
+      tracker.currentFilePlannedChunks = tracker.plannedChunkCountsByPath.get(file.path) ?? estimateFileChunkCount(file, this.ragConfig);
+    }
+    tracker.currentFilePath = path;
+    const completedBefore = tracker.completedFiles;
+    const window = progressTracker ? undefined : beginPipelineWindow(tracker, options);
+    let settled = false;
     try {
-      const result = await this.indexFileInternal(file, options, progressTracker, fileIndex);
-      if (this.fileOwners.get(path) === owner) this.failedFiles.delete(path);
+      const result = await this.indexFileInternal(file, options, tracker, fileIndex);
+      settled = true;
+      if (!progressTracker) tracker.planningComplete = true;
+      if (this.fileOwners.get(path) === owner && (tracker.completedFiles > completedBefore || (result.partial ?? 0) > 0)) this.failedFiles.delete(path);
       return result;
     } catch (error) {
+      if (!progressTracker && !isIndexingCancelledError(error) && !(error instanceof IndexingPerformancePausedError)) {
+        completeProgressFile(tracker, 0, 0, error instanceof SourceReadError && error.reason === 'binary' ? 'skipped' : 'failed');
+        emitIndexingProgress(options, tracker, 'file-complete');
+      }
+      if (this.fileOwners.get(path) === owner && error instanceof SourceReadError) {
+        recordRagIndexingVerdict(options.inventory, file, error.reason === 'binary' ? { kind: 'unsupported' } : { kind: 'failed', reason: error.reason });
+      }
       if (
         this.fileOwners.get(path) === owner &&
         !(error instanceof IndexingCancelledError) &&
-        !(error instanceof IndexingPerformancePausedError)
+        !(error instanceof IndexingPerformancePausedError) &&
+        !(error instanceof SourceReadError && error.reason === 'binary')
       )
-        this.failedFiles.set(path, revision);
+        this.failedFiles.set(path, { ...revision, reason: error instanceof SourceReadError ? error.reason : error instanceof Error ? error.message : 'indexing-failed' });
       throw error;
+    } finally {
+      if (window) {
+        finishPipelineWindow(tracker, options, window, settled);
+        if (settled) {
+          finalizePipeline(tracker);
+          emitIndexingProgress(options, tracker, 'plan');
+        }
+      }
     }
   }
 
   private async indexFileInternal(
     file: TFile,
     options: IndexingOptions,
-    progressTracker?: IndexingProgressTracker,
+    tracker: IndexingProgressTracker,
     fileIndex = 0,
   ): Promise<IndexingResult> {
     const startedAt = performance.now();
     const currentFile = this.vault.getAbstractFileByPath(file.path);
     if (!isCurrentVaultFile(currentFile)) {
+      tracker.skipped += 1;
+      completeProgressFile(tracker, 0, 0, 'skipped');
+      emitIndexingProgress(options, tracker, 'file-complete');
       this.logger.debug('File indexing skipped because the queued file no longer exists.', {
         data: { path: file.path },
       });
@@ -774,13 +1140,11 @@ export class VaultIndexer {
       );
     }
     file = currentFile;
-    if (await isRagFileExcluded(this.vault, file, this.ragConfig, this.chatConfig)) {
+    if (isRagFileMetadataExcluded(this.vault, file, this.ragConfig, this.chatConfig)) {
       await this.removeFile(file.path);
-      if (progressTracker) {
-        progressTracker.skipped += 1;
-        completeProgressFile(progressTracker, 0, 0);
-        emitIndexingProgress(options, progressTracker, 'file-complete');
-      }
+      tracker.skipped += 1;
+      completeProgressFile(tracker, 0, 0, 'skipped');
+      emitIndexingProgress(options, tracker, 'file-complete');
       this.logger.debug('File indexing skipped by the current exclusion policy.', {
         data: { path: file.path },
       });
@@ -790,29 +1154,24 @@ export class VaultIndexer {
         options,
       );
     }
-    const tracker = progressTracker ?? createProgressTracker([file], this.ragConfig);
-    if (!progressTracker) {
-      emitIndexingProgress(options, tracker, 'plan');
-      await this.planProgressChunks([file], options, tracker);
-      emitIndexingProgress(options, tracker, 'plan');
-    }
-    throwIfIndexingCancelled(options.signal);
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
     tracker.currentFilePath = file.path;
     tracker.currentFileIndex = fileIndex;
     tracker.currentFileTotalChunks = 0;
     tracker.currentFileEmbeddedChunks = 0;
     tracker.currentFileEstimatedChunks = estimateFileChunkCount(file, this.ragConfig);
-    tracker.currentFilePlannedChunks = tracker.plannedChunkCountsByPath.get(file.path) ?? 0;
+    tracker.currentFilePlannedChunks = tracker.plannedChunkCountsByPath.get(file.path) ?? estimateFileChunkCount(file, this.ragConfig);
     tracker.currentFileBatchDurationMs = 0;
     const fileStartedAt = performance.now();
     emitIndexingProgress(options, tracker, 'file-start');
     this.logger.debug('File indexing started.', {
       data: { path: file.path, size: file.stat.size },
     });
-    const snapshot = await readSourceFileSnapshot(this.vault, file, { signal: options.signal });
+    const prepared = tracker.preparedSources.get(file.path) ?? await this.prepareSource(file, options, tracker);
+    const snapshot = prepared?.snapshot;
     if (!snapshot) {
       tracker.skipped += 1;
-      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0, 'skipped');
       emitIndexingProgress(options, tracker, 'file-complete');
       return finishIndexingResult(
         { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
@@ -820,57 +1179,54 @@ export class VaultIndexer {
         options,
       );
     }
-    const content = snapshot.content;
     file = snapshot.file;
-    throwIfIndexingCancelled(options.signal);
-    const sourceHash = createContentHash(content);
-    await this.documentCorpus?.refreshFile(currentFile, options.signal);
-    const currentRecord = await this.vectorStore.getFileIndexRecord(file.path);
-    let revisionIsCurrent = false;
+    tracker.currentFilePlannedChunks = prepared.chunks.length;
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    const sourceHash = snapshot.revision.contentHash;
+    const currentRecord = tracker.existingRecordsByPath ? (tracker.existingRecordsByPath.get(file.path) ?? null) : await this.vectorStore.getFileIndexRecord(file.path);
     if (currentRecord && isCurrentFileIndexRecord(currentRecord, sourceHash, this.ragConfig)) {
-      const revisionChanged =
-        currentRecord.sourceMtime !== file.stat.mtime ||
-        currentRecord.sourceSize !== file.stat.size;
-      if (revisionChanged) {
-        try {
-          await this.bm25Index?.refreshSourceRevision(file.path, {
-            sourceMtime: file.stat.mtime,
-            sourceSize: file.stat.size,
-            contentHash: sourceHash,
-          });
-        } catch (error) {
-          this.logger.warn('BM25 source revision refresh failed; lexical metadata may remain stale.', {
-            data: { path: file.path },
-            error,
-          });
-        }
-      }
-      revisionIsCurrent = revisionChanged
-        ? await this.vectorStore.refreshFileIndexRevision({
-            filePath: file.path,
-            sourceMtime: file.stat.mtime,
-            sourceSize: file.stat.size,
-            contentHash: sourceHash,
-          })
-        : true;
-    }
-    if (revisionIsCurrent) {
-      const skipped = finishIndexingResult(
-        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
-        startedAt,
-        options,
-      );
-      tracker.skipped += 1;
-      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
-      emitIndexingProgress(options, tracker, 'file-complete');
-      this.logger.debug('File indexing skipped because content hash is unchanged.', {
-        data: { path: file.path },
+      if (!(await this.isPreparedCurrent(prepared, options))) throw new Error('Source changed before metadata commit.');
+      const existingEntries = await this.vectorStore.getEntriesByFilePaths([file.path]);
+      const byId = new Map(existingEntries.map((entry) => [entry.id, entry]));
+      const updatedEntries = prepared.chunks.map((chunk): VectorEntry | null => {
+        const existing = byId.get(chunk.id);
+        return existing ? { ...existing, metadata: { ...existing.metadata,
+          heading: chunk.metadata.heading, startLine: chunk.metadata.startLine, endLine: chunk.metadata.endLine,
+          sourceSegment: chunk.metadata.sourceSegment, sourceMetadataHash: snapshot.sourceMetadataHash,
+          sourceMtime: file.stat.mtime, sourceSize: file.stat.size,
+        } } : null;
       });
-      return skipped;
+      if (!updatedEntries.some((entry) => entry === null)) {
+        if (currentRecord.sourceMetadataHash !== snapshot.sourceMetadataHash || currentRecord.sourceMtime !== file.stat.mtime || currentRecord.sourceSize !== file.stat.size || existingEntries.length !== updatedEntries.length) {
+          if (updatedEntries.length === 0) {
+            await this.vectorStore.markFileIndexedWithoutVectors({ ...currentRecord, sourceMtime: file.stat.mtime, sourceSize: file.stat.size, contentHash: sourceHash, sourceMetadata: snapshot.sourceMetadata, sourceMetadataHash: snapshot.sourceMetadataHash, updated: Date.now() });
+          } else if (currentRecord.sourceMetadataHash === snapshot.sourceMetadataHash && existingEntries.length === updatedEntries.length) {
+            await this.vectorStore.refreshFileIndexRevision({ filePath: file.path, sourceMtime: file.stat.mtime, sourceSize: file.stat.size, contentHash: sourceHash });
+          } else {
+            await this.vectorStore.replaceBatchFileEntries([{ filePath: file.path, entries: updatedEntries.filter((entry): entry is VectorEntry => entry !== null), sourceMetadata: snapshot.sourceMetadata, sourceMetadataHash: snapshot.sourceMetadataHash }]);
+          }
+        }
+        if (!(await this.isPreparedCurrent(prepared, options))) throw new Error('Source changed during metadata commit.');
+        await this.vectorStore.completePendingWriteRecovery?.([file.path], prepared.recoveryOwner);
+        const partial = snapshot.sourceMetadata.completeness?.status === 'partial';
+        const skipped = finishIndexingResult(
+          { indexed: 0, vectors: 0, skipped: partial ? 0 : 1, documents: [file.path], ...(partial ? { partial: 1 } : {}) },
+          startedAt,
+          options,
+        );
+        if (!partial && prepared.chunks.length > 0) tracker.skipped += 1;
+        completeProgressFile(tracker, performance.now() - fileStartedAt, 0, partial ? 'partial' : prepared.chunks.length === 0 ? 'completed' : 'skipped');
+        emitIndexingProgress(options, tracker, 'file-complete');
+        this.failedFiles.delete(file.path);
+        this.logger.debug('File indexing skipped because content hash and chunks are unchanged.', {
+          data: { path: file.path },
+        });
+        return skipped;
+      }
     }
     const indexedAt = Date.now();
-    const chunks = chunkSourceDocument(file, content, this.ragConfig, snapshot.segments);
-    throwIfIndexingCancelled(options.signal);
+    const chunks = prepared.chunks;
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
     if (chunks.length === 0) {
       const emptyRecord = planEmptyFileIndexRecordRust(
         {
@@ -887,20 +1243,18 @@ export class VaultIndexer {
       if (!emptyRecord) {
         throw new Error('Rust empty-file index record planning failed');
       }
-      await this.vectorStore.markFileIndexedWithoutVectors(emptyRecord);
-      if (this.bm25Index) {
-        this.bm25Index.removeDocumentsBySource(file.path);
-        await this.bm25Index.persist();
-      }
-      await this.vectorStore.completePendingWriteRecovery?.([file.path]);
-      throwIfIndexingCancelled(options.signal);
+      if (!(await this.isPreparedCurrent(prepared, options))) throw new Error('Source changed before empty-file commit.');
+      await this.vectorStore.markFileIndexedWithoutVectors({ ...emptyRecord, sourceMetadata: snapshot.sourceMetadata, sourceMetadataHash: snapshot.sourceMetadataHash });
+      if (!(await this.isPreparedCurrent(prepared, options))) throw new Error('Source changed during empty-file commit.');
+      await this.vectorStore.completePendingWriteRecovery?.([file.path], prepared.recoveryOwner);
+      throwIfIndexingCancelled(options.signal, options.isCurrent);
+      const partial = snapshot.sourceMetadata.completeness?.status === 'partial';
       const skipped = finishIndexingResult(
-        { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
+        { indexed: 0, vectors: 0, skipped: partial ? 0 : 1, documents: [file.path], ...(partial ? { partial: 1 } : {}) },
         startedAt,
         options,
       );
-      tracker.skipped += 1;
-      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0, partial ? 'partial' : 'completed');
       emitIndexingProgress(options, tracker, 'file-complete');
       this.logger.debug('File indexing skipped because no chunks were produced.', {
         data: { path: file.path },
@@ -917,28 +1271,10 @@ export class VaultIndexer {
 
     const texts = chunks.map((chunk) => buildSearchText(file, chunk));
     const metadata = this.metadataCache?.getFileCache(file);
-    if (this.bm25Index) {
-      this.bm25Index.removeDocumentsBySource(file.path);
-      for (const chunk of chunks) {
-        this.bm25Index.addCorpusDocument({
-          id: chunk.id,
-          text: chunk.text,
-          sourcePath: file.path,
-          ...getBM25DocumentFields(file, metadata, chunk.metadata.heading),
-          heading: chunk.metadata.heading,
-          startLine: chunk.metadata.startLine,
-          endLine: chunk.metadata.endLine,
-          sourceMtime: file.stat.mtime,
-          sourceSize: file.stat.size,
-          contentHash: sourceHash,
-          indexedAt,
-        });
-      }
-      await this.bm25Index.persist();
-      throwIfIndexingCancelled(options.signal);
-    }
+    tracker.stage = 'embedding';
+    emitIndexingProgress(options, tracker, 'file-chunks');
     const vectors = await this.embedTextsInBatches(texts, options, tracker);
-    throwIfIndexingCancelled(options.signal);
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
 
     const entries: VectorEntry[] = chunks.map((chunk, i) => ({
       id: chunk.id,
@@ -954,6 +1290,8 @@ export class VaultIndexer {
         sourceSize: file.stat.size,
         contentHash: sourceHash,
         chunkHash: chunk.chunkHash,
+        sourceSegment: chunk.metadata.sourceSegment,
+        sourceMetadataHash: snapshot.sourceMetadataHash,
         indexedAt,
         embeddingProvider: this.ragConfig.embeddingProvider,
         embeddingModel: this.ragConfig.embeddingModel,
@@ -961,15 +1299,15 @@ export class VaultIndexer {
     }));
 
     const latestFile = this.vault.getAbstractFileByPath(file.path);
-    const currentSnapshot = isCurrentVaultFile(latestFile)
-      ? await readSourceFileSnapshot(this.vault, latestFile, { signal: options.signal })
+    const currentSnapshot = isCurrentVaultFile(latestFile) && !isRagFileMetadataExcluded(this.vault, latestFile, this.ragConfig, this.chatConfig)
+      ? await readSourceFileSnapshot(this.vault, latestFile, { signal: options.signal, forceRefresh: true })
       : null;
     if (
       !currentSnapshot ||
-      !isSourceRevisionCurrentRust(snapshot.revision, currentSnapshot.revision)
+      !isSourceRevisionCurrentRust(snapshot.revision, currentSnapshot.revision) || snapshot.sourceMetadataHash !== currentSnapshot.sourceMetadataHash
     ) {
       if (
-        isCurrentVaultFile(latestFile) &&
+        this.fileOwners.get(file.path) === prepared.owner && isCurrentVaultFile(latestFile) &&
         (await isRagFileExcluded(this.vault, latestFile, this.ragConfig, this.chatConfig))
       )
         await this.removeFile(file.path);
@@ -977,7 +1315,7 @@ export class VaultIndexer {
         data: { path: file.path },
       });
       tracker.skipped += 1;
-      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0, 'skipped');
       emitIndexingProgress(options, tracker, 'file-complete');
       return finishIndexingResult(
         { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
@@ -986,11 +1324,11 @@ export class VaultIndexer {
       );
     }
     if (
-      await isRagFileExcluded(this.vault, currentSnapshot.file, this.ragConfig, this.chatConfig)
+      isRagFileExcludedWithContent(this.vault, currentSnapshot.file, currentSnapshot.content, this.ragConfig, this.chatConfig)
     ) {
-      await this.removeFile(file.path);
+      if (this.fileOwners.get(file.path) === prepared.owner) await this.removeFile(file.path);
       tracker.skipped += 1;
-      completeProgressFile(tracker, performance.now() - fileStartedAt, 0);
+      completeProgressFile(tracker, performance.now() - fileStartedAt, 0, 'skipped');
       emitIndexingProgress(options, tracker, 'file-complete');
       return finishIndexingResult(
         { indexed: 0, vectors: 0, skipped: 1, documents: [file.path] },
@@ -998,23 +1336,33 @@ export class VaultIndexer {
         options,
       );
     }
-    throwIfIndexingCancelled(options.signal);
-    await this.vectorStore.replaceFileEntries(file.path, entries);
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    if (!(await this.isPreparedCurrent(prepared, options, false))) throw new Error('Source changed before vector commit.');
+    tracker.stage = 'committing';
+    emitIndexingProgress(options, tracker, 'file-chunks');
+    await this.vectorStore.replaceBatchFileEntries([{ filePath: file.path, entries, sourceMetadata: snapshot.sourceMetadata, sourceMetadataHash: snapshot.sourceMetadataHash }]);
+    if (!(await this.isPreparedCurrent(prepared, options))) throw new Error('Source changed during vector commit.');
+    tracker.existingRecordsByPath?.set(file.path, {
+      filePath: file.path, sourceMtime: file.stat.mtime, sourceSize: file.stat.size, contentHash: sourceHash,
+      indexedAt, embeddingProvider: this.ragConfig.embeddingProvider, embeddingModel: this.ragConfig.embeddingModel,
+      hasCompleteMetadata: true, vectorCount: entries.length, updated: indexedAt,
+    });
     // 중단된 쓰기로 등록된 복구 요청은 재색인이 끝난 시점에 완료 처리한다.
-    await this.vectorStore.completePendingWriteRecovery?.([file.path]);
+    await this.vectorStore.completePendingWriteRecovery?.([file.path], prepared.recoveryOwner);
+    const partial = snapshot.sourceMetadata.completeness?.status === 'partial';
 
     const finished = finishIndexingResult(
-      { indexed: 1, vectors: entries.length, skipped: 0, documents: [file.path] },
+      { indexed: partial ? 0 : 1, vectors: entries.length, skipped: 0, documents: [file.path], ...(partial ? { partial: 1 } : {}) },
       startedAt,
       options,
     );
-    tracker.indexed += 1;
+    tracker.stage = 'settled';
+    tracker.indexed += partial ? 0 : 1;
     tracker.vectors += entries.length;
-    completeProgressFile(tracker, performance.now() - fileStartedAt, entries.length);
+    if (partial) {
+      completeProgressFile(tracker, 0, 0, 'partial');
+    } else completeProgressFile(tracker, performance.now() - fileStartedAt, entries.length, 'completed');
     emitIndexingProgress(options, tracker, 'file-complete');
-    if (!progressTracker) {
-      await this.saveEtaCalibration(tracker);
-    }
     this.logger.debug('File indexing completed.', {
       data: {
         path: file.path,
@@ -1028,33 +1376,37 @@ export class VaultIndexer {
 
   async reindexAll(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
-    throwIfIndexingCancelled(options.signal);
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
     const progressTracker = createProgressTracker([], this.ragConfig);
-    const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
-    throwIfIndexingCancelled(options.signal);
+    const inventory = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
+    options = { ...options, inventory };
+    const files = inventory.candidates;
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    this.recordInventoryFailures(inventory);
     this.logger.info('Vault full reindex started.', { data: { fileCount: files.length } });
     resetProgressTrackerPlan(progressTracker, files, this.ragConfig);
     emitIndexingProgress(options, progressTracker, 'plan');
-    await this.planProgressChunks(files, options, progressTracker);
+    this.planProgressChunks(files, options, progressTracker);
     emitIndexingProgress(options, progressTracker, 'plan');
     const existingSourcePaths = new Set(await this.vectorStore.getIndexedFilePaths());
     for (const sourcePath of (await this.bm25Index?.getSourcePaths()) ?? []) {
       existingSourcePaths.add(sourcePath);
     }
-    const result = await this.indexFiles(files, startedAt, options, progressTracker);
-    throwIfIndexingCancelled(options.signal);
-    const currentSourcePaths = new Set(files.map((file) => file.path));
+    this.completeInventoryFailures(inventory.failures, options, progressTracker);
+    const result = await this.indexFiles(files, startedAt, options, progressTracker, inventory.failures);
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    const currentSourcePaths = new Set([...files, ...inventory.failures.map(({ file }) => file)].map((file) => file.path));
     await this.withIndexBatch(async () => {
       for (const sourcePath of existingSourcePaths) {
         if (currentSourcePaths.has(sourcePath)) continue;
-        await this.vectorStore.removeByFilePath(sourcePath);
-        this.bm25Index?.removeDocumentsBySource(sourcePath);
+        await this.removeOrphanSource(sourcePath, options);
       }
-      await this.bm25Index?.persist();
     });
     const finished = finishIndexingResult(
       {
         indexed: result.indexed,
+        ...(result.partial ? { partial: result.partial } : {}),
+        ...(result.failed ? { failed: result.failed } : {}),
         vectors: result.vectors,
         skipped: result.skipped,
         documents: result.documents,
@@ -1067,37 +1419,60 @@ export class VaultIndexer {
 
   private async removeOrphanedSources(
     files: readonly TFile[],
-    signal?: AbortSignal,
+    options: IndexingOptions,
   ): Promise<void> {
     const existingSourcePaths = new Set(await this.vectorStore.getIndexedFilePaths());
     for (const sourcePath of (await this.bm25Index?.getSourcePaths()) ?? []) {
       existingSourcePaths.add(sourcePath);
     }
-    throwIfIndexingCancelled(signal);
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
     const currentSourcePaths = new Set(files.map((file) => file.path));
-    let bm25Changed = false;
     await this.withIndexBatch(async () => {
       for (const sourcePath of existingSourcePaths) {
         if (currentSourcePaths.has(sourcePath)) continue;
-        throwIfIndexingCancelled(signal);
-        await this.vectorStore.removeByFilePath(sourcePath);
-        this.bm25Index?.removeDocumentsBySource(sourcePath);
-        bm25Changed = true;
+        await this.removeOrphanSource(sourcePath, options);
       }
-      if (bm25Changed) await this.bm25Index?.persist();
     });
-    throwIfIndexingCancelled(signal);
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+  }
+
+  private async removeOrphanSource(path: string, options: IndexingOptions): Promise<void> {
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    const owner = this.fileOwners.get(path);
+    const file = this.vault.getAbstractFileByPath(path);
+    if (isCurrentVaultFile(file) && !isRagFileMetadataExcluded(this.vault, file, this.ragConfig, this.chatConfig)) {
+      try {
+        const snapshot = await readSourceFileSnapshot(this.vault, file, { signal: options.signal, forceRefresh: true });
+        if (!snapshot || !isRagFileExcludedWithContent(this.vault, snapshot.file, snapshot.content, this.ragConfig, this.chatConfig)) return;
+      } catch (error) {
+        throwIfIndexingCancelled(options.signal, options.isCurrent);
+        if (isIndexingCancelledError(error)) throw error;
+        if (this.fileOwners.get(path) !== owner) return;
+        this.failedFiles.set(path, { mtime: file.stat.mtime, size: file.stat.size, reason: error instanceof SourceReadError ? error.reason : error instanceof Error ? error.message : 'source-read-failed' });
+        return;
+      }
+    }
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    if (this.fileOwners.get(path) !== owner) return;
+    await this.removeFile(path);
   }
 
   async removeFile(filePath: string): Promise<number> {
+    const owner = Symbol(filePath);
+    const recoveryOwner = crypto.randomUUID();
+    this.fileOwners.set(filePath, owner);
+    await this.vectorStore.beginPendingWriteRecovery?.([filePath], recoveryOwner);
+    if (this.fileOwners.get(filePath) !== owner) return 0;
     await this.documentCorpus?.removeFile(filePath);
+    if (this.fileOwners.get(filePath) !== owner) return 0;
     const removed = await this.vectorStore.removeByFilePath(filePath);
+    if (this.fileOwners.get(filePath) !== owner) return removed;
     if (this.bm25Index) {
       this.bm25Index.removeDocumentsBySource(filePath);
-      await this.bm25Index.persist();
+      await this.bm25Index.flush();
     }
-    // 삭제까지 끝난 경로는 재색인 대상이 아니므로 복구 요청에서 제거한다.
-    await this.vectorStore.completePendingWriteRecovery?.([filePath]);
+    // 다른 owner가 인수한 복구 요청은 이전 삭제 작업이 해제하지 않습니다.
+    if (this.fileOwners.get(filePath) === owner) await this.vectorStore.completePendingWriteRecovery?.([filePath], recoveryOwner);
     return removed;
   }
 
@@ -1109,25 +1484,79 @@ export class VaultIndexer {
     return (await this.vectorStore.probePendingFileWrites?.()) ?? [];
   }
 
+  private captureRecoveryCurrentness(files: readonly TFile[], options: IndexingOptions): () => void {
+    const epoch = this.recoverySourceEpoch;
+    const snapshots = files.map((file) => ({ file, path: file.path, mtime: file.stat.mtime, size: file.stat.size, owner: this.fileOwners.get(file.path) }));
+    return () => {
+      throwIfIndexingCancelled(options.signal, options.isCurrent);
+      if (epoch !== this.recoverySourceEpoch || snapshots.some(({ file, path, mtime, size, owner }) =>
+        this.vault.getAbstractFileByPath(path) !== file || file.path !== path || file.stat.mtime !== mtime || file.stat.size !== size || this.fileOwners.get(path) !== owner)) {
+        throw new IndexingCancelledError();
+      }
+    };
+  }
+
+  private async planPendingFiles(inventory: RagFileInventory, options: IndexingOptions) {
+    const requireCurrent = this.captureRecoveryCurrentness(inventory.candidates, options);
+    const status = await calculateRagStatus(this.vault, this.vectorStore, this.ragConfig, this.chatConfig, options.signal, inventory);
+    requireCurrent();
+    const recoveryPaths = (await this.vectorStore.readPendingWriteRecovery?.()) ?? [];
+    requireCurrent();
+    // 실패·내구 recovery까지 합친 뒤 Native에서 terminal partial을 판정합니다.
+    const requiredPaths = [...getRagUnverifiedIndexingFiles(inventory).map((file) => file.path),
+      ...status.updateRequiredDocuments.map((document) => document.path), ...inventory.failures.map(({ file }) => file.path), ...this.getFailedFilePaths(), ...recoveryPaths, ...this.invalidatedRecoveryPaths];
+    const plan = planIndexPendingFilesRust(inventory.candidates.map((file) => file.path), requiredPaths);
+    if (!plan) throw new Error('Rust pending index file planning failed');
+    return plan;
+  }
+
+  private async planAutomaticRecovery(inventory: RagFileInventory, pendingIndices: readonly number[], options: IndexingOptions) {
+    const requireCurrent = this.captureRecoveryCurrentness(inventory.candidates, options);
+    const [corpusRows, vectorRows] = await Promise.all([
+      this.documentCorpus?.getFileIndexRecords?.() ?? Promise.resolve([]), this.vectorStore.getFileIndexRecords(),
+    ]);
+    requireCurrent();
+    const corpus = new Map(corpusRows.map((row) => [row.filePath, row]));
+    const vectors = new Map(vectorRows.map((row) => [row.filePath, row]));
+    const pendingFiles = pendingIndices.map((index) => inventory.candidates[index]);
+    const plan = planRagAutomaticRecoveryBatchRust(pendingFiles.map((file) => {
+      const prepared = getRagPreparedSourceRevision(this.vault, file);
+      return { path: file.path, mtime: file.stat.mtime, size: file.stat.size,
+        invalidated: this.invalidatedRecoveryPaths.has(file.path) || inventory.failures.some((failure) => failure.file.path === file.path),
+        ...(prepared ? { contentHash: prepared.contentHash, sourceMetadataHash: prepared.sourceMetadataHash } : {}),
+        corpusRecord: projectRecoveryPartialRecord(corpus.get(file.path)), vectorRecord: projectRecoveryPartialRecord(vectors.get(file.path)) };
+    }));
+    if (!plan) throw new Error('Rust automatic RAG recovery batch planning failed');
+    requireCurrent();
+    return { ...plan, deferredPaths: plan.deferredIndices.map((index) => pendingFiles[index].path) };
+  }
+
+  async getAutomaticRecoveryPendingState(options: IndexingOptions = {}) {
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    const manifest = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
+    const inventory = { ...manifest, candidates: [...manifest.candidates, ...manifest.failures.map(({ file }) => file)] };
+    const requireCurrent = this.captureRecoveryCurrentness(inventory.candidates, options);
+    const pending = await this.planPendingFiles(inventory, options);
+    requireCurrent();
+    const plan = await this.planAutomaticRecovery(inventory, pending.fileIndices, options);
+    requireCurrent();
+    return plan;
+  }
+
   async indexPending(options: IndexingOptions = {}): Promise<IndexingResult> {
     const startedAt = performance.now();
-    throwIfIndexingCancelled(options.signal);
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
     const progressTracker = createProgressTracker([], this.ragConfig);
-    const files = await getRagCandidateFiles(this.vault, this.ragConfig, this.chatConfig);
-    throwIfIndexingCancelled(options.signal);
-    await this.removeOrphanedSources(files, options.signal);
-    const status = await calculateRagStatus(
-      this.vault,
-      this.vectorStore,
-      this.ragConfig,
-      this.chatConfig,
-      options.signal,
-    );
-    throwIfIndexingCancelled(options.signal);
+    const inventory = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
+    options = { ...options, inventory };
+    const files = inventory.candidates;
+    throwIfIndexingCancelled(options.signal, options.isCurrent);
+    this.recordInventoryFailures(inventory);
+    await this.removeOrphanedSources([...files, ...inventory.failures.map(({ file }) => file)], options);
     const candidatePaths = files.map((file) => file.path);
-    const requiredPaths = status.updateRequiredDocuments.map((document) => document.path);
-    const pendingPlan = planIndexPendingFilesRust(candidatePaths, requiredPaths);
-    if (!pendingPlan) throw new Error('Rust pending index file planning failed');
+    const requireCurrent = this.captureRecoveryCurrentness(files, options);
+    const pendingPlan = await this.planPendingFiles(inventory, options);
+    requireCurrent();
 
     const normalizedPendingPlanFileIndices = normalizeRustIndices(
       [...new Set(pendingPlan.fileIndices)],
@@ -1140,11 +1569,12 @@ export class VaultIndexer {
       fileIndices: normalizedPendingPlanFileIndices,
       skipped: Math.max(candidatePaths.length - normalizedPendingPlanFileIndices.length, 0),
     };
-    const pendingFiles = normalizedPendingPlan.fileIndices
-      .map((index) => files[index])
-      .filter((file): file is TFile => file !== undefined);
-    const selectedFileIndices = options.automaticRecovery
-      ? selectAutomaticRecoveryFileIndices(files, normalizedPendingPlan.fileIndices, pendingFiles)
+    const automatic = options.automaticRecovery
+      ? await this.planAutomaticRecovery(inventory, normalizedPendingPlan.fileIndices, options)
+      : null;
+    requireCurrent();
+    const selectedFileIndices = automatic
+      ? automatic.batchIndices.map((index) => normalizedPendingPlan.fileIndices[index])
       : normalizedPendingPlan.fileIndices;
     const selectedFiles = selectedFileIndices
       .map((index) => files[index])
@@ -1156,12 +1586,15 @@ export class VaultIndexer {
       Math.max(candidatePaths.length - selectedFiles.length, 0),
     );
     emitIndexingProgress(options, progressTracker, 'plan');
-    await this.planProgressChunks(selectedFiles, options, progressTracker);
+    this.planProgressChunks(selectedFiles, options, progressTracker);
     emitIndexingProgress(options, progressTracker, 'plan');
 
+    this.completeInventoryFailures(inventory.failures, options, progressTracker);
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
-      batchResult.skipped = Math.max(candidatePaths.length - selectedFiles.length, 0);
+      batchResult.skipped = Math.max(candidatePaths.length - selectedFiles.length, 0) + inventory.failures.length;
+      if (inventory.failures.length > 0) batchResult.failed = inventory.failures.length;
+      batchResult.documents.push(...inventory.failures.map(({ file }) => file.path));
       await this.indexBatchFiles(selectedFiles, batchResult, options, progressTracker);
       return batchResult;
     });
@@ -1169,6 +1602,8 @@ export class VaultIndexer {
     const finished = finishIndexingResult(
       {
         indexed: result.indexed,
+        ...(result.partial ? { partial: result.partial } : {}),
+        ...(result.failed ? { failed: result.failed } : {}),
         vectors: result.vectors,
         skipped: result.skipped,
         documents: result.documents,
@@ -1176,7 +1611,6 @@ export class VaultIndexer {
       startedAt,
       options,
     );
-    await this.saveEtaCalibration(progressTracker);
     return finished;
   }
 
@@ -1185,6 +1619,15 @@ export class VaultIndexer {
     options: IndexingOptions,
     progressTracker?: IndexingProgressTracker,
   ): Promise<number[][]> {
+    if (progressTracker && texts.length > 0 && texts.every((text) => progressTracker.prefetchedVectorsByText.has(text))) {
+      throwIfIndexingCancelled(options.signal, options.isCurrent);
+      throwIfPerformanceGuardPaused(options);
+      const cached = texts.map((text) => progressTracker.prefetchedVectorsByText.get(text)!);
+      for (const text of texts) progressTracker.prefetchedVectorsByText.delete(text);
+      progressTracker.currentFileEmbeddedChunks = progressTracker.currentFileTotalChunks;
+      emitIndexingProgress(options, progressTracker, 'batch-complete');
+      return cached;
+    }
     const plan = planEmbeddingInputsRust(texts);
     if (!plan) throw new Error('Rust embedding batch planning failed');
     const inputs = plan.inputIndices.map((index) => texts[index]);
@@ -1193,7 +1636,7 @@ export class VaultIndexer {
     let offset = 0;
 
     while (offset < inputs.length) {
-      throwIfIndexingCancelled(options.signal);
+      throwIfIndexingCancelled(options.signal, options.isCurrent);
       throwIfPerformanceGuardPaused(options);
       const requestedBatchSize =
         options.getMaxEmbeddingBatchSize?.() ?? options.maxEmbeddingBatchSize ?? inputs.length;
@@ -1208,10 +1651,10 @@ export class VaultIndexer {
         },
       });
       const batchVectors = await awaitEmbeddingBatch(
-        this.embeddingProvider.embedBatch(batch, { signal: options.signal }),
+        this.embeddingProvider.embedBatch(batch, { signal: options.signal, priority: 'background', onInferenceDispatch: progressTracker?.onInferenceDispatch, onInferenceSample: progressTracker?.onInferenceSample }),
         options.signal,
       );
-      throwIfIndexingCancelled(options.signal);
+      throwIfIndexingCancelled(options.signal, options.isCurrent);
       expectedDimension = assertValidEmbeddingBatch(
         batchVectors,
         batch.length,
@@ -1221,8 +1664,7 @@ export class VaultIndexer {
       const durationMs = performance.now() - startedAt;
       await options.onBatchComplete?.(durationMs, batch.length);
       if (progressTracker) {
-        progressTracker.completedBatchDurationsMs.push(durationMs);
-        progressTracker.completedBatchChunkCounts.push(batch.length);
+        recordBatchSample(progressTracker, durationMs, batch.length);
         progressTracker.currentFileBatchDurationMs += durationMs;
         progressTracker.currentFileEmbeddedChunks = Math.min(
           progressTracker.currentFileTotalChunks,
@@ -1238,7 +1680,7 @@ export class VaultIndexer {
           dimension: expectedDimension,
         },
       });
-      throwIfIndexingCancelled(options.signal);
+      throwIfIndexingCancelled(options.signal, options.isCurrent);
       throwIfPerformanceGuardPaused(options);
       vectors.push(...batchVectors);
       offset += batch.length;
@@ -1260,18 +1702,11 @@ export class VaultIndexer {
 
 }
 
-function selectAutomaticRecoveryFileIndices(
-  files: readonly TFile[],
-  pendingFileIndices: readonly number[],
-  pendingFiles: readonly TFile[],
-): number[] {
-  const plan = planRagAutomaticRecoveryBatchRust(
-    pendingFiles.map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size })),
-  );
-  if (!plan) throw new Error('Rust automatic RAG recovery batch planning failed');
-  return plan.batchIndices
-    .map((index) => pendingFileIndices[index])
-    .filter((index): index is number => index !== undefined && index >= 0 && index < files.length);
+function projectRecoveryPartialRecord(record: FileIndexRecord | undefined): RustRagRecoveryPartialRecord | undefined {
+  if (!record) return undefined;
+  return { mtime: record.sourceMtime, size: record.sourceSize, contentHash: record.contentHash,
+    sourceMetadataHash: record.sourceMetadataHash, partial: record.sourceMetadata?.completeness?.status === 'partial',
+    hasCompleteMetadata: record.hasCompleteMetadata === true };
 }
 
 function isCurrentFileIndexRecord(

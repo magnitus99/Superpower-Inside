@@ -126,7 +126,7 @@ describe('calculateRagStatus', () => {
 
     const status = await calculateRagStatus(vault, store, baseRagConfig, chatConfig);
 
-    // mtime/size가 같으면 hash 차이를 무시 → healthy (cachedRead 생략 최적화)
+    // mtime/size가 같으면 hash 차이를 무시 → healthy (추가 hash 읽기 생략 최적화)
     expect(status.healthyDocuments).toBe(1);
     expect(status.updateRequiredDocuments).toHaveLength(0);
   });
@@ -287,7 +287,8 @@ function createVault(files: TFile[]): Vault {
   return {
     getMarkdownFiles: () => files,
     getFiles: () => files,
-    cachedRead: (file: TFile) => Promise.resolve(`${file.path} content`),
+    readBinary: (file: TFile) =>
+      Promise.resolve(new TextEncoder().encode(`${file.path} content`).buffer),
   } as unknown as Vault;
 }
 

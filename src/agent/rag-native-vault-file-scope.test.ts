@@ -44,8 +44,10 @@ describe('RAG 기반 네이티브 Vault 파일 범위', () => {
     const visible = createFile('Visible.md');
     let content = '---\nsuperpower-inside-exclude: true\n---\nsecret';
     const app = createApp([hidden, visible]);
-    app.vault.cachedRead = (file) =>
-      Promise.resolve(file.path === hidden.path ? content : 'public');
+    app.vault.readBinary = (file) =>
+      Promise.resolve(
+        new TextEncoder().encode(file.path === hidden.path ? content : 'public').buffer,
+      );
     const scope = new RagNativeVaultFileScope(
       app,
       () => baseRagConfig,
@@ -120,7 +122,7 @@ function createApp(files: readonly TFile[]): App {
   const vault = {
     configDir: '.obsidian',
     getFiles: () => [...files],
-    cachedRead: () => Promise.resolve('text'),
+    readBinary: () => Promise.resolve(new TextEncoder().encode('text').buffer),
   } as unknown as Vault;
   return { vault } as unknown as App;
 }

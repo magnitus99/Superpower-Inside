@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createSyntheticCorpus, SEARCH_EVAL_CATEGORIES } from './search-eval/corpus.mjs';
 import {
   aggregateRows,
+  benchmarkGate,
   evaluateQuery,
   latencySummary,
   quantile,
@@ -187,4 +188,125 @@ describe('검색 평가 지표', () => {
     expect(quantile([], 0.5)).toBeNull();
     expect(aggregateRows([]).documentRecall).toBeNull();
   });
+});
+
+describe('평가 원장 회귀', () => {
+  const lowScores = [
+    ['minScore 미달', 0.5],
+    ['zero', 0],
+    ['negative', -1],
+    ['NaN', Number.NaN],
+  ];
+  const goldQuery = {
+    id: 'hard-exclusion', category: 'synthetic', goldPaths: ['a'],
+    goldPassages: [{ path: 'a', startLine: 9, endLine: 9 }], hardExcludedPaths: ['x'],
+  };
+  const goldResult = { path: 'a', startLine: 9, endLine: 9, score: 2 };
+  const noUpdate = { supported: false };
+
+  it.each(lowScores)('%s 제외 결과는 minScore 미달·rank > k여도 게이트를 실패시킨다', (_label, score) => {
+    const options = { k: 1, minScore: 1 };
+    const allowed = summarizeSearchEvaluation([goldQuery], new Map([
+      [goldQuery.id, [goldResult, { path: 'allowed-low', score }]],
+    ]), options);
+    const leaked = summarizeSearchEvaluation([goldQuery], new Map([
+      [goldQuery.id, [goldResult, { path: 'x', score }]],
+    ]), options);
+    expect(allowed.rows[0].hardExclusionLeakage).toBe(false);
+    expect(benchmarkGate(allowed, noUpdate, true)).toBe(true);
+    expect(leaked.overall).toEqual(allowed.overall);
+    expect(leaked.rows[0]).toEqual({ ...allowed.rows[0], hardExclusionLeakage: true });
+    expect(benchmarkGate(leaked, noUpdate, true)).toBe(false);
+  });
+
+  it.each(lowScores)('%s 제외 결과는 cutoff 후 no-answer 성공으로 숨길 수 없다', (_label, score) => {
+    const noAnswer = { id: 'empty', category: 'no-answer', goldPaths: [], expectNoAnswer: true, hardExcludedPaths: ['x'] };
+    const summary = summarizeSearchEvaluation([goldQuery, noAnswer], new Map([
+      [goldQuery.id, [goldResult]], [noAnswer.id, [{ path: 'x', score }]],
+    ]), { k: 1, minScore: 1 });
+    expect(summary.rows[1].resultCount).toBe(0);
+    expect(summary.rows[1].noAnswerPass).toBe(true);
+    expect(summary.overall.noAnswerAccuracy).toBe(1);
+    expect(summary.rows[1].hardExclusionLeakage).toBe(true);
+    expect(benchmarkGate(summary, noUpdate, true)).toBe(false);
+  });
+
+  it('summary 기본 cutoff 0도 음수·NaN hard 제외 누출을 숨기지 않는다', () => {
+    for (const score of [-1, Number.NaN]) {
+      const summary = summarizeSearchEvaluation([goldQuery], new Map([
+        [goldQuery.id, [goldResult, { path: 'x', score }]],
+      ]));
+      expect(summary.minScore).toBe(0);
+      expect(summary.rows[0].resultCount).toBe(1);
+      expect(summary.rows[0].hardExclusionLeakage).toBe(true);
+      expect(benchmarkGate(summary, noUpdate, true)).toBe(false);
+    }
+  });
+
+  it.each(lowScores)('%s 직접 평가는 기본적으로 점수를 거르지 않는다', (_label, score) => {
+    const row = evaluateQuery(goldQuery, [goldResult, { path: 'x', score }]);
+    expect(row.resultCount).toBe(2);
+    expect(row.hardExclusionLeakage).toBe(true);
+    expect(evaluateQuery(goldQuery, [goldResult, { path: 'x', score }], 1).hardExclusionLeakage).toBe(true);
+  });
+
+  it('허용 자료의 score cutoff와 문서·구절·상충쌍·no-answer 순위 의미를 보존한다', () => {
+    const query = {
+      ...goldQuery, goldPaths: ['a', 'b'], multiGold: true, conflictPair: true,
+      goldPassages: [...goldQuery.goldPassages, { path: 'b', startLine: 2, endLine: 2 }],
+      forbiddenPaths: ['allowed-low'], forbiddenPassages: [{ path: 'allowed-low', startLine: 1, endLine: 1 }],
+    };
+    const noAnswer = { id: 'empty', category: 'no-answer', goldPaths: [], expectNoAnswer: true };
+    const queries = [query, noAnswer];
+    const raw = [
+      { path: 'allowed-low', startLine: 1, endLine: 1, score: 0.5 },
+      goldResult,
+      { path: 'b', startLine: 2, endLine: 2, score: 0.5 },
+      { path: 'a', startLine: 1, endLine: 1 },
+    ];
+    const low = [{ path: 'allowed-low', score: 0.5 }, { path: 'nan', score: Number.NaN }];
+    const summary = summarizeSearchEvaluation(queries, new Map([[query.id, raw], [noAnswer.id, low]]), { k: 1, minScore: 1 });
+    const expectedRows = [evaluateQuery(query, [goldResult, raw[3]], 1), evaluateQuery(noAnswer, [], 1)];
+    expect(summary.rows).toEqual(expectedRows);
+    expect(summary.overall).toEqual(aggregateRows(expectedRows));
+    expect(summary.rows[0]).toMatchObject({
+      resultCount: 1, documentRecall: 0.5, precision: 1, reciprocalRank: 1,
+      passageHitRatio: 0.5, passageAllHit: false, multiGoldCovered: false,
+      conflictPairCovered: false, forbiddenTop1: false, distractorLeakage: false,
+      hardExclusionLeakage: false,
+    });
+    expect(summary.rows[1].noAnswerPass).toBe(true);
+    const unfiltered = summarizeSearchEvaluation(queries, new Map([[query.id, raw], [noAnswer.id, low]]), { k: 1 });
+    expect(unfiltered.rows[0].forbiddenTop1).toBe(true);
+    expect(unfiltered.rows[0].documentRecall).toBe(0);
+    expect(unfiltered.rows[1].noAnswerPass).toBe(false);
+  });
+
+  it('뒤쪽 같은 문서의 정답 구절과 rank 2 hard 제외 누출을 잃지 않는다', () => {
+    const row = evaluateQuery({ goldPaths: ['a'], goldPassages: [{ path: 'a', startLine: 9, endLine: 9 }], hardExcludedPaths: ['x'] }, [
+      { path: 'a', startLine: 1, endLine: 1 }, { path: 'a', startLine: 9, endLine: 9 }, { path: 'x', startLine: 1, endLine: 1 },
+    ]);
+    expect(row.passageAllHit).toBe(true);
+    expect(row.hardExclusionLeakage).toBe(true);
+  });
+  it('문서의 금지 chunk 원장을 관련성 distractor로 연결한다', () => {
+    const corpus = createSyntheticCorpus({ scale: 'ci' });
+    const documents = corpus.documents.filter((doc) => doc.forbiddenChunkIndexes.length);
+    expect(documents.length).toBeGreaterThan(0);
+    for (const doc of documents) expect(corpus.queries.some((q) => q.forbiddenPaths.includes(doc.path))).toBe(true);
+  });
+});
+
+it('벤치 CLI 게이트도 필수 사례·갱신·안정성 실패를 평균으로 상쇄하지 않는다', async () => {
+  const { benchmarkGate } = await import('./search-eval/metrics.mjs');
+  const summary = { overall: { documentRecall: 1, mrr: 1, ndcg10: 1, passageHitRatio: 1 }, rows: [{ documentRecall: 1, noAnswerPass: null, multiGoldCovered: true, conflictPairCovered: true }] };
+  const update = { supported: true, changedRetrievable: true, addedRetrievable: true, removedAbsent: true };
+  expect(benchmarkGate(summary, update, true)).toBe(true);
+  expect(benchmarkGate({ ...summary, rows: [...summary.rows, { documentRecall: 0 }] }, update, true)).toBe(false);
+  expect(benchmarkGate({ ...summary, rows: [{ ...summary.rows[0], passageAllHit: false }] }, update, true)).toBe(false);
+  for (const field of ['noAnswerPass', 'multiGoldCovered', 'conflictPairCovered'])
+    expect(benchmarkGate({ ...summary, rows: [{ ...summary.rows[0], [field]: false }] }, update, true)).toBe(false);
+  expect(benchmarkGate({ ...summary, rows: [{ ...summary.rows[0], hardExclusionLeakage: true }] }, update, true)).toBe(false);
+  expect(benchmarkGate(summary, { ...update, removedAbsent: false }, true)).toBe(false);
+  expect(benchmarkGate(summary, update, false)).toBe(false);
 });

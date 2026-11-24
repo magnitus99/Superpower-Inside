@@ -11,12 +11,189 @@ import {
   type VectorStore,
 } from './store';
 
+import { DURABILITY_RECEIPT_KEY, isStoreMutationReceipt } from './durability';
+
 const dbNames = new Set<string>();
 
 describe('IndexedDbVectorStore', () => {
   afterEach(async () => {
     await Promise.all([...dbNames].map((name) => Dexie.delete(name)));
     dbNames.clear();
+  });
+
+  it('vector receipt 읽기는 인증하지 않고 빈 DB의 명시 초기화·재열기·재생성을 구분한다', async () => {
+    const store = createStore();
+    expect(await store.getDurabilityCheckpoint()).toEqual({ receipt: null, pendingWrites: 0, recoveryPending: false });
+    expect(await store.probePendingFileWrites()).toEqual([]);
+    expect((await store.getDurabilityCheckpoint()).receipt).toBeNull();
+    const first = await store.initializeEmptyDurabilityReceipt();
+    expect(isStoreMutationReceipt(first)).toBe(true);
+    expect(await store.initializeEmptyDurabilityReceipt()).toEqual(first);
+    expect(await store.probePendingFileWrites()).toEqual([]);
+    expect((await store.getDurabilityCheckpoint()).receipt).toEqual(first);
+    const name = store['db'].name;
+    store.close();
+    const reopened = new IndexedDbVectorStore(name);
+    expect((await reopened.getDurabilityCheckpoint()).receipt).toEqual(first);
+    reopened.close();
+    await Dexie.delete(name);
+    const recreated = new IndexedDbVectorStore(name);
+    const next = await recreated.initializeEmptyDurabilityReceipt();
+    expect(isStoreMutationReceipt(next)).toBe(true);
+    expect(next?.incarnation).not.toBe(first?.incarnation);
+    recreated.close();
+  });
+
+  it('v1 vector의 schema migration과 읽기는 기존 데이터를 인증하거나 지우지 않는다', async () => {
+    const name = `vector-receipt-legacy-${crypto.randomUUID()}`;
+    dbNames.add(name);
+    const entry = createEntry('legacy.md', 0, [1, 0], 'synthetic legacy');
+    const legacy = new Dexie(name);
+    legacy.version(1).stores({ vectors: 'id, filePath, updated' });
+    await legacy.table('vectors').put({ ...entry, filePath: 'legacy.md', dimension: 2, updated: 1 });
+    legacy.close();
+    const store = new IndexedDbVectorStore(name);
+    expect((await store.getDurabilityCheckpoint()).receipt).toBeNull();
+    expect(await store.initializeEmptyDurabilityReceipt()).toBeNull();
+    expect((await store.getEntriesByIds([entry.id]))[0]?.vector).toEqual([1, 0]);
+    expect((await store.getEntriesByIds([entry.id]))[0]?.metadata.text).toBe('synthetic legacy');
+    expect((await store.getDurabilityCheckpoint()).receipt).toBeNull();
+    store.close();
+  });
+
+  it('vector/file-index 유지보수의 실제 commit도 receipt를 바꾼다', async () => {
+    const store = createStore();
+    const entry = createEntry('note.md', 0, [1, 0], 'synthetic');
+    await store.add([entry]);
+    await store['db'].fileIndex.clear();
+    const beforeRepair = (await store.getDurabilityCheckpoint()).receipt;
+    expect(await store.getFileIndexRecord('note.md')).not.toBeNull();
+    const repaired = (await store.getDurabilityCheckpoint()).receipt;
+    expect(repaired?.mutation).not.toBe(beforeRepair?.mutation);
+    await store['db'].vectors.update(entry.id, { updated: -1 });
+    const input = { lifecycleKey: 'synthetic', validFilePaths: ['note.md'], embeddingProvider: 'openai', embeddingModel: 'text-embedding-3-small', expectedDimension: 2 };
+    await store.reconcileBatch(input);
+    expect((await store.reconcileBatch(input)).deletedVectorIds).toContain(entry.id);
+    const removedVector = (await store.getDurabilityCheckpoint()).receipt;
+    expect(removedVector?.mutation).not.toBe(repaired?.mutation);
+    expect((await store.reconcileFileIndex({ ...input, validFilePaths: [] })).deletedFilePaths).toContain('note.md');
+    expect((await store.getDurabilityCheckpoint()).receipt?.mutation).not.toBe(removedVector?.mutation);
+    store.close();
+  });
+
+  it('같은 행 수의 vector·metadata·빈 파일·일반 meta·삭제·clear도 durable mutation을 바꾼다', async () => {
+    const store = createStore();
+    await store.add([createEntry('note.md', 0, [1, 0], 'a')]);
+    const record = await store.getFileIndexRecord('note.md');
+    if (!record) throw new Error('Synthetic file record missing.');
+    let previous = (await store.getDurabilityCheckpoint()).receipt;
+    expect(isStoreMutationReceipt(previous)).toBe(true);
+    const mutations: Array<() => Promise<unknown>> = [
+      () => store.add([createEntry('note.md', 0, [0, 1], 'b')]),
+      () => store.replaceFileEntries('note.md', [createEntry('note.md', 0, [1, 1], 'c')]),
+      () => store.replaceBatchFileEntries([{ filePath: 'note.md', entries: [createEntry('note.md', 0, [1, 0], 'd')] }]),
+      async () => { expect(await store.refreshFileIndexRevision({ filePath: 'note.md', sourceMtime: 2000, sourceSize: 1, contentHash: createEntry('note.md', 0, [1, 0], 'd').metadata.contentHash, sourceMetadataHash: 'synthetic-metadata' })).toBe(true); },
+      () => store.markFileIndexedWithoutVectors({ ...record, sourceSize: 0 }),
+      () => store.removeByFilePath('note.md'),
+      () => store.setMetaValue('synthetic-import', true),
+      () => store.clear(),
+    ];
+    for (const mutate of mutations) {
+      await mutate();
+      const current = (await store.getDurabilityCheckpoint()).receipt;
+      expect(isStoreMutationReceipt(current)).toBe(true);
+      expect(current?.incarnation).toBe(previous?.incarnation);
+      expect(current?.mutation).not.toBe(previous?.mutation);
+      previous = current;
+    }
+    store.close();
+  });
+
+  it('실패한 실제 commit과 recovery owner만 남은 상태도 checkpoint에서 보인다', async () => {
+    const store = createStore();
+    const before = await store.initializeEmptyDurabilityReceipt();
+    vi.spyOn(store['db'].fileIndex, 'bulkPut').mockRejectedValueOnce(new Error('Synthetic file-index write failure.'));
+    await expect(store.add([createEntry('note.md', 0, [1, 0], 'a')])).rejects.toThrow('Synthetic file-index write failure.');
+    const interrupted = await store.getDurabilityCheckpoint();
+    expect(interrupted.receipt?.mutation).not.toBe(before?.mutation);
+    expect(interrupted.pendingWrites).toBe(1);
+    await store.probePendingFileWrites();
+    const requested = await store.getDurabilityCheckpoint();
+    expect(requested.pendingWrites).toBe(0);
+    expect(requested.recoveryPending).toBe(true);
+    expect(requested.receipt?.mutation).not.toBe(interrupted.receipt?.mutation);
+    await store.beginPendingWriteRecovery(['note.md'], 'owner');
+    const owned = await store.getDurabilityCheckpoint();
+    await store.completePendingWriteRecovery(['note.md'], 'owner');
+    const done = await store.getDurabilityCheckpoint();
+    expect(done.recoveryPending).toBe(false);
+    expect(done.receipt?.mutation).not.toBe(owned.receipt?.mutation);
+    await store.setMetaValue('write-recovery-requests:v1:owners', [['note.md', 'orphan-owner']]);
+    expect(await store.readPendingWriteRecovery()).toEqual([]);
+    expect((await store.getDurabilityCheckpoint()).recoveryPending).toBe(true);
+    await store.setMetaValue('write-recovery-requests:v1:owners', []);
+    await store.setMetaValue('write-recovery-requests:v1', { malformed: true });
+    expect((await store.getDurabilityCheckpoint()).recoveryPending).toBe(true);
+    store.close();
+  });
+
+  it.each([
+    ['requests object', 'write-recovery-requests:v1', { malformed: true }],
+    ['owners object', 'write-recovery-requests:v1:owners', { malformed: true }],
+    ['requests array', 'write-recovery-requests:v1', [123]],
+    ['requests sparse', 'write-recovery-requests:v1', new Array<unknown>(1)],
+    ['owners sparse', 'write-recovery-requests:v1:owners', new Array<unknown>(1)],
+    ['owners pair', 'write-recovery-requests:v1:owners', [['synthetic.md']]],
+    ['duplicate owners', 'write-recovery-requests:v1:owners', [['synthetic.md', 'first'], ['synthetic.md', 'second']]],
+  ] as const)('malformed recovery %s는 무관한 begin/probe/complete로 정상화하지 않는다', async (_label, key, value) => {
+    for (const action of ['begin', 'probe', 'complete'] as const) {
+      const store = createStore();
+      await store.initializeEmptyDurabilityReceipt();
+      await store.setMetaValue(key, value);
+      if (action === 'probe') await store['beginFileWrites'](['unrelated.md'], 1);
+      const checkpoint = await store.getDurabilityCheckpoint();
+      const meta = await store['db'].meta.toArray();
+      const pending = await store['db'].pendingWrites.toArray();
+      try {
+        const operation = action === 'begin' ? store.beginPendingWriteRecovery(['unrelated.md'], 'owner') :
+          action === 'probe' ? store.probePendingFileWrites() : store.completePendingWriteRecovery(['unrelated.md'], 'owner');
+        await expect(operation).rejects.toThrow('rag-vector-recovery-invalid');
+        expect(await store.getDurabilityCheckpoint()).toEqual(checkpoint);
+        expect(await store['db'].meta.toArray()).toEqual(meta);
+        expect(await store['db'].pendingWrites.toArray()).toEqual(pending);
+      } finally { store.close(); }
+    }
+  });
+
+  it('receipt reserved key는 generic meta로 덮어쓸 수 없고 데이터와 함께 rollback된다', async () => {
+    const store = createStore();
+    const original = createEntry('note.md', 0, [1, 0], 'a');
+    await store.add([original]);
+    const before = await store.getDurabilityCheckpoint();
+    await expect(store.setMetaValue(DURABILITY_RECEIPT_KEY, {})).rejects.toThrow('rag-durability-reserved-key');
+    expect(await store.getDurabilityCheckpoint()).toEqual(before);
+    const db = store['db'];
+    await expect(db.transaction('rw', [db.vectors, db.fileIndex, db.meta, db.pendingWrites], async () => {
+      await store.replaceBatchFileEntries([{ filePath: 'note.md', entries: [createEntry('note.md', 0, [0, 1], 'changed')] }]);
+      expect((await store.getDurabilityCheckpoint()).receipt?.mutation).not.toBe(before.receipt?.mutation);
+      throw new Error('Synthetic vector rollback.');
+    })).rejects.toThrow('Synthetic vector rollback.');
+    expect(await store.getDurabilityCheckpoint()).toEqual(before);
+    expect((await store.getEntriesByIds([original.id]))[0]?.vector).toEqual([1, 0]);
+    store.close();
+  });
+
+  it('복구 원장은 동시 등록을 합치고 이전 owner·legacy 완료가 새 owner의 요청을 지우지 않는다', async () => {
+    const store = createStore();
+    await Promise.all([store.beginPendingWriteRecovery(['a.md'], 'old'), store.beginPendingWriteRecovery(['b.md'], 'other')]);
+    expect(await store.readPendingWriteRecovery()).toEqual(['a.md', 'b.md']);
+    await store.beginPendingWriteRecovery(['a.md'], 'new');
+    await store.completePendingWriteRecovery(['a.md'], 'old');
+    await store.completePendingWriteRecovery(['a.md']);
+    expect(await store.readPendingWriteRecovery()).toEqual(['a.md', 'b.md']);
+    await store.completePendingWriteRecovery(['a.md'], 'new');
+    expect(await store.readPendingWriteRecovery()).toEqual(['b.md']);
+    store.close();
   });
 
   it('벡터를 추가하고 같은 id를 덮어쓴다', async () => {
@@ -760,6 +937,29 @@ describe('VectorStore contract', () => {
     expect(await store.getStats()).toEqual(
       expect.objectContaining({ totalFiles: 1, totalVectors: 0 }),
     );
+  });
+
+  it.each([
+    ['MemoryVectorStore', () => new MemoryVectorStore()],
+    ['IndexedDbVectorStore', () => createStore()],
+  ])('%s는 내용이 같을 때 파일 출처 원장도 갱신하고 벡터·빈 파일을 보존한다', async (_name, create) => {
+    const store = create();
+    const oldMetadata = { segments: [], metadataParts: [{ label: 'Sheet', sourcePart: 'sheet.xml', locator: { cells: [{ address: 'A1', blank: true }] } }] };
+    const sourceMetadata = { segments: [], metadataParts: [{ label: 'Renamed', sourcePart: 'sheet.xml', locator: { cells: [{ address: 'C3', blank: true }] } }] };
+    try {
+      for (const empty of [false, true]) {
+        const filePath = empty ? 'empty.xlsx' : 'note.xlsx';
+        if (empty) {
+          await store.markFileIndexedWithoutVectors({ filePath, sourceMtime: 1000, sourceSize: 0, contentHash: '811c9dc5', indexedAt: 1200, embeddingProvider: 'openai', embeddingModel: 'text-embedding-3-small', hasCompleteMetadata: true, updated: 1200, sourceMetadata: oldMetadata, sourceMetadataHash: 'aaaaaaaa' });
+        } else {
+          await store.replaceBatchFileEntries([{ filePath, entries: [createEntry(filePath, 0, [1, 0], 'a')], sourceMetadata: oldMetadata, sourceMetadataHash: 'aaaaaaaa' }]);
+        }
+        const before = (await store.getEntries()).filter((entry) => entry.metadata.filePath === filePath).map(({ id, vector }) => ({ id, vector }));
+        expect(await store.refreshFileIndexRevision({ filePath, sourceMtime: 2000, sourceSize: empty ? 0 : 1, contentHash: empty ? '811c9dc5' : 'a', sourceMetadata, sourceMetadataHash: 'bbbbbbbb' })).toBe(true);
+        expect(await store.getFileIndexRecord(filePath)).toMatchObject({ sourceMtime: 2000, sourceMetadata, sourceMetadataHash: 'bbbbbbbb', vectorCount: empty ? 0 : 1 });
+        expect((await store.getEntries()).filter((entry) => entry.metadata.filePath === filePath).map(({ id, vector }) => ({ id, vector }))).toEqual(before);
+      }
+    } finally { store.close(); }
   });
 
   it.each([

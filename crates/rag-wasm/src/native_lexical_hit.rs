@@ -19,12 +19,12 @@ pub fn plan_native_vault_lexical_hit_json(query: &str, content: &str, match_mode
     }
 
     let joined_tokens = tokens.join("\u{1f}");
-    let normalized_phrase = query.trim().to_lowercase();
+    let normalized_phrase = super::normalize_search_text(query).trim().to_lowercase();
     let best = content
         .lines()
         .enumerate()
         .filter_map(|(index, line)| {
-            let normalized_line = line.to_lowercase();
+            let normalized_line = super::normalize_search_text(line).to_lowercase();
             let matched_tokens = count_keyword_matches(&joined_tokens, &normalized_line);
             let phrase_match =
                 match_mode == "phrase" && normalized_line.contains(&normalized_phrase);
@@ -75,6 +75,7 @@ pub fn plan_native_vault_lexical_hit_json(query: &str, content: &str, match_mode
 
 /// 토크나이저의 확장 토큰을 필수 조건으로 요구하지 않는 원래 검색어를 선택합니다.
 pub fn primary_query_terms(query: &str) -> Vec<String> {
+    let query = super::normalize_search_text(query);
     let mut terms = BTreeSet::new();
     let mut part = String::new();
     for character in query.chars() {
@@ -102,6 +103,32 @@ fn push_primary_query_term(part: &str, terms: &mut BTreeSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::plan_native_vault_lexical_hit_json;
+
+    /// 비교용 정규화 뒤에도 실제 행과 preview는 원문입니다.
+    #[test]
+    fn quality_normalization_native_lines_and_phrase() {
+        for (query, line) in [
+            ("radiance", "ＲＡＤＩＡＮＣＥ routes east."),
+            ("ＲＡＤＩＡＮＣＥ", "radiance routes east."),
+            ("ffinal", "ﬃnal routes east."),
+            ("12", "①② routes east."),
+            ("café", "cafe\u{301} routes east."),
+            ("CAFÉ", "café routes east."),
+        ] {
+            for mode in ["all", "any", "phrase"] {
+                let result =
+                    plan_native_vault_lexical_hit_json(query, &format!("neutral\n{line}"), mode);
+                let value = serde_json::from_str::<serde_json::Value>(&result).unwrap_or_default();
+                assert_eq!(
+                    value.get("status"),
+                    Some(&serde_json::json!("verified")),
+                    "{query}: {mode}: {result}"
+                );
+                assert_eq!(value.get("preview"), Some(&serde_json::json!(line)));
+                assert_eq!(value.get("startLine"), Some(&serde_json::json!(2)));
+            }
+        }
+    }
 
     #[test]
     fn lexical_hit_points_to_the_matching_line() {

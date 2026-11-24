@@ -20,6 +20,7 @@ export async function searchIndexedFollowup(
   onUsage?: (usage: TokenUsage) => void,
   onRequest?: () => void,
 ): Promise<IndexedFollowupResult> {
+  if (options.executionMode === 'engine-only') return { status: 'skipped' };
   const { getFollowupPaths, discoveryCandidates, discoveryPaths } = options;
   if (!getFollowupPaths || !discoveryCandidates || !discoveryPaths ||
     options.isCurrent?.() === false) {

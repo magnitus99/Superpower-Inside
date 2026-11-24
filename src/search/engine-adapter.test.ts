@@ -83,6 +83,25 @@ const corpus: IndexedVaultCorpus = {
 };
 
 describe('색인 검색 포트 어댑터', () => {
+  it('유효 인용을 보존해도 현재 PDF의 누락 페이지는 incomplete로 남긴다', async () => {
+    const base = fixtureResult();
+    const result = { ...base, evidence: base.evidence.map((item) => ({ ...item, endLine: 3 })), coverage: { ...base.coverage, status: 'supported' as const } };
+    const quote = base.evidence[0].quote;
+    const port = createIndexedSearchPort({ corpus, getIndexedPaths: () => Promise.resolve(['Synthetic/Relevant.md']), revisionReader: () => Promise.resolve('rev-1'), sourceReader: () => Promise.resolve({ revision: 'rev-1', text: `one\ntwo\n${quote}`, chunks: [{ text: quote, startLine: 3, endLine: 3 }], sourceMetadata: { segments: [{ label: 'Page 1', startLine: 2, endLine: 2 }], completeness: { status: 'partial', pageCount: 2, missingPageCount: 1, missingPages: [{ pageNumber: 2, reason: 'page-error' }], failures: [] } } }) }, () => Promise.resolve(result));
+    const response = await port({ query: 'quartz' });
+    expect(response?.evidence).toHaveLength(1);
+    expect(response?.coverage.status).toBe('incomplete');
+    expect(response?.staleDocuments).toBe(0);
+  });
+
+  it('전체 본문에 구절이 있어도 현재 인용 가능 chunk 범위 밖이면 verified로 승격하지 않는다', async () => {
+    const base = fixtureResult();
+    const port = createIndexedSearchPort({ corpus, getIndexedPaths: () => Promise.resolve(['Synthetic/Relevant.md']), revisionReader: () => Promise.resolve('rev-1'), sourceReader: () => Promise.resolve({ revision: 'rev-1', text: `one\ntwo\n${base.evidence[0].quote}`, chunks: [{ text: 'one\ntwo', startLine: 1, endLine: 2 }] }) }, () => Promise.resolve(base));
+    const response = await port({ query: 'quartz' });
+    expect(response?.evidence).toEqual([]);
+    expect(response?.staleDocuments).toBe(1);
+  });
+
   it('엔진 결과를 화면 계약으로 옮기며 순위와 진단을 보존한다', () => {
     const response = toSearchResponse(fixtureResult());
 
@@ -365,4 +384,10 @@ describe('색인 검색 포트 어댑터', () => {
 
     await expect(port({ query: 'quartz' })).resolves.toBeNull();
   });
+});
+
+it('엄격 current 검증은 reader 누락을 revision으로 승격하지 않는다', async () => {
+  const port = createIndexedSearchPort({ corpus, getIndexedPaths: () => Promise.resolve(['Synthetic/Relevant.md']), revisionReader: () => Promise.resolve('rev-1'), verifyCurrentSource: true }, () => Promise.resolve(fixtureResult()));
+  const response = await port({ query: 'quartz' });
+  expect(response?.evidence ?? []).toHaveLength(0);
 });

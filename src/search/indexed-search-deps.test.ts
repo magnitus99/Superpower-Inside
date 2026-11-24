@@ -5,6 +5,7 @@ import { planIndexedEvidenceRust, type IndexedSearchPlan } from '../rag/rust-cor
 import type { IndexedSearchCorpus } from './indexed-search-deps';
 import {
   collectIndexedSearchSource,
+  createPluginSearchPort,
   createVaultRevisionReader,
   createVaultSourceReader,
 } from './indexed-search-deps';
@@ -72,7 +73,7 @@ function sourceApp(file: TFile | null, text: string): App {
   return {
     vault: {
       getAbstractFileByPath: () => file,
-      cachedRead: () => Promise.resolve(text),
+      readBinary: () => Promise.resolve(new TextEncoder().encode(text).buffer),
       adapter: {
         stat: () => Promise.resolve(file ? { mtime: file.stat.mtime, size: file.stat.size } : null),
       },
@@ -124,6 +125,52 @@ function engine(results: QueryResult[]): RAGQueryEngine {
 }
 
 describe('검색 의존성 factory', () => {
+  it('cached 포트도 요청마다 active를 얻고 진행 중 요청은 old corpus lease를 끝까지 보존한다', async () => {
+    const { acquireRuntimeLease, retireRuntime } = await import('../rag/runtime-generation');
+    const oldRuntime = {};
+    const newRuntime = {};
+    const close = vi.fn();
+    let finish = (_paths: string[]): void => undefined;
+    const oldCorpus = { ...corpus(), getIndexedFilePaths: vi.fn(() => new Promise<string[]>((resolve) => { finish = resolve; })) };
+    const newCorpus = { ...corpus(), getIndexedFilePaths: vi.fn(() => Promise.resolve([])) };
+    let current = { runtime: oldRuntime, corpus: oldCorpus };
+    const port = createPluginSearchPort({
+      app: app({}), ragEngine: null, documentCorpus: null,
+      acquireSnapshot: () => ({ ragEngine: null, documentCorpus: current.corpus, release: acquireRuntimeLease(current.runtime) }),
+    });
+    const first = port({ query: 'synthetic' });
+    current = { runtime: newRuntime, corpus: newCorpus };
+    retireRuntime(oldRuntime, close);
+    expect(close).not.toHaveBeenCalled();
+    finish([]);
+    await first;
+    expect(close).toHaveBeenCalledOnce();
+    await port({ query: 'synthetic' });
+    expect(oldCorpus.getIndexedFilePaths).toHaveBeenCalledOnce();
+    expect(newCorpus.getIndexedFilePaths).toHaveBeenCalledOnce();
+  });
+
+  it('source 수집 실패·취소는 lease를 남기지 않는다', async () => {
+    const release = vi.fn();
+    const broken = { ...corpus(), getIndexedFilePaths: () => Promise.reject(new Error('synthetic-read-failed')) };
+    await expect(collectIndexedSearchSource({
+      app: app({}), ragEngine: null, documentCorpus: null,
+      acquireSnapshot: () => ({ ragEngine: null, documentCorpus: broken, release }),
+    }, 'synthetic')).rejects.toThrow('synthetic-read-failed');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('수집 이후 현재 정책이 축소되면 원문 reader는 이전 허용 경로도 차단한다', async () => {
+    const path = 'Synthetic/Alpha.md';
+    let allowed = [path];
+    const source = await collectIndexedSearchSource({
+      app: sourceApp(sourceFile(path, 10, 20), 'synthetic current source'),
+      ragEngine: null, documentCorpus: corpus(), getCandidatePaths: () => Promise.resolve(allowed),
+    }, 'synthetic');
+    allowed = [];
+    await expect(source?.sourceReader?.(path)).resolves.toEqual({ revision: null, text: null });
+  });
+
   it('긴 질문은 핵심 term 의미 질의로 교차언어 문서를 추가 발견한다', async () => {
     const question = '네빌 고다드가 말하는 지혜는 서로 무엇이 다르고 같은지 개념적으로 설명해줘.';
     planIndexedSearchQueries.mockReturnValue({
@@ -1355,4 +1402,64 @@ describe('검색 의존성 factory', () => {
 
     expect(query.mock.calls.map((call) => call[0])).toEqual(['alpha', 'beta', 'gamma']);
   });
+});
+
+it('제품 포트는 같은 revision/길이 현재 본문 교체도 fresh 검증하며 serving lease는 rebuilding에 막히지 않는다', async () => {
+  const { createContentHash } = await import('../rag/hash');
+  const path = 'Synthetic/current-integrity.md';
+  const original = 'Quartz restarts only after two cooling cycles.';
+  let text = original;
+  const file = sourceFile(path, 1, original.length);
+  const hostApp = sourceApp(file, original);
+  const readBinary = vi.fn(() => Promise.resolve(new TextEncoder().encode(text).buffer));
+  hostApp.vault.readBinary = readBinary;
+  const contentHash = createContentHash(original);
+  const currentCorpus: IndexedSearchCorpus = {
+    getIndexedFilePaths: () => Promise.resolve([path]),
+    getFileIndexRecords: () => Promise.resolve([{ filePath: path, contentHash, sourceMtime: 1, sourceSize: original.length, vectorCount: 1, updated: 1 }]),
+    getEntriesByFilePaths: () => Promise.resolve([{ id: 'current', vector: [], metadata: { filePath: path, text: original, startLine: 1, endLine: 1, contentHash } }]),
+  };
+  const release = vi.fn();
+  const port = createPluginSearchPort({ app: hostApp, ragEngine: null, documentCorpus: null,
+    isIndexing: () => true, getCandidatePaths: () => Promise.resolve([path]),
+    acquireSnapshot: () => ({ ragEngine: null, documentCorpus: currentCorpus, chunkConfig: { chunkSize: 1200, overlap: 0 }, release }),
+  });
+  const first = await port({ query: 'Quartz' });
+  expect(first?.evidence).toHaveLength(1);
+  text = 'X'.repeat(original.length);
+  const second = await port({ query: 'Quartz' });
+  expect(second?.evidence).toHaveLength(0);
+  expect(second?.staleDocuments).toBe(1);
+  expect(readBinary.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(release).toHaveBeenCalledTimes(2);
+  const abort = new AbortController(); abort.abort();
+  const cancelled = await port({ query: 'Quartz', signal: abort.signal }).catch(() => null);
+  expect(cancelled?.evidence ?? []).toHaveLength(0);
+  expect(release).toHaveBeenCalledTimes(3);
+});
+
+it('현재 partial/metadataParts를 보존하고 chunking 실패는 raw window로 승격하지 않는다', async () => {
+  const access = await import('../rag/source-access');
+  const sourceDocument = await import('../rag/source-document');
+  const sourceMetadata = { segments: [{ label: 'Page 1', startLine: 1, endLine: 1 }],
+    metadataParts: [{ sourcePart: 'sheet', label: 'Empty sheet', locator: { sheetName: 'Empty' } }],
+    completeness: { status: 'partial' as const, pageCount: 2, missingPageCount: 1, missingPages: [{ pageNumber: 2, reason: 'page-error' as const }], failures: [] },
+  };
+  const read = vi.spyOn(access, 'readSourceText').mockResolvedValue({ text: 'Quartz', ...sourceMetadata });
+  const chunk = vi.spyOn(sourceDocument, 'chunkSourceDocument').mockImplementation(() => { throw new Error('synthetic-sensitive-chunk-error'); });
+  try {
+    const reader = createVaultSourceReader(sourceApp(sourceFile('Synthetic/partial.md', 1, 6), 'Quartz'), true, { chunkSize: 1200, overlap: 0 });
+    const snapshot = await reader('Synthetic/partial.md');
+    expect(snapshot.sourceMetadata).toEqual(sourceMetadata);
+    expect(snapshot.chunks).toEqual([]);
+    expect(read).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ forceRefresh: true }));
+  } finally { read.mockRestore(); chunk.mockRestore(); }
+});
+
+it('serving snapshot이 없으면 첫 building corpus를 host fallback으로 섞지 않는다', async () => {
+  const building = corpus();
+  const source = await collectIndexedSearchSource({ app: app({}), ragEngine: null, documentCorpus: building, acquireSnapshot: () => null }, 'Quartz');
+  expect(source).toBeNull();
+  const { acquirePluginSearchSnapshot } = await import('./indexed-search-deps');
+  expect(acquirePluginSearchSnapshot({ ragEngine: null, documentCorpus: building, acquireRagSearchSnapshot: () => null }).documentCorpus).toBeNull();
 });

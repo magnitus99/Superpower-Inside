@@ -7,12 +7,13 @@ import {
   chunkMarkdownRust,
   chunkPlainTextRust,
   planSourceChunksRust,
+  planSourceSegmentChunksRust,
   type RustSourceChunk,
 } from './rust-core';
 
 export interface Chunk {
   text: string;
-  metadata: { filePath: string; heading?: string; startLine: number; endLine: number };
+  metadata: { filePath: string; heading?: string; startLine: number; endLine: number; sourceSegment?: number };
 }
 
 export interface SourceDocument extends BM25CorpusDocument {
@@ -23,6 +24,7 @@ export interface SourceDocument extends BM25CorpusDocument {
   contentHash: string;
   chunkHash: string;
   indexedAt: number;
+  sourceSegment?: number;
 }
 
 export function chunkMarkdown(content: string, maxChunkSize: number, overlapChars = 0): Chunk[] {
@@ -50,29 +52,24 @@ export function chunkSourceFile(
   return chunks;
 }
 
-/**
- * 추출 문서의 구간 라벨을 청크에서 가장 가까운 시작 줄 기준으로 붙입니다.
- *
- * 라벨은 출처 표시와 검색 힌트에만 쓰고 `id`·`chunkHash`는 원문에서 계산된 값을 그대로
- * 유지해 재색인 사이의 청크 식별자가 바뀌지 않게 합니다.
- */
+/** 구간 경계를 넘지 않도록 Rust에서 청킹하고 라벨은 검색 메타데이터로만 붙입니다. */
 export function chunkSourceDocument(
   file: TFile,
   content: string,
   config: Pick<RAGConfig, 'chunkSize' | 'overlap'>,
   segments: readonly SourceTextSegment[] = [],
 ): RustSourceChunk[] {
-  const chunks = chunkSourceFile(file, content, config);
-  if (segments.length === 0) return chunks;
-  return chunks.map((chunk) => {
-    // 청크 줄 번호는 1부터, 추출 구간(segment)은 0부터 시작합니다. 비교 경계에서 한 번만 맞춥니다.
-    const chunkLine = chunk.metadata.startLine - 1;
-    const segment = segments.find(
-      (candidate) => chunkLine >= candidate.startLine && chunkLine <= candidate.endLine,
-    );
-    if (!segment) return chunk;
-    return { ...chunk, metadata: { ...chunk.metadata, heading: segment.label } };
-  });
+  if (segments.length === 0) return chunkSourceFile(file, content, config);
+  const chunks = planSourceSegmentChunksRust(
+    file.path,
+    file.extension ?? '',
+    content,
+    config.chunkSize,
+    config.overlap,
+    segments,
+  );
+  if (chunks === null) throw new Error('Source segment chunking is unavailable.');
+  return chunks;
 }
 
 /** 임베딩 요청에만 사용하는 일시적 projection이며 원문 저장에는 사용하지 않습니다. */
@@ -88,10 +85,12 @@ export function buildSourceDocuments(
   config: Pick<RAGConfig, 'chunkSize' | 'overlap'>,
   segments: readonly SourceTextSegment[] = [],
   metadata?: CachedMetadata | null,
+  preparedChunks?: readonly RustSourceChunk[],
+  preparedHash?: string,
 ): SourceDocument[] {
   const indexedAt = Date.now();
-  const contentHash = createContentHash(content);
-  return chunkSourceDocument(file, content, config, segments).map((chunk) => ({
+  const contentHash = preparedHash ?? createContentHash(content);
+  return (preparedChunks ?? chunkSourceDocument(file, content, config, segments)).map((chunk) => ({
     id: chunk.id,
     chunkHash: chunk.chunkHash,
     text: chunk.text,
@@ -100,6 +99,7 @@ export function buildSourceDocuments(
     heading: chunk.metadata.heading,
     startLine: chunk.metadata.startLine,
     endLine: chunk.metadata.endLine,
+    ...(chunk.metadata.sourceSegment !== undefined ? { sourceSegment: chunk.metadata.sourceSegment } : {}),
     sourceMtime: file.stat.mtime,
     sourceSize: file.stat.size,
     contentHash,

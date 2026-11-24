@@ -46,9 +46,10 @@ export function isProtectedRagDocumentExtension(extension: string): boolean {
 
 export function isRecommendableExcludeExtension(extension: string): boolean {
   const normalized = normalizeExcludeExtension(extension);
+  if (!normalized) return false;
   const recommendableFromRust = isRecommendableExcludeExtensionRust(normalized);
   if (recommendableFromRust !== null) return recommendableFromRust;
-  return normalized.length > 0 && !isProtectedRagDocumentExtension(normalized);
+  return false;
 }
 
 export function validateExcludePathInput(

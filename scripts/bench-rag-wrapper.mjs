@@ -3,6 +3,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { readEmbeddedWasmBytes } from './load-embedded-wasm.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,7 +15,7 @@ const {
   chunk_markdown_json,
   initSync,
 } = await importGeneratedWasmModule();
-const wasmBytes = readEmbeddedWasmBytes(path.join(repoRoot, '.local/generated/rag-wasm-bytes.ts'));
+const wasmBytes = await readEmbeddedWasmBytes();
 
 initSync({ module: wasmBytes });
 
@@ -89,15 +90,6 @@ function medianNs(sampleCount, operation) {
   }
   samples.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
   return samples[Math.floor(samples.length / 2)]?.toString() ?? '0';
-}
-
-function readEmbeddedWasmBytes(filePath) {
-  const source = readFileSync(filePath, 'utf8');
-  const chunks = [...source.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? '');
-  if (chunks.length === 0) {
-    throw new Error(`embedded WASM base64 chunks not found: ${filePath}`);
-  }
-  return Buffer.from(chunks.join(''), 'base64');
 }
 
 async function importGeneratedWasmModule() {

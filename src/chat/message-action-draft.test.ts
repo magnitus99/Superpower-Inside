@@ -20,7 +20,10 @@ vi.mock('../llm/provider-resolution', () => ({
   prepareChatProviderForModel: vi.fn(),
   buildStoredChatModelRef: vi.fn(),
 }));
-vi.mock('../agent/indexed-vault-review', () => ({ reviewIndexedVault: vi.fn() }));
+vi.mock('../agent/indexed-vault-review', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent/indexed-vault-review')>()),
+  reviewIndexedVault: vi.fn(),
+}));
 vi.mock('../utils/vault', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/vault')>()),
   getRagCandidateFiles: vi.fn(() => Promise.resolve([])),
@@ -272,6 +275,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       app: { workspace: { getActiveFile: () => null, iterateAllLeaves: vi.fn() } },
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        getRetrievalReadiness: () => 'ready',
       },
       inputArea: { value: '작성 중인 별도 질문' },
       messages: storedMessages,
@@ -314,6 +318,208 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     });
     return { view, stream, context, chat, storedMessages };
   }
+
+  function createLiteralCaller(entry: 'send' | 'resume', restricted = false) {
+    const { view, context, stream, storedMessages } = createView(3);
+    let sourceCurrent = true;
+    let readiness = 'ready';
+    const result = createReviewResult();
+    result.dossier.sourceDocuments = {
+      'Synthetic/Private.md': { segments: [], metadataParts: [{ label: '합성 비공개 원문', locator: { body: '합성 source-body' } }] },
+    };
+    result.dossier.matchInventory = [{
+      query: '합성 원문', totalDocuments: 4, totalChunks: 5, totalOccurrences: 7,
+      documents: [{ sourcePath: 'Synthetic/Private.md', occurrences: 7 }],
+    }];
+    result.dossier.literalInventory = {
+      status: 'complete', representativePages: 1,
+      summary: {
+        matchMode: 'nfkc-unicode-lower-line-substring-v1', generationId: 'synthetic-generation',
+        receipt: { version: 1, incarnation: 'synthetic-incarnation', mutation: 'synthetic-mutation' },
+        sources: 123, pageCount: 2,
+        needles: [{ needle: '합성 원문', normalizedNeedle: '합성 원문', documents: 4, matchingLines: 6, occurrences: 7 }],
+      },
+    };
+    const source = {
+      corpus: { getEntriesByFilePaths: () => Promise.resolve([]), getFileIndexRecords: () => Promise.resolve([]) },
+      getIndexedPaths: () => Promise.resolve(['Synthetic/Allowed.md']),
+      literalQuery: '합성 직접 literal 질의',
+      openLiteralInventory: vi.fn(),
+      isCurrent: () => sourceCurrent,
+      release: vi.fn(() => Promise.resolve()),
+    };
+    const settings = { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } };
+    const pending = { id: 'literal-call', name: 'synthetic_tool', arguments: '{}', status: 'running',
+      approved: false, serverName: 'external', executionKind: 'mcp' };
+    Object.assign(storedMessages[1], {
+      providerKey: 'ollama', model: 'synthetic', indexedReviewDiagnostics: result.diagnostics,
+      toolCalls: [pending],
+    });
+    const resumeLoop = vi.fn<(options: { baseMessages: import('../llm/providers').ChatMessage[] }) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    Object.assign(view, {
+      plugin: { settings, prepareRagForChat: vi.fn(), getRetrievalReadiness: () => readiness },
+      updateMessage: vi.fn((id: string, _content: string, _done: boolean, _reasoning?: string,
+        _toolCalls?: ChatMessageWithMeta['toolCalls'], meta?: Partial<ChatMessageWithMeta>) => {
+        const message = storedMessages.find((item) => item.id === id);
+        if (message) Object.assign(message, meta);
+      }),
+      parseMentions: () => restricted ? [{ type: 'folder', name: 'Synthetic' }, { type: 'tag', name: 'limited' }] : [],
+      getMentionedServerNames: () => ['external'],
+      getEffectiveMcpServerNames: () => ['external'],
+      collectToolDefinitions: vi.fn().mockResolvedValue([]),
+      executeAssistantToolCalls: vi.fn().mockResolvedValue([{ ...pending, approved: true, status: 'success', result: '합성 외부 결과' }]),
+      ...(entry === 'resume' ? { runToolResponseLoop: resumeLoop } : {}),
+    });
+    context.mockResolvedValue({ systemPrompt: '합성 지침', attachments: [], citations: [], warnings: [], vaultSearchEnabled: true });
+    const invoke = () => entry === 'send'
+      ? view.handleSend('합성 자료와 @external 결과를 비교해줘')
+      : (view as unknown as { approveToolCall(message: string, tool: string): Promise<void> })
+        .approveToolCall('answer', 'literal-call');
+    return {
+      view, result, source, settings, invoke, storedMessages,
+      setSourceCurrent: (value: boolean) => { sourceCurrent = value; },
+      setReadiness: (value: string) => { readiness = value; },
+      providerMessages: () => entry === 'send' ? stream.mock.calls[0]?.[0] : resumeLoop.mock.calls[0]?.[0].baseMessages,
+    };
+  }
+
+  describe.each(['send', 'resume'] as const)('실제 %s literal 연결', (entry) => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('직접 질의·lazy opener와 허용 발견 범위를 동일 객체로 전달한다', async () => {
+      const caller = createLiteralCaller(entry);
+      vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(caller.source);
+      vi.mocked(reviewIndexedVault).mockImplementation(() => {
+        expect(caller.source.release).not.toHaveBeenCalled();
+        return Promise.resolve(caller.result);
+      });
+      await caller.invoke();
+      expect(caller.source.release).toHaveBeenCalledOnce();
+      const options = vi.mocked(reviewIndexedVault).mock.calls.at(-1)?.[0];
+      expect(options?.literalQuery).toBe(caller.source.literalQuery);
+      expect(options?.openLiteralInventory).toBe(caller.source.openLiteralInventory);
+      expect(options?.discoveryPaths).toEqual(['Synthetic/Allowed.md']);
+      expect(caller.source.openLiteralInventory).not.toHaveBeenCalled();
+    });
+
+    it('source epoch와 원래 실행·readiness guard를 AND로 보존한다', async () => {
+      const caller = createLiteralCaller(entry);
+      vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(caller.source);
+      const states: boolean[] = [];
+      vi.mocked(reviewIndexedVault).mockImplementation((options) => {
+        const current = () => options.isCurrent?.() === true;
+        states.push(current());
+        caller.setSourceCurrent(false); states.push(current());
+        caller.setSourceCurrent(true); caller.setReadiness('preparing'); states.push(current());
+        caller.setReadiness('ready'); states.push(current());
+        if (entry === 'send') {
+          caller.settings.chat.defaultModel = 'ollama:changed'; states.push(current());
+          caller.settings.chat.defaultModel = 'ollama:synthetic';
+        }
+        const run = Reflect.get(caller.view, 'activeRun') as { controller: AbortController };
+        Reflect.set(caller.view, 'activeRun', null); states.push(current());
+        Reflect.set(caller.view, 'activeRun', run);
+        run.controller.abort(); states.push(current());
+        return Promise.resolve(caller.result);
+      });
+      await caller.invoke();
+      expect(states).toEqual(entry === 'send' ? [true, false, false, true, false, false, false] : [true, false, false, true, false, false]);
+    });
+
+    it.each([false, true])('제한=%s 수집 시점에 폴더·태그 범위를 고정한다', async (restricted) => {
+      const caller = createLiteralCaller(entry, restricted);
+      const collect = vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(caller.source);
+      vi.mocked(reviewIndexedVault).mockResolvedValue(caller.result);
+      await caller.invoke();
+      const args = collect.mock.calls[0];
+      expect(args?.[3]).toBe(entry === 'send' ? '합성 자료와 @external 결과를 비교해줘' : messages[0].content);
+      expect(args?.[4]).toBe(true);
+      expect(args?.[5]).toBe(12_000);
+      expect(args?.[7]).toEqual(restricted ? { scopes: ['Synthetic'], filters: { tags: ['limited'] } } : undefined);
+      expect(vi.mocked(reviewIndexedVault).mock.calls.at(-1)?.[0]).toMatchObject({
+        scopes: restricted ? ['Synthetic'] : [],
+        filters: restricted ? { tags: ['limited'] } : undefined,
+      });
+    });
+
+    it('후속 모델 system prompt에는 최소 DTO만 넣고 원장과 메시지 token metadata를 보존한다', async () => {
+      const caller = createLiteralCaller(entry);
+      const original = structuredClone(caller.result.dossier);
+      vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(caller.source);
+      vi.mocked(reviewIndexedVault).mockResolvedValue(caller.result);
+      await caller.invoke();
+      const system = caller.providerMessages()?.find((message) => message.role === 'system')?.content;
+      expect(typeof system).toBe('string');
+      const json = String(system).split('\n').find((line) => line.startsWith('{"indexedEvidenceDossier"'));
+      const payload = JSON.parse(json ?? '') as { indexedEvidenceDossier: Record<string, unknown> };
+      const dto = payload.indexedEvidenceDossier;
+      expect(dto.literalInventory).toEqual({
+        matchMode: 'nfkc-unicode-lower-line-substring-v1', scope: 'indexed-policy-allowed-source-body',
+        needles: original.literalInventory?.status === 'complete' ? original.literalInventory.summary.needles : [],
+        discoveryPagesReadComplete: false,
+      });
+      expect(dto.matchInventory).toEqual([{ query: '합성 원문', totalDocuments: 4, totalChunks: 5, totalOccurrences: 7 }]);
+      const checkKeys = (value: unknown): void => {
+        if (!value || typeof value !== 'object') return;
+        for (const [key, nested] of Object.entries(value)) {
+          expect(['sourceDocuments', 'summary', 'generationId', 'receipt', 'sources', 'pageCount', 'representativePages', 'sourcePath', 'metadataParts', 'requestedPaths', 'plannedPaths', 'unreviewedPaths'].includes(key), key).toBe(false);
+          checkKeys(nested);
+        }
+      };
+      checkKeys(dto);
+      expect(JSON.stringify(caller.providerMessages())).not.toContain('합성 비공개 원문');
+      expect(JSON.stringify(caller.providerMessages())).not.toContain('합성 source-body');
+      expect(caller.result.dossier).toEqual(original);
+      expect(caller.storedMessages.at(-1)?.indexedMatchInventory).toEqual(original.matchInventory);
+      expect(JSON.stringify(caller.storedMessages)).not.toContain('synthetic-generation');
+      expect(JSON.stringify(caller.settings)).not.toContain('synthetic-incarnation');
+    });
+
+    it('비동기 source release 정착 전에는 후속 provider에 넘기지 않는다', async () => {
+      const caller = createLiteralCaller(entry);
+      let settle!: () => void;
+      const closing = new Promise<void>((resolve) => { settle = resolve; });
+      caller.source.release.mockReturnValue(closing);
+      vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(caller.source);
+      vi.mocked(reviewIndexedVault).mockResolvedValue(caller.result);
+      const pending = caller.invoke();
+      await vi.waitFor(() => expect(caller.source.release).toHaveBeenCalledOnce());
+      expect(caller.providerMessages()).toBeUndefined();
+      settle(); await pending;
+      expect(caller.providerMessages()).toBeDefined();
+    });
+
+    it.each(entry === 'send' ? ['source', 'readiness', 'settings'] : ['source', 'readiness'])('release 대기 중 %s가 무효화되면 이전 근거를 후속 모델이나 메타에 게시하지 않는다', async (invalidation) => {
+      const caller = createLiteralCaller(entry);
+      let settle!: () => void;
+      const closing = new Promise<void>((resolve) => { settle = resolve; });
+      caller.source.release.mockReturnValue(closing);
+      vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(caller.source);
+      vi.mocked(reviewIndexedVault).mockResolvedValue(caller.result);
+      const pending = caller.invoke();
+      await vi.waitFor(() => expect(caller.source.release).toHaveBeenCalledOnce());
+      if (invalidation === 'source') caller.setSourceCurrent(false);
+      else if (invalidation === 'readiness') caller.setReadiness('preparing');
+      else caller.settings.chat.defaultModel = 'ollama:changed';
+      settle(); await pending;
+      expect(caller.providerMessages()).toBeUndefined();
+      expect(caller.storedMessages.at(-1)?.indexedMatchInventory).not.toEqual(caller.result.dossier.matchInventory);
+      expect(caller.source.release).toHaveBeenCalledOnce();
+    });
+
+    it('legacy source의 생략된 currentness callback도 허용한다', async () => {
+      const caller = createLiteralCaller(entry);
+      const legacySource = { ...caller.source, isCurrent: undefined };
+      vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(legacySource);
+      const states: boolean[] = [];
+      vi.mocked(reviewIndexedVault).mockImplementation((options) => {
+        states.push(options.isCurrent?.() === true); return Promise.resolve(caller.result);
+      });
+      await caller.invoke();
+      expect(states).toEqual([true]);
+    });
+  });
 
   it('실제 채팅은 폴더·태그 제한을 집계 수집 시작부터 전달한다', async () => {
     const { view, context } = createView();
@@ -574,6 +780,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     Object.assign(view, {
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        getRetrievalReadiness: () => 'ready',
         prepareRagForChat: vi.fn(),
         documentCorpus: {
           getIndexedFilePaths: () => Promise.resolve(['Synthetic.md']),
@@ -651,6 +858,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       Object.assign(view, {
         plugin: {
           settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+          getRetrievalReadiness: () => 'ready',
           prepareRagForChat: vi.fn(),
           documentCorpus: {
             getIndexedFilePaths: () => Promise.resolve(['Synthetic.md']),
@@ -797,6 +1005,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
         settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
         prepareRagForChat: vi.fn(),
         ragEngine: null,
+        getRetrievalReadiness: () => 'ready',
       },
       getMentionedServerNames: () => ['external'],
       getEffectiveMcpServerNames: () => ['external'],
@@ -1091,6 +1300,7 @@ describe('전수 검수 뒤 승인 대기 재개', () => {
       app: { workspace: { getActiveFile: () => null, iterateAllLeaves: vi.fn() } },
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { mcpMentionOnly: true } },
+        getRetrievalReadiness: () => 'ready',
         prepareRagForChat: vi.fn().mockResolvedValue(undefined),
         documentCorpus: {
           getIndexedFilePaths: () => Promise.resolve(['Current/Fresh.md']),

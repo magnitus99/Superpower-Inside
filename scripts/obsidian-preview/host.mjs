@@ -8,14 +8,14 @@ export function installHost(data) {
     throw Error(`검수 환경에서 Node 모듈을 실행할 수 없습니다: ${name}`);
   };
   const methods = {
-    createEl(tag, options = {}) {
-      return createElement(this, tag, options);
+    createEl(tag, options = {}, callback) {
+      return createElement(this, tag, options, callback);
     },
-    createDiv(options) {
-      return createElement(this, 'div', options);
+    createDiv(options, callback) {
+      return createElement(this, 'div', options, callback);
     },
-    createSpan(options) {
-      return createElement(this, 'span', options);
+    createSpan(options, callback) {
+      return createElement(this, 'span', options, callback);
     },
     empty() {
       this.replaceChildren();
@@ -47,7 +47,7 @@ export function installHost(data) {
   }
 }
 
-function createElement(parent, tag, options = {}) {
+function createElement(parent, tag, options = {}, callback) {
   if (typeof options === 'string') options = { cls: options };
   const node = parent.ownerDocument.createElement(tag);
   if (options.cls)
@@ -59,6 +59,7 @@ function createElement(parent, tag, options = {}) {
     node.setAttribute(name, String(value));
   if (options.title) node.title = options.title;
   parent.appendChild(node);
+  callback?.(node);
   return node;
 }
 

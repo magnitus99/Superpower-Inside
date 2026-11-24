@@ -34,3 +34,8 @@ body > .app-container {
   position: absolute;
   visibility: hidden;
 }
+
+/* 실제 브라우저 200% 확대에서 공유 상태 영역의 reflow를 확인합니다. */
+body.preview-zoom {
+  zoom: 2;
+}

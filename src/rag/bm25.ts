@@ -1,4 +1,5 @@
 import Dexie from 'dexie';
+import { isStoreMutationReceipt, readStoreMutationReceipt, stampStoreMutation, type DurabilityMetaRecord, type StoreMutationReceipt } from './durability';
 import {
   GeneratedArtifactDatabase,
   type GeneratedArtifactBinding,
@@ -177,6 +178,7 @@ interface BM25RemovalRecord {
 }
 
 interface BM25SnapshotManifest {
+  sourceReceipt?: StoreMutationReceipt;
   generation: string;
   tokenizerVersion: number;
   lastOrder: number;
@@ -199,8 +201,14 @@ interface BM25MutationRecord {
 }
 
 type BM25PendingOperation =
-  | { kind: 'upsert-document'; record: BM25DocumentRecord }
-  | { kind: 'mutation'; record: BM25MutationRecord };
+  | { kind: 'upsert-document'; record: BM25DocumentRecord; revision: number }
+  | { kind: 'mutation'; record: BM25MutationRecord; revision: number };
+
+export interface BM25DurabilityCheckpoint {
+  receipt: StoreMutationReceipt | null;
+  applied: { receipt: StoreMutationReceipt; sessionId: string; revision: number } | null;
+  pendingOperations: number;
+}
 
 type BM25SnapshotSource = 'manifest' | 'indexeddb' | 'legacy' | 'empty';
 
@@ -227,6 +235,7 @@ class BM25IndexDB extends GeneratedArtifactDatabase {
   mutations!: Dexie.Table<BM25MutationRecord, string>;
   removals!: Dexie.Table<BM25RemovalRecord, number>;
   snapshotBlocks!: Dexie.Table<BM25SnapshotBlock, string>;
+  durability!: Dexie.Table<DurabilityMetaRecord, string>;
 
   constructor(name: string, ownership?: GeneratedArtifactBinding) {
     super(name, ownership);
@@ -244,6 +253,10 @@ class BM25IndexDB extends GeneratedArtifactDatabase {
       mutations: 'id, kind, target, updated, order',
       removals: 'order, target',
       snapshotBlocks: 'key',
+    });
+    this.version(4).stores({
+      meta: 'key', documents: 'id, sourcePath, updated, order', mutations: 'id, kind, target, updated, order',
+      removals: 'order, target', snapshotBlocks: 'key', durability: 'key',
     });
   }
 }
@@ -278,6 +291,19 @@ export class IndexedDbBM25Index {
   private lastSnapshotAt = 0;
   private snapshotCaptureInFlight = false;
   private workerGeneration = 0;
+  private persistenceQueue: Promise<void> = Promise.resolve();
+  private persistedOrder = 0;
+  private proofSession = crypto.randomUUID();
+  private issuedRevision = 0;
+  private appliedRevision = 0;
+  private boundRevision = 0;
+  private boundReceipt: StoreMutationReceipt | null = null;
+  private prefixValid = false;
+  private headContinuity = true;
+  private loading = false;
+  private loadBarrier: Promise<void> | null = null;
+  private rebuilding = false;
+  private pendingBarriers = 0;
 
   constructor(
     dbName = 'SuperpowerInsideBM25Index',
@@ -307,8 +333,127 @@ export class IndexedDbBM25Index {
     this.nextOperationOrderValue = Date.now() * 1000;
   }
 
-  async load(): Promise<void> {
+  getDurabilityReceipt(): Promise<StoreMutationReceipt | null> {
+    return readStoreMutationReceipt(this.db.durability);
+  }
+
+  async getCheckpoint(): Promise<BM25DurabilityCheckpoint> {
+    const generation = this.workerGeneration;
+    const receipt = await this.getDurabilityReceipt();
+    const worker = this.workerRuntime;
+    const revision = worker ? worker.appliedRevision : this.appliedRevision;
+    const valid = receipt !== null && this.loaded && this.isTokenizerCurrent && !this.loading && !this.rebuilding && this.rebuildReplayOperations === null &&
+      this.prefixValid && this.pendingBarriers === 0 && this.pendingOperations.length === 0 &&
+      !this.snapshotCaptureInFlight && !this.workerFailure && !worker?.isClosed && worker?.pendingRevision == null &&
+      this.boundRevision === this.issuedRevision && revision === this.boundRevision &&
+      generation === this.workerGeneration && sameBm25Receipt(receipt, this.boundReceipt);
+    return {
+      receipt, pendingOperations: this.pendingOperations.length,
+      applied: valid && receipt ? { receipt, sessionId: worker?.sessionId ?? this.proofSession, revision: this.boundRevision } : null,
+    };
+  }
+
+  async initializeEmptyDurabilityReceipt(): Promise<StoreMutationReceipt | null> {
+    if (this.legacyAdapter && await this.legacyAdapter.exists(this.legacyPath)) return null;
+    const nested = Dexie.currentTransaction?.db === this.db;
+    let created = false;
+    const receipt = await this.db.transaction('rw', this.db.tables, async () => {
+      const previous = await this.getDurabilityReceipt();
+      if (previous) return previous;
+      for (const table of [this.db.documents, this.db.mutations, this.db.removals, this.db.meta, this.db.snapshotBlocks]) {
+        if (await table.count()) return null;
+      }
+      const initial = await stampStoreMutation(this.db.durability);
+      created = true;
+      return initial;
+    });
+    if (!nested && created && receipt && this.loaded && !this.loading && this.pendingOperations.length === 0 && this.issuedRevision === 0 && this.totalDocs === 0) {
+      this.boundReceipt = { ...receipt };
+      this.prefixValid = true;
+    }
+    return receipt;
+  }
+
+  private bindCommittedHead(previous: StoreMutationReceipt | null, next: StoreMutationReceipt, revision = this.boundRevision, resetsProjection = false): void {
+    const connected = sameBm25Receipt(previous, this.boundReceipt);
+    this.headContinuity = resetsProjection || (this.headContinuity && connected);
+    this.prefixValid = resetsProjection || (this.prefixValid && connected);
+    this.boundReceipt = next;
+    this.boundRevision = revision;
+  }
+
+  private async commitMutation<T>(operation: () => Promise<T>, projection?: { revision: number; resets: boolean }): Promise<T> {
+    const nested = Dexie.currentTransaction?.db === this.db;
+    const generation = this.workerGeneration;
+    const committed = await this.db.transaction('rw', this.db.tables, async () => {
+      if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+      const previous = await this.getDurabilityReceipt();
+      const result = await operation();
+      if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+      const receipt = await stampStoreMutation(this.db.durability);
+      if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+      return { previous, receipt, result };
+    });
+    if (!nested && generation === this.workerGeneration) this.bindCommittedHead(committed.previous, committed.receipt, projection?.revision, projection?.resets);
+    return committed.result;
+  }
+
+  private async readPersistedOrder(): Promise<number> {
+    const stored: unknown = (await this.db.durability.get('bm25-order-v1'))?.value;
+    if (stored !== undefined) {
+      if (typeof stored !== 'number' || !Number.isSafeInteger(stored) || stored < 0) throw new Error('rag-bm25-order-invalid');
+      return stored;
+    }
+    const [document, mutation, removal, manifest] = await Promise.all([
+      this.db.documents.orderBy('order').last(), this.db.mutations.orderBy('order').last(),
+      this.db.removals.orderBy('order').last(), this.db.meta.get(BM25_SNAPSHOT_MANIFEST_KEY),
+    ]);
+    let watermark = 0;
+    if (manifest) {
+      try { const parsed: unknown = JSON.parse(manifest.value); if (isBm25SnapshotManifest(parsed)) watermark = parsed.lastOrder; }
+      catch { /* 손상된 스냅샷은 복원 경로에서 처리합니다. */ }
+    }
+    const order = Math.max(0, document?.order ?? 0, mutation?.order ?? 0, removal?.order ?? 0, watermark);
+    if (!Number.isSafeInteger(order)) throw new Error('rag-bm25-order-invalid');
+    return order;
+  }
+
+  load(onProgress?: (progress: { stage: 'restoring-keyword-snapshot' | 'restoring-keyword-documents'; processedUnits: number | null; totalUnits: number | null; unit: 'documents' | 'steps' }) => void): Promise<void> {
+    const generation = ++this.workerGeneration;
+    this.loading = true;
+    this.snapshotCaptureInFlight = false;
+    this.prefixValid = false;
+    this.headContinuity = true;
+    this.boundReceipt = null;
+    this.boundRevision = 0;
+    this.appliedRevision = 0;
+    this.proofSession = crypto.randomUUID();
+    const revisions = new Map<number, number>();
+    this.pendingOperations = this.pendingOperations.map((operation) => {
+      if (!revisions.has(operation.revision)) revisions.set(operation.revision, revisions.size + 1);
+      return { ...operation, revision: revisions.get(operation.revision)! };
+    });
+    this.issuedRevision = revisions.size;
+    const publish = (progress: Parameters<NonNullable<typeof onProgress>>[0]): void => {
+      if (generation !== this.workerGeneration) return;
+      try { onProgress?.(progress); } catch { /* 관측 오류는 복원을 중단하지 않습니다. */ }
+    };
+    publish({ stage: 'restoring-keyword-snapshot', processedUnits: 0, totalUnits: 1, unit: 'steps' });
+    const task = this.loadRuntime(generation, publish);
+    const finish = (): void => {
+      if (generation === this.workerGeneration) { this.loading = false; this.loadBarrier = null; }
+    };
+    const completion = task.then(finish, (error: unknown) => {
+      if (generation === this.workerGeneration) { this.prefixValid = false; this.loaded = false; }
+      finish(); throw error;
+    });
+    this.loadBarrier = completion;
+    return completion;
+  }
+
+  private async loadRuntime(generation: number, publish: (progress: { stage: 'restoring-keyword-snapshot' | 'restoring-keyword-documents'; processedUnits: number | null; totalUnits: number | null; unit: 'documents' | 'steps' }) => void): Promise<void> {
     this.runtime?.dispose();
+    this.runtime = null;
     this.workerRuntime?.close();
     this.workerRuntime = null;
     this.workerQueue = Promise.resolve();
@@ -319,34 +464,75 @@ export class IndexedDbBM25Index {
     this.loaded = false;
     this.restoreMode = 'full';
     this.activeManifest = null;
-    this.workerGeneration += 1;
+    const initialReceipt = this.getDurabilityReceipt();
+    const existingPending = [...this.pendingOperations];
+    const requireSession = (): void => {
+      if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+    };
+    const prepareBase = async (): Promise<StoreMutationReceipt | null> => {
+      const receipt = await initialReceipt;
+      requireSession();
+      this.boundReceipt = receipt;
+      const order = await this.readPersistedOrder();
+      requireSession();
+      this.persistedOrder = order;
+      return receipt;
+    };
+    const finishBase = async (snapshot: BM25Snapshot, original: StoreMutationReceipt | null, fullRead = false): Promise<void> => {
+      const receipt = await this.getDurabilityReceipt();
+      requireSession();
+      const linked = snapshot.manifest && isStoreMutationReceipt(snapshot.manifest.sourceReceipt) &&
+        snapshot.manifest.sourceReceipt.incarnation === original?.incarnation && snapshot.manifest.lastOrder <= this.persistedOrder;
+      const full = fullRead || snapshot.raw.trim().length === 0;
+      const empty = full && await this.db.documents.count() === 0 && await this.db.mutations.count() === 0;
+      requireSession();
+      this.prefixValid = this.headContinuity && sameBm25Receipt(receipt, this.boundReceipt) &&
+        (original !== null ? full || !!linked : empty);
+      this.boundReceipt = receipt;
+      this.boundRevision = 0;
+      this.appliedRevision = 0;
+    };
     if (this.workerFactory || canUseBM25Worker()) {
-      const worker = new BM25WorkerRuntime(this.workerFactory);
+      let restoringSnapshot = false;
+      const worker = new BM25WorkerRuntime(this.workerFactory, undefined, (progress) => {
+        if (!this.loading) return;
+        if (restoringSnapshot && progress.processedDocuments === 0) publish({ stage: 'restoring-keyword-snapshot', unit: 'steps', processedUnits: 1, totalUnits: 2 });
+        else publish({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: progress.processedDocuments, totalUnits: progress.expectedDocuments });
+      });
       this.workerRuntime = worker;
       const initialization = (async () => {
+        const original = await prepareBase();
         const snapshot = await this.loadSnapshot();
+        requireSession();
         const raw = snapshot.raw.trim();
         const usableRaw = raw.length > 0 && raw.length <= this.maxSnapshotBytes ? raw : '';
         const manifest = usableRaw.length > 0 ? snapshot.manifest : undefined;
+        publish({ stage: 'restoring-keyword-snapshot', processedUnits: 1, totalUnits: 1, unit: 'steps' });
+        restoringSnapshot = usableRaw.length > 0;
+        const expectedDocuments = manifest?.docCount ?? await this.db.documents.count();
+        requireSession();
         const state = await worker.initialize(
           this.db.name,
           usableRaw,
           manifest?.lastOrder,
-          manifest?.docCount,
+          expectedDocuments,
         );
+        if (restoringSnapshot && !state.snapshotRejected) publish({ stage: 'restoring-keyword-snapshot', unit: 'steps', processedUnits: 2, totalUnits: 2 });
+        restoringSnapshot = false;
         let finalState = state;
         if (state.snapshotRejected) {
           // 손상 스냅샷은 폐기하고 저장된 원문에서 전량 복구한다.
           await this.dropSnapshot();
-          finalState = await worker.initialize(this.db.name, '', undefined, undefined);
+          finalState = await worker.initialize(this.db.name, '', undefined, await this.db.documents.count());
         }
+        requireSession();
         this.applyWorkerState(finalState);
         this.restoreMode = manifest && !state.snapshotRejected ? 'snapshot+delta' : 'full';
         if (manifest && !state.snapshotRejected) {
           this.activeManifest = manifest;
           this.ordersSinceSnapshot = 0;
           this.removalsSinceSnapshot = 0;
-          await this.db.meta.delete(BM25_SNAPSHOT_KEY);
+          await this.commitChangedRows(() => this.db.meta.where('key').equals(BM25_SNAPSHOT_KEY).delete());
         }
         this.runtime = null;
         this.loaded = true;
@@ -354,23 +540,28 @@ export class IndexedDbBM25Index {
           await this.persistSnapshotRaw(raw);
         }
         await this.sweepOrphanSnapshotBlocks();
+        await finishBase(snapshot, original, state.snapshotRejected === true);
       })();
       // 초기화 중 들어온 파일 변경도 hydration 완료 뒤 같은 worker에 순서대로 적용한다.
       this.workerQueue = initialization;
+      if (existingPending.length) this.enqueuePendingProjection(existingPending);
       try {
         await initialization;
         return;
       } catch (error) {
         worker.close();
         // 닫힌 작업자를 남겨 다음 준비에서도 재초기화를 시도할 수 있게 합니다.
-        this.loaded = false;
+        if (generation === this.workerGeneration) this.loaded = false;
         throw error;
       }
     }
+    const original = await prepareBase();
     const snapshot = await this.loadSnapshot();
+    requireSession();
     if (snapshot.manifest) {
       // 작업자 없는 세션은 tombstone 델타를 남길 수 없으므로 스냅샷을 버리고 원문에서 재구성한다.
       await this.dropSnapshot();
+      requireSession();
     }
     const raw = (snapshot.manifest ? '' : snapshot.raw).trim();
     const snapshotRuntime =
@@ -382,15 +573,20 @@ export class IndexedDbBM25Index {
       this.runtime?.positionIndexStatus()?.complete === false &&
       (await this.db.documents.count()) > 0
     ) {
+      requireSession();
       this.runtime.dispose();
       this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
     }
-    await this.replayPersistedOperations();
+    publish({ stage: 'restoring-keyword-snapshot', unit: 'steps', processedUnits: 1, totalUnits: 1 });
+    await this.replayPersistedOperations(requireSession, (processed, total) => publish({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: processed, totalUnits: total }));
+    requireSession();
     this.loaded = true;
     if (snapshot.source === 'legacy' && raw.length <= this.maxSnapshotBytes) {
       await this.persistSnapshotRaw(raw);
     }
     await this.sweepOrphanSnapshotBlocks();
+    await finishBase(snapshot, original, snapshot.manifest !== undefined);
+    this.applyPendingProjection(this.pendingOperations);
   }
 
   async persist(): Promise<void> {
@@ -398,79 +594,99 @@ export class IndexedDbBM25Index {
       this.batchDirty = true;
       return;
     }
-    await this.persistNow();
+    await this.flush();
+  }
+
+  /** 외부 배치 안에서도 호출 시점의 내구 커밋과 작업자 적용 ACK를 기다립니다. */
+  flush(): Promise<void> {
+    const applied = this.workerQueue;
+    const checkpoint = this.issuedRevision;
+    this.pendingBarriers++;
+    const task = this.persistenceQueue.then(async () => {
+      try {
+        await this.persistNow(checkpoint);
+        await applied;
+        if (this.workerFailure) throw this.workerFailure;
+      } finally { this.pendingBarriers--; }
+    });
+    this.persistenceQueue = task.catch(() => undefined);
+    return task;
   }
 
   async withBatch<T>(operation: () => Promise<T>): Promise<T> {
     this.batchDepth++;
+    let succeeded = false;
     try {
-      return await operation();
+      const result = await operation();
+      succeeded = true;
+      return result;
     } finally {
       this.batchDepth--;
-      if (this.batchDepth === 0 && this.batchDirty) {
-        await this.persistNow();
-      }
+      // 실패·취소의 원래 오류와 미커밋 원장을 보존합니다.
+      if (succeeded && this.batchDepth === 0 && this.batchDirty) await this.flush();
     }
   }
 
-  private async persistNow(): Promise<void> {
-    const operations = [...this.pendingOperations];
+  private async persistNow(checkpoint: number): Promise<void> {
+    const generation = this.workerGeneration;
+    if (this.loadBarrier) await this.loadBarrier;
+    if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+    const operations = this.pendingOperations.filter((operation) => operation.revision <= checkpoint)
+      .sort((left, right) => left.revision - right.revision);
     if (operations.length === 0) {
-      this.batchDirty = false;
+      this.batchDirty = this.pendingOperations.length > 0;
       return;
     }
-    // 스냅샷 델타는 작업자 세션에서만 유효하므로 tombstone도 그때만 남긴다.
     const removalRecords: BM25RemovalRecord[] = [];
-    if (this.workerRuntime) {
+    const committedOrder = await this.commitMutation(async () => {
+      const recordRemovals = this.workerRuntime !== null || await this.readManifest() !== null;
+      let order = await this.readPersistedOrder();
+      if (order > Number.MAX_SAFE_INTEGER - operations.length) throw new Error('rag-bm25-order-overflow');
       for (const operation of operations) {
-        if (operation.kind === 'mutation') {
-          removalRecords.push({
-            order: operation.record.order,
-            kind: operation.record.kind,
-            target: operation.record.target,
-            updated: operation.record.updated,
-          });
+        const record = { ...operation.record, order: ++order };
+        if (operation.kind === 'upsert-document') {
+          await this.db.documents.put({ ...operation.record, order });
+          continue;
         }
+        await this.persistMutationOperation({ ...operation.record, order });
+        if (recordRemovals) removalRecords.push({ order, kind: operation.record.kind, target: operation.record.target, updated: record.updated });
       }
-    }
-    await this.db.transaction(
-      'rw',
-      this.db.documents,
-      this.db.mutations,
-      this.db.removals,
-      async () => {
-        for (const operation of operations) {
-          if (operation.kind === 'upsert-document') {
-            await this.db.documents.put(operation.record);
-            continue;
-          }
-          await this.persistMutationOperation(operation.record);
-        }
-        if (removalRecords.length > 0) await this.db.removals.bulkPut(removalRecords);
-      },
-    );
-    this.pendingOperations = this.pendingOperations.slice(operations.length);
-    this.batchDirty = false;
-    this.removalsSinceSnapshot += removalRecords.length;
+      if (removalRecords.length > 0) await this.db.removals.bulkPut(removalRecords);
+      await this.db.durability.put({ key: 'bm25-order-v1', value: order });
+      return order;
+    }, { revision: operations.at(-1)?.revision ?? this.boundRevision, resets: operations.some((operation) => operation.kind === 'mutation' && operation.record.kind === 'clear') });
+    if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+    this.persistedOrder = committedOrder;
+    const committed = new Set(operations);
+    this.pendingOperations = this.pendingOperations.filter((operation) => !committed.has(operation));
+    this.batchDirty = this.pendingOperations.length > 0;
+    const removals = await this.db.removals.count();
+    if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+    this.removalsSinceSnapshot = removals;
     await this.enforceRemovalLogBound();
     await this.captureSnapshotIfDue();
   }
 
   async clear(): Promise<void> {
+    const revision = ++this.issuedRevision;
     if (this.workerRuntime) {
       this.enqueueWorkerMutation(async (worker) => {
-        this.applyWorkerState(await worker.clear());
+        this.applyWorkerState(await worker.clear({ revision }));
       });
-    } else {
+    } else if (!this.loading && !this.rebuilding) {
       this.runtime?.dispose();
       this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
     }
-    this.queueMutation('clear', '*');
+    this.queueMutation('clear', '*', true, revision);
     await this.persist();
     await this.dropSnapshot();
   }
 
   async deleteDatabase(): Promise<void> {
+    this.workerGeneration++;
+    this.prefixValid = false;
+    this.loading = false;
+    this.loadBarrier = null;
     this.workerRuntime?.close();
     this.workerRuntime = null;
     this.runtime?.dispose();
@@ -492,6 +708,10 @@ export class IndexedDbBM25Index {
   }
 
   close(): void {
+    this.workerGeneration++;
+    this.prefixValid = false;
+    this.loading = false;
+    this.loadBarrier = null;
     this.workerRuntime?.close();
     this.workerRuntime = null;
     this.runtime?.dispose();
@@ -512,52 +732,36 @@ export class IndexedDbBM25Index {
   }
 
   async rebuild(documents: readonly BM25DocumentInput[]): Promise<void> {
-    if (this.workerRuntime) {
-      await this.withBatch(() => {
-        this.queueMutation('clear', '*', false);
-        for (const document of documents) {
-          this.queueDocument(normalizeCorpusDocument(document), false);
+    if (this.loadBarrier) await this.loadBarrier;
+    if (this.rebuilding) throw new Error('BM25 rebuild is already in progress.');
+    this.rebuilding = true;
+    const revision = ++this.issuedRevision;
+    try {
+      await this.withBatch(async () => {
+        this.queueMutation('clear', '*', false, revision);
+        if (this.workerRuntime) {
+          const workerDocuments = documents.map((document) => ({ ...document, ...documentFields(document), sourcePath: document.sourcePath ?? document.id }));
+          for (const document of documents) this.queueDocument(normalizeCorpusDocument(document), false, revision);
+          this.enqueueWorkerMutation(async (worker) => { this.applyWorkerState(await worker.rebuild(workerDocuments, { revision })); });
+        } else {
+          this.runtime?.dispose();
+          this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
+          for (let index = 0; index < documents.length; index++) {
+            const document = documents[index];
+            this.addRuntimeDocument(normalizeCorpusDocument(document));
+            this.queueDocument(normalizeCorpusDocument(document), false, revision);
+            if (index + 1 < documents.length && (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0) await yieldToHost();
+          }
+          this.appliedRevision = revision;
+          this.applyPendingProjection(this.pendingOperations.filter((operation) => operation.revision > revision));
         }
-        this.batchDirty = true;
-        return Promise.resolve();
+        await this.persist();
       });
-      const workerDocuments = documents.map((document) => ({
-        ...document,
-        ...documentFields(document),
-        id: document.id,
-        text: document.text,
-        sourcePath: document.sourcePath ?? document.id,
-      }));
-      this.enqueueWorkerMutation(async (worker) => {
-        this.applyWorkerState(await worker.rebuild(workerDocuments));
-      });
-      await this.workerQueue;
-      // 재구성된 런타임은 직렬화 스냅샷과 어긋나므로 이전 세대를 버린다.
-      await this.dropSnapshot();
-      if (this.workerFailure) throw this.workerFailure;
-      return;
-    }
-    await this.withBatch(async () => {
-      this.runtime?.dispose();
-      this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
-      this.queueMutation('clear', '*', false);
-      for (let index = 0; index < documents.length; index++) {
-        const document = documents[index];
-        if (document === undefined) continue;
-        this.ensureRuntime().addDocumentFields(
-          document.id,
-          document.text,
-          document.sourcePath ?? document.id,
-          documentFields(document),
-          TOKENIZER_VERSION,
-        );
-        this.queueDocument(normalizeCorpusDocument(document), false);
-        if (index + 1 < documents.length && (index + 1) % BM25_REBUILD_YIELD_INTERVAL === 0) {
-          await yieldToHost();
-        }
-      }
-      await this.persist();
-    });
+    } finally { this.rebuilding = false; }
+    if (!this.workerRuntime) this.applyPendingProjection(this.pendingOperations.filter((operation) => operation.revision > this.appliedRevision));
+    await this.flush();
+    await this.dropSnapshot();
+    if (this.workerFailure) throw this.workerFailure;
   }
 
   async rebuildFrom(createDocuments: () => Promise<readonly BM25DocumentInput[]>): Promise<void> {
@@ -588,6 +792,7 @@ export class IndexedDbBM25Index {
   }
 
   addCorpusDocument(document: BM25CorpusDocument): void {
+    const revision = ++this.issuedRevision;
     if (this.workerRuntime) {
       this.enqueueWorkerMutation(async (worker) => {
         this.applyWorkerState(
@@ -597,41 +802,78 @@ export class IndexedDbBM25Index {
             id: document.id,
             text: document.text,
             sourcePath: document.sourcePath,
-          }),
+          }, { revision }),
         );
       });
-    } else {
-      this.ensureRuntime().addDocumentFields(
-        document.id,
-        document.text,
-        document.sourcePath,
-        documentFields(document),
-        TOKENIZER_VERSION,
-      );
+    } else if (!this.loading && !this.rebuilding) {
+      this.addRuntimeDocument(document);
     }
-    this.queueDocument(document);
+    this.queueDocument(document, true, revision);
+  }
+
+  /** 소스 교체는 유한 크기 메시지로 보내며 기존 역색인·위치 계산을 그대로 사용합니다. */
+  replaceSourceDocuments(sourcePath: string, documents: readonly BM25CorpusDocument[]): void {
+    if (documents.some((document) => document.sourcePath !== sourcePath))
+      throw new Error('BM25 source replacement path mismatch.');
+    const wireBytes = documents.map((document) => JSON.stringify(document).length * 2);
+    if (wireBytes.some((bytes) => bytes > 1024 * 1024)) throw new Error('BM25 replacement message budget exceeded.');
+    const revision = ++this.issuedRevision;
+    this.queueMutation('remove-source', sourcePath, true, revision);
+    if (!this.workerRuntime) {
+      if (!this.loading && !this.rebuilding) this.ensureRuntime().removeSource(sourcePath, TOKENIZER_VERSION);
+      for (const document of documents) {
+        if (!this.loading && !this.rebuilding) this.addRuntimeDocument(document);
+        this.queueDocument(document, true, revision);
+      }
+      return;
+    }
+    let batch: BM25CorpusDocument[] = [];
+    let bytes = 0;
+    let replace = true;
+    let part = 0;
+    const send = (finalPart: boolean): void => {
+      const pending = batch;
+      const removeFirst = replace;
+      const context = { revision, part: part++, finalPart };
+      this.enqueueWorkerMutation(async (worker) => {
+        this.applyWorkerState(await worker.replaceSource(sourcePath, pending, removeFirst, context));
+      });
+      batch = [];
+      bytes = 0;
+      replace = false;
+    };
+    for (const [index, document] of documents.entries()) {
+      const size = wireBytes[index];
+      if (batch.length > 0 && (bytes + size > 1024 * 1024 || batch.length >= 128)) send(false);
+      batch.push(document);
+      bytes += size;
+      this.queueDocument(document, true, revision);
+    }
+    if (batch.length > 0 || replace) send(true);
   }
 
   removeDocument(docId: string): void {
+    const revision = ++this.issuedRevision;
     if (this.workerRuntime) {
       this.enqueueWorkerMutation(async (worker) => {
-        this.applyWorkerState(await worker.removeDocument(docId));
+        this.applyWorkerState(await worker.removeDocument(docId, { revision }));
       });
-    } else {
+    } else if (!this.loading && !this.rebuilding) {
       this.ensureRuntime().removeDocument(docId, TOKENIZER_VERSION);
     }
-    this.queueMutation('remove-doc', docId);
+    this.queueMutation('remove-doc', docId, true, revision);
   }
 
   removeDocumentsBySource(sourcePath: string): void {
+    const revision = ++this.issuedRevision;
     if (this.workerRuntime) {
       this.enqueueWorkerMutation(async (worker) => {
-        this.applyWorkerState(await worker.removeSource(sourcePath));
+        this.applyWorkerState(await worker.removeSource(sourcePath, { revision }));
       });
-    } else {
+    } else if (!this.loading && !this.rebuilding) {
       this.ensureRuntime().removeSource(sourcePath, TOKENIZER_VERSION);
     }
-    this.queueMutation('remove-source', sourcePath);
+    this.queueMutation('remove-source', sourcePath, true, revision);
   }
 
   search(query: string): Map<string, number> {
@@ -741,7 +983,7 @@ export class IndexedDbBM25Index {
   }
 
   /** 색인 복원 중이면 읽은 문서 수와 기대 문서 수를 알려줍니다. */
-  get restoreProgress(): { processedDocuments: number; expectedDocuments: number } | null {
+  get restoreProgress(): { processedDocuments: number; expectedDocuments: number | null } | null {
     if (this.isReady) return null;
     return this.workerRuntime?.hydrationProgress ?? null;
   }
@@ -769,7 +1011,9 @@ export class IndexedDbBM25Index {
       .catch(() => undefined)
       .then(async () => {
         // 기록 대기 중인 변경을 먼저 저장하고 같은 코퍼스에서 작업자만 복원한다.
-        await this.persist();
+        const saving = this.persistenceQueue.then(() => this.persistNow(this.issuedRevision));
+        this.persistenceQueue = saving.catch(() => undefined);
+        await saving;
         await this.load();
       })
       .finally(() => {
@@ -812,14 +1056,19 @@ export class IndexedDbBM25Index {
     sourcePath: string,
     revision: Pick<BM25CorpusDocument, 'sourceMtime' | 'sourceSize' | 'contentHash'>,
   ): Promise<number> {
-    await this.persist();
-    const updated = Date.now();
-    return this.db.documents.where('sourcePath').equals(sourcePath).modify((record) => {
-      record.sourceMtime = revision.sourceMtime;
-      record.sourceSize = revision.sourceSize;
-      record.contentHash = revision.contentHash;
-      record.updated = updated;
-    });
+    this.pendingBarriers++;
+    try {
+      await this.persist();
+      const updated = Date.now();
+      return await this.commitChangedRows(() => this.db.documents.where('sourcePath').equals(sourcePath)
+        .filter((record) => record.sourceMtime !== revision.sourceMtime || record.sourceSize !== revision.sourceSize || record.contentHash !== revision.contentHash)
+        .modify((record) => {
+          record.sourceMtime = revision.sourceMtime;
+          record.sourceSize = revision.sourceSize;
+          record.contentHash = revision.contentHash;
+          record.updated = updated;
+        }));
+    } finally { this.pendingBarriers--; }
   }
 
   async getCorpusDocumentsBySourcePaths(
@@ -873,13 +1122,19 @@ export class IndexedDbBM25Index {
   ): Promise<void> {
     const worker = this.workerRuntime;
     if (!worker) return Promise.resolve();
-    const task = this.workerQueue.then(() => operation(worker));
+    const generation = this.workerGeneration;
+    const task = this.workerQueue.then(() => {
+      if (generation !== this.workerGeneration || worker !== this.workerRuntime) throw new Error('rag-bm25-session-retired');
+      return operation(worker);
+    });
     this.workerQueue = task.then(
       () => undefined,
       (error: unknown) => {
-        this.workerFailure = error instanceof Error ? error : new Error(String(error));
-        this.workerReady = false;
-        worker.close(this.workerFailure);
+        if (generation === this.workerGeneration && worker === this.workerRuntime) {
+          this.workerFailure = error instanceof Error ? error : new Error(String(error));
+          this.workerReady = false;
+          worker.close(this.workerFailure);
+        }
       },
     );
     return task;
@@ -895,11 +1150,12 @@ export class IndexedDbBM25Index {
     this.workerTotalDocs = state.totalDocs ?? 0;
   }
 
-  private async replayPersistedOperations(): Promise<void> {
+  private async replayPersistedOperations(requireSession: () => void, progress?: (processed: number, total: number) => void): Promise<void> {
     const [documents, mutations] = await Promise.all([
       this.db.documents.toArray(),
       this.db.mutations.toArray(),
     ]);
+    requireSession();
     const operations: Array<
       | { kind: 'upsert-document'; record: BM25DocumentRecord; order: number }
       | { kind: 'mutation'; record: BM25MutationRecord; order: number }
@@ -916,17 +1172,16 @@ export class IndexedDbBM25Index {
       })),
     ].sort((a, b) => a.order - b.order);
 
+    let processedDocuments = 0;
+    progress?.(0, documents.length);
     for (let index = 0; index < operations.length; index++) {
+      requireSession();
       const operation = operations[index];
       if (!operation) continue;
       if (operation.kind === 'upsert-document') {
-        this.ensureRuntime().addDocumentFields(
-          operation.record.id,
-          operation.record.text,
-          operation.record.sourcePath,
-          documentFields(operation.record),
-          TOKENIZER_VERSION,
-        );
+        this.addRuntimeDocument(toCorpusDocument(operation.record));
+        processedDocuments++;
+        if (processedDocuments % 128 === 0) progress?.(processedDocuments, documents.length);
       } else {
         this.applyMutation(operation.record);
       }
@@ -934,10 +1189,11 @@ export class IndexedDbBM25Index {
         await yieldToHost();
       }
     }
-    this.pendingOperations = [];
-    this.batchDirty = false;
+    requireSession();
+    progress?.(processedDocuments, documents.length);
+    this.batchDirty = this.pendingOperations.length > 0;
     if (mutations.length > 0) {
-      await this.db.mutations.clear();
+      await this.commitChangedRows(() => this.db.mutations.toCollection().delete());
     }
   }
 
@@ -954,54 +1210,59 @@ export class IndexedDbBM25Index {
     }
   }
 
-  private async replayOperationsAfterRebuild(
-    operations: readonly BM25PendingOperation[],
-  ): Promise<void> {
+  private async replayOperationsAfterRebuild(operations: readonly BM25PendingOperation[]): Promise<void> {
     await this.withBatch(async () => {
       for (const operation of operations) {
-        if (operation.kind === 'upsert-document') {
-          const document = toCorpusDocument(operation.record);
-          if (this.workerRuntime) {
-            this.enqueueWorkerMutation(async (worker) => {
-              this.applyWorkerState(
-                await worker.add({
-                  ...document,
-                  ...documentFields(document),
-                  id: document.id,
-                  text: document.text,
-                  sourcePath: document.sourcePath,
-                }),
-              );
-            });
-          } else {
-            this.ensureRuntime().addDocumentFields(
-              document.id,
-              document.text,
-              document.sourcePath,
-              documentFields(document),
-              TOKENIZER_VERSION,
-            );
-          }
-        } else if (this.workerRuntime) {
-          const mutation = operation.record;
-          this.enqueueWorkerMutation(async (worker) => {
-            if (mutation.kind === 'clear') {
-              this.applyWorkerState(await worker.clear());
-            } else if (mutation.kind === 'remove-doc') {
-              this.applyWorkerState(await worker.removeDocument(mutation.target));
-            } else {
-              this.applyWorkerState(await worker.removeSource(mutation.target));
-            }
-          });
-        } else {
-          this.applyMutation(operation.record);
-        }
-        this.pendingOperations.push(operation);
+        const revision = ++this.issuedRevision;
+        const start = this.pendingOperations.length;
+        if (operation.kind === 'upsert-document') this.queueDocument(toCorpusDocument(operation.record), false, revision);
+        else this.queueMutation(operation.record.kind, operation.record.target, false, revision);
+        const replay = this.pendingOperations.slice(start);
+        if (this.workerRuntime) this.enqueuePendingProjection(replay);
+        else this.applyPendingProjection(replay);
       }
       await this.persist();
     });
     await this.workerQueue;
     if (this.workerFailure) throw this.workerFailure;
+  }
+
+  private addRuntimeDocument(document: BM25CorpusDocument): void {
+    if (!this.ensureRuntime().addDocumentFields(document.id, document.text, document.sourcePath, documentFields(document), TOKENIZER_VERSION)) {
+      this.prefixValid = false;
+      this.workerFailure = new Error('BM25 runtime rejected a document.');
+      throw this.workerFailure;
+    }
+  }
+
+  private applyPendingProjection(operations: readonly BM25PendingOperation[]): void {
+    for (const operation of [...operations].sort((left, right) => left.revision - right.revision)) {
+      if (operation.kind === 'upsert-document') this.addRuntimeDocument(toCorpusDocument(operation.record));
+      else this.applyMutation(operation.record);
+      this.appliedRevision = operation.revision;
+    }
+  }
+
+  private enqueuePendingProjection(operations: readonly BM25PendingOperation[]): void {
+    const groups = new Map<number, BM25PendingOperation[]>();
+    for (const operation of operations) {
+      const group = groups.get(operation.revision) ?? [];
+      group.push(operation);
+      groups.set(operation.revision, group);
+    }
+    for (const [revision, group] of [...groups].sort(([left], [right]) => left - right)) {
+      group.forEach((operation, part) => {
+        const context = { revision, part, finalPart: part === group.length - 1 };
+        this.enqueueWorkerMutation(async (worker) => {
+          if (operation.kind === 'upsert-document') {
+            const document = toCorpusDocument(operation.record);
+            this.applyWorkerState(await worker.add({ ...document, ...documentFields(document) }, context));
+          } else if (operation.record.kind === 'clear') this.applyWorkerState(await worker.clear(context));
+          else if (operation.record.kind === 'remove-doc') this.applyWorkerState(await worker.removeDocument(operation.record.target, context));
+          else this.applyWorkerState(await worker.removeSource(operation.record.target, context));
+        });
+      });
+    }
   }
 
   private applyMutation(record: BM25MutationRecord): void {
@@ -1017,10 +1278,11 @@ export class IndexedDbBM25Index {
     this.ensureRuntime().removeSource(record.target, TOKENIZER_VERSION);
   }
 
-  private queueDocument(document: BM25CorpusDocument, captureForRebuild = true): void {
+  private queueDocument(document: BM25CorpusDocument, captureForRebuild = true, revision = ++this.issuedRevision): void {
     const now = Date.now();
     const operation: BM25PendingOperation = {
       kind: 'upsert-document',
+      revision,
       record: {
         ...document,
         id: document.id,
@@ -1038,6 +1300,7 @@ export class IndexedDbBM25Index {
       },
     };
     this.pendingOperations.push(operation);
+    if (!this.workerRuntime && !this.loading && !this.rebuilding) this.appliedRevision = revision;
     this.ordersSinceSnapshot += 1;
     if (captureForRebuild) {
       this.rebuildReplayOperations?.push(operation);
@@ -1048,11 +1311,13 @@ export class IndexedDbBM25Index {
     kind: BM25MutationRecord['kind'],
     target: string,
     captureForRebuild = true,
+    revision = ++this.issuedRevision,
   ): void {
     const now = Date.now();
     const order = this.nextOperationOrder();
     const operation: BM25PendingOperation = {
       kind: 'mutation',
+      revision,
       record: {
         id: `${kind}:${target}:${order}`,
         kind,
@@ -1062,6 +1327,7 @@ export class IndexedDbBM25Index {
       },
     };
     this.pendingOperations.push(operation);
+    if (!this.workerRuntime && !this.loading && !this.rebuilding) this.appliedRevision = revision;
     this.ordersSinceSnapshot += 1;
     if (captureForRebuild) {
       this.rebuildReplayOperations?.push(operation);
@@ -1076,8 +1342,8 @@ export class IndexedDbBM25Index {
 
   /** 스냅샷 캡처 시점의 order까지 직렬화와 manifest 기록을 마칩니다. */
   private async captureSnapshotIfDue(force = false): Promise<boolean> {
-    if (!this.workerRuntime || this.workerFailure || !this.loaded) return false;
-    if (this.batchDepth > 0 || this.snapshotCaptureInFlight || this.pendingOperations.length > 0) {
+    if (!this.workerRuntime || this.workerFailure || !this.loaded || !this.isTokenizerCurrent || this.rebuilding) return false;
+    if (this.batchDepth > 0 || this.snapshotCaptureInFlight || this.pendingOperations.length > 0 || !this.prefixValid || !this.boundReceipt || this.boundRevision !== this.issuedRevision) {
       return false;
     }
     if (!force) {
@@ -1086,16 +1352,21 @@ export class IndexedDbBM25Index {
     }
     this.snapshotCaptureInFlight = true;
     // watermark는 직렬화 작업을 대기열에 넣는 이 시점의 순서여야 한다.
-    const lastOrder = this.nextOperationOrderValue;
+    const lastOrder = this.persistedOrder;
+    const sourceReceipt = this.boundReceipt;
+    const revision = this.boundRevision;
+    const generation = this.workerGeneration;
     const worker = this.workerRuntime;
     try {
       await this.enqueueWorkerTask(async () => {
-        const raw = await worker.serialize();
+        const serialized = await worker.serializeCheckpoint();
+        if (serialized.sessionId !== worker.sessionId || serialized.appliedRevision !== revision || serialized.pendingRevision !== null) return;
+        const raw = serialized.snapshot;
         if (raw.length === 0 || raw.length > this.maxSnapshotBytes) {
           this.lastSnapshotAt = Date.now();
           return;
         }
-        await this.commitSnapshot(raw, lastOrder, await this.db.documents.count());
+        await this.commitSnapshot(raw, lastOrder, { receipt: sourceReceipt, sessionId: serialized.sessionId, revision });
       });
     } catch (error) {
       this.logger?.warn('BM25 snapshot capture failed; keeping the previous snapshot.', {
@@ -1103,34 +1374,40 @@ export class IndexedDbBM25Index {
       });
       return false;
     } finally {
-      this.snapshotCaptureInFlight = false;
+      if (generation === this.workerGeneration) this.snapshotCaptureInFlight = false;
     }
-    return this.activeManifest !== null;
+    return generation === this.workerGeneration && this.activeManifest !== null;
   }
 
   /** 블록을 먼저 쓰고 manifest 1건을 마지막에 써서 원자적으로 세대를 교체합니다. */
-  private async commitSnapshot(raw: string, lastOrder: number, docCount: number): Promise<void> {
+  private async commitSnapshot(raw: string, lastOrder: number, expected: { receipt: StoreMutationReceipt; sessionId: string; revision: number }): Promise<void> {
+    const ownerGeneration = this.workerGeneration;
     const generation = crypto.randomUUID();
     const blockCount = Math.max(1, Math.ceil(raw.length / BM25_SNAPSHOT_BLOCK_BYTES));
     const manifest: BM25SnapshotManifest = {
       generation,
       tokenizerVersion: TOKENIZER_VERSION,
       lastOrder,
-      docCount,
+      sourceReceipt: { ...expected.receipt },
+      docCount: 0,
       byteLength: raw.length,
       blockCount,
     };
     try {
-      for (let index = 0; index < blockCount; index++) {
-        await this.writeSnapshotBlock(
-          `${generation}:${index}`,
-          raw.slice(index * BM25_SNAPSHOT_BLOCK_BYTES, (index + 1) * BM25_SNAPSHOT_BLOCK_BYTES),
-        );
-      }
-      await this.db.meta.put({
-        key: BM25_SNAPSHOT_MANIFEST_KEY,
-        value: JSON.stringify(manifest),
-        updated: Date.now(),
+      await this.commitMutation(async () => {
+        if (!sameBm25Receipt(await this.getDurabilityReceipt(), expected.receipt) || await this.readPersistedOrder() !== lastOrder ||
+            this.workerRuntime?.sessionId !== expected.sessionId || this.workerRuntime.appliedRevision !== expected.revision || this.workerRuntime.pendingRevision !== null) {
+          throw new Error('rag-bm25-snapshot-stale');
+        }
+        manifest.docCount = await this.db.documents.count();
+        const previous = await this.readManifest();
+        for (let index = 0; index < blockCount; index++) {
+          await this.writeSnapshotBlock(`${generation}:${index}`, raw.slice(index * BM25_SNAPSHOT_BLOCK_BYTES, (index + 1) * BM25_SNAPSHOT_BLOCK_BYTES));
+        }
+        await this.db.meta.put({ key: BM25_SNAPSHOT_MANIFEST_KEY, value: JSON.stringify(manifest), updated: Date.now() });
+        if (previous && previous.generation !== generation) await this.deleteSnapshotBlocks(previous.generation, previous.blockCount);
+        await this.db.removals.where('order').belowOrEqual(lastOrder).delete();
+        await this.db.meta.delete(BM25_SNAPSHOT_KEY);
       });
     } catch (error) {
       this.lastSnapshotAt = Date.now();
@@ -1140,36 +1417,27 @@ export class IndexedDbBM25Index {
       });
       return;
     }
-    const previous = this.activeManifest;
+    if (ownerGeneration !== this.workerGeneration) return;
     this.activeManifest = manifest;
     this.ordersSinceSnapshot = 0;
     this.removalsSinceSnapshot = 0;
     this.lastSnapshotAt = Date.now();
-    try {
-      if (previous && previous.generation !== generation) {
-        await this.deleteSnapshotBlocks(previous.generation, previous.blockCount);
-      }
-      await this.db.removals.where('order').belowOrEqual(lastOrder).delete();
-      await this.db.meta.delete(BM25_SNAPSHOT_KEY);
-    } catch (error) {
-      // 정리는 실패해도 새 스냅샷 자체는 유효하므로 다음 캡처에서 다시 시도한다.
-      this.logger?.warn('BM25 snapshot cleanup failed.', {
-        error,
-      });
-    }
   }
 
   /** 스냅샷과 tombstone 로그를 버리고 다음 복구를 전량 재구성으로 되돌립니다. */
   private async dropSnapshot(): Promise<void> {
-    const manifest = this.activeManifest ?? (await this.readManifest());
     this.activeManifest = null;
     this.ordersSinceSnapshot = 0;
     this.removalsSinceSnapshot = 0;
     this.restoreMode = 'full';
     try {
-      await this.db.meta.delete(BM25_SNAPSHOT_MANIFEST_KEY);
-      if (manifest) await this.deleteSnapshotBlocks(manifest.generation, manifest.blockCount);
-      await this.db.removals.clear();
+      await this.commitChangedRows(async () => {
+        const manifest = await this.readManifest();
+        const removed = await this.db.meta.where('key').anyOf([BM25_SNAPSHOT_MANIFEST_KEY, BM25_SNAPSHOT_KEY]).delete();
+        const blocks = manifest ? await this.db.snapshotBlocks.where('key').startsWith(`${manifest.generation}:`).delete() : 0;
+        const removals = await this.db.removals.toCollection().delete();
+        return removed + blocks + removals;
+      });
     } catch (error) {
       this.logger?.warn('BM25 snapshot cleanup failed.', {
         error,
@@ -1191,12 +1459,28 @@ export class IndexedDbBM25Index {
 
   /** 테스트에서 quota 실패를 주입할 수 있게 분리한 블록 기록입니다. */
   protected async writeSnapshotBlock(key: string, data: string): Promise<void> {
-    await this.db.snapshotBlocks.put({ key, data });
+    await this.commitMutation(() => this.db.snapshotBlocks.put({ key, data }));
   }
 
   private async deleteSnapshotBlocks(generation: string, blockCount: number): Promise<void> {
     const keys = Array.from({ length: blockCount }, (_, index) => `${generation}:${index}`);
-    await this.db.snapshotBlocks.bulkDelete(keys);
+    await this.commitChangedRows(() => this.db.snapshotBlocks.where('key').anyOf(keys).delete());
+  }
+
+  private async commitChangedRows(operation: () => Promise<number>): Promise<number> {
+    const nested = Dexie.currentTransaction?.db === this.db;
+    const generation = this.workerGeneration;
+    const committed = await this.db.transaction('rw', this.db.tables, async () => {
+      if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+      const previous = await this.getDurabilityReceipt();
+      const count = await operation();
+      if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+      const receipt = count > 0 ? await stampStoreMutation(this.db.durability) : null;
+      if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+      return { previous, count, receipt };
+    });
+    if (!nested && committed.receipt && generation === this.workerGeneration) this.bindCommittedHead(committed.previous, committed.receipt);
+    return committed.count;
   }
 
   /**
@@ -1204,17 +1488,16 @@ export class IndexedDbBM25Index {
    * 캡처 도중 죽어 남은 세대와 폐기된 세대를 함께 회수합니다.
    */
   private async sweepOrphanSnapshotBlocks(): Promise<void> {
-    const activeGeneration = this.activeManifest?.generation ?? null;
     try {
-      const keys = await this.db.snapshotBlocks.toCollection().primaryKeys();
-      const orphans = keys.filter(
-        (key) => activeGeneration === null || !key.startsWith(`${activeGeneration}:`),
-      );
-      if (orphans.length === 0) return;
-      await this.db.snapshotBlocks.bulkDelete(orphans);
-      this.logger?.warn('BM25 orphan snapshot blocks were removed.', {
-        data: { blocks: orphans.length },
+      const removed = await this.commitChangedRows(async () => {
+        const manifest = await this.readManifest();
+        if (!manifest && await this.db.meta.get(BM25_SNAPSHOT_MANIFEST_KEY)) return 0;
+        const activeGeneration = manifest?.generation ?? null;
+        const keys = await this.db.snapshotBlocks.toCollection().primaryKeys();
+        const orphans = keys.filter((key) => activeGeneration === null || !key.startsWith(`${activeGeneration}:`));
+        return orphans.length ? this.db.snapshotBlocks.where('key').anyOf(orphans).delete() : 0;
       });
+      if (removed > 0) this.logger?.warn('BM25 orphan snapshot blocks were removed.', { data: { blocks: removed } });
     } catch (error) {
       this.logger?.warn('BM25 orphan snapshot sweep failed.', { error });
     }
@@ -1234,9 +1517,6 @@ export class IndexedDbBM25Index {
       this.logger?.debug('BM25 snapshot manifest was discarded.', {
         error,
       });
-      await this.db.meta.delete(BM25_SNAPSHOT_MANIFEST_KEY);
-      await this.db.snapshotBlocks.clear();
-      await this.db.removals.clear();
       return null;
     }
   }
@@ -1253,15 +1533,12 @@ export class IndexedDbBM25Index {
   }
 
   private async persistSnapshotRaw(raw: string): Promise<void> {
-    await this.db.meta.put({
-      key: BM25_SNAPSHOT_KEY,
-      value: raw,
-      updated: Date.now(),
-    });
+    await this.commitMutation(() => this.db.meta.put({ key: BM25_SNAPSHOT_KEY, value: raw, updated: Date.now() }));
   }
 
   private async loadSnapshot(): Promise<BM25Snapshot> {
     const manifest = await this.readManifest();
+    if (!manifest && await this.db.meta.get(BM25_SNAPSHOT_MANIFEST_KEY)) return { raw: '', source: 'empty' };
     if (manifest) {
       if (manifest.byteLength > this.maxSnapshotBytes) {
         // 메모리 상한을 넘는 스냅샷은 다음 기회를 위해 남겨 두고 원문에서 복구한다.
@@ -1290,6 +1567,10 @@ export class IndexedDbBM25Index {
     }
     return { raw: await this.legacyAdapter.read(this.legacyPath), source: 'legacy' };
   }
+}
+
+function sameBm25Receipt(left: StoreMutationReceipt | null, right: StoreMutationReceipt | null): boolean {
+  return left === null ? right === null : right !== null && left.incarnation === right.incarnation && left.mutation === right.mutation;
 }
 
 function toCorpusDocument(record: BM25DocumentRecord): BM25CorpusDocument {
@@ -1349,9 +1630,10 @@ function isBm25SnapshotManifest(value: unknown): value is BM25SnapshotManifest {
   return (
     typeof record.generation === 'string' &&
     record.generation.length > 0 &&
-    record.tokenizerVersion === TOKENIZER_VERSION &&
+    typeof record.tokenizerVersion === 'number' &&
+    Number.isSafeInteger(record.tokenizerVersion) && record.tokenizerVersion > 0 &&
     typeof record.lastOrder === 'number' &&
-    Number.isFinite(record.lastOrder) &&
+    Number.isSafeInteger(record.lastOrder) && record.lastOrder >= 0 &&
     typeof record.docCount === 'number' &&
     Number.isInteger(record.docCount) &&
     record.docCount >= 0 &&

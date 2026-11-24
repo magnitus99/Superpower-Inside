@@ -31,6 +31,7 @@ import {
 } from './rust-core';
 import { selectByRustIndices } from '../utils/rust-index-plan';
 import { appLogger } from '../utils/logger';
+import { openLiteralInventory, LiteralInventoryError, type LiteralInventorySource, type LiteralInventoryHandle } from './literal-inventory';
 
 const QUERY_SCORE_YIELD_INTERVAL = 512;
 /**
@@ -83,6 +84,7 @@ export interface RAGExhaustiveBm25Match {
 }
 
 export interface RAGQueryEngineOptions {
+  literalInventorySource?: LiteralInventorySource;
   corpusStore?: import('./corpus-store').RetrievalCorpusStore;
   getCandidatePaths?: () => Promise<ReadonlySet<string>>;
   annEnabled?: boolean;
@@ -128,6 +130,7 @@ interface QueryEmbeddingResolution {
 }
 
 export class RAGQueryEngine {
+  private readonly literalInventorySource: LiteralInventorySource | undefined;
   private readonly corpusStore: import('./corpus-store').RetrievalCorpusStore | undefined;
   private readonly getCandidatePaths: RAGQueryEngineOptions['getCandidatePaths'];
   private candidatePathsCache: { at: number; paths: ReadonlySet<string> } | null = null;
@@ -145,6 +148,23 @@ export class RAGQueryEngine {
   private consecutiveQueryEmbeddingTimeouts = 0;
   private queryEmbeddingCooldownUntil = 0;
   private lastRetrievalDiagnostics: RetrievalProviderDiagnostic[] = [];
+  private semanticSearchAdmission: () => boolean = () => true;
+
+  openLiteralInventory(needles: readonly string[], signal?: AbortSignal, allowedPaths?: readonly string[]): Promise<LiteralInventoryHandle> {
+    const source = this.literalInventorySource;
+    if (!source) return Promise.reject(new LiteralInventoryError('source-scope-unavailable'));
+    if (allowedPaths === undefined) return openLiteralInventory(source, needles, signal);
+    const allowed = new Set(allowedPaths);
+    return openLiteralInventory({ corpus: source.corpus, captureScope: async () => {
+      const scope = await source.captureScope();
+      return { generationId: scope.generationId, isCurrent: () => scope.isCurrent(), sources: new Map([...scope.sources].filter(([path]) => allowed.has(path))) };
+    } }, needles, signal);
+  }
+
+  /** 모델·인증 교체 뒤 기존 engine은 lexical만 제공하며 새 원격 요청을 만들지 않습니다. */
+  setSemanticSearchAdmission(admit: () => boolean): void {
+    this.semanticSearchAdmission = admit;
+  }
 
   constructor(
     vectorStore: VectorStore | null,
@@ -154,6 +174,7 @@ export class RAGQueryEngine {
     minScore: number = DEFAULT_SEARCH_QUALITY.minScore,
     options: RAGQueryEngineOptions = {},
   ) {
+    this.literalInventorySource = options.literalInventorySource;
     this.corpusStore = options.corpusStore;
     this.getCandidatePaths = options.getCandidatePaths;
     this.vectorStore = vectorStore;
@@ -411,7 +432,7 @@ export class RAGQueryEngine {
       ...options,
       excludedProviderIds,
     });
-    const qVector = embeddingResolution.vector;
+    const qVector = this.semanticSearchAdmission() ? embeddingResolution.vector : [];
     const retrieval = await this.retrievalPipeline.retrieve(
       {
         question,
@@ -579,7 +600,7 @@ export class RAGQueryEngine {
     const startedAt = performance.now();
     const elapsed = (): number => performance.now() - startedAt;
     const embeddingProvider = this.embeddingProvider;
-    if (!embeddingProvider) {
+    if (!embeddingProvider || !this.semanticSearchAdmission()) {
       return {
         vector: [],
         status: 'skipped',

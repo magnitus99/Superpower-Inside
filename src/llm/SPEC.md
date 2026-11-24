@@ -32,6 +32,18 @@ API 키와 ChatGPT 자격증명의 영속화는 Obsidian SecretStorage에 한정
 
 일반 설정·data.json·localStorage·로그·공유 명세에 키·토큰·쿠키 원문을 기록하지 않는다. 기존 인증 자료를 문서 import 과정에서 복제하거나 정상 로그인 대신 과거 바이트로 복원하지 않는다.
 
+## 로컬 임베딩 소유권과 우선 큐
+
+Ternlight·Gemma provider는 자기 runtime·초기화·worker를 소유한다. 직접 호출용 legacy helper와 수명을 공유하지 않으며 닫힌 owner의 늦은 응답·실패가 새 owner를 종료하지 않는다. owner close는 단조 상태이고 worker의 치명적 종료와 요청 하나의 전송·응답·검증 실패는 구별한다. 요청별 실패를 다른 대기 소비자의 강제 종료로 확대하지 않는다.
+
+로컬 요청은 owner 안에서 한 번에 하나만 실제 worker에 전송한다. 다음 전송은 foreground 우선, 같은 우선순위는 FIFO다. provider의 query `embed`는 기본 foreground, document `embedBatch`는 기본 background이며 명시한 priority는 cache miss까지 전달한다. 우선순위는 client 큐 정보이고 모델 입력·prefix·worker wire·캐시 namespace·벡터 내용이나 원격 제공자의 동시성을 바꾸지 않는다.
+
+실행 중 소비자의 취소는 즉시 반환하되 물리 요청·예약은 실제 ACK·error·worker 종료까지 남는다. 전송 전 취소는 큐와 큰 입력·transfer 참조를 제거한다. `waitForIdle()`은 초기화·대기·물리 작업의 정착 경계이지 성공 인증이나 신규 admission 잠금이 아니다. 종료·모델 파일 삭제의 상위 조율은 `retrieval-index`의 runtime 경계가 맡는다. 상태 알림은 비권위 관찰자이며 예외가 계산 결과 정착·다음 dispatch·물리 drain을 막지 못한다. 진단에 raw 응답·관찰자 오류·벡터를 복제하지 않는다.
+
+로컬 background 논리 batch는 순차 physical microdispatch로 조립하며 다음 전송 turn에서만 `deterministic-core`가 정한 행 수를 적용한다. 따라서 대기 중 추가된 foreground·실제 backend·상한 변경도 다음 전송에 반영한다. 실제 ACK로 확인한 Gemma backend는 CPU 4행·WebGPU 32행 상한에 연결하고 기존 padded-token 제한을 보존한다. 이미 실행 중인 동기 inference는 선점하지 않는다.
+
+owner-local 표본은 실제 miss post 직전부터 해당 ACK handler 진입까지의 실제 행 수·wall duration·그 span 안에서 실행된 timer drift만 측정한다. cache hit·중복 병합·lookup·commit·큐 대기·초기화는 건강 표본이 아니다. RSS·available memory는 실제 지원 API만 읽고 미지원·오류는 null이며 heap·weights·장치 사양으로 여유를 만들지 않는다. 미계측 source 원장을 0으로 바꾸지 않으며 관측·Rust 판정이 없으면 새 최적화를 닫고 기존 baseline 요청을 유지한다. 무인자 inference-dispatch hook은 실제 성공 post 뒤에만 알리고 관찰자 예외는 격리한다. 선택적 `onInferenceSample`은 검증된 성공 miss의 `{backend, workUnits, durationMs, endedAtMs}`만 별도 frozen 객체로 전달한다. 이는 같은 monotonic clock의 실제 post→ACK wall 관측이지 논리 batch·CPU 시간·전체 pipeline 시간이 아니다. 취소·실패·초기화·cache hit·dedupe 추가 소비에는 공개 표본을 만들지 않으며 unknown/변경 backend는 생략한다. callback이나 진단 실패가 정착을 막지 않고 외부 수정이 private admission 표본을 바꾸지 않는다. 원격 경로에 새 물리 관측을 만들지 않는다. `waitForIdle()`은 ACK 사이 남은 논리 micro-operation도 포함한다. 이 연결과 합성 회귀만으로 실제 Obsidian foreground 지연·처리량·CPU/GPU 활용 향상을 주장하지 않는다.
+
 ## 근거와 한계
 
 공통 계약은 `providers.ts`, 비밀정보 처리는 `src/secrets/provider-secrets.ts`와 `src/secrets/provider-secrets.test.ts`가 근거다. 제공자별 메시지·스트리밍·tool call 테스트는 로컬 계약 검증이며 실제 온라인 제공자 지원·로그인 성공을 대신하지 않는다. 한도 조회의 합성 응답·가짜 타이머·설정 보존 회귀는 로컬 계약 검증이며 실제 계정의 조회 성공이나 현재 과금 상태를 대신하지 않는다. 실제 계정 온라인 호출은 이 변경의 검증에 포함하지 않는다.

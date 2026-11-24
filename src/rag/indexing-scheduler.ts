@@ -131,6 +131,7 @@ export class RAGIndexingScheduler {
   private abortController: AbortController | null = null;
   private cancelled = false;
   private activeJob: QueueJob | null = null;
+  private jobEpoch = 0;
   private lastResult: IndexingResult | null = null;
   private progress: RagIndexingSchedulerProgress | null = null;
   private startedAt: number | null = null;
@@ -154,7 +155,7 @@ export class RAGIndexingScheduler {
         this.queue.filter((job) => job.kind === 'file').length +
         (this.parkedJob?.kind === 'file' ? 1 : 0),
       lastResult: this.lastResult,
-      progress: this.progress,
+      progress: this.progress ? { ...copyProgress(this.progress), eta: this.progress.eta ? { ...this.progress.eta } : null } : null,
     };
   }
 
@@ -220,6 +221,7 @@ export class RAGIndexingScheduler {
   }
 
   cancel(): void {
+    this.jobEpoch++;
     this.cancelled = true;
     this.preparing = false;
     this.preparationVisible = false;
@@ -443,16 +445,22 @@ export class RAGIndexingScheduler {
 
   private async runJob(job: QueueJob): Promise<'completed' | 'paused'> {
     const controller = new AbortController();
+    const epoch = ++this.jobEpoch;
     this.abortController = controller;
     const baseOptions = this.operations.createIndexingOptions?.(controller.signal) ?? {
       signal: controller.signal,
     };
+    const isCurrent = (): boolean => this.activeJob === job && this.abortController === controller &&
+      this.jobEpoch === epoch && !this.cancelled && !controller.signal.aborted && !baseOptions.signal?.aborted && baseOptions.isCurrent?.() !== false;
     const options: IndexingOptions = {
       ...baseOptions,
+      signal: baseOptions.signal ?? controller.signal,
+      isCurrent,
       onProgress: (progress) => {
-        if (controller.signal.aborted) return;
+        if (!isCurrent()) return;
+        const snapshot = copyProgress(progress);
         baseOptions.onProgress?.(progress);
-        this.handleProgress(progress);
+        if (isCurrent()) this.handleProgress(snapshot);
       },
     };
     this.progress = null;
@@ -461,7 +469,7 @@ export class RAGIndexingScheduler {
         this.phase = 'file';
         this.emitStatus();
         const result = await this.operations.indexFile(job.file, options);
-        if (controller.signal.aborted) throw new IndexingCancelledError();
+        if (!isCurrent()) throw new IndexingCancelledError();
         this.lastResult = result;
         job.resolve(result);
         return 'completed';
@@ -470,7 +478,7 @@ export class RAGIndexingScheduler {
         this.phase = 'file';
         this.emitStatus();
         const removed = await this.operations.removeFile(job.filePath);
-        if (controller.signal.aborted) throw new IndexingCancelledError();
+        if (!isCurrent()) throw new IndexingCancelledError();
         job.resolve(removed);
         return 'completed';
       }
@@ -481,7 +489,7 @@ export class RAGIndexingScheduler {
           ...options,
           automaticRecovery: job.options.automaticRecovery,
         });
-        if (controller.signal.aborted) throw new IndexingCancelledError();
+        if (!isCurrent()) throw new IndexingCancelledError();
         this.lastResult = result;
         job.resolve(result);
         return 'completed';
@@ -489,12 +497,13 @@ export class RAGIndexingScheduler {
       this.phase = 'all';
       this.emitStatus();
       const result = await this.operations.reindexAll(options);
-      if (controller.signal.aborted) throw new IndexingCancelledError();
+      if (!isCurrent()) throw new IndexingCancelledError();
       this.lastResult = result;
       job.resolve(result);
       return 'completed';
     } catch (error) {
-      if (error instanceof IndexingPerformancePausedError && !this.abortController.signal.aborted) {
+      if (error instanceof IndexingPerformancePausedError && isCurrent()) {
+        this.jobEpoch++;
         this.parkedJob = job;
         this.phase = 'paused';
         this.progress = null;
@@ -514,6 +523,8 @@ export class RAGIndexingScheduler {
       }
       job.reject(error);
       return 'completed';
+    } finally {
+      if (this.jobEpoch === epoch) this.jobEpoch++;
     }
   }
 
@@ -595,8 +606,11 @@ export class RAGIndexingScheduler {
     if (this.statusHeartbeat !== null) return;
     this.statusHeartbeat = window.setInterval(() => {
       if (!this.draining && !this.preparing) return;
-      // 마지막 progress는 유지하고 시계만 갱신해 경과 시간이 매초 움직이게 합니다.
-      if (this.progress) this.progress = { ...this.progress, nowMs: performance.now() };
+      // 관측은 그대로 두고 현재 시각으로 Rust의 신선도·잔여 시간을 다시 계산합니다.
+      if (this.progress) {
+        const nowMs = performance.now();
+        this.progress = { ...this.progress, nowMs, eta: this.planProgressEta(this.progress, nowMs) };
+      }
       this.emitStatus();
     }, STATUS_HEARTBEAT_MS);
   }
@@ -613,34 +627,55 @@ export class RAGIndexingScheduler {
 
   private handleProgress(progress: RagIndexingProgressSnapshot): void {
     this.progress = {
-      ...progress,
-      eta: planRagIndexingEtaRust({
-        nowMs: progress.nowMs,
-        startedAtMs: progress.startedAtMs,
-        totalFiles: progress.totalFiles,
-        completedFiles: progress.completedFiles,
-        currentFileTotalChunks: progress.currentFileTotalChunks,
-        currentFileEmbeddedChunks: progress.currentFileEmbeddedChunks,
-        totalEstimatedChunks: progress.totalEstimatedChunks,
-        completedEstimatedChunks: progress.completedEstimatedChunks,
-        currentFileEstimatedChunks: progress.currentFileEstimatedChunks,
-        totalPlannedChunks: progress.totalPlannedChunks,
-        completedPlannedChunks: progress.completedPlannedChunks,
-        planningComplete: progress.planningComplete,
-        completedBatchDurationsMs: progress.completedBatchDurationsMs,
-        completedBatchChunkCounts: progress.completedBatchChunkCounts,
-        completedFileDurationsMs: progress.completedFileDurationsMs,
-        completedFileChunkCounts: progress.completedFileChunkCounts,
-        completedFileEstimatedChunkCounts: progress.completedFileEstimatedChunkCounts,
-        completedFileActualChunkCounts: progress.completedFileActualChunkCounts,
-        completedFileOverheadDurationsMs: progress.completedFileOverheadDurationsMs,
-        historicalMsPerChunk: progress.historicalMsPerChunk,
-        historicalChunkEstimateRatio: progress.historicalChunkEstimateRatio,
-        historicalVariance: progress.historicalVariance,
-      }),
+      ...copyProgress(progress),
+      eta: this.planProgressEta(progress, progress.nowMs),
     };
     this.emitStatus();
   }
+
+  private planProgressEta(progress: RagIndexingProgressSnapshot, nowMs: number): RustRagIndexingEtaPlan | null {
+    return planRagIndexingEtaRust({
+      pipeline: progress.pipeline,
+      nowMs,
+      startedAtMs: progress.startedAtMs,
+      totalFiles: progress.totalFiles,
+      completedFiles: progress.completedFiles,
+      currentFileTotalChunks: progress.currentFileTotalChunks,
+      currentFileEmbeddedChunks: progress.currentFileEmbeddedChunks,
+      totalEstimatedChunks: progress.totalEstimatedChunks,
+      completedEstimatedChunks: progress.completedEstimatedChunks,
+      currentFileEstimatedChunks: progress.currentFileEstimatedChunks,
+      totalPlannedChunks: progress.totalPlannedChunks,
+      completedPlannedChunks: progress.completedPlannedChunks,
+      planningComplete: progress.planningComplete,
+      completedBatchDurationsMs: progress.completedBatchDurationsMs,
+      completedBatchChunkCounts: progress.completedBatchChunkCounts,
+      completedFileDurationsMs: progress.completedFileDurationsMs,
+      completedFileChunkCounts: progress.completedFileChunkCounts,
+      completedFileEstimatedChunkCounts: progress.completedFileEstimatedChunkCounts,
+      completedFileActualChunkCounts: progress.completedFileActualChunkCounts,
+      completedFileOverheadDurationsMs: progress.completedFileOverheadDurationsMs,
+      historicalMsPerChunk: progress.historicalMsPerChunk,
+      historicalChunkEstimateRatio: progress.historicalChunkEstimateRatio,
+      historicalVariance: progress.historicalVariance,
+    });
+  }
+}
+
+function copyProgress(progress: RagIndexingProgressSnapshot): RagIndexingProgressSnapshot {
+  return {
+    ...progress,
+    pipeline: progress.pipeline ? { ...progress.pipeline,
+      windowSamples: progress.pipeline.windowSamples.map((sample) => ({ ...sample })),
+      inferenceSamples: progress.pipeline.inferenceSamples.map((sample) => ({ ...sample })) } : undefined,
+    completedBatchDurationsMs: [...progress.completedBatchDurationsMs],
+    completedBatchChunkCounts: [...progress.completedBatchChunkCounts],
+    completedFileDurationsMs: [...progress.completedFileDurationsMs],
+    completedFileChunkCounts: [...progress.completedFileChunkCounts],
+    completedFileEstimatedChunkCounts: [...progress.completedFileEstimatedChunkCounts],
+    completedFileActualChunkCounts: [...progress.completedFileActualChunkCounts],
+    completedFileOverheadDurationsMs: [...progress.completedFileOverheadDurationsMs],
+  };
 }
 
 function createEmptyIndexingResult(): IndexingResult {

@@ -169,3 +169,13 @@ describe('발견 단서의 한 차례 후속 검색', () => {
     expect(f.runSearch).not.toHaveBeenCalled();
   });
 });
+
+it('deferAnswer는 기존 후속 모델 호출을 유지하지만 engine-only는 시도하지 않는다', async () => {
+  const first = fixture();
+  await searchIndexedFollowup({ ...first.options, deferAnswer: true }, first.base, first.runSearch);
+  expect(first.streamChat).toHaveBeenCalledOnce();
+  const second = fixture();
+  await searchIndexedFollowup({ ...second.options, executionMode: 'engine-only' }, second.base, second.runSearch);
+  expect(second.streamChat).not.toHaveBeenCalled();
+  expect(second.runSearch).not.toHaveBeenCalled();
+});

@@ -294,6 +294,7 @@ fn coverage_ladder(clause_count: usize) -> Vec<usize> {
 /// query 문자열을 절 목록으로 파싱한다.
 #[must_use]
 fn parse_query(query: &str, exact_terms: bool) -> Vec<Bm25QueryClause> {
+    let query = super::normalize_search_text(query);
     let characters = query.chars().collect::<Vec<_>>();
     let mut clauses = Vec::<Bm25QueryClause>::new();
     let mut seen = BTreeSet::<ClauseKey>::new();

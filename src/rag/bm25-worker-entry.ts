@@ -1,82 +1,105 @@
 import { readWorkerStorePages } from './worker-indexed-db';
 import { Bm25RuntimeIndex, initSync } from '../../.local/generated/rag-wasm/rag_wasm';
-import type { BM25WorkerDocument } from './bm25-worker-runtime';
+import type {
+  BM25WorkerDocument,
+  BM25WorkerRequest,
+  BM25WorkerResponse,
+} from './bm25-worker-runtime';
 import { TOKENIZER_VERSION } from './tokenizer-version';
 
-export interface BM25WorkerRequest {
-  id: number;
-  operation:
-    | 'initialize'
-    | 'rebuild'
-    | 'add'
-    | 'remove-doc'
-    | 'remove-source'
-    | 'clear'
-    | 'serialize'
-    | 'search-top'
-    | 'aggregate'
-    | 'batch';
-  wasmBase64?: string;
-  dbName?: string;
-  snapshot?: string;
-  sinceOrder?: number;
-  expectedDocs?: number;
-  documents?: BM25WorkerDocument[];
-  document?: BM25WorkerDocument;
-  target?: string;
-  query?: string;
-  limit?: number;
-  allowedPaths?: readonly string[];
-  queries?: readonly { query: string; limit: number }[];
-  aggregates?: readonly { query: string; limit: number }[];
-}
-
-interface BM25WorkerHit {
-  docId: string;
-  sourcePath: string;
-  score: number;
-}
-
-export interface BM25WorkerResponse {
-  id: number;
-  ready?: boolean;
-  tokenizerCurrent?: boolean;
-  totalDocs?: number;
-  snapshot?: string;
-  snapshotRejected?: boolean;
-  hits?: BM25WorkerHit[];
-  /** 점수 없이 센 질의 일치 인벤토리입니다. TS가 형식을 검증합니다. */
-  aggregateJson?: string;
-  /** 여러 질의의 검색·집계를 담은 JSON입니다. TS가 형식을 검증합니다. */
-  batchJson?: string;
-  progress?: {
-    processedDocuments: number;
-  };
-  error?: string;
-}
+export type { BM25WorkerRequest, BM25WorkerResponse } from './bm25-worker-runtime';
 
 const HYDRATION_PROGRESS_INTERVAL = 128;
 
 let initialized = false;
 let runtime: Bm25RuntimeIndex | null = null;
+let sessionId: string | null = null;
+let appliedRevision: number | null = null;
+let pendingRevision: number | null = null;
+let nextPart = 0;
+let processing = Promise.resolve();
+const SESSION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function proofState(): Pick<
+  BM25WorkerResponse,
+  'sessionId' | 'appliedRevision' | 'pendingRevision' | 'nextPart'
+> {
+  return { sessionId, appliedRevision, pendingRevision, nextPart };
+}
+
+function isMutation(operation: BM25WorkerRequest['operation']): boolean {
+  return ['rebuild', 'add', 'replace-source', 'remove-doc', 'remove-source', 'clear'].includes(
+    operation,
+  );
+}
+
+function validateRequest(request: BM25WorkerRequest): void {
+  if (
+    typeof request !== 'object' ||
+    request === null ||
+    !Number.isSafeInteger(request.id) ||
+    request.id < 1 ||
+    typeof request.sessionId !== 'string' ||
+    !SESSION_PATTERN.test(request.sessionId) ||
+    !Number.isSafeInteger(request.revision) ||
+    request.revision < 0 ||
+    !Number.isSafeInteger(request.part) ||
+    request.part < 0 ||
+    typeof request.finalPart !== 'boolean'
+  )
+    throw new Error('Invalid BM25 worker protocol.');
+  if (request.operation === 'initialize') {
+    if (request.revision !== 0 || request.part !== 0 || !request.finalPart)
+      throw new Error('Invalid BM25 worker initialization.');
+    sessionId = request.sessionId;
+    appliedRevision = null;
+    pendingRevision = null;
+    nextPart = 0;
+    return;
+  }
+  if (request.sessionId !== sessionId || appliedRevision === null)
+    throw new Error('BM25 worker requires initialization.');
+  if (isMutation(request.operation)) {
+    if (request.revision !== appliedRevision + 1 || request.part !== nextPart)
+      throw new Error('Invalid BM25 worker mutation sequence.');
+  } else if (!['serialize', 'search-top', 'aggregate', 'batch'].includes(request.operation)) {
+    throw new Error('Invalid BM25 worker operation.');
+  }
+}
 
 self.onmessage = (event: MessageEvent<BM25WorkerRequest>): void => {
   const request = event.data;
-  void handleMessage(request);
+  processing = processing.then(() => handleMessage(request));
 };
 
 async function handleMessage(request: BM25WorkerRequest): Promise<void> {
   try {
+    validateRequest(request);
     if (!initialized) {
       if (!request.wasmBase64) throw new Error('BM25 worker WASM payload is missing.');
       initSync({ module: decodeBase64(request.wasmBase64) });
       initialized = true;
     }
     const response = await handleRequest(request);
-    self.postMessage({ id: request.id, ...response } satisfies BM25WorkerResponse);
+    if (request.operation === 'initialize') appliedRevision = 0;
+    else if (isMutation(request.operation)) {
+      if (request.finalPart) {
+        appliedRevision = request.revision;
+        pendingRevision = null;
+        nextPart = 0;
+      } else {
+        pendingRevision = request.revision;
+        nextPart = request.part + 1;
+      }
+    }
+    self.postMessage({ id: request.id, ...response, ...proofState() } satisfies BM25WorkerResponse);
   } catch (error) {
+    appliedRevision = null;
+    pendingRevision = null;
+    nextPart = 0;
     self.postMessage({
-      id: request.id,
+      id: request?.id ?? 0,
+      ...proofState(),
       error: error instanceof Error ? error.message : String(error),
     } satisfies BM25WorkerResponse);
   }
@@ -139,16 +162,28 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
     return { ...runtimeState(), snapshot: ensureRuntime().to_json() };
   }
   const active = ensureRuntime();
-  if (request.operation === 'add') {
+  if (request.operation === 'replace-source') {
+    const documents = request.documents;
+    if (
+      !request.target ||
+      !documents ||
+      documents.length > 128 ||
+      documents.some((document) => document.sourcePath !== request.target)
+    )
+      throw new Error('Invalid BM25 source replacement.');
+    if (request.removeFirst) active.remove_source(request.target, TOKENIZER_VERSION);
+    addDocuments(documents, false, request.id);
+  } else if (request.operation === 'add') {
     const document = request.document;
     if (!document) throw new Error('BM25 worker document is missing.');
-    active.add_document_fields_json(
+    const added = active.add_document_fields_json(
       document.id,
       document.text,
       document.sourcePath,
       JSON.stringify({ ...document, path: document.sourcePath }),
       TOKENIZER_VERSION,
     );
+    if (added !== 1) throw new Error('BM25 worker document validation failed.');
   } else if (request.operation === 'remove-doc') {
     active.remove_document(request.target ?? '', TOKENIZER_VERSION);
   } else if (request.operation === 'remove-source') {
@@ -170,18 +205,25 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
   } else if (request.operation === 'aggregate') {
     return {
       ...runtimeState(),
-      aggregateJson: request.allowedPaths === undefined
-        ? active.aggregate_json(request.query ?? '', Math.max(0, Math.floor(request.limit ?? 0)))
-        : active.aggregate_scoped_json(request.query ?? '', Math.max(0, Math.floor(request.limit ?? 0)), JSON.stringify(request.allowedPaths)),
+      aggregateJson:
+        request.allowedPaths === undefined
+          ? active.aggregate_json(request.query ?? '', Math.max(0, Math.floor(request.limit ?? 0)))
+          : active.aggregate_scoped_json(
+              request.query ?? '',
+              Math.max(0, Math.floor(request.limit ?? 0)),
+              JSON.stringify(request.allowedPaths),
+            ),
     };
   } else if (request.operation === 'batch') {
     return {
       ...runtimeState(),
-      batchJson: active.batch_search_and_aggregate_json(JSON.stringify({
-        queries: request.queries ?? [],
-        aggregates: request.aggregates ?? [],
-        ...(request.allowedPaths !== undefined ? { allowedPaths: request.allowedPaths } : {}),
-      })),
+      batchJson: active.batch_search_and_aggregate_json(
+        JSON.stringify({
+          queries: request.queries ?? [],
+          aggregates: request.aggregates ?? [],
+          ...(request.allowedPaths !== undefined ? { allowedPaths: request.allowedPaths } : {}),
+        }),
+      ),
     };
   }
   return runtimeState();
@@ -355,6 +397,7 @@ function postHydrationProgress(requestId: number, processedDocuments: number): v
   if (processedDocuments <= 0) return;
   self.postMessage({
     id: requestId,
+    ...proofState(),
     progress: { processedDocuments },
   } satisfies BM25WorkerResponse);
 }
@@ -391,6 +434,7 @@ function parsePersistedDocument(value: unknown): BM25WorkerDocument {
 function runtimeState(): Omit<BM25WorkerResponse, 'id'> {
   const active = ensureRuntime();
   return {
+    ...proofState(),
     ready: active.is_ready(),
     tokenizerCurrent: active.is_tokenizer_current(TOKENIZER_VERSION),
     totalDocs: active.total_docs(),

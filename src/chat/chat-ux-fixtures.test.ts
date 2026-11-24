@@ -56,7 +56,9 @@ describe('chat UX fixture gate', () => {
     expect(viewSource).toContain("cls: 'superpower-inside-chat-empty-state'");
     expect(viewSource).toContain("text: t('chatEmptyStateTitle')");
     expect(viewSource).toContain('this.plugin.prepareRagForChat()');
-    expect(viewSource).toContain("setHidden(this.readinessEl, snapshot.status === 'ready')");
+    expect(viewSource).toContain('setHidden(this.readinessEl, snapshot.items.length === 0)');
+    expect(viewSource).toContain('renderRagIndexingProgress(row, indexing)');
+    expect(viewSource).not.toContain('this.readinessEl.empty()');
     expect(viewSource).toContain('severity-${item.severity}');
     expect(styles).toContain('.superpower-inside-chat-empty-state-prompts button');
     expect(styles).toContain('.superpower-inside-chat-readiness.superpower-inside-hidden');

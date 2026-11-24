@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const rustWireExports = vi.hoisted(() => ({
+  plan_rag_runtime_work_eta_json: vi.fn<(input: string) => string>(),
+  plan_local_rag_admission_json: vi.fn<(input: string) => string>(),
+  plan_rag_file_indexability_json: vi.fn<(files: string, paths: string, extensions: string, probes: string) => string>(),
+  plan_rag_status_json: vi.fn<(input: string) => string>(),
+  plan_rag_automatic_recovery_batch_json: vi.fn<(input: string) => string>(),
+  plan_source_segment_chunks_json: vi.fn<(path: string, extension: string, content: string, maxSize: number, overlap: number, segments: string) => string>(),
+  decode_source_bytes_json:
+    vi.fn<(bytes: Uint8Array, includeText: boolean, sourceSize: number) => string>(),
   plan_indexed_search_queries_json: vi.fn<(input: string) => string>(),
   plan_indexed_review_answer_plan_json: vi.fn<(input: string) => string>(),
   validate_indexed_review_answer_json: vi.fn<(input: string) => string>(),
@@ -8,12 +16,33 @@ const rustWireExports = vi.hoisted(() => ({
 }));
 
 vi.mock('../../.local/generated/rag-wasm/rag_wasm.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../.local/generated/rag-wasm/rag_wasm.js')>();
+  const actual =
+    await importOriginal<typeof import('../../.local/generated/rag-wasm/rag_wasm.js')>();
+  rustWireExports.plan_rag_runtime_work_eta_json.mockImplementation((input) => {
+    const candidate: unknown = Reflect.get(actual, 'plan_rag_runtime_work_eta_json');
+    return typeof candidate === 'function' ? (candidate as (input: string) => string)(input) : '';
+  });
+  rustWireExports.plan_local_rag_admission_json.mockImplementation((input) => {
+    const candidate: unknown = Reflect.get(actual, 'plan_local_rag_admission_json');
+    return typeof candidate === 'function' ? (candidate as (input: string) => string)(input) : '';
+  });
   rustWireExports.plan_indexed_evidence_json.mockImplementation(actual.plan_indexed_evidence_json);
+  rustWireExports.plan_rag_file_indexability_json.mockImplementation(actual.plan_rag_file_indexability_json);
+  rustWireExports.plan_rag_status_json.mockImplementation(actual.plan_rag_status_json);
+  rustWireExports.plan_rag_automatic_recovery_batch_json.mockImplementation(actual.plan_rag_automatic_recovery_batch_json);
+  rustWireExports.decode_source_bytes_json.mockImplementation(actual.decode_source_bytes_json);
+  rustWireExports.plan_source_segment_chunks_json.mockImplementation(actual.plan_source_segment_chunks_json);
   return { ...actual, ...rustWireExports };
 });
 
 import {
+  planLocalRagAdmissionRust,
+  type RustLocalRagAdmissionInput,
+  type RustLocalRagAdmissionPlan,
+  isRustSourceReadResult,
+  prepareSourceBytesRust,
+  decodeSourceBytesRust,
+  planSourceSegmentChunksRust,
   calculateRecallAtKRust,
   RustBm25RuntimeIndex,
   createContentHashRust,
@@ -64,6 +93,7 @@ import {
   planRagFileTypeSummaryRust,
   planRagStatusRust,
   planRagIndexingEtaRust,
+  planRagRuntimeWorkEtaRust,
   planRagAutomaticRecoveryBatchRust,
   planRagAutomaticRecoveryRust,
   planProviderProfileStateRust,
@@ -106,10 +136,120 @@ import {
 } from './rust-core';
 
 beforeEach(() => {
+  rustWireExports.plan_local_rag_admission_json.mockClear();
+  rustWireExports.plan_rag_automatic_recovery_batch_json.mockClear();
   rustWireExports.plan_indexed_search_queries_json.mockReset();
   rustWireExports.plan_indexed_review_answer_plan_json.mockReset();
   rustWireExports.validate_indexed_review_answer_json.mockReset();
   rustWireExports.plan_indexed_evidence_json.mockClear();
+});
+
+describe('준비 원문 wire guard', () => {
+  it('실제 WASM의 8자리 본문 signature와 16자리 청크 hash 계약을 구분한다', () => {
+    const result = prepareSourceBytesRust('md', new TextEncoder().encode('synthetic source text'), {
+      path: 'fixture.md', chunkSize: 100, overlap: 0,
+    });
+    expect(result).toMatchObject({ ok: true, prepared: { contentHash: 'b6042b00', sourceMetadataHash: '0a56edc5' } });
+    expect(result?.prepared?.chunks).toHaveLength(1);
+    expect(result?.prepared?.chunks?.[0].chunkHash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('실제 WASM은 겹친 source의 남은 charge·청크 상한을 반환 전에 확인한다', () => {
+    const bytes = new TextEncoder().encode('synthetic evidence line\n'.repeat(8));
+    const config = { path: 'synthetic.md', chunkSize: 24, overlap: 2 };
+    const full = prepareSourceBytesRust('md', bytes, config);
+    expect(full?.ok).toBe(true);
+    const charge = full!.prepared!.chargeBytes;
+    const chunks = full!.prepared!.chunks!.length;
+    expect(chunks).toBeGreaterThan(1);
+    expect(prepareSourceBytesRust('md', bytes, { ...config, maxChargeBytes: charge, maxPreparedChunks: chunks })).toEqual(full);
+    expect(prepareSourceBytesRust('md', bytes, { ...config, maxChargeBytes: charge - 1 })).toMatchObject({ ok: false, reason: 'memory-budget', text: '' });
+    expect(prepareSourceBytesRust('md', bytes, { ...config, maxPreparedChunks: chunks - 1 })).toMatchObject({ ok: false, reason: 'memory-budget', text: '' });
+  });
+
+  it('EOF가 잘린 PDF는 평문 청크가 아니라 전용 PDF 입력으로 남긴다', () => {
+    for (const text of ['%PDF-1.7\n', '%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n']) {
+      const bytes = new TextEncoder().encode(text);
+      const result = prepareSourceBytesRust('pdf', bytes, { path: 'truncated.pdf', chunkSize: 100, overlap: 0 });
+      expect(result).toMatchObject({ ok: true, format: 'pdf', binary: true, text: '', segments: [] });
+      expect(result?.prepared).toBeUndefined();
+      expect(decodeSourceBytesRust(bytes)).toMatchObject({ ok: false, reason: 'binary' });
+    }
+    const text = '%PDF- format documentation';
+    const documentation = prepareSourceBytesRust('pdf', new TextEncoder().encode(text), { path: 'documentation.pdf', chunkSize: 100, overlap: 0 });
+    expect(documentation).toMatchObject({ ok: true, format: 'text', text });
+    expect(documentation).not.toHaveProperty('binary');
+  });
+
+  it('손상된 준비 signature·charge·binary 본문을 거절한다', () => {
+    const valid = { ok: true, format: 'text', text: 'body', segments: [], reason: null, prepared: {
+      contentHash: '01234567', sourceMetadataHash: 'fedcba98', sourceMetadataBytes: 30, chargeBytes: 100, chunks: [],
+    } };
+    expect(isRustSourceReadResult(valid)).toBe(true);
+    expect(isRustSourceReadResult(valid, { path: 'synthetic', maxChargeBytes: 100, maxPreparedChunks: 0 })).toBe(true);
+    expect(isRustSourceReadResult(valid, { path: 'synthetic', maxChargeBytes: 99 })).toBe(false);
+    for (const limit of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
+      expect(isRustSourceReadResult(valid, { path: 'synthetic', maxChargeBytes: limit })).toBe(false);
+      expect(isRustSourceReadResult(valid, { path: 'synthetic', maxPreparedChunks: limit })).toBe(false);
+    }
+    for (const prepared of [null, [], { ...valid.prepared, contentHash: 1234567812345678 }, { ...valid.prepared, sourceMetadataHash: 'broken' }, { ...valid.prepared, contentHash: '0123456789abcdef' }, { ...valid.prepared, sourceMetadataHash: 'fedcba9876543210' }, { ...valid.prepared, chargeBytes: 29 }, { ...valid.prepared, chunks: [{ text: 'body' }] }]) {
+      expect(isRustSourceReadResult({ ...valid, prepared })).toBe(false);
+    }
+    expect(isRustSourceReadResult({ ...valid, binary: true })).toBe(false);
+    expect(isRustSourceReadResult({ ...valid, ok: false })).toBe(false);
+  });
+});
+
+describe('엄격한 원문 byte wire', () => {
+  it('UTF-16과 빈 파일을 실패와 구분하며 probe는 본문을 반환하지 않는다', () => {
+    expect(decodeSourceBytesRust(new Uint8Array([0xff, 0xfe, 72, 0, 105, 0]))).toEqual({
+      ok: true,
+      text: 'Hi',
+      encoding: 'UTF-16LE',
+      reason: null,
+      basis: 'bom', selectionReason: 'byte-order-mark',
+    });
+    expect(decodeSourceBytesRust(new Uint8Array())).toEqual({
+      ok: true,
+      text: '',
+      encoding: 'UTF-8',
+      reason: null,
+      basis: 'strict-unicode', selectionReason: 'utf8',
+    });
+    expect(decodeSourceBytesRust(new TextEncoder().encode('body'), false)?.text).toBe('');
+    expect(decodeSourceBytesRust(new Uint8Array(), false, 64 * 1024 * 1024 + 1)).toMatchObject({
+      ok: false,
+      reason: 'memory-budget',
+    });
+  });
+
+  it.each([
+    null,
+    { ok: true, text: '', encoding: null, reason: null },
+    { ok: true, text: '', encoding: 'UTF-8', reason: 'corrupt' },
+    { ok: false, text: 'replacement', encoding: null, reason: 'corrupt' },
+    { ok: false, text: '', encoding: 'UTF-8', reason: null },
+    { ok: false, text: '', encoding: null, reason: null },
+  ])('손상된 decoder wire는 TS에서 계산으로 대체하지 않는다: %j', (wire) => {
+    rustWireExports.decode_source_bytes_json.mockReturnValueOnce(JSON.stringify(wire));
+    expect(decodeSourceBytesRust(new Uint8Array())).toBeNull();
+  });
+
+  it('probe의 본문 누출과 decoder 예외를 차단한다', () => {
+    rustWireExports.decode_source_bytes_json.mockReturnValueOnce(
+      JSON.stringify({
+        ok: true,
+        text: 'must not retain body',
+        encoding: 'UTF-8',
+        reason: null,
+      }),
+    );
+    expect(decodeSourceBytesRust(new Uint8Array(), false)).toBeNull();
+    rustWireExports.decode_source_bytes_json.mockImplementationOnce(() => {
+      throw new Error('unavailable');
+    });
+    expect(decodeSourceBytesRust(new Uint8Array())).toBeNull();
+  });
 });
 
 describe('Rust WASM RAG core bridge', () => {
@@ -260,9 +400,9 @@ describe('Rust WASM RAG core bridge', () => {
   });
 
   it('내장 WASM에서 분리형 한글 비교 질문과 검색어를 정규화한다', async () => {
-    const actual = await vi.importActual<typeof import('../../.local/generated/rag-wasm/rag_wasm.js')>(
-      '../../.local/generated/rag-wasm/rag_wasm.js',
-    );
+    const actual = await vi.importActual<
+      typeof import('../../.local/generated/rag-wasm/rag_wasm.js')
+    >('../../.local/generated/rag-wasm/rag_wasm.js');
     rustWireExports.plan_indexed_search_queries_json.mockImplementation(
       actual.plan_indexed_search_queries_json,
     );
@@ -345,6 +485,50 @@ describe('Rust WASM RAG core bridge', () => {
         endLine: 4,
       },
     ]);
+  });
+
+  it('pipeline wall과 물리 추론을 더하지 않고 미확인 최종 tail을 분리한다', () => {
+    const input: import('./rust-core').RustRagIndexingEtaInput = {
+      nowMs: 1000, startedAtMs: 0, totalFiles: 3, completedFiles: 1,
+      currentFileTotalChunks: 0, currentFileEmbeddedChunks: 0,
+      totalEstimatedChunks: 300, completedEstimatedChunks: 100, currentFileEstimatedChunks: 0,
+      totalPlannedChunks: 300, completedPlannedChunks: 100, planningComplete: true,
+      completedBatchDurationsMs: [], completedBatchChunkCounts: [], completedFileDurationsMs: [], completedFileChunkCounts: [],
+      completedFileEstimatedChunkCounts: [], completedFileActualChunkCounts: [], completedFileOverheadDurationsMs: [],
+      historicalMsPerChunk: null, historicalChunkEstimateRatio: null, historicalVariance: null,
+      pipeline: { lifecycle: 'running', totalKnown: true, processedFiles: 1, failedFiles: 0, partialFiles: 0,
+        processedEstimatedChunks: 100, processedPlannedChunks: 100, observedAtMs: 1000, backend: 'cpu',
+        windowSamples: [{ startedAtMs: 0, endedAtMs: 1000, logicalChunks: 100, physicalWorkUnits: 20 }],
+        inferenceSamples: [{ backend: 'cpu', endedAtMs: 1000, durationMs: 600, workUnits: 20 }],
+      },
+    };
+    expect(planRagIndexingEtaRust(input)).toMatchObject({ lifecycle: 'running', pipelineRemainingMs: 2000, inferenceRemainingMs: 1200,
+      remainingMs: null, estimatedCompletionMs: null, lowerRemainingMs: null, upperRemainingMs: null, confidence: 'calculating' });
+    expect(planRagIndexingEtaRust({ ...input, nowMs: 1500 })?.pipelineRemainingMs).toBe(1500);
+    expect(planRagIndexingEtaRust({ ...input, nowMs: 3001 })).toMatchObject({ pipelineRemainingMs: null, remainingMs: null, confidence: 'calculating' });
+    const pipeline = input.pipeline!;
+    expect(planRagIndexingEtaRust({ ...input, nowMs: 1000.25, startedAtMs: 0.125, pipeline: { ...pipeline, observedAtMs: 1000.25,
+      windowSamples: [{ startedAtMs: 0.125, endedAtMs: 1000.125, logicalChunks: 100, physicalWorkUnits: 20 }],
+      inferenceSamples: [{ backend: 'cpu', workUnits: 20, durationMs: 600.25, endedAtMs: 1000.125 }],
+    } })).toMatchObject({ pipelineRemainingMs: 2000, inferenceRemainingMs: 1201, remainingMs: null });
+    for (const malformed of [null, { ...pipeline, observedAtMs: 1001 }, { ...pipeline, processedFiles: -1 },
+      { ...pipeline, windowSamples: Array(1) }, { ...pipeline, windowSamples: Array.from({ length: 65 }, () => pipeline.windowSamples[0]) },
+      { ...pipeline, inferenceSamples: [{ ...pipeline.inferenceSamples[0], backend: 'webgpu' }] }]) {
+      expect(planRagIndexingEtaRust({ ...input, pipeline: malformed as typeof pipeline })).toBeNull();
+    }
+    const complete = { ...input, completedFiles: 3, completedEstimatedChunks: 300, completedPlannedChunks: 300,
+      pipeline: { ...pipeline, lifecycle: 'complete' as const, processedFiles: 3, processedEstimatedChunks: 300, processedPlannedChunks: 300 } };
+    expect(planRagIndexingEtaRust(complete)).toMatchObject({ lifecycle: 'complete', remainingMs: 0, confidence: 'complete' });
+    expect(planRagIndexingEtaRust({ ...complete, completedEstimatedChunks: 0 })).toBeNull();
+    expect(planRagIndexingEtaRust({ ...complete, completedPlannedChunks: 0 })).toBeNull();
+    expect(planRagIndexingEtaRust({ ...complete, planningComplete: false, completedPlannedChunks: 0,
+      pipeline: { ...complete.pipeline, processedPlannedChunks: 0 },
+    })).toMatchObject({ lifecycle: 'complete', remainingMs: 0 });
+    const empty = { ...input, totalFiles: 0, completedFiles: 0, totalEstimatedChunks: 0, completedEstimatedChunks: 0, totalPlannedChunks: 0, completedPlannedChunks: 0 };
+    expect(planRagIndexingEtaRust({ ...empty, pipeline: undefined })).toMatchObject({ lifecycle: 'unknown', remainingMs: null, confidence: 'calculating' });
+    const finalizing = { ...pipeline, lifecycle: 'finalizing' as const, processedFiles: 0, processedEstimatedChunks: 0, processedPlannedChunks: 0, windowSamples: [], inferenceSamples: [] };
+    expect(planRagIndexingEtaRust({ ...empty, pipeline: finalizing })).toMatchObject({ lifecycle: 'finalizing', remainingMs: null, confidence: 'calculating' });
+    expect(planRagIndexingEtaRust({ ...empty, pipeline: { ...finalizing, lifecycle: 'complete' } })).toMatchObject({ lifecycle: 'complete', remainingMs: 0, confidence: 'complete' });
   });
 
   it('plans RAG vector indexing ETA through the Rust bridge', () => {
@@ -891,14 +1075,59 @@ describe('Rust WASM RAG core bridge', () => {
     );
   });
 
-  it('keeps automatic recovery batches bounded and leaves large sources for explicit indexing', () => {
+  it('keeps automatic recovery batches bounded while still including large sources', () => {
     expect(
       planRagAutomaticRecoveryBatchRust([
         { path: 'large.md', mtime: 1, size: 600_000 },
         { path: 'new.md', mtime: 3, size: 100 },
         { path: 'old.md', mtime: 2, size: 200 },
       ]),
-    ).toEqual({ eligibleIndices: [1, 2], batchIndices: [1, 2], selectedSourceBytes: 300 });
+    ).toEqual({
+      pendingDocumentCount: 3,
+      actionableDocumentCount: 3,
+      deferredDocumentCount: 0,
+      deferredIndices: [],
+      eligibleIndices: [0, 1, 2],
+      batchIndices: [1, 2, 0],
+      selectedSourceBytes: 600_300,
+    });
+  });
+
+  it('partial corpus hint는 Native에서만 억제하며 malformed·legacy·changed·희소 wire는 완료로 만들지 않는다', () => {
+    const record = { mtime: 1, size: 10, contentHash: '1234abcd', sourceMetadataHash: 'abcd1234', partial: true, hasCompleteMetadata: true };
+    const file = { path: 'synthetic.pdf', mtime: 1, size: 10, corpusRecord: record };
+    expect(planRagAutomaticRecoveryBatchRust([file])).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: 0, deferredDocumentCount: 1, deferredIndices: [0], batchIndices: [] });
+    for (const changed of [
+      { ...file, invalidated: true }, { ...file, mtime: 2 }, { ...file, contentHash: '8765abcd' },
+      { ...file, sourceMetadataHash: 'abcd4321' }, { ...file, corpusRecord: { ...record, sourceMetadataHash: undefined } },
+      { ...file, corpusRecord: { ...record, contentHash: 'malformed' } }, { ...file, corpusRecord: { ...record, partial: false } },
+    ]) expect(planRagAutomaticRecoveryBatchRust([changed])).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: 1, deferredDocumentCount: 0, batchIndices: [0] });
+    for (const invalid of [
+      [{ ...file, size: 1.5 }], [{ ...file, mtime: Number.MAX_SAFE_INTEGER + 1 }],
+      [{ ...file, corpusRecord: { ...record, size: 1.5 } }], [{ ...file, unexpected: true }],
+      new Array<typeof file>(1),
+    ]) expect(planRagAutomaticRecoveryBatchRust(invalid)).toBeNull();
+  });
+
+  it('automatic recovery의 원문 mtime은 소수 시각을 보존하고 byte·계수와 구별한다', () => {
+    const record = { mtime: 1.25, size: 10, contentHash: '1234abcd', sourceMetadataHash: 'abcd1234', partial: true, hasCompleteMetadata: true };
+    const file = { path: 'fractional.pdf', mtime: 1.25, size: 10, corpusRecord: record };
+    expect(planRagAutomaticRecoveryBatchRust([file])).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: 0, deferredDocumentCount: 1 });
+    expect(planRagAutomaticRecoveryBatchRust([{ ...file, mtime: 1.5 }])).toMatchObject({ actionableDocumentCount: 1, deferredDocumentCount: 0 });
+    const first = planRagAutomaticRecoveryRust([file], '', 0);
+    const changed = planRagAutomaticRecoveryRust([{ ...file, mtime: 1.5 }], '', 0);
+    expect(first?.fingerprint).toMatch(/^[a-f0-9]{32}$/);
+    expect(changed?.fingerprint).toMatch(/^[a-f0-9]{32}$/);
+    expect(first?.fingerprint).not.toBe(changed?.fingerprint);
+    expect(planRagAutomaticRecoveryBatchRust([{ ...file, size: 1.25 }])).toBeNull();
+  });
+
+  it('automatic recovery wire의 중첩 eligible/deferred 분할을 권한으로 수락하지 않는다', () => {
+    rustWireExports.plan_rag_automatic_recovery_batch_json.mockReturnValueOnce(JSON.stringify({
+      pendingDocumentCount: 2, actionableDocumentCount: 2, deferredDocumentCount: 1,
+      deferredIndices: [0], eligibleIndices: [0, 1], batchIndices: [0, 1], selectedSourceBytes: 20,
+    }));
+    expect(planRagAutomaticRecoveryBatchRust([{ path: 'a.md', mtime: 1, size: 10 }, { path: 'b.md', mtime: 1, size: 10 }])).toBeNull();
   });
 
   it('creates deterministic 128-bit namespaced IndexedDB record keys through Rust', () => {
@@ -1212,7 +1441,9 @@ describe('Rust WASM RAG core bridge', () => {
       },
     ];
 
-    expect(planRagFileContentProbeIndicesRust(files, ['Archive'], ['png'])).toEqual([4, 5]);
+    expect(planRagFileContentProbeIndicesRust(files, ['Archive'], ['png'])).toEqual([
+      0, 1, 4, 5, 9,
+    ]);
 
     expect(
       planRagFileIndexabilityRust(
@@ -1226,6 +1457,8 @@ describe('Rust WASM RAG core bridge', () => {
       ),
     ).toEqual({
       candidateIndices: [0, 1, 4],
+      failures: [{ index: 5, reason: 'ambiguous-encoding' }, { index: 9, reason: 'probe-unavailable' }],
+      policyExcludedIndices: [2, 3, 6, 7, 8], unsupportedIndices: [],
       summaryInputs: [
         { filePath: 'note.md', extension: 'MD', indexable: true },
         { filePath: 'src/main.ts', extension: 'ts', indexable: true },
@@ -1253,7 +1486,7 @@ describe('Rust WASM RAG core bridge', () => {
           filePath: 'large.opaque',
           extension: 'opaque',
           indexable: false,
-          recommendationReason: 'too-large',
+          recommendationReason: 'unreadable',
         },
       ],
     });
@@ -1273,6 +1506,7 @@ describe('Rust WASM RAG core bridge', () => {
 
     expect(planRagFileIndexabilityRust(files, [], [], [])).toEqual({
       candidateIndices: [6, 7],
+      failures: [], policyExcludedIndices: [0, 1, 2, 3, 4, 5], unsupportedIndices: [],
       summaryInputs: [
         { filePath: '.npmrc', extension: '', indexable: false, recommendationReason: 'sensitive' },
         {
@@ -1309,6 +1543,42 @@ describe('Rust WASM RAG core bridge', () => {
         { filePath: 'app.log', extension: 'log', indexable: true },
       ],
     });
+  });
+
+  it('inventory wire는 실패 원장·분할 index와 입력 사유를 검증한다', () => {
+    const files = [{ filePath: 'damaged.txt', fileName: 'damaged.txt', extension: 'txt', size: 10 }];
+    const base = { candidateIndices: [], summaryInputs: [],
+      failures: [{ index: 0, reason: 'ambiguous-encoding' }], policyExcludedIndices: [], unsupportedIndices: [] };
+    rustWireExports.plan_rag_file_indexability_json.mockReturnValueOnce(JSON.stringify(base));
+    expect(planRagFileIndexabilityRust(files, [], [], [])).toEqual(base);
+    for (const wire of [
+      { ...base, failures: [{ index: 1, reason: 'read-failed' }] },
+      { ...base, failures: [{ index: 0, reason: '' }] },
+      { ...base, candidateIndices: [0] },
+      { ...base, failures: [] },
+      { candidateIndices: [], summaryInputs: [] },
+    ]) {
+      rustWireExports.plan_rag_file_indexability_json.mockReturnValueOnce(JSON.stringify(wire));
+      expect(planRagFileIndexabilityRust(files, [], [], [])).toBeNull();
+    }
+    expect(planRagFileIndexabilityRust(files, [], [], [
+      { index: 0, readable: true, sample: '', textValid: true, reason: 'corrupt-encoding' },
+    ])).toBeNull();
+    expect(planRagFileIndexabilityRust(files, [], [], [
+      { index: 1, readable: false, sample: '', reason: 'read-failed' },
+    ])).toBeNull();
+  });
+
+  it('실패 문서는 기존 벡터가 있어도 unknown이며 사유를 유지한다', () => {
+    const input = { includedFiles: [{ path: 'damaged.txt', mtime: 10, size: 10, failureReason: 'read-failed' }],
+      records: [], totalVaultFiles: 2, embeddingProvider: 'local', embeddingModel: 'fixture',
+      reasons: { missing: 'missing', legacy: 'legacy', staleFile: 'stale', embeddingChanged: 'embedding' } };
+    const plan = planRagStatusRust(input);
+    expect(plan).toMatchObject({ totalDocuments: 1, unknownDocuments: 1, failedDocuments: 1, healthyDocuments: 0,
+      excludedDocuments: 1, updateRequiredDocuments: [{ path: 'damaged.txt', status: 'unknown', reason: 'read-failed', mtime: 10, size: 10 }] });
+    expect(planRagStatusRust({ ...input, includedFiles: [{ ...input.includedFiles[0], failureReason: '' }] })).toBeNull();
+    rustWireExports.plan_rag_status_json.mockReturnValueOnce(JSON.stringify({ ...plan, failedDocuments: 2 }));
+    expect(planRagStatusRust(input)).toBeNull();
   });
 
   it('plans answer source references and warning keys through Rust', () => {
@@ -1941,6 +2211,7 @@ describe('Rust WASM RAG core bridge', () => {
       missingDocuments: 1,
       staleDocuments: 2,
       unknownDocuments: 1,
+      failedDocuments: 0,
       excludedDocuments: 2,
       totalVectors: 2,
       updateRequiredDocuments: [
@@ -2368,7 +2639,10 @@ describe('planIndexedEvidenceRust / verifyIndexedEvidenceRust', () => {
 });
 
 describe('indexed search/answer wire wrappers', () => {
-  function evidencePlanWire(queryIndexes?: readonly number[], preferredQueryIndexes?: readonly unknown[]): string {
+  function evidencePlanWire(
+    queryIndexes?: readonly number[],
+    preferredQueryIndexes?: readonly unknown[],
+  ): string {
     return JSON.stringify({
       queryTokens: [],
       phrases: [],
@@ -2586,7 +2860,9 @@ describe('indexed search/answer wire wrappers', () => {
     rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire([1, 3]));
     expect(planIndexedEvidenceRust(input)?.evidence[0].preferredQueryIndexes).toEqual([]);
     for (const invalid of [[2], [-1], [4], [1.5], ['1']]) {
-      rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(evidencePlanWire([1, 3], invalid));
+      rustWireExports.plan_indexed_evidence_json.mockReturnValueOnce(
+        evidencePlanWire([1, 3], invalid),
+      );
       expect(planIndexedEvidenceRust(input)).toBeNull();
     }
   });
@@ -2721,5 +2997,196 @@ describe('hasVaultInventoryIntentRust', () => {
   it('설명형 질문을 목록 의도로 오인하지 않는다', () => {
     expect(hasVaultInventoryIntentRust('쿼츠 재시작 조건을 설명해줘')).toBe(false);
     expect(hasVaultInventoryIntentRust('explain the cooling protocol')).toBe(false);
+  });
+});
+
+it('구간 청킹 wire 손상은 TS 분할 없이 null로 닫는다', () => {
+  for (const wire of ['null', '{}', '[{"text":"body","metadata":{"filePath":"a","startLine":1,"endLine":1}}]',
+    '[{"id":"a","chunkHash":"hash","text":"body","metadata":{"filePath":"a","startLine":0,"endLine":1}}]']) {
+    rustWireExports.plan_source_segment_chunks_json.mockReturnValueOnce(wire);
+    expect(planSourceSegmentChunksRust('a.pdf', 'pdf', 'body', 100, 0, [{ label: 'Page 1', startLine: 0, endLine: 0 }])).toBeNull();
+  }
+});
+
+it('구간 청킹 wire의 안정적 식별자와 원문 경로를 검증한다', () => {
+  const valid = {
+    id: 'a.pdf::chunk::0123456789abcdef::0',
+    chunkHash: '0123456789abcdef',
+    text: 'body',
+    metadata: { filePath: 'a.pdf', startLine: 1, endLine: 1, heading: 'Page 1' },
+  };
+  for (const invalid of [
+    { ...valid, chunkHash: 'invalid' },
+    { ...valid, id: 'wrong' },
+    { ...valid, metadata: { ...valid.metadata, filePath: 'other.pdf' } },
+  ]) {
+    rustWireExports.plan_source_segment_chunks_json.mockReturnValueOnce(JSON.stringify([invalid]));
+    expect(planSourceSegmentChunksRust('a.pdf', 'pdf', 'body', 100, 0, [])).toBeNull();
+  }
+  rustWireExports.plan_source_segment_chunks_json.mockReturnValueOnce(JSON.stringify([valid]));
+  expect(planSourceSegmentChunksRust('a.pdf', 'pdf', 'body', 100, 0, [])).toEqual([valid]);
+  rustWireExports.plan_source_segment_chunks_json.mockReturnValueOnce(JSON.stringify([valid]));
+  expect(planSourceSegmentChunksRust('a.pdf', 'pdf', 'body', 100, 0, [{ label: 'Page 1', startLine: 0, endLine: 0, sourcePart: 'part.xml', locator: { cells: [{ address: 'A1' }] } }])).toEqual([valid]);
+  expect(rustWireExports.plan_source_segment_chunks_json.mock.lastCall?.[5]).toBe('[{"label":"Page 1","startLine":0,"endLine":0}]');
+  rustWireExports.plan_source_segment_chunks_json.mockReturnValueOnce(JSON.stringify([{ ...valid, metadata: { ...valid.metadata, sourceSegment: 1 } }]));
+  expect(planSourceSegmentChunksRust('a.pdf', 'pdf', 'body', 100, 0, [{ label: 'Page 1', startLine: 0, endLine: 0 }])).toBeNull();
+});
+
+describe('로컬 resource admission Rust bridge', () => {
+  const input = (): RustLocalRagAdmissionInput => ({
+    backend: 'cpu', maxBatchSize: 4, targetBatchMs: 100, maxLagMs: 20,
+    sourceBudgetBytes: 1000, nowMs: 1000, foregroundPending: 0,
+    physicalSourceCount: 0, physicalInferenceCount: 1,
+    reservedSourceBytes: 200, plannedSourceBytes: 300, state: null,
+    sample: { endedAtMs: 1000, workUnits: 1, durationMs: 10, lagMs: 1,
+      rssBytes: 1000, availableBytes: 10000 },
+  });
+  const wirePlan = (): RustLocalRagAdmissionPlan => ({
+    state: { backend: 'cpu', maxBatchSize: 4, batchSize: 1, healthySamples: 0, previousRate: null,
+      trialBaseRate: null, lastSampleEndedAtMs: 1000, lastLagMs: null },
+    nextBatchSize: 1, admitSourcePrefetch: false,
+  });
+
+  it('실제 WASM export로 baseline을 계획한다: 공식 부모 build 전에는 RED다', () => {
+    expect(planLocalRagAdmissionRust(input())).toEqual(wirePlan());
+  });
+
+  it.each([3, 2, 1])('실제 WASM: batch2에서 max%d로 축소하면 크기 비교와 무관하게 baseline으로 돌아간다', async (max) => {
+    expect(createContentHashRust('synthetic admission')).not.toBeNull();
+    const actual = await vi.importActual<typeof import('../../.local/generated/rag-wasm/rag_wasm.js')>(
+      '../../.local/generated/rag-wasm/rag_wasm.js',
+    );
+    const request = input();
+    // 실제 WASM 상태를 그대로 왕복한다. TS는 표본 시각만 진행하고 계획을 계산하지 않는다.
+    const advance = (): RustLocalRagAdmissionPlan => {
+      const plan = JSON.parse(actual.plan_local_rag_admission_json(JSON.stringify(request))) as RustLocalRagAdmissionPlan;
+      request.state = plan.state;
+      request.nowMs += 100;
+      request.sample = { ...input().sample!, endedAtMs: request.nowMs, workUnits: plan.nextBatchSize };
+      return plan;
+    };
+    expect(advance().nextBatchSize).toBe(1);
+    expect(advance().state.healthySamples).toBe(1);
+    expect(advance().nextBatchSize).toBe(2);
+    expect(advance().state.trialBaseRate).toBeNull();
+    expect(request.state?.batchSize).toBe(2);
+    request.maxBatchSize = max;
+    const reset = JSON.parse(actual.plan_local_rag_admission_json(JSON.stringify(request))) as RustLocalRagAdmissionPlan;
+    expect(reset.nextBatchSize).toBe(1);
+    expect(reset.state.healthySamples).toBe(0);
+    expect(reset.state.previousRate).toBeNull();
+    expect(reset.state.trialBaseRate).toBeNull();
+    expect(reset.admitSourcePrefetch).toBe(false);
+    expect(reset.state.maxBatchSize).toBe(max);
+    expect(reset.state.lastLagMs).toBeNull();
+    expect(reset.state.lastSampleEndedAtMs).toBe(request.nowMs);
+    expect(planLocalRagAdmissionRust(request)).toEqual(reset);
+  });
+
+  it.each([3, 2, 1])('실제 WASM: batch1/healthy1에서 max%d 축소는 새 trial을 만들지 않는다', async (max) => {
+    expect(createContentHashRust('synthetic admission')).not.toBeNull();
+    const actual = await vi.importActual<typeof import('../../.local/generated/rag-wasm/rag_wasm.js')>(
+      '../../.local/generated/rag-wasm/rag_wasm.js',
+    );
+    const request = input();
+    for (let step = 0; step < 2; step += 1) {
+      const plan = JSON.parse(actual.plan_local_rag_admission_json(JSON.stringify(request))) as RustLocalRagAdmissionPlan;
+      request.state = plan.state;
+      request.nowMs += 100;
+      request.sample = { ...input().sample!, endedAtMs: request.nowMs };
+    }
+    expect(request.state?.batchSize).toBe(1);
+    expect(request.state?.healthySamples).toBe(1);
+    request.maxBatchSize = max;
+    const reset = JSON.parse(actual.plan_local_rag_admission_json(JSON.stringify(request))) as RustLocalRagAdmissionPlan;
+    expect(reset.nextBatchSize).toBe(1);
+    expect(reset.state.healthySamples).toBe(0);
+    expect(reset.state.previousRate).toBeNull();
+    expect(reset.state.trialBaseRate).toBeNull();
+    expect(reset.admitSourcePrefetch).toBe(false);
+    expect(reset.state.maxBatchSize).toBe(max);
+    expect(reset.state.lastLagMs).toBeNull();
+    expect(reset.state.lastSampleEndedAtMs).toBe(request.nowMs);
+    expect(planLocalRagAdmissionRust(request)).toEqual(reset);
+  });
+
+  it('수치 계산 없이 입력을 wire로 보내고 검증한 결과만 돌려준다', () => {
+    const request = input();
+    const response = wirePlan();
+    rustWireExports.plan_local_rag_admission_json.mockReturnValueOnce(JSON.stringify(response));
+    expect(planLocalRagAdmissionRust(request)).toEqual(response);
+    expect(rustWireExports.plan_local_rag_admission_json).toHaveBeenCalledWith(JSON.stringify(request));
+  });
+
+  it('이전 상한이 없거나 부적합한 입력 state는 보정 없이 Rust 호출 전에 거절한다', () => {
+    for (const maxBatchSize of [undefined, null, 0, -1, 1.5, 2 ** 32, Infinity, 1]) {
+      const request = { ...input(), state: { ...wirePlan().state, maxBatchSize,
+        batchSize: 2, previousRate: 0.1, lastLagMs: 1 } };
+      expect(planLocalRagAdmissionRust(request as RustLocalRagAdmissionInput)).toBeNull();
+    }
+    expect(rustWireExports.plan_local_rag_admission_json).not.toHaveBeenCalled();
+  });
+
+  it('출력의 저장 상한 누락·범위 오류·현재 상한 불일치·batch 초과는 null이다', () => {
+    for (const maxBatchSize of [undefined, null, 0, -1, 1.5, 2 ** 32, 3]) {
+      const response = { ...wirePlan(), state: { ...wirePlan().state, maxBatchSize } };
+      rustWireExports.plan_local_rag_admission_json.mockReturnValueOnce(JSON.stringify(response));
+      expect(planLocalRagAdmissionRust(input())).toBeNull();
+    }
+    const request = { ...input(), maxBatchSize: 1 };
+    const response = { ...wirePlan(), nextBatchSize: 2, state: { ...wirePlan().state,
+      maxBatchSize: 1, batchSize: 2, previousRate: 0.1, lastLagMs: 1 } };
+    rustWireExports.plan_local_rag_admission_json.mockReturnValueOnce(JSON.stringify(response));
+    expect(planLocalRagAdmissionRust(request)).toBeNull();
+  });
+
+  it('nonfinite·missing·범위 밖 입력은 JSON null로 세탁하지 않고 거절한다', () => {
+    const valid = input();
+    for (const invalid of [
+      { ...valid, nowMs: NaN },
+      { ...valid, maxBatchSize: 2 ** 32 },
+      { ...valid, reservedSourceBytes: Number.MAX_SAFE_INTEGER + 1 },
+      { ...valid, sample: { ...valid.sample, durationMs: Infinity } },
+      { ...valid, sample: { ...valid.sample, lagMs: undefined } },
+      { ...valid, physicalSourceCount: undefined },
+      null,
+    ]) {
+      expect(planLocalRagAdmissionRust(invalid as RustLocalRagAdmissionInput)).toBeNull();
+    }
+    expect(rustWireExports.plan_local_rag_admission_json).not.toHaveBeenCalled();
+  });
+
+  it('빈 실패·손상 wire·불일치 state·예외는 null이며 성공으로 대체하지 않는다', () => {
+    for (const raw of ['', '{', 'null', '{}',
+      JSON.stringify({ ...wirePlan(), nextBatchSize: 2 }),
+      JSON.stringify({ ...wirePlan(), admitSourcePrefetch: 1 }),
+      JSON.stringify({ ...wirePlan(), state: { ...wirePlan().state, backend: 'remote' } }),
+      JSON.stringify({ ...wirePlan(), state: { ...wirePlan().state, previousRate: 0 } }),
+      JSON.stringify({ ...wirePlan(), state: { ...wirePlan().state, healthySamples: 2 } }),
+    ]) {
+      rustWireExports.plan_local_rag_admission_json.mockReturnValueOnce(raw);
+      expect(planLocalRagAdmissionRust(input())).toBeNull();
+    }
+    rustWireExports.plan_local_rag_admission_json.mockImplementationOnce(() => { throw new Error(); });
+    expect(planLocalRagAdmissionRust(input())).toBeNull();
+  });
+});
+
+describe('runtime work ETA Rust wire', () => {
+  const input = { startedAtMs: 0.25, nowMs: 1000.75, processedUnits: 128, totalUnits: 135835, samples: [{ atMs: 0.25, units: 0 }, { atMs: 1000.75, units: 128 }] };
+  it('실제 Native export는 소수 clock과 초기 low 단계 ETA를 전달한다', () => {
+    expect(planRagRuntimeWorkEtaRust(input)).toMatchObject({ elapsedMs: 1000.5, confidence: 'low', etaReason: 'observed-rate' });
+    expect(planRagRuntimeWorkEtaRust(input)?.remainingMs).toBeGreaterThan(1000000);
+  });
+  it('실패·구 wire·손상 수치는 TS 계산으로 보완하지 않는다', () => {
+    expect(planRagRuntimeWorkEtaRust({ ...input, totalUnits: Number.NaN })).toBeNull();
+    expect(planRagRuntimeWorkEtaRust({ ...input, totalUnits: 1.5 })).toBeNull();
+    expect(planRagRuntimeWorkEtaRust({ ...input, nowMs: Number.POSITIVE_INFINITY })).toBeNull();
+    for (const response of ['', '{}', '{"elapsedMs":-1}', JSON.stringify({ elapsedMs: 1, lastProgressAgeMs: null, remainingMs: -1, ratePerSecond: null, confidence: 'low', etaReason: 'observed-rate' })]) {
+      rustWireExports.plan_rag_runtime_work_eta_json.mockReturnValueOnce(response);
+      expect(planRagRuntimeWorkEtaRust(input)).toBeNull();
+    }
+    rustWireExports.plan_rag_runtime_work_eta_json.mockReturnValueOnce(JSON.stringify({ elapsedMs: 1000.5, lastProgressAgeMs: 0, remainingMs: 10000, ratePerSecond: 128, confidence: 'low', etaReason: 'observed-rate' }));
+    expect(planRagRuntimeWorkEtaRust(input)).toMatchObject({ elapsedMs: 1000.5, remainingMs: 10000, confidence: 'low' });
   });
 });

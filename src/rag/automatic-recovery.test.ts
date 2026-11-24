@@ -58,13 +58,14 @@ describe('AutomaticRagRecoveryCoordinator', () => {
     expect(damaged.host.writeCompletedFingerprint).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps partial progress unmarked and retries with Rust-planned backoff', async () => {
+  it('keeps partial progress unmarked and schedules the next opportunity immediately', async () => {
     const fixture = createFixture({ pendingCounts: [2, 1, 1, 0] });
     await fixture.coordinator.start();
     await fixture.timer.runNext();
 
     expect(fixture.host.writeCompletedFingerprint).not.toHaveBeenCalled();
-    expect(fixture.timer.delays).toEqual([2_000, 30_000]);
+    // 진행이 있었던 기회는 재시도 backoff가 아니라 짧은 간격으로 이어진다.
+    expect(fixture.timer.delays).toEqual([2_000, 2_000]);
     expect(fixture.events).toEqual(['scheduled', 'started', 'progressed', 'scheduled']);
 
     await fixture.timer.runNext();
@@ -72,6 +73,33 @@ describe('AutomaticRagRecoveryCoordinator', () => {
     expect(fixture.host.runPending).toHaveBeenCalledTimes(2);
     expect(fixture.host.writeCompletedFingerprint).toHaveBeenCalledTimes(1);
     expect(fixture.events.at(-1)).toBe('completed');
+  });
+
+  it('drains a large backlog without exhausting the session', async () => {
+    const fixture = createFixture({ pendingCounts: [9_000, 7_000, 5_000, 3_000, 2_000, 1_000, 0] });
+    await fixture.coordinator.start();
+    for (let round = 0; round < 8; round += 1) await fixture.timer.runNext();
+
+    // 기회마다 대기 수가 줄면 세션 한도를 소진하지 않고 끝까지 이어진다.
+    expect(fixture.host.runPending).toHaveBeenCalledTimes(4);
+    expect(fixture.timer.delays).toEqual([2_000, 2_000, 2_000, 2_000]);
+    expect(fixture.events).not.toContain('exhausted');
+    expect(fixture.events.at(-1)).toBe('completed');
+    expect(fixture.host.writeCompletedFingerprint).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['initial', 'after-run'] as const)('deferred-only 추출 partial은 완료·maintenance·재예약 없이 debt를 유지한다 (%s)', async (stage) => {
+    const fixture = createFixture();
+    const deferred = { pendingDocumentCount: 1, actionableDocumentCount: 0, deferredDocumentCount: 1 };
+    fixture.host.countPendingDocuments.mockResolvedValue(deferred);
+    if (stage === 'after-run') fixture.host.countPendingDocuments.mockResolvedValueOnce(1);
+    await fixture.coordinator.start();
+    await fixture.timer.runNext();
+    expect(fixture.host.runPending).toHaveBeenCalledTimes(stage === 'initial' ? 0 : 1);
+    expect(fixture.host.writeCompletedFingerprint).not.toHaveBeenCalled();
+    expect(fixture.host.runHealthyMaintenance).not.toHaveBeenCalled();
+    expect(fixture.timer.delays).toEqual([2_000]);
+    expect(fixture.events.at(-1)).toBe('deferred');
   });
 
   it('stops retrying in-session when bounded batches make no coverage progress', async () => {

@@ -1,6 +1,7 @@
 import { t } from '../i18n';
 import type { RagIndexingProgressSummary } from '../rag/indexing-progress';
 import { formatRagEtaDuration } from '../rag/indexing-progress';
+import { getRagIndexingProgressDisplay } from '../rag/indexing-progress-view';
 
 export type ChatReadinessStatus = 'ready' | 'degraded' | 'blocked';
 export type ChatReadinessSeverity = 'notice' | 'blocking';
@@ -33,6 +34,7 @@ export interface ChatReadinessItem {
 }
 
 export interface ChatReadinessSnapshot {
+  /** ready에서도 building 안내 items는 남을 수 있으며 검색 가능 상태를 낮추지 않습니다. */
   status: ChatReadinessStatus;
   blocksSend: boolean;
   primaryText: string;
@@ -88,10 +90,11 @@ function describeIndexingPhase(phase: RagIndexingProgressSummary['phase']): stri
 /** 색인 진행 중이면 단계·문서 범위·남은 시간을 한 줄로 요약합니다. */
 export function describeIndexingProgress(indexing: RagIndexingProgressSummary | null): string {
   if (!indexing) return t('chatReadinessRagIndexingDetail');
+  if (indexing.activity || indexing.work) return getRagIndexingProgressDisplay(indexing).detail;
   if (indexing.keywordRestore) {
     const { processedDocuments, expectedDocuments } = indexing.keywordRestore;
     // 기대 문서 수를 모르거나 이미 넘었다면 읽은 수만 보여 줍니다.
-    return expectedDocuments > processedDocuments
+    return expectedDocuments !== null && expectedDocuments > processedDocuments
       ? t('chatReadinessKeywordRestore', {
           completed: String(processedDocuments),
           total: String(expectedDocuments),
@@ -152,14 +155,15 @@ export function createChatReadinessSnapshot(input: ChatReadinessInput): ChatRead
   }
 
   // 전송을 막는 문제가 있을 때는 검색 안내로 주의를 나누지 않습니다.
-  if (!items.some((item) => item.severity === 'blocking') && input.retrieval !== 'ready') {
+  if (!items.some((item) => item.severity === 'blocking') && (input.retrieval !== 'ready' || input.indexing)) {
     const preparing = input.retrieval === 'preparing';
+    const display = input.indexing ? getRagIndexingProgressDisplay(input.indexing) : null;
     items.push({
       kind: 'rag',
       severity: 'notice',
-      tone: preparing ? 'neutral' : 'warning',
-      label: t(preparing ? 'chatReadinessRagIndexing' : 'chatReadinessRagNotReady'),
-      detail: preparing
+      tone: display?.tone ?? (preparing ? 'neutral' : 'warning'),
+      label: display?.headline ?? t(preparing ? 'chatReadinessRagIndexing' : 'chatReadinessRagNotReady'),
+      detail: input.indexing || preparing
         ? describeIndexingProgress(input.indexing ?? null)
         : t('chatReadinessRagNotReadyDetail'),
     });
@@ -168,7 +172,7 @@ export function createChatReadinessSnapshot(input: ChatReadinessInput): ChatRead
   const blocksSend = items.some((item) => item.severity === 'blocking');
   const status: ChatReadinessStatus = blocksSend
     ? 'blocked'
-    : items.length > 0
+    : input.retrieval !== 'ready'
       ? 'degraded'
       : 'ready';
   return {

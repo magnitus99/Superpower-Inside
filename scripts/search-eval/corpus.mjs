@@ -78,6 +78,9 @@ export function createSyntheticCorpus(options = {}) {
     for (let index = 0; index < queriesPerCategory; index += 1) {
       const built = buildCase(category, index, ns, random);
       specs.push(...built.documents);
+      built.query.forbiddenChunks.push(...built.documents.flatMap((document) =>
+        document.forbiddenChunks.map((chunkIndex) => ({ path: document.path, chunkIndex })),
+      ));
       queries.push(built.query);
     }
   }
@@ -94,6 +97,11 @@ export function createSyntheticCorpus(options = {}) {
     query.goldPassages = query.goldChunks.map((ref) => {
       const document = byPath.get(ref.path);
       const chunk = document.chunks[ref.chunkIndex];
+      return { path: ref.path, startLine: chunk.startLine, endLine: chunk.endLine };
+    });
+    // hard 제외 정책이 아니라 같은 사례의 관련성 distractor입니다.
+    query.forbiddenPassages = query.forbiddenChunks.map((ref) => {
+      const chunk = byPath.get(ref.path).chunks[ref.chunkIndex];
       return { path: ref.path, startLine: chunk.startLine, endLine: chunk.endLine };
     });
     query.forbiddenPaths = [...new Set(query.forbiddenChunks.map((ref) => ref.path))];

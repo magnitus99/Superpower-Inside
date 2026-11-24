@@ -132,6 +132,7 @@ import {
   type SettingsOverviewSnapshot,
 } from './settings-overview';
 import { describeSearchStatus } from './rag/search-status';
+import { getRagIndexingProgressDisplay, renderRagIndexingProgress, type RagIndexingProgressDisplay } from './rag/indexing-progress-view';
 import { type AppLogger, type LoggerConfig } from './utils/logger';
 interface StandardMcpServerEntry {
   command?: string;
@@ -249,6 +250,8 @@ export interface ProviderModelConfig {
   verification: ProviderModelVerification;
 }
 export interface ProviderProfileConfig {
+  /** 인증·endpoint 변경 때만 교체하는 비밀 없는 임베딩 공간 식별자입니다. */
+  embeddingBindingRevision?: string;
   id: string;
   name: string;
   strategy: ProviderStrategyKey;
@@ -933,6 +936,9 @@ function normalizeProviderProfile(
     name: normalizedName,
     strategy,
     apiKey: typeof source.apiKey === 'string' ? source.apiKey : '',
+    ...(typeof source.embeddingBindingRevision === 'string' && /^[0-9a-f-]{36}$/i.test(source.embeddingBindingRevision)
+      ? { embeddingBindingRevision: source.embeddingBindingRevision }
+      : {}),
     ...(typeof source.apiKeySecret === 'string' && source.apiKeySecret
       ? { apiKeySecret: source.apiKeySecret }
       : {}),
@@ -1222,6 +1228,17 @@ export function migrateLegacyProviderProfiles(
 
 export interface PluginLike {
   readonly retiredArtifacts?: RetiredArtifactService;
+  getRagGenerationSnapshot?(): import('./rag/runtime-generation').RagGenerationSnapshot;
+  startRagUpdate?(): Promise<IndexingResult | null>;
+  rebuildRagGeneration?(): Promise<IndexingResult>;
+  acquireRagEngineOnlySnapshot?(): Promise<import('./search/indexed-search-deps').IndexedSearchRuntimeLease | null>;
+  acquireRagSearchSnapshot?(): {
+    ragEngine: import('./rag/query').RAGQueryEngine | null;
+    documentCorpus: import('./rag/document-corpus-store').IndexedDbDocumentCorpusStore | null;
+    chunkConfig: RAGConfig;
+    queryMinScore: number;
+    release(): void;
+  } | null;
   app: App;
   ragEngine: import('./rag/query').RAGQueryEngine | null;
   getSourceFileProcessingStatus?(
@@ -1232,6 +1249,7 @@ export interface PluginLike {
   settings: SuperpowerInsideSettings;
   vectorStore: import('./rag/store').VectorStore | null;
   getRagRuntimeState(): {
+    generation?: import('./rag/runtime-generation').RagGenerationSnapshot;
     ragStatus: RagStatusSummary | null;
     vectorStore: VectorStore | null;
     embeddingProvider: { clearCache(): Promise<void> } | null;
@@ -1267,7 +1285,6 @@ export interface PluginLike {
   cancelRagIndexing(options?: { byUser?: boolean }): void;
   resumeRagAutoRecovery(): void;
   runRagIndexing<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null>;
-  resumeRagIndexing(): boolean;
   getRagPerformanceGuardState(): PerformanceGuardState | null;
   createIndexedDbName(kind: string): string;
   mcpRegistry: MCPRegistry | null;
@@ -1637,7 +1654,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private updatePendingButton: HTMLButtonElement | null = null;
   private reindexAllButton: HTMLButtonElement | null = null;
   private cancelIndexingButton: HTMLButtonElement | null = null;
-  private resumeIndexingButton: HTMLButtonElement | null = null;
   private resetIndexButton: HTMLButtonElement | null = null;
   private providerStatusBody: HTMLElement | null = null;
   private updateNoticeEl: HTMLElement | null = null;
@@ -1828,7 +1844,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.updatePendingButton = null;
     this.reindexAllButton = null;
     this.cancelIndexingButton = null;
-    this.resumeIndexingButton = null;
     this.resetIndexButton = null;
     this.providerStatusBody = null;
     this.providerQuotaElements.clear();
@@ -1855,7 +1870,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       this.refreshBusUnsubscribers.push(
         bus.on('rag', (result) => {
           this.refreshGeneralStatusSection();
-          if (this.plugin.isRagIndexing()) {
+          if (this.plugin.isRagIndexing() || this.plugin.getSearchStatusSnapshot?.()?.indexing?.work) {
             this.updateRagIndexingProgress();
             return;
           }
@@ -3734,6 +3749,31 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
    * RefreshBus에서 rag 이벤트 수신 시 RAG 상태 패널 일부만 업데이트합니다.
    * (전체 rebuild 대신 statusGrid, timestamp, updateList 등만 갱신)
    */
+  private renderSharedRagProgress(): RagIndexingProgressDisplay | null | undefined {
+    if (!this.ragStatusGrid || (!this.plugin.getSearchStatusSnapshot && !this.plugin.getRagIndexingProgressSummary)) return undefined;
+    const summary = this.plugin.getSearchStatusSnapshot
+      ? this.plugin.getSearchStatusSnapshot().indexing
+      : this.plugin.getRagIndexingProgressSummary?.();
+    let copy = this.ragStatusGrid.querySelector<HTMLElement>('.superpower-inside-rag-overview-copy');
+    let host = copy?.querySelector<HTMLElement>('.superpower-inside-rag-shared-progress-host');
+    if (summary && !copy) {
+      const row = this.ragStatusGrid.createDiv({ cls: 'superpower-inside-rag-row superpower-inside-rag-overview-row' });
+      copy = row.createDiv({ cls: 'superpower-inside-rag-overview-copy' });
+      copy.createDiv({ cls: 'superpower-inside-rag-overview-title', text: t('ragOverviewTitle') });
+    }
+    if (summary && copy && !host) host = copy.createDiv({ cls: 'superpower-inside-rag-shared-progress-host' });
+    if (host) host.hidden = !summary;
+    if (copy) for (const child of Array.from(copy.children)) {
+      if (child !== host && !child.classList.contains('superpower-inside-rag-overview-title')) {
+        child.classList.toggle('superpower-inside-hidden', !!summary);
+      }
+    }
+    this.ragStatusGrid.querySelector<HTMLElement>('.superpower-inside-rag-overview-actions')?.classList.toggle('superpower-inside-hidden', !!summary);
+    if (!summary || !host) return summary === undefined ? undefined : null;
+    renderRagIndexingProgress(host, summary);
+    return getRagIndexingProgressDisplay(summary);
+  }
+
   private updateRagIndexingProgress(): void {
     const runtime = this.plugin.getRagRuntimeState();
     const isRunning = this.plugin.isRagIndexing();
@@ -3743,11 +3783,17 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     this.ragStatusAction?.setText(
       this.getRagActionMessage(runtime.ragStatus, guardState, retrievalReadiness),
     );
+    const shared = this.renderSharedRagProgress();
+    if (shared) {
+      this.ragStatusAction?.setText('');
+      this.ragStatusTimestamp?.setText(t('settingsAuto115', { v0: shared.headline }));
+      return;
+    }
+    const indexingStatus = shared === undefined ? runtime.ragIndexingStatus : null;
     const overviewCopy = this.ragStatusGrid?.querySelector<HTMLElement>(
       '.superpower-inside-rag-overview-copy',
     );
     if (overviewCopy) {
-      const indexingStatus = runtime.ragIndexingStatus;
       const isPaused = guardState?.mode === 'paused' || indexingStatus?.phase === 'paused';
       const headline = isPaused
         ? t('ragPerformancePaused')
@@ -3782,7 +3828,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     }
     if (this.ragStatusTimestamp) {
       this.ragStatusTimestamp.setText(
-        t('settingsAuto115', { v0: this.getIndexingStatusLabel(runtime.ragIndexingStatus) }),
+        t('settingsAuto115', { v0: this.getIndexingStatusLabel(indexingStatus) }),
       );
     }
   }
@@ -3790,6 +3836,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   private ragStatusRevision = 0;
   updateRagStats(indexingDetail?: string): void {
     this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus);
+    this.renderSharedRagProgress();
     const revision = ++this.ragStatusRevision;
     const statusGrid = this.ragStatusGrid;
     const timestampEl = this.ragStatusTimestamp;
@@ -3846,6 +3893,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private renderRagUnavailableState(detail: string): void {
     if (!this.ragStatusGrid || !this.ragStatusAction || !this.ragStatusDetails) return;
+    if (this.renderSharedRagProgress()) { this.ragStatusAction.setText(''); return; }
     this.ragStatusGrid.empty();
     const row = this.ragStatusGrid.createDiv({
       cls: 'superpower-inside-rag-row superpower-inside-rag-overview-row',
@@ -3886,12 +3934,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
   }
   private renderRagStatusSummary(status: RagStatusSummary): void {
     if (!this.ragStatusGrid || !this.ragStatusAction || !this.ragStatusDetails) return;
+    const shared = this.renderSharedRagProgress();
+    if (shared) { this.ragStatusAction.setText(''); return; }
     const guardState = this.plugin.getRagPerformanceGuardState();
     const retrievalReadiness = this.plugin.getRetrievalReadiness();
     const updateCount = status.updateRequiredDocuments.length;
     const healthyCount = Math.max(0, status.totalDocuments - updateCount);
     const isRunning = this.plugin.isRagIndexing();
-    const indexingStatus = isRunning ? this.plugin.getRagRuntimeState().ragIndexingStatus : null;
+    const indexingStatus = isRunning && shared === undefined ? this.plugin.getRagRuntimeState().ragIndexingStatus : null;
     const isPaused = guardState?.mode === 'paused' || indexingStatus?.phase === 'paused';
     const tone =
       isPaused || retrievalReadiness === 'degraded'
@@ -4402,6 +4452,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           refreshBus: this.plugin.refreshBus,
           refreshDomains: ['rag'],
           action: async () => {
+            if (this.plugin.startRagUpdate) return this.runExplicitRagAction('updatePending');
             const latestRuntime = await this.ensureRagRuntimeAccess();
             if (!latestRuntime.hasIndexer || !latestRuntime.ragIndexingScheduler) {
               return {
@@ -4469,6 +4520,7 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
           refreshBus: this.plugin.refreshBus,
           refreshDomains: ['rag'],
           action: async () => {
+            if (this.plugin.rebuildRagGeneration) return this.runExplicitRagAction('reindexAll');
             const latestRuntime = await this.ensureRagRuntimeAccess();
             if (!latestRuntime.hasIndexer || !latestRuntime.ragIndexingScheduler) {
               return {
@@ -4536,31 +4588,6 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
         }).finally(() => this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus));
       });
     });
-    primaryControls.createEl('button', { text: t('settingsAuto174') }, (btn) => {
-      this.resumeIndexingButton = btn;
-      btn.disabled = true;
-      btn.addEventListener('click', () => {
-        void runActionWithFeedback({
-          button: btn,
-          refreshBus: this.plugin.refreshBus,
-          refreshDomains: ['rag'],
-          action: () => {
-            const guardPaused = this.plugin.getRagPerformanceGuardState()?.mode === 'paused';
-            const userPaused =
-              this.plugin.getRagRuntimeState().autoRecoveryPausedByUser === true;
-            if (!guardPaused && !userPaused) {
-              return { status: 'noop', detail: t('ragNotPerformancePaused') };
-            }
-            const resumed = this.plugin.resumeRagIndexing();
-            if (!resumed && guardPaused) {
-              return { status: 'error', detail: t('ragNotPerformancePaused') };
-            }
-            this.updateRagStats();
-            return { status: 'success', detail: t('ragIndexResumeRequestedNotice') };
-          },
-        }).finally(() => this.updateRagControlStates(this.plugin.getRagRuntimeState().ragStatus));
-      });
-    });
     this.ragControlsHint = recoveryControls.createDiv({
       cls: 'superpower-inside-rag-controls-hint',
       text: t('settingsAuto175'),
@@ -4605,9 +4632,14 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
     });
     void this.getRagStatus().then((status) => this.updateRagControlStates(status));
   }
-  private updateRagControlStates(status: RagStatusSummary | null): void {
+  private getRagControlState(status: RagStatusSummary | null) {
     const runtime = this.plugin.getRagRuntimeState();
-    const state = getRagIndexingControlState({
+    const hasExplicitApi = typeof this.plugin.startRagUpdate === 'function' || typeof this.plugin.rebuildRagGeneration === 'function';
+    const validSetup = !hasExplicitApi || this.getRagSetupWarning() === null;
+    return getRagIndexingControlState({
+      canStartUpdate: validSetup && (typeof this.plugin.startRagUpdate === 'function' || runtime.hasIndexer),
+      canRebuild: validSetup && (typeof this.plugin.rebuildRagGeneration === 'function' || runtime.hasIndexer),
+      isInitializing: runtime.initRunning || runtime.generation?.availability === 'restoring',
       hasIndexer: runtime.hasIndexer,
       isIndexing: this.plugin.isRagIndexing(),
       totalDocuments: status?.totalDocuments ?? null,
@@ -4616,19 +4648,51 @@ export class SuperpowerInsideSettingTab extends PluginSettingTab {
       guardRemainingPauseMs: this.plugin.getRagPerformanceGuardState()?.remainingPauseMs ?? null,
       autoRecoveryPausedByUser: runtime.autoRecoveryPausedByUser === true,
     });
+  }
+  private async runExplicitRagAction(kind: 'updatePending' | 'reindexAll') {
+    const state = this.getRagControlState(this.plugin.getRagRuntimeState().ragStatus)[kind];
+    if (state.disabled) return { status: 'noop' as const, detail: state.reason ?? undefined };
+    try {
+      // 업데이트 API는 원문 보충과 중단 해제까지 소유하므로 별도로 재개하지 않습니다.
+      if (kind === 'reindexAll') this.plugin.resumeRagAutoRecovery?.();
+      const result = kind === 'updatePending'
+        ? await this.plugin.startRagUpdate!()
+        : await this.plugin.rebuildRagGeneration!();
+      this.updateRagStats();
+      if (!result || result.partial || result.failed || result.guardState?.mode === 'paused') {
+        return { status: 'partial' as const, detail: t('settingsAuto167') };
+      }
+      return {
+        status: 'success' as const,
+        detail: kind === 'updatePending'
+          ? t('settingsAuto166', { v0: result.indexed, v1: result.skipped })
+          : t('settingsAuto171', { v0: result.indexed }),
+      };
+    } catch (err) {
+      if (isIndexingCancelledError(err)) {
+        this.updateRagStats();
+        return { status: 'partial' as const, detail: t('settingsAuto167') };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        status: 'error' as const,
+        detail: msg,
+        notice: t(kind === 'updatePending' ? 'settingsAuto168' : 'settingsAuto172', { v0: msg }),
+      };
+    }
+  }
+  private updateRagControlStates(status: RagStatusSummary | null): void {
+    const runtime = this.plugin.getRagRuntimeState();
+    const state = this.getRagControlState(status);
     this.applyButtonState(this.updatePendingButton, state.updatePending);
     this.applyButtonState(this.reindexAllButton, state.reindexAll);
     this.applyButtonState(this.cancelIndexingButton, state.cancel);
-    this.applyButtonState(this.resumeIndexingButton, state.resume);
     this.applyButtonState(this.resetIndexButton, state.reset);
     if (this.updatePendingButton) {
       this.updatePendingButton.hidden = state.updatePending.disabled;
     }
     if (this.cancelIndexingButton) {
       this.cancelIndexingButton.hidden = state.cancel.disabled;
-    }
-    if (this.resumeIndexingButton) {
-      this.resumeIndexingButton.hidden = state.resume.disabled;
     }
     const firstReason = state.updatePending.reason ?? state.reindexAll.reason;
     if (this.ragControlsHint) {

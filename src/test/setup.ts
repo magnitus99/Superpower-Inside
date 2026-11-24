@@ -10,6 +10,7 @@ vi.mock('obsidian', () => {
       return { exists: match !== null, frontmatter: match?.[1] ?? '' };
     },
     parseYaml: yaml.load,
+    TFolder: class {},
     // 경로 정규화는 순수 함수라 호스트 없이도 같은 결과를 냅니다.
     normalizePath: (path: string) => path.replace(/\\/gu, '/').replace(/\/{2,}/gu, '/'),
   };

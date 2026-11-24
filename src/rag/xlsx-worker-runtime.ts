@@ -5,6 +5,7 @@ import { appLogger } from '../utils/logger';
 import { RAG_WASM_BASE64 } from '../../.local/generated/rag-wasm-bytes';
 import type { SourceText } from './source-access';
 import type { PdfReadOptions } from './pdf-worker-runtime';
+import { isSourceMetadataParts } from './rust-core';
 import type { RustSourceTextSegment } from './rust-core';
 
 /** 순차 추출의 파일별 전체 실행 예산이며 대기열 시간은 포함하지 않습니다. */
@@ -20,6 +21,7 @@ interface XlsxWorkerResponse {
   reason?: string;
   bytes?: Uint8Array;
   segmentsJson?: string;
+  metadataPartsJson?: string;
 }
 
 /** 오류 코드는 로깅에, 번역된 메시지는 기존 오류 표시 경로에 사용합니다. */
@@ -123,11 +125,13 @@ function runWorker(bytes: Uint8Array<ArrayBuffer>, signal?: AbortSignal): Promis
       stopWorker();
       try {
         const segments: unknown = JSON.parse(response.segmentsJson ?? 'null');
-        if (!response.bytes?.byteLength || !isSegments(segments) || segments.length === 0)
+        const metadataParts: unknown = JSON.parse(response.metadataPartsJson ?? 'null');
+        if (!response.bytes || !isSegments(segments) || !isSourceMetadataParts(metadataParts))
           throw new Error('Invalid XLSX wire format.');
         finish(undefined, {
           text: new TextDecoder('utf-8', { fatal: true }).decode(response.bytes),
           segments,
+          ...(metadataParts.length > 0 ? { metadataParts } : {}),
         });
       } catch {
         finish(new XlsxExtractionError('worker-failed'));

@@ -68,6 +68,7 @@ describe('XLSX 워커 실행 경계', () => {
         ok: true,
         bytes: new TextEncoder().encode('Alpha'),
         segmentsJson: '[{"label":"Sheet 1","startLine":0,"endLine":0}]',
+        metadataPartsJson: '[]',
       },
     } as MessageEvent<unknown>);
     await expect(first).resolves.toMatchObject({ text: 'Alpha' });

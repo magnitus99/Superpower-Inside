@@ -2,8 +2,8 @@
 export const PDF_WORKER_ASSETS = [
   {
     "file": "pdf-worker.js",
-    "size": 3950562,
-    "sha256": "12cf6b40ab6273b340d1e47316aae36e015e2b0b79d21c39ac0845c74bd7fc42",
+    "size": 3952689,
+    "sha256": "8a44ab14d76888bf470c513a8c5b93d31b343cdd9a4c97c9ace3c67f81163454",
     "url": "https://github.com/magnitus99/Superpower-Inside/releases/download/3.4.0/pdf-worker.js"
   },
   {

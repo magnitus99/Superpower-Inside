@@ -30,6 +30,8 @@
     "format": "prettier --write src/ main.ts",
     "rust:check": "node scripts/run-fish.mjs scripts/check-rust-local.fish",
     "quality:local": "node scripts/check-quality.mjs",
+    "quality:loop": "node scripts/search-eval/quality-loop.mjs",
+    "quality:loop:vault": "node scripts/search-eval/quality-loop.mjs --mode=vault",
     "preview:prepare": "node scripts/obsidian-preview.mjs prepare",
     "preview:build": "node scripts/obsidian-preview.mjs build",
     "preview": "node scripts/obsidian-preview.mjs serve",
@@ -50,6 +52,7 @@
     "@ternlight/base": "0.1.0",
     "dexie": "^4.0.11",
     "eventsource-parser": "3.0.8",
+    "fflate": "0.8.3",
     "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
     "pdfjs-dist": "5.4.54",
     "tesseract.js": "7.0.0"

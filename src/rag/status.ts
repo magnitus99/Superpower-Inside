@@ -1,7 +1,7 @@
 import type { TFile, Vault } from 'obsidian';
 import { t } from '../i18n';
 import type { RAGConfig, ChatConfig } from '../settings';
-import { getRagCandidateFiles } from '../utils/vault';
+import { getRagCandidateFiles, getRagFileInventory, type RagFileInventory } from '../utils/vault';
 import {
   planRagStatusRust,
   type RustRagStatusFileInput,
@@ -25,6 +25,8 @@ export interface RagStatusSummary {
   missingDocuments: number;
   staleDocuments: number;
   unknownDocuments: number;
+  /** unknownDocuments 중 현재 원문 읽기·디코딩 실패 수. 기존 공개 요약과 호환한다. */
+  failedDocuments?: number;
   excludedDocuments: number;
   totalVectors: number;
   lastCalculatedAt: number;
@@ -46,18 +48,21 @@ export async function calculateRagStatus(
   ragConfig: RAGConfig,
   chatConfig: ChatConfig,
   signal?: AbortSignal,
+  inventory?: RagFileInventory,
 ): Promise<RagStatusSummary> {
-  const includedFiles = await getIncludedRagFiles(vault, ragConfig, chatConfig);
+  const manifest = inventory ?? await getRagFileInventory(vault, ragConfig, chatConfig);
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  const allFiles = vault.getFiles();
   const fileIndexRecords = await vectorStore.getFileIndexRecords();
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   const input = {
-    includedFiles: includedFiles.map(toRagStatusFileInput),
+    includedFiles: [
+      ...manifest.candidates.map(toRagStatusFileInput),
+      ...manifest.failures.map(({ file, reason }) => ({ ...toRagStatusFileInput(file), failureReason: reason })),
+    ],
     records: fileIndexRecords.map(toRagStatusRecordInput),
-    totalVaultFiles: allFiles.length,
+    totalVaultFiles: manifest.totalVaultFiles,
     embeddingProvider: ragConfig.embeddingProvider,
     embeddingModel: ragConfig.embeddingModel,
     reasons: {
@@ -89,6 +94,7 @@ function toRagStatusFileInput(file: TFile): RustRagStatusFileInput {
 function toRagStatusRecordInput(record: FileIndexRecord): RustRagStatusRecordInput {
   return {
     filePath: record.filePath,
+    ...(record.sourceMetadata?.completeness?.status === 'partial' ? { sourceIncomplete: true } : {}),
     sourceMtime: record.sourceMtime,
     sourceSize: record.sourceSize,
     contentHash: record.contentHash,

@@ -1,6 +1,6 @@
 import { ChatView } from '../../src/chat/view';
 import { SearchView } from '../../src/search/view';
-import { DEFAULT_SETTINGS } from '../../src/settings';
+import { DEFAULT_SETTINGS, SuperpowerInsideSettingTab } from '../../src/settings';
 import { RefreshBus } from '../../src/utils/refresh-bus';
 import { setLanguage, t } from '../../src/i18n';
 import {
@@ -16,6 +16,7 @@ import {
 } from './host.mjs';
 import { checkProduct } from './checks.mjs';
 import { createQuotaPreview } from './quota.mjs';
+import { createIndexingPreviewSummary, checkIndexingProgress } from './progress.mjs';
 
 async function start() {
   const params = new URLSearchParams(location.search);
@@ -24,7 +25,9 @@ async function start() {
   const theme = params.get('theme') === 'dark' ? 'dark' : 'light';
   const lang = params.get('lang') === 'en' ? 'en' : 'ko';
   const state = params.get('state') ?? 'answer';
+  let progressSummary = createIndexingPreviewSummary(params.get('progress'));
   document.body.className = `mod-macos theme-${theme}`;
+  if (params.get('zoom') === '2') document.body.addClass('preview-zoom');
   document.documentElement.lang = lang;
   setLanguage(lang);
   const width = Number(params.get('width') ?? 420);
@@ -175,8 +178,9 @@ async function start() {
     // 검색 화면은 색인 상태 스냅샷을 직접 받습니다.
     // ?readiness=preparing|degraded와 ?docs=N 조합으로 준비·제한 화면을 검수합니다.
     getSearchStatusSnapshot: () => ({
-      readiness: params.has('noindex')
-        ? 'ready'
+      readiness: progressSummary
+        ? progressSummary.servingAvailable ? 'ready' : 'preparing'
+        : params.has('noindex') ? 'ready'
         : params.get('readiness') === 'preparing' || params.get('readiness') === 'degraded'
           ? params.get('readiness')
           : 'ready',
@@ -188,13 +192,16 @@ async function start() {
             staleDocuments: Number(params.get('stale') ?? 0),
             missingDocuments: 0,
           },
-      indexing: params.has('indexing')
+      indexing: progressSummary ?? (params.has('indexing')
         ? {
             completedFiles: 3,
             totalFiles: 12,
+            phase: 'all',
+            currentFileEmbeddedChunks: null,
+            currentFileTotalChunks: null,
             etaRemainingMs: null,
           }
-        : null,
+        : null),
     }),
     getSearchPort: () => {
       if (searchScenario.unavailable) return null;
@@ -294,6 +301,7 @@ async function start() {
     },
   };
 
+  if (progressSummary) plugin.getSearchStatusSnapshot = () => searchHost.getSearchStatusSnapshot();
   const quotaPreview = params.has('quota') ? await createQuotaPreview({ app, plugin, params }) : null;
   const view =
     state === 'search'
@@ -439,6 +447,81 @@ async function start() {
   }
 
   quotaPreview?.mount();
+  let checkManualRecovery = null;
+  if (params.has('manualRecovery')) {
+    const mode = params.get('manualRecovery');
+    if (!['legacy', 'paused', 'initializing', 'invalid'].includes(mode)) throw Error('알 수 없는 합성 복구 상태');
+    settings.providerProfiles = [{ id: 'preview-local', name: 'Synthetic local', strategy: 'ternlight', apiKey: '', enabled: true,
+      models: [{ id: 'embeddinggemma-300m', kind: 'embedding', verification: { chatStatus: 'unknown', embeddingStatus: 'success' } }] }];
+    settings.rag.embeddingModelRef = `profile:preview-local:${mode === 'invalid' ? 'missing' : 'embeddinggemma-300m'}`;
+    let updates = 0;
+    let rebuilds = 0;
+    let resumes = 0;
+    const result = { indexed: 1, vectors: 1, skipped: 0, documents: ['Synthetic/recovery.md'], durationMs: 1 };
+    Object.assign(plugin, {
+      getRagRuntimeState: () => ({ hasIndexer: false, ragIndexingScheduler: null, ragStatus: null, initRunning: mode === 'initializing', autoRecoveryPausedByUser: mode === 'paused', generation: { availability: 'usable', coverage: 'legacy-limited' } }),
+      getRagPerformanceGuardState: () => null,
+      startRagUpdate: async () => { updates++; return result; },
+      rebuildRagGeneration: async () => { rebuilds++; return result; },
+      resumeRagAutoRecovery: () => { resumes++; },
+      ensureRagRuntimeInitialized: async () => { throw Error('명시 복구가 기존 scheduler 초기화로 우회됨'); },
+    });
+    const tab = new SuperpowerInsideSettingTab(app, plugin);
+    tab.getRagStatus = async () => null;
+    const root = tab.containerEl;
+    root.addClass('view-content', 'superpower-inside-settings-root');
+    root.setAttribute('lang', lang);
+    document.getElementById('preview-leaf').replaceChildren(root);
+    root.createEl('h3', { text: t('ragOverviewTitle') });
+    tab.buildControlsSection(root);
+    root.querySelector('[aria-controls="superpower-inside-rag-disclosure-recovery"]')?.click();
+    await Promise.resolve();
+    checkManualRecovery = async () => {
+      const checks = [];
+      const check = (condition, name) => { if (!condition) throw Error(`명시 복구 검수 실패: ${name}`); checks.push(name); };
+      const blocked = mode === 'initializing' || mode === 'invalid';
+      const update = tab.updatePendingButton;
+      const rebuild = tab.reindexAllButton;
+      check(!!update && !!rebuild, '실제 설정 버튼 두 개');
+      check(update.disabled === blocked && rebuild.disabled === blocked, '기존 indexer와 명시 capability 분리');
+      check(updates === 0 && rebuilds === 0, '자동 재색인 없음');
+      if (!blocked) { update.focus(); check(document.activeElement === update, '업데이트 키보드 focus'); }
+      update.click();
+      await new Promise(resolve => window.setTimeout(resolve, 0));
+      check(updates === (blocked ? 0 : 1) && resumes === 0, '공통 업데이트 API와 내부 resume 소유권');
+      rebuild.click();
+      await new Promise(resolve => window.setTimeout(resolve, 0));
+      check(rebuilds === (blocked ? 0 : 1) && resumes === (blocked ? 0 : 1), '공통 전체 구축 API와 명시 재개');
+      check(plugin.getRagRuntimeState().hasIndexer === false, 'indexer 상태를 위장하지 않음');
+      return checks;
+    };
+  }
+  let progressSettingsTab = null;
+  let previousSettingsActions = null;
+  let previousSettingsProgress = null;
+  if (progressSummary && params.has('progressSettings')) {
+    const current = progressSummary;
+    progressSummary = null;
+    plugin.getRagPerformanceGuardState = () => null;
+    plugin.getRagRuntimeState = () => ({ ragStatus: null, ragIndexingStatus: null, hasIndexer: true });
+    progressSettingsTab = new SuperpowerInsideSettingTab(app, plugin);
+    const root = progressSettingsTab.containerEl;
+    root.addClass('view-content', 'superpower-inside-settings-root');
+    root.setAttribute('lang', lang);
+    document.getElementById('preview-leaf').replaceChildren(root);
+    root.createEl('h3', { text: t('ragOverviewTitle') });
+    progressSettingsTab.ragStatusGrid = root.createDiv({ cls: 'superpower-inside-rag-status-grid' });
+    progressSettingsTab.ragStatusTimestamp = root.createDiv();
+    progressSettingsTab.ragStatusAction = root.createDiv();
+    progressSettingsTab.ragStatusDetails = root.createDiv();
+    progressSettingsTab.renderRagUnavailableState(lang === 'ko' ? '합성 이전 오류 상태' : 'Synthetic previous error state');
+    previousSettingsActions = root.querySelector('.superpower-inside-rag-overview-actions');
+    previousSettingsProgress = root.querySelector('.superpower-inside-rag-overview-copy')
+      .createEl('ul', { cls: 'superpower-inside-rag-overview-progress' });
+    previousSettingsProgress.createEl('li', { text: 'synthetic previous progress' });
+    progressSummary = current;
+    progressSettingsTab.updateRagIndexingProgress();
+  }
   const toolbar = document.getElementById('preview-toolbar');
   toolbar.createSpan({
     text: `Obsidian ${reference.version} · 공식 기본 CSS · 합성 자료 · 외부 요청 차단`,
@@ -648,6 +731,40 @@ async function start() {
   }
   async function checkAll() {
     const host = await checkHost();
+    if (checkManualRecovery) {
+      const recovery = await checkManualRecovery();
+      const result = document.getElementById('preview-result');
+      result.dataset.failed = 'false';
+      result.dataset.metrics = previewMetrics();
+      result.textContent = `기본 스타일·호스트 ${host.length}개 / 명시 복구 ${recovery.length}개 통과 · 합성 설정 상태`;
+      return;
+    }
+    if (progressSummary) {
+      const progress = await checkIndexingProgress({
+        container: document.getElementById('preview-leaf'), summary: progressSummary,
+        expanded: params.has('expanded'),
+        update: (summary) => {
+          progressSummary = summary;
+          plugin.refreshBus.emit('rag', { status: 'partial' });
+          progressSettingsTab?.updateRagIndexingProgress();
+        },
+      });
+      if (progressSettingsTab) {
+        for (const element of [previousSettingsActions, previousSettingsProgress]) {
+          if (!element || getComputedStyle(element).display !== 'none' || element.getClientRects().length !== 0) throw Error('이전 설정 상태의 숨김 우선순위가 무효입니다.');
+        }
+        for (const button of previousSettingsActions.querySelectorAll('button')) {
+          button.focus();
+          if (document.activeElement === button) throw Error('이전 오류 제어가 여전히 포커스를 받습니다.');
+        }
+        progress.push('이전 설정 오류 제어·진행 행의 실제 비표시·포커스 제외');
+      }
+      const result = document.getElementById('preview-result');
+      result.dataset.failed = 'false';
+      result.dataset.metrics = previewMetrics();
+      result.textContent = `기본 스타일·호스트 ${host.length}개 / 공유 진행 ${progress.length}개 통과 · 합성 pipeline 상태`;
+      return;
+    }
     if (quotaPreview) {
       const quota = await quotaPreview.check();
       const result = document.getElementById('preview-result');

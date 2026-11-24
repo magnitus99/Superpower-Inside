@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { TFile } from 'obsidian';
 import { IndexedDbDocumentCorpusStore } from './document-corpus-store';
 import { buildSourceDocuments } from './source-document';
+import { isStoreMutationReceipt } from './durability';
 
 const stores: IndexedDbDocumentCorpusStore[] = [];
 const names: string[] = [];
@@ -33,6 +34,119 @@ function createFile(path: string): TFile {
 }
 
 describe('지원 파일 공통 문서 저장소', () => {
+  it('receipt 읽기는 기존 행을 인증하지 않으며 빈 DB의 명시 초기화만 새 incarnation을 만든다', async () => {
+    const store = createStore();
+    expect(await store.getDurabilityReceipt()).toBeNull();
+    const empty = await store.initializeEmptyDurabilityReceipt();
+    expect(isStoreMutationReceipt(empty)).toBe(true);
+    expect(await store.initializeEmptyDurabilityReceipt()).toEqual(empty);
+    expect(await store.getDocuments()).toEqual([]);
+  });
+
+  it('v1 기존 본문은 migration·읽기만으로 receipt를 만들거나 지우지 않는다', async () => {
+    const name = `legacy-corpus-receipt:${crypto.randomUUID()}`;
+    names.push(name);
+    const legacy = new Dexie(name);
+    legacy.version(1).stores({ documents: 'id, sourcePath', files: 'filePath' });
+    const file = createFile('legacy.md');
+    const documents = buildSourceDocuments(file, 'legacy preserved source', { chunkSize: 1000, overlap: 0 });
+    await legacy.table('documents').bulkPut(documents);
+    await legacy.table('files').put({ filePath: file.path, vectorCount: 1, updated: 1 });
+    legacy.close();
+    const store = new IndexedDbDocumentCorpusStore(name);
+    stores.push(store);
+    expect(await store.getDurabilityReceipt()).toBeNull();
+    expect(await store.initializeEmptyDurabilityReceipt()).toBeNull();
+    expect(await store.getDocuments()).toEqual(documents);
+    expect(await store.getFileIndexRecords()).toEqual([{ filePath: file.path, vectorCount: 1, updated: 1 }]);
+  });
+
+  it('같은 행 수의 본문·metadata 변경과 삭제·clear도 서로 다른 mutation으로 저장한다', async () => {
+    const store = createStore();
+    const file = createFile('same.md');
+    const heads = [await store.initializeEmptyDurabilityReceipt()];
+    for (const text of ['first source', 'second source']) {
+      await store.replaceFileDocuments(file.path, buildSourceDocuments(file, text, { chunkSize: 1000, overlap: 0 }));
+      expect(await store.getDocuments()).toHaveLength(1);
+      heads.push(await store.getDurabilityReceipt());
+    }
+    const sourceRevision = { sourceMtime: 20, sourceSize: 5, contentHash: '811c9dc5' };
+    await store.replaceBatchFileDocuments([{ filePath: file.path, documents: [], sourceMetadata: { segments: [], metadataParts: [{ label: 'Only metadata' }] }, sourceRevision }]);
+    heads.push(await store.getDurabilityReceipt());
+    await store.removeByFilePath(file.path);
+    heads.push(await store.getDurabilityReceipt());
+    await store.clear();
+    heads.push(await store.getDurabilityReceipt());
+    expect(heads.every((head) => head !== null)).toBe(true);
+    expect(new Set(heads.map((head) => head?.incarnation)).size).toBe(1);
+    expect(new Set(heads.map((head) => head?.mutation)).size).toBe(heads.length);
+  });
+
+  it('corpus 데이터와 receipt는 같은 transaction에서 rollback된다', async () => {
+    const store = createStore();
+    const file = createFile('rollback.md');
+    await store.replaceFileDocuments(file.path, buildSourceDocuments(file, 'preserved source', { chunkSize: 1000, overlap: 0 }));
+    const before = await store.getDurabilityReceipt();
+    await expect(store['db'].transaction('rw', ['documents', 'files', 'meta', 'sourceBlocks'], async () => {
+      await store.replaceFileDocuments(file.path, buildSourceDocuments(file, 'uncommitted source', { chunkSize: 1000, overlap: 0 }));
+      expect(await store.getDurabilityReceipt()).not.toEqual(before);
+      throw new Error('Synthetic outer transaction abort.');
+    })).rejects.toThrow('Synthetic outer transaction abort.');
+    expect(await store.getDurabilityReceipt()).toEqual(before);
+    expect((await store.getDocuments()).map(({ text }) => text)).toEqual(['preserved source']);
+  });
+
+  it('재열기는 같은 receipt이고 같은 이름의 DB 재생성은 다른 incarnation이다', async () => {
+    const store = createStore();
+    const before = await store.initializeEmptyDurabilityReceipt();
+    const name = names.at(-1)!;
+    store.close();
+    const reopened = new IndexedDbDocumentCorpusStore(name);
+    stores.push(reopened);
+    expect(await reopened.getDurabilityReceipt()).toEqual(before);
+    reopened.close();
+    await Dexie.delete(name);
+    const recreated = new IndexedDbDocumentCorpusStore(name);
+    stores.push(recreated);
+    const after = await recreated.initializeEmptyDurabilityReceipt();
+    expect(after?.incarnation).not.toBe(before?.incarnation);
+  });
+
+  it.each(['file', 'batch'] as const)('%s 저장은 metadata-only 파일의 실제 revision을 가짜 청크 없이 보존한다', async (mode) => {
+    const store = createStore();
+    const filePath = 'empty.xlsx';
+    const sourceMetadata = { segments: [], metadataParts: [{ label: 'Empty', sourcePart: 'sheet.xml', locator: { cells: [{ address: 'C3' }] } }] };
+    const sourceRevision = { sourceMtime: 20, sourceSize: 250, contentHash: '811c9dc5' };
+    if (mode === 'file') await store.replaceFileDocuments(filePath, [], sourceMetadata, 'aaaaaaaa', sourceRevision);
+    else await store.replaceBatchFileDocuments([{ filePath, documents: [], sourceMetadata, sourceMetadataHash: 'aaaaaaaa', sourceRevision }]);
+    store.close();
+    const reopened = new IndexedDbDocumentCorpusStore(names.at(-1)!);
+    stores.push(reopened);
+    expect(await reopened.getFileIndexRecords()).toEqual([expect.objectContaining({ filePath, ...sourceRevision, sourceMetadata, sourceMetadataHash: 'aaaaaaaa', vectorCount: 0, hasCompleteMetadata: true })]);
+    expect(await reopened.getDocuments()).toEqual([]);
+    expect(await reopened.getEntriesByFilePaths([filePath])).toEqual([]);
+  });
+
+  it('빈 시트 원장·alias·부분 PDF를 파일에 한 번 저장하고 재시작 후에도 보존한다', async () => {
+    const store = createStore();
+    const file = createFile('metadata.xlsx');
+    const sourceMetadata = {
+      segments: [{ label: 'Sheet', startLine: 0, endLine: 0, sourcePart: 'xl/worksheets/sheet1.xml', locator: { sheetName: 'Sheet', cells: [{ address: 'A1', startLine: 0, endLine: 0, formula: 'SUM(B1)' }], aliases: [{ sourcePart: 'chart.xml', reference: 'Sheet!A1', address: 'A1', cacheIndex: 0, nodePath: '/chart/v' }] } }],
+      metadataParts: [{ label: 'Empty', sourcePart: 'sheet2.xml', locator: { cells: [{ address: 'B2', blank: true }], mergedRanges: ['B2:C3'], containerChain: ['outer.docx', 'inner.xlsx'] } }],
+      completeness: { status: 'partial' as const, pageCount: 2, missingPageCount: 1, missingPages: [{ pageNumber: 2, reason: 'page-error' as const }], failures: [] },
+    };
+    const documents = buildSourceDocuments(file, 'alpha', { chunkSize: 100, overlap: 0 }, sourceMetadata.segments);
+    await store.replaceBatchFileDocuments([{ filePath: file.path, documents, sourceMetadata, sourceMetadataHash: 'metadata-signature' }, { filePath: 'empty.xlsx', documents: [], sourceMetadata: { segments: [], metadataParts: sourceMetadata.metadataParts } }]);
+    store.close();
+    const reopened = new IndexedDbDocumentCorpusStore(names.at(-1)!);
+    stores.push(reopened);
+    const records = await reopened.getFileIndexRecords();
+    expect(records.find((record) => record.filePath === file.path)).toMatchObject({ sourceMetadata, sourceMetadataHash: 'metadata-signature' });
+    expect(records.find((record) => record.filePath === 'empty.xlsx')).toMatchObject({ vectorCount: 0, sourceMetadata: { segments: [], metadataParts: sourceMetadata.metadataParts } });
+    expect((await reopened.getDocuments())[0]).not.toHaveProperty('sourceMetadata');
+    expect((await reopened.getEntriesByFilePaths([file.path]))[0]?.metadata.text).toBe('alpha');
+  });
+
   it('raw 청크와 별도 검색 필드를 저장하고 엔트리에도 손실 없이 전달한다', async () => {
     const store = createStore();
     const file = createFile('notes/source.md');

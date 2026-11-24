@@ -1,6 +1,6 @@
 import { ItemView, Notice, TFile, setIcon, type WorkspaceLeaf } from 'obsidian';
 import { t } from '../i18n';
-import { formatRagEtaDuration } from '../rag/indexing-progress';
+import { renderRagIndexingProgress } from '../rag/indexing-progress-view';
 import { describeSearchStatus, type SearchStatusSnapshot } from '../rag/search-status';
 import type { PluginLike } from '../settings';
 import {
@@ -336,35 +336,28 @@ export class SearchView extends ItemView {
   private renderIndexState(): void {
     const el = this.indexEl;
     if (!el) return;
-    el.empty();
     el.removeClass(WARNING_CLASS);
+    let message = el.querySelector<HTMLElement>('.superpower-inside-search-index-message');
+    if (!message) message = el.createSpan({ cls: 'superpower-inside-search-index-message' });
     const snapshot = this.host.getSearchStatusSnapshot();
     this.noteStatusSnapshot(snapshot);
     const status = snapshot.ragStatus;
     const hasDocuments = (status?.totalDocuments ?? 0) > 0;
     const indexing = snapshot.indexing;
-    if (indexing && indexing.totalFiles > 0) {
-      el.setText(
-        indexing.etaRemainingMs !== null
-          ? t('searchIndexProgressEta', {
-              completed: Math.min(indexing.completedFiles, indexing.totalFiles),
-              total: indexing.totalFiles,
-              eta: formatRagEtaDuration(indexing.etaRemainingMs),
-            })
-          : t('searchIndexProgress', {
-              completed: Math.min(indexing.completedFiles, indexing.totalFiles),
-              total: indexing.totalFiles,
-            }),
-      );
-      // 진행 중에도 질의를 대기 등록할 수 있도록 제출 경로를 열어 둡니다.
-      this.setRunEnabled(true);
+    message.toggleClass(HIDDEN_CLASS, !!indexing);
+    if (indexing) {
+      renderRagIndexingProgress(el, indexing);
+      el.querySelector<HTMLElement>('.superpower-inside-indexing-progress')?.toggleClass(HIDDEN_CLASS, false);
+      // 안내 표시가 실제 readiness나 기존 검색 가능 범위를 바꾸지는 않습니다.
+      this.setRunEnabled(snapshot.readiness === 'preparing' || hasDocuments);
       return;
     }
+    el.querySelector<HTMLElement>('.superpower-inside-indexing-progress')?.toggleClass(HIDDEN_CLASS, true);
     if (snapshot.readiness !== 'ready') {
       // 준비 중에는 부분 색인을 결과 근거로 쓰지 않습니다. 확인된 제한(degraded)만
       // 이미 색인된 문서 범위에서 검색을 허용하고, preparing은 대기 등록을 받습니다.
       const description = describeSearchStatus(snapshot);
-      el.setText(
+      message.setText(
         description.detail ? `${description.label} · ${description.detail}` : description.label,
       );
       el.addClass(WARNING_CLASS);
@@ -375,21 +368,22 @@ export class SearchView extends ItemView {
       return;
     }
     if (!status) {
-      el.setText(t('searchIndexMissing'));
+      message.setText(t('searchIndexMissing'));
       el.addClass(WARNING_CLASS);
       this.setRunEnabled(false);
       return;
     }
     if (!hasDocuments) {
-      el.setText(t('searchIndexEmpty'));
+      message.setText(t('searchIndexEmpty'));
       el.addClass(WARNING_CLASS);
       this.setRunEnabled(false);
       return;
     }
     this.setRunEnabled(true);
+    message.setText('');
     const pending = status.staleDocuments + status.missingDocuments;
     if (pending > 0) {
-      el.setText(t('searchIndexStale', { count: pending }));
+      message.setText(t('searchIndexStale', { count: pending }));
       el.addClass(WARNING_CLASS);
     }
   }

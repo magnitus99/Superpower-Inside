@@ -4,7 +4,7 @@ type: module-design
 status: draft
 title: 볼트 근거 심사와 답변 계약
 parent: superpower-architecture
-references: [superpower-goals, chat-contract]
+references: [superpower-goals, chat-contract, retrieval-index, deterministic-core]
 ---
 
 # 볼트 근거 심사와 답변 계약
@@ -27,11 +27,17 @@ indexing·engine-unavailable·no-evidence·evidence-only를 구분하고 반환�
 
 기본 documentScope all에서 접근 가능한 전체 색인의 lexical 후보를 BM25로 평가한다. hybrid 후보는 순위 prior이며 검토 세계를 제한하지 않는다. 후보 초기화 불가·빈 후보·일부 facet 실패여도 전체 lexical 평가와 원문 검증 후보 구성을 계속한다. 기본 발견·집계·구문 판정·구간 주소는 모델 도구 왕복 없이 엔진 한 번·색인 한 순회에서 확보하는 것이 목표다.
 
+`matchInventory`의 BM25 exact-token/구문 집계와 `literalInventory`의 원문 부분문자열 문서·행·발생은 별도 단위로 표시한다. literal 정의는 `deterministic-core`, 저장·currentness·lease는 `retrieval-index`가 소유한다. 직접 literal 입력을 planner term보다 먼저 보존하고 Rust가 계산한 총계를 전달한다. literal 실패·미지원 필터를 token 숫자나 성공 0으로 대체하지 않으며 해당 상태를 모델 전달 전부터 명시한다. 모델에는 일치 정의·범위·숫자를 전달하고 내부 receipt/세대 ID는 복제하지 않는다.
+
+조사는 전체 literal 원장의 처음 최대 8페이지에서 위치 힌트를 읽고 그 힌트 자체를 Rust 대표 계획에 넣어 기존 검토 경로와 합친다. 기존 discovery 기록이 새 힌트의 대표 슬롯을 소비하지 않으며 기존 후보의 순위 prior를 같은 위치 일치로 중복 강화하지 않는다. 새로 발견한 경로는 bounded discovery 후속 심사를 먼저 받을 수 있고, 색인에서 읽었지만 근거로 선택하지 않은 새 literal 경로를 현재 원문 심사 완료로 간주하지 않는다. 이 한도는 전체 원장 총계나 후속 비동기 페이지를 자르지 않으며, 읽은 페이지·선택한 경로·현재 원문 심사는 별개다. reference는 인용이 아니므로 새 단서도 같은 원문 검증을 통과해야 한다. source 요청은 lazy opener로 얻은 handle을 소유하고 모델/후속 소비와 비동기 페이지 정리가 끝날 때까지 실제 serving lease를 유지한다. 결과의 페이지 callback은 그 요청 수명 안에서만 유효하며 종료는 await한다. literal 유효성을 마지막으로 재확인한 뒤에도 원래 요청 signal과 조사 실행 소유권을 다시 확인하며, 그 전에 최종 답변·완료 callback을 게시하지 않는다.
+
 인벤토리는 점수·후보 컷에 쓰지 않고 수치를 그대로 전달한다. 비교는 Rust facet 계획과 후보 queryIndex 귀속을 사용하며 supported facet의 주장과 양쪽 supported 근거가 있는 종합만 허용한다. missing facet을 supported로 바꾸거나 근거 없는 직접 비교를 만들지 않는다. 주변 맥락·조건·예외·상충 근거를 보존하고 확인 사실과 문서 전제에 근거한 추론을 구분한다.
 
 quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검증 사유로 제외하며 모델의 관련성 판단으로 표현하지 않는다. engine-unavailable·indexing은 반환 content·검증 citations로 종료하고 엔진 실패를 우회하는 모델 도구 루프로 대체하지 않는다. no-evidence·evidence-only도 한계를 보존하며 evidence-only 표시 본문을 JSON으로 재해석하지 않는다.
 
 단서 기반 읽기 전용 search/read/list/links/related와 전체 열거에도 현재 접근·제외·필터·revision·원문 검증·취소를 적용한다. 후속 근거가 없으면 원래 제한 상태를 유지하며 추가 조사 허용이 교정 한도를 없애거나 검증 실패 답변을 게시할 권한은 아니다. 실제 최종 답변의 의미 충실도는 형식 검증과 별개다.
+
+품질 평가의 `executionMode: 'engine-only'`는 같은 발견·현재 원문 심사·dossier 경로에서 후속 모델과 답변 생성을 금지한다. `deferAnswer`만으로 이 경계를 대신하지 않는다. 전용 serving-only lexical lease가 없으면 평가를 차단하며 일반 검색 포트·초기화·제공자·별도 기준선으로 우회하지 않는다. 이 평가의 단위 통과는 실제 모델 답변의 충실도 합격이 아니다.
 
 발견·검증·판정의 기본 주체는 결정적 검색 엔진이다. LLM은 엔진이 확보한 근거를 해석·종합하며 후보 선별자나 근거 검증자로 대체되지 않는다. 도구 호출은 엔진의 기본 결과가 부족할 때 조사를 깊게 하는 수단이며 기본 발견·검증을 대신하는 경로가 아니다.
 
@@ -52,7 +58,7 @@ quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검�
 - `src/search/indexed-search-deps.ts`는 exhaustive lexical 후보와 discovery 단서를 보유하면서 원문 심사 경로를 최대 96개로 선택한다. 따라서 전체 lexical 발견을 전체 현재 원문 검토 완료로 해석할 수 없다. `indexed-vault-review.ts`의 coverage는 이제 원문을 실제로 읽은 경로만 `reviewedDocuments`로 세고, 발견 범위는 discovery 단서·일치 인벤토리·후속 조회로 분리한다. 검토 예산 밖 경로를 미검토 실패로 부풀리지 않지만, 발견 범위와 원문 검증 범위가 다르다는 사실은 그대로다.
 - 검토 예산 밖 discovery 페이지는 후속 질의 뒤 `unreviewed` 상태의 고유 경로를 최대 8개(discovery 페이지 최대 8장) 골라 같은 질문·로컬 질의 변형·원래 후보의 facet 귀속으로 한 번 더 검색하고, Rust 현재 원문 검증을 통과한 근거만 dossier에 합칩니다. 필터가 있으면 현재 정책 재조회(`getFollowupPaths`)가 있을 때만 실행하며, 재조회·추가 검색 실패나 취소는 기존 검증 근거를 유지합니다. 이 자동 조사는 발견 전체를 다시 검토하는 장치가 아니며, 8경로·8페이지 밖의 단서와 실제 답변 품질·전체 recall은 이 경계의 검증 대상이 아닙니다. 현재 원문이 바뀐 discovery 근거의 복구도 원래 후보를 유지하고 확장 예산으로 재병합해 기존 검증 근거를 고정 상한으로 자르지 않으며, 병합에서 제외된 구간은 진단과 미완료 고지에 반영합니다.
 - 기본 생성에는 인벤토리 총계가 전달되고, 목록·개수 의도는 후속 모델 응답과 무관하게 Rust 결정적 감지로 `enumerate` 경로를 실행한다. 다만 일치 인벤토리가 상한으로 자른 문서는 `missing`으로 남으므로 전체 무누락은 인벤토리 범위에 한정된다. 관련 근거는 `indexed-vault-followup.ts`, `indexed-vault-enumeration.ts`와 `indexed-vault-review.test.ts`다.
-- 채팅 검증은 현재 본문을 읽고 구절·절대 행 주소를 Rust로 재검증하며, 현재 파일 content hash를 색인 hash와 비교해 다르면 현재 revision·hash로 갱신한다. 해시 일치만으로 색인 사본을 verified로 승격하지 않는다. 검색 화면은 `verifyCurrentSource: false`이므로 같은 검증 보장이 아니다.
+- 채팅 검증은 현재 본문을 읽고 구절·절대 행 주소를 Rust로 재검증하며, 현재 파일 content hash를 색인 hash와 비교해 다르면 현재 revision·hash로 갱신한다. 해시 일치만으로 색인 사본을 verified로 승격하지 않는다. 제품 검색 포트도 `forceRefresh: true`·`verifyCurrentSource: true`로 현재 본문·좌표를 검증한다. reader나 명시된 청킹 결과가 없으면 실패 폐쇄하며, 명시적인 legacy `false`는 제품 포트가 사용하지 않는다. serving snapshot의 null은 building corpus나 이전 원장으로 대체하지 않는다.
 - 기본 발견·집계·주소를 엔진 한 번·색인 한 순회에서 얻는 것이 목표다. BM25 facet 검색과 term 집계는 term 128개·입력 상한 안에서 `Bm25RuntimeIndex.batch_search_and_aggregate_json` 한 번의 worker 호출로 합치고 선택 chunk의 원문 주소도 한 번에 읽는다. 상한을 넘으면 기존 facet별 검색·term 집계로 되돌아간다. 후속 질의 변형은 로컬 질문 분해만 사용한다. 다만 vector 후보 임베딩·검색은 facet별 호출이 남아 있어 전체 발견 경로의 단일 순회는 아직 아니다.
 
 구현 중심은 `indexed-vault-review.ts`의 `searchIndexedVault`·`reviewIndexedVault`다. `research-agent.ts`는 의도 분류와 진행 라벨만 제공하며 실행 에이전트를 포함하지 않는다. 회귀 근거는 `indexed-vault-review.test.ts`, `indexed-vault-search.test.ts`, `indexed-vault-followup.test.ts`, `src/search/indexed-search-deps.test.ts`, `src/search/engine-adapter.test.ts`다. 로컬 회귀 계약과 실제 답변·전체 recall 검증은 별개이며, 이번 편입에서는 실제 답변·전체 recall을 재측정하지 않았다. 달성 상태와 종료 판정은 [engineering-contract.md](../../engineering-contract.md#검증-상태와-이력)의 검증 상태 절이 소유한다.

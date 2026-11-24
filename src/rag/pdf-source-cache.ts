@@ -3,9 +3,9 @@ import {
   GeneratedArtifactDatabase,
   type GeneratedArtifactBinding,
 } from '../storage/generated-artifacts';
-import type { PdfSourceText } from './pdf-worker-runtime';
+import { isPdfSourceText, type PdfSourceText } from './pdf-worker-runtime';
 
-export const PDF_EXTRACTOR_VERSION = 'pdfjs-5.4.54-tesseract-7-kor-eng-v3';
+export const PDF_EXTRACTOR_VERSION = 'pdfjs-5.4.54-tesseract-7-kor-eng-v4';
 
 interface CachedPdf {
   path: string;
@@ -40,12 +40,19 @@ export class PdfSourceCache {
     version = PDF_EXTRACTOR_VERSION,
   ): Promise<PdfSourceText | undefined> {
     const row = await this.db.sources.get(path);
-    if (row?.mtime !== mtime || row.size !== size || row.version !== version) return undefined;
+    if (
+      row?.mtime !== mtime ||
+      row.size !== size ||
+      row.version !== version ||
+      !isPdfSourceText(row.source)
+    )
+      return undefined;
     await this.db.sources.update(path, { usedAt: Date.now() });
     return row.source;
   }
 
   async put(path: string, mtime: number, size: number, source: PdfSourceText): Promise<void> {
+    if (!isPdfSourceText(source)) throw new Error('PDF cache source is invalid.');
     await this.db.transaction('rw', this.db.sources, async () => {
       await this.db.sources.put({
         path,

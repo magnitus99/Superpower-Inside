@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { ARTIFACT_PATHS } from '../artifact-paths.mjs';
+import { readEmbeddedWasmBytes } from '../load-embedded-wasm.mjs';
 
 export const SEARCH_EVAL_SCOPE = 'node-adapter-unit: BM25 WASM retrieval(+engine plan feature-detect), not product DB/IO end-to-end';
 
@@ -43,7 +44,7 @@ export async function createSearchAdapter(name, options = {}) {
 // 기준선: 현재 제품 WASM의 BM25 runtime index를 그대로 사용한다.
 export async function createBaselineAdapter(options = {}) {
   const module = await loadGeneratedWasm();
-  initWasm(module);
+  await initWasm(module);
   const index = new module.Bm25RuntimeIndex(tokenizerVersion);
   const chunksByPath = new Map();
   const chunkByDocId = new Map();
@@ -126,7 +127,7 @@ export async function createBaselineAdapter(options = {}) {
 // plan/verify export가 generated WASM에 아직 없으면 query 시 명확히 실패한다.
 export async function createEnginePlannerAdapter(options = {}) {
   const module = await loadGeneratedWasm();
-  initWasm(module);
+  await initWasm(module);
   if (typeof module.plan_indexed_evidence_json !== 'function')
     throw new Error(
       'engine plan export가 현재 generated WASM에 없습니다. engine rebuild 후 같은 데이터로 다시 실행하세요.',
@@ -214,9 +215,11 @@ export function buildEnginePlanInput(question, candidates, documentsByPath, cand
   };
 }
 
-function initWasm(module) {
+async function initWasm(module) {
   if (wasmInitialized) return;
-  module.initSync({ module: readEmbeddedWasmBytes() });
+  const bytes = await readEmbeddedWasmBytes();
+  if (wasmInitialized) return;
+  module.initSync({ module: bytes });
   tokenizerVersion = module.tokenizer_version();
   wasmInitialized = true;
 }
@@ -296,13 +299,6 @@ function chunkDocId(filePath, chunkIndex) {
 // 제품 buildSearchText와 같은 필드 힌트를 넣어 title/path 질의를 공정하게 평가한다.
 function buildSearchText(document, chunk) {
   return `File: ${document.path}\nTitle: ${path.basename(document.path, '.md')}\n\n${chunk.text}`;
-}
-
-function readEmbeddedWasmBytes() {
-  const source = readFileSync(path.join(repository, '.local/generated/rag-wasm-bytes.ts'), 'utf8');
-  const chunks = [...source.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? '');
-  if (chunks.length === 0) throw new Error('embedded WASM base64 청크를 찾지 못했습니다.');
-  return Buffer.from(chunks.join(''), 'base64');
 }
 
 async function importGeneratedWasmModule() {

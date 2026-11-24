@@ -18,6 +18,14 @@ pub use plugin_aware::{plan_plugin_aware_indices_json, select_plugin_context7_li
 /// 기본 임베딩 모델의 입력 형식과 다운로드 응답 검증.
 mod local_embedding;
 mod source_document;
+mod source_segment_chunks;
+pub use source_segment_chunks::plan_source_segment_chunks_json;
+mod text_decode;
+pub use text_decode::decode_source_bytes_json;
+pub mod literal_inventory;
+pub use literal_inventory::{LiteralInventoryTotals, LiteralSourceScanner, plan_source_body_json};
+mod source_preparation;
+pub use source_preparation::{prepare_source_bytes_json, prepare_source_text_json};
 mod source_extract;
 mod source_metadata;
 pub use local_embedding::{embedding_gemma_inputs_json, local_model_range_matches};
@@ -63,7 +71,7 @@ pub use rag_recovery::{
 
 /// Adaptive RAG indexing performance policy.
 mod performance_guard;
-pub use performance_guard::plan_rag_performance_guard_json;
+pub use performance_guard::{plan_local_rag_admission_json, plan_rag_performance_guard_json};
 
 mod chat_input;
 mod evidence_collection;
@@ -168,7 +176,7 @@ const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
 /// 기존 `TypeScript` 해시가 쓰는 `FNV-1a` 32비트 소수.
 const FNV_PRIME: u32 = 0x0100_0193;
 /// Unknown formats above this size are not read in full merely to guess whether they are text.
-const MAX_RAG_UNKNOWN_TEXT_PROBE_BYTES: u64 = 512 * 1024;
+const MAX_RAG_UNKNOWN_TEXT_PROBE_BYTES: u64 = text_decode::SOURCE_BYTE_BUDGET;
 /// Extractable document containers above this size are not read in full during indexing.
 const MAX_RAG_EXTRACTABLE_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 /// 기존 `TypeScript BM25` 검색 경로의 `k1` 상수.
@@ -284,10 +292,20 @@ pub(crate) fn normalize_nfc(text: &str) -> Cow<'_, str> {
     }
 }
 
+/// 원문 보존용 `NFC`와 분리한 검색 비교용 `NFKC`입니다.
+#[must_use]
+pub(crate) fn normalize_search_text(text: &str) -> Cow<'_, str> {
+    if unicode_normalization::is_nfkc(text) {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(text.nfkc().collect())
+    }
+}
+
 /// 검색 토큰 규칙의 버전입니다.
 ///
 /// 토큰 규칙이 바뀌면 올립니다. 저장된 색인은 이 값이 다르면 다시 만들어집니다.
-pub const TOKENIZER_VERSION: u32 = 3;
+pub const TOKENIZER_VERSION: u32 = 4;
 
 /// 현재 검색 토큰 규칙 버전을 반환합니다.
 ///
@@ -305,6 +323,7 @@ pub fn tokenizer_version() -> u32 {
 /// 현재 `TypeScript BM25` 경로와 같은 검색 토큰 규칙으로 텍스트를 토큰화한다.
 #[must_use]
 pub fn tokenize(text: &str) -> Vec<String> {
+    let text = normalize_search_text(text);
     let mut tokens = Vec::new();
     let mut part = String::new();
 
@@ -354,7 +373,7 @@ pub fn plan_bm25_index_add_document_json(
     let Some(mut index) = parse_bm25_index_json(index_json) else {
         return String::new();
     };
-    index.tokenizer_version = tokenizer_version;
+    index.adopt_tokenizer_if_empty(tokenizer_version);
     add_bm25_document(&mut index, doc_id, text, source_path);
 
     serialize_bm25_index_json(&index)
@@ -371,7 +390,7 @@ pub fn plan_bm25_index_remove_document_json(
     let Some(mut index) = parse_bm25_index_json(index_json) else {
         return String::new();
     };
-    index.tokenizer_version = tokenizer_version;
+    index.adopt_tokenizer_if_empty(tokenizer_version);
     remove_bm25_document(&mut index, doc_id);
     serialize_bm25_index_json(&index)
 }
@@ -387,7 +406,7 @@ pub fn plan_bm25_index_remove_source_json(
     let Some(mut index) = parse_bm25_index_json(index_json) else {
         return String::new();
     };
-    index.tokenizer_version = tokenizer_version;
+    index.adopt_tokenizer_if_empty(tokenizer_version);
     let doc_ids = index
         .doc_sources
         .iter()
@@ -417,10 +436,10 @@ pub fn count_keyword_matches(query_tokens: &str, text: &str) -> u32 {
         return 0;
     }
 
-    let haystack = text.to_lowercase();
+    let haystack = normalize_search_text(text).to_lowercase();
     let matches = query_tokens
         .split('\u{1f}')
-        .filter(|token| haystack.contains(&token.to_lowercase()))
+        .filter(|token| haystack.contains(&normalize_search_text(token).to_lowercase()))
         .count();
     u32::try_from(matches).unwrap_or(u32::MAX)
 }
@@ -2124,9 +2143,8 @@ pub fn plan_rag_file_indexability_json(
         return String::new();
     };
 
-    let (candidate_indices, summary_inputs) =
-        plan_rag_file_indexability(&files, &exclude_paths, &exclude_exts, &text_probes);
-    serialize_rag_file_indexability_plan_json(&candidate_indices, &summary_inputs)
+    let plan = plan_rag_file_indexability(&files, &exclude_paths, &exclude_exts, &text_probes);
+    serialize_rag_file_indexability_plan_json(&plan)
 }
 
 /// assistant 답변에서 출처 참조와 path alias plan을 `JSON` 문자열로 만든다.
@@ -3043,7 +3061,7 @@ fn prepare_folder_lexical_query(query: &str) -> Option<FolderLexicalQuery> {
     Some(FolderLexicalQuery {
         joined_tokens: tokens.join("\u{1f}"),
         term_count: tokens.len(),
-        phrase: query.trim().to_lowercase(),
+        phrase: normalize_search_text(query).trim().to_lowercase(),
     })
 }
 
@@ -3054,7 +3072,7 @@ fn score_folder_lexical_sample(
     content: &str,
     match_mode: &str,
 ) -> Option<u32> {
-    let combined = format!("{file_path}\n{content}").to_lowercase();
+    let combined = normalize_search_text(&format!("{file_path}\n{content}")).to_lowercase();
     let path_score = count_keyword_matches(&query.joined_tokens, file_path);
     let content_score = count_keyword_matches(&query.joined_tokens, content).min(9_999);
     let matched_tokens = count_keyword_matches(&query.joined_tokens, &combined);
@@ -3415,9 +3433,9 @@ fn is_protected_rag_document_extension(extension: &str) -> bool {
         .any(|candidate| candidate.eq_ignore_ascii_case(extension))
 }
 
-/// 제외 확장자 입력에서 추천/수락 가능한 값인지 판별한다.
+/// 제외 확장자 추천에서 제안 가능한 값인지 판별한다.
 fn is_recommendable_rag_exclude_extension_for_validation(extension: &str) -> bool {
-    !extension.is_empty() && !is_protected_rag_document_extension(extension)
+    is_recommendable_exclude_extension(extension)
 }
 
 /// 제외 확장자 입력이 유효한 토큰 형식인지 판별한다.
@@ -4487,7 +4505,7 @@ impl Bm25RuntimeIndex {
         source_path: &str,
         tokenizer_version: u32,
     ) {
-        self.index.tokenizer_version = tokenizer_version;
+        self.index.adopt_tokenizer_if_empty(tokenizer_version);
         add_bm25_document(&mut self.index, doc_id, text, source_path);
     }
 
@@ -4509,7 +4527,7 @@ impl Bm25RuntimeIndex {
         let Some(fields) = parse_bm25_document_fields_json(fields_json) else {
             return 0;
         };
-        self.index.tokenizer_version = tokenizer_version;
+        self.index.adopt_tokenizer_if_empty(tokenizer_version);
         add_bm25_document_fields(&mut self.index, doc_id, text, source_path, &fields);
         1
     }
@@ -4522,7 +4540,7 @@ impl Bm25RuntimeIndex {
         source_path: &str,
         tokenizer_version: u32,
     ) {
-        self.index.tokenizer_version = tokenizer_version;
+        self.index.adopt_tokenizer_if_empty(tokenizer_version);
         insert_bm25_document(&mut self.index, doc_id, text, source_path);
     }
 
@@ -4537,7 +4555,7 @@ impl Bm25RuntimeIndex {
         let Some(documents) = parse_bm25_document_batch_json(documents_json) else {
             return 0;
         };
-        self.index.tokenizer_version = tokenizer_version;
+        self.index.adopt_tokenizer_if_empty(tokenizer_version);
         let count = documents.len();
         for document in documents {
             if known_unique {
@@ -4563,13 +4581,13 @@ impl Bm25RuntimeIndex {
 
     /// document 하나를 runtime index에서 제거한다.
     pub fn remove_document(&mut self, doc_id: &str, tokenizer_version: u32) {
-        self.index.tokenizer_version = tokenizer_version;
+        self.index.adopt_tokenizer_if_empty(tokenizer_version);
         remove_bm25_document(&mut self.index, doc_id);
     }
 
     /// source path에 속한 document들을 runtime index에서 제거한다.
     pub fn remove_source(&mut self, source_path: &str, tokenizer_version: u32) {
-        self.index.tokenizer_version = tokenizer_version;
+        self.index.adopt_tokenizer_if_empty(tokenizer_version);
         let doc_ids = self
             .index
             .doc_sources
@@ -4897,6 +4915,13 @@ struct Bm25DocumentFields {
 }
 
 impl Bm25IndexData {
+    /// 빈 색인에만 요청한 토큰 계약을 적용합니다.
+    fn adopt_tokenizer_if_empty(&mut self, tokenizer_version: u32) {
+        if self.doc_lengths.is_empty() {
+            self.tokenizer_version = tokenizer_version;
+        }
+    }
+
     /// 빈 BM25 index data를 만든다.
     const fn empty(tokenizer_version: u32) -> Self {
         Self {
@@ -6449,6 +6474,8 @@ struct VectorStoreStatsPlan {
 
 /// RAG status 계산 대상 file snapshot.
 struct RagStatusFileInput {
+    /// 현재 원문 실패. unknown의 부분집합이며 기존 벡터가 있어도 healthy가 아니다.
+    failure_reason: Option<String>,
     /// vault file path.
     path: String,
     /// source mtime.
@@ -6459,6 +6486,8 @@ struct RagStatusFileInput {
 
 /// RAG status 계산 대상 file index record snapshot.
 struct RagStatusRecordInput {
+    /// 같은 revision에서 유효 본문은 있지만 원문 일부가 누락된 종료 상태입니다.
+    source_incomplete: bool,
     /// record file path.
     file_path: String,
     /// source mtime.
@@ -6581,6 +6610,8 @@ struct RagStatusPlan {
     stale_documents: usize,
     /// unknown count.
     unknown_documents: usize,
+    /// unknown 중 현재 원문 실패 수.
+    failed_documents: usize,
     /// excluded vault file count.
     excluded_documents: usize,
     /// vector count of the healthy, included documents only.
@@ -6643,6 +6674,134 @@ struct RagIndexingEtaInput {
     historical_chunk_estimate_ratio: Option<f64>,
     /// Historical ETA rate variance for matching provider/model/chunk settings.
     historical_variance: Option<f64>,
+    /// 명시적인 실행 상태와 현재 작업의 관측 경계다.
+    pipeline: Option<RagIndexingEtaPipeline>,
+}
+
+/// 완료 증명과 비성공 종료를 구별하는 호스트 상태다.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RagIndexingEtaLifecycle {
+    /// 실행 상태 또는 backend가 확인되지 않았다.
+    Unknown,
+    /// 현재 작업이 진행 중이다.
+    Running,
+    /// 마지막 저장과 증명을 확인 중이다.
+    Finalizing,
+    /// 작업이 일시 중지됐다.
+    Paused,
+    /// 작업이 취소됐다.
+    Cancelled,
+    /// 작업이 실패했다.
+    Failed,
+    /// 일부만 처리된 비완료 상태다.
+    Partial,
+    /// 호스트가 최종 내구 증명을 확인했다.
+    Complete,
+}
+
+impl RagIndexingEtaLifecycle {
+    /// wire에서 허용한 상태만 읽는다.
+    fn parse(value: &JsonValue) -> Option<Self> {
+        match value.as_str()? {
+            "unknown" => Some(Self::Unknown),
+            "running" => Some(Self::Running),
+            "finalizing" => Some(Self::Finalizing),
+            "paused" => Some(Self::Paused),
+            "cancelled" => Some(Self::Cancelled),
+            "failed" => Some(Self::Failed),
+            "partial" => Some(Self::Partial),
+            "complete" => Some(Self::Complete),
+            _ => None,
+        }
+    }
+
+    /// 상태의 고정 wire 라벨이다.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Running => "running",
+            Self::Finalizing => "finalizing",
+            Self::Paused => "paused",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+            Self::Partial => "partial",
+            Self::Complete => "complete",
+        }
+    }
+}
+
+/// 물리 추론 속도는 현재 로컬 backend와 일치할 때만 쓴다.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RagIndexingEtaBackend {
+    /// 선택한 로컬 CPU backend다.
+    Cpu,
+    /// 선택한 로컬 WebGPU backend다.
+    Webgpu,
+    /// 원격 backend로 물리 로컬 속도를 추정하지 않는다.
+    Remote,
+    /// 실행 상태 또는 backend가 확인되지 않았다.
+    Unknown,
+}
+
+impl RagIndexingEtaBackend {
+    /// 지원하지 않는 backend는 보정하지 않는다.
+    fn parse(value: &JsonValue) -> Option<Self> {
+        match value.as_str()? {
+            "cpu" => Some(Self::Cpu),
+            "webgpu" => Some(Self::Webgpu),
+            "remote" => Some(Self::Remote),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+/// 겹치지 않는 성공한 내구 저장 window의 wall-time이다.
+struct RagIndexingEtaWindow {
+    /// window 시작 시각이다.
+    started_at_ms: f64,
+    /// 성공 관측 종료 시각이다.
+    ended_at_ms: f64,
+    /// 내구 저장된 논리 청크 수다.
+    logical_chunks: usize,
+    /// 귀속이 완전한 실제 miss 행 수이며 미관측은 None이다.
+    physical_work_units: Option<usize>,
+}
+
+/// 실제 로컬 miss의 성공한 post부터 ACK까지의 관측이다.
+struct RagIndexingEtaInference {
+    /// 실제로 실행한 로컬 miss 행 수다.
+    work_units: usize,
+    /// 성공한 실제 추론의 소요 시간이다.
+    duration_ms: f64,
+    /// 성공 관측 종료 시각이다.
+    ended_at_ms: f64,
+}
+
+/// 실패와 부분 처리를 성공 수치와 분리한 현재 작업 경계다.
+struct RagIndexingEtaPipeline {
+    /// 호스트가 확인한 실행 상태다.
+    lifecycle: RagIndexingEtaLifecycle,
+    /// 전체 후보 수가 확정됐는지 나타낸다.
+    total_known: bool,
+    /// 성공과 실패 및 부분 처리가 정착한 파일 수다.
+    processed_files: usize,
+    /// 처리 중 실패한 파일 수다.
+    failed_files: usize,
+    /// 원문이 부분적으로 처리된 파일 수다.
+    partial_files: usize,
+    /// 정착한 파일들의 예상 청크 수다.
+    processed_estimated_chunks: usize,
+    /// 정착한 파일들의 실제 계획 청크 수다.
+    processed_planned_chunks: usize,
+    /// 잔여량을 관측한 wall-time 경계다.
+    observed_at_ms: f64,
+    /// 현재 작업의 선택 backend다.
+    backend: RagIndexingEtaBackend,
+    /// 시간순 비중복 성공 window 목록이다.
+    window_samples: Vec<RagIndexingEtaWindow>,
+    /// 현재 backend의 실제 성공 추론 목록이다.
+    inference_samples: Vec<RagIndexingEtaInference>,
 }
 
 /// Estimated milliseconds per chunk-like work unit.
@@ -6737,6 +6896,14 @@ struct RagIndexingEtaPlan {
     upper_remaining_ms: Option<f64>,
     /// Machine-readable confidence reason.
     confidence_reason: &'static str,
+    /// 최종 증명 여부를 포함하는 호스트 실행 상태다.
+    lifecycle: RagIndexingEtaLifecycle,
+    /// 관측된 내구 pipeline만의 잔여 wall-time이다.
+    pipeline_remaining_ms: Option<f64>,
+    /// pipeline에 더하지 않는 물리 추론 설명 성분이다.
+    inference_remaining_ms: Option<f64>,
+    /// 전체 tail의 미관측과 독립적인 pipeline 근거 수준이다.
+    pipeline_confidence: RagIndexingEtaConfidence,
 }
 
 /// 기존 entry id와 incoming id에서 add mutation plan을 만든다.
@@ -6994,6 +7161,11 @@ fn plan_rag_status(input: &RagStatusInput) -> RagStatusPlan {
         missing_documents,
         stale_documents,
         unknown_documents,
+        failed_documents: input
+            .included_files
+            .iter()
+            .filter(|file| file.failure_reason.is_some())
+            .count(),
         excluded_documents: input
             .total_vault_files
             .saturating_sub(input.included_files.len()),
@@ -7008,6 +7180,9 @@ fn rag_file_index_state(
     record: Option<&RagStatusRecordInput>,
     input: &RagStatusInput,
 ) -> (RagDocumentStatus, String) {
+    if let Some(reason) = &file.failure_reason {
+        return (RagDocumentStatus::Unknown, reason.clone());
+    }
     let Some(record) = record else {
         return (RagDocumentStatus::Missing, input.reasons.missing.clone());
     };
@@ -7024,6 +7199,9 @@ fn rag_file_index_state(
             RagDocumentStatus::Stale,
             input.reasons.embedding_changed.clone(),
         );
+    }
+    if record.source_incomplete {
+        return (RagDocumentStatus::Unknown, "source-partial".to_owned());
     }
     (RagDocumentStatus::Healthy, String::new())
 }
@@ -7097,7 +7275,17 @@ fn plan_rag_indexing_eta(input: &RagIndexingEtaInput) -> RagIndexingEtaPlan {
     let completed_files = input.completed_files.min(total_files);
     let elapsed_ms = (input.now_ms - input.started_at_ms).max(0.0).round();
     let current_file_progress = current_file_progress(input, completed_files);
-    let work = estimate_rag_indexing_eta_work(input, current_file_progress);
+    let work = estimate_rag_indexing_eta_work(
+        input,
+        if input.pipeline.is_some() {
+            0.0
+        } else {
+            current_file_progress
+        },
+    );
+    if let Some(pipeline) = &input.pipeline {
+        return plan_rag_pipeline_eta(input, pipeline, &work, elapsed_ms);
+    }
 
     if total_files == 0 || completed_files >= total_files {
         return RagIndexingEtaPlan {
@@ -7106,13 +7294,17 @@ fn plan_rag_indexing_eta(input: &RagIndexingEtaInput) -> RagIndexingEtaPlan {
             current_file_progress: 0.0,
             progress_ratio: 1.0,
             elapsed_ms,
-            remaining_ms: Some(0.0),
-            estimated_completion_ms: Some(input.now_ms),
-            confidence: RagIndexingEtaConfidence::Complete,
+            remaining_ms: None,
+            estimated_completion_ms: None,
+            confidence: RagIndexingEtaConfidence::Calculating,
             basis: complete_eta_basis(input),
-            lower_remaining_ms: Some(0.0),
-            upper_remaining_ms: Some(0.0),
-            confidence_reason: "complete",
+            lower_remaining_ms: None,
+            upper_remaining_ms: None,
+            confidence_reason: "finalization-unobserved",
+            lifecycle: RagIndexingEtaLifecycle::Unknown,
+            pipeline_remaining_ms: None,
+            inference_remaining_ms: None,
+            pipeline_confidence: RagIndexingEtaConfidence::Calculating,
         };
     }
 
@@ -7131,6 +7323,10 @@ fn plan_rag_indexing_eta(input: &RagIndexingEtaInput) -> RagIndexingEtaPlan {
             lower_remaining_ms: None,
             upper_remaining_ms: None,
             confidence_reason: "insufficient-samples",
+            lifecycle: RagIndexingEtaLifecycle::Unknown,
+            pipeline_remaining_ms: None,
+            inference_remaining_ms: None,
+            pipeline_confidence: RagIndexingEtaConfidence::Calculating,
         };
     };
 
@@ -7155,7 +7351,143 @@ fn plan_rag_indexing_eta(input: &RagIndexingEtaInput) -> RagIndexingEtaPlan {
         lower_remaining_ms: Some(lower_remaining_ms),
         upper_remaining_ms: Some(upper_remaining_ms),
         confidence_reason,
+        lifecycle: RagIndexingEtaLifecycle::Unknown,
+        pipeline_remaining_ms: None,
+        inference_remaining_ms: None,
+        pipeline_confidence: RagIndexingEtaConfidence::Calculating,
     }
+}
+
+/// 최종 DB 증명 이전의 pipeline 추정은 전체 완료 시각으로 승격하지 않는다.
+fn plan_rag_pipeline_eta(
+    input: &RagIndexingEtaInput,
+    pipeline: &RagIndexingEtaPipeline,
+    work: &RagIndexingEtaWorkEstimate,
+    elapsed_ms: f64,
+) -> RagIndexingEtaPlan {
+    let complete = pipeline.lifecycle == RagIndexingEtaLifecycle::Complete;
+    let mut plan = RagIndexingEtaPlan {
+        total_files: input.total_files,
+        completed_files: input.completed_files,
+        current_file_progress: current_file_progress(input, input.completed_files),
+        progress_ratio: if complete { 1.0 } else { work.progress_ratio },
+        elapsed_ms,
+        remaining_ms: complete.then_some(0.0),
+        estimated_completion_ms: complete.then_some(input.now_ms),
+        confidence: if complete {
+            RagIndexingEtaConfidence::Complete
+        } else {
+            RagIndexingEtaConfidence::Calculating
+        },
+        basis: if complete {
+            complete_eta_basis(input)
+        } else {
+            work.basis
+        },
+        lower_remaining_ms: complete.then_some(0.0),
+        upper_remaining_ms: complete.then_some(0.0),
+        confidence_reason: if complete {
+            "complete"
+        } else {
+            "finalization-unobserved"
+        },
+        lifecycle: pipeline.lifecycle,
+        pipeline_remaining_ms: complete.then_some(0.0),
+        inference_remaining_ms: None,
+        pipeline_confidence: if complete {
+            RagIndexingEtaConfidence::Complete
+        } else {
+            RagIndexingEtaConfidence::Calculating
+        },
+    };
+    if pipeline.lifecycle != RagIndexingEtaLifecycle::Running || !pipeline.total_known {
+        return plan;
+    }
+    let (durations, chunks): (Vec<_>, Vec<_>) = pipeline
+        .window_samples
+        .iter()
+        .map(|sample| {
+            (
+                sample.ended_at_ms - sample.started_at_ms,
+                sample.logical_chunks,
+            )
+        })
+        .unzip();
+    let Some(rate) = average_completed_batch_chunk_ms(&durations, &chunks) else {
+        return plan;
+    };
+    let remaining_ms = work
+        .remaining_units
+        .mul_add(rate.ms_per_chunk, -(input.now_ms - pipeline.observed_at_ms));
+    let estimate = RagIndexingEtaEstimate {
+        basis: work.basis,
+        remaining_ms,
+        rate: Some(rate),
+    };
+    plan.pipeline_confidence = if rate.sample_count == 1 {
+        RagIndexingEtaConfidence::Low
+    } else {
+        rag_indexing_eta_confidence(
+            input,
+            work,
+            &estimate,
+            pipeline.processed_files,
+            input.total_files,
+        )
+        .0
+    };
+    plan.inference_remaining_ms =
+        rag_pipeline_inference_remaining(input, pipeline, work.remaining_units);
+    if !remaining_ms.is_finite() || remaining_ms <= 0.0 {
+        plan.confidence_reason = "stalled-observation";
+        return plan;
+    }
+    plan.pipeline_remaining_ms = round_non_negative_millis(remaining_ms);
+    plan
+}
+
+/// 실제 miss 속도와 귀속이 완전한 window의 물리/논리 비율만 곱한다.
+fn rag_pipeline_inference_remaining(
+    input: &RagIndexingEtaInput,
+    pipeline: &RagIndexingEtaPipeline,
+    remaining_units: f64,
+) -> Option<f64> {
+    if !matches!(
+        pipeline.backend,
+        RagIndexingEtaBackend::Cpu | RagIndexingEtaBackend::Webgpu
+    ) {
+        return None;
+    }
+    let (durations, units): (Vec<_>, Vec<_>) = pipeline
+        .inference_samples
+        .iter()
+        .filter(|sample| {
+            input.now_ms - sample.ended_at_ms <= performance_guard::LOCAL_SAMPLE_MAX_AGE_MS
+        })
+        .map(|sample| (sample.duration_ms, sample.work_units))
+        .unzip();
+    let rate = average_completed_batch_chunk_ms(&durations, &units)?;
+    let (physical, logical) = pipeline
+        .window_samples
+        .iter()
+        .rev()
+        .take(12)
+        .filter_map(|sample| {
+            sample
+                .physical_work_units
+                .map(|units| (units, sample.logical_chunks))
+        })
+        .try_fold((0.0, 0.0), |(physical, logical), (units, chunks)| {
+            Some((
+                physical + usize_to_f64(units)?,
+                logical + usize_to_f64(chunks)?,
+            ))
+        })?;
+    if logical <= 0.0 {
+        return None;
+    }
+    // 이 값은 관측 경계의 설명 성분이므로 heartbeat 시간을 다시 빼지 않는다.
+    round_non_negative_millis(remaining_units * (physical / logical) * rate.ms_per_chunk)
 }
 
 /// Current file progress를 `[0, 1]`로 제한한다.
@@ -7218,7 +7550,11 @@ fn planned_rag_indexing_eta_work(
         .filter(|total| *total > 0.0)
         .unwrap_or(1.0);
     let completed_planned_chunks = input
-        .completed_planned_chunks
+        .pipeline
+        .as_ref()
+        .map_or(input.completed_planned_chunks, |pipeline| {
+            pipeline.processed_planned_chunks
+        })
         .min(input.total_planned_chunks);
     let completed_units = usize_to_f64(completed_planned_chunks).unwrap_or(0.0);
     let current_units =
@@ -7258,6 +7594,15 @@ fn calibrated_rag_indexing_eta_work(
     let current_units = current_total_units * current_file_progress;
     let total_estimated_chunks = input.total_estimated_chunks.max(input.total_files);
     let completed_estimated_chunks = input.completed_estimated_chunks.min(total_estimated_chunks);
+    let completed_estimated_chunks =
+        input
+            .pipeline
+            .as_ref()
+            .map_or(completed_estimated_chunks, |pipeline| {
+                pipeline
+                    .processed_estimated_chunks
+                    .min(total_estimated_chunks)
+            });
     let remaining_after_completed =
         total_estimated_chunks.saturating_sub(completed_estimated_chunks);
     let remaining_units = usize_to_f64(remaining_after_completed)
@@ -7281,6 +7626,15 @@ fn raw_estimated_rag_indexing_eta_work(
 ) -> RagIndexingEtaWorkEstimate {
     let total_estimated_chunks = input.total_estimated_chunks.max(input.total_files);
     let completed_estimated_chunks = input.completed_estimated_chunks.min(total_estimated_chunks);
+    let completed_estimated_chunks =
+        input
+            .pipeline
+            .as_ref()
+            .map_or(completed_estimated_chunks, |pipeline| {
+                pipeline
+                    .processed_estimated_chunks
+                    .min(total_estimated_chunks)
+            });
     let current_completed_chunks =
         current_file_completed_estimated_chunks(input, current_file_progress);
     let progress_units = completed_estimated_chunks_to_f64(completed_estimated_chunks)
@@ -7542,7 +7896,8 @@ fn rag_indexing_eta_confidence(
     match estimate.basis {
         RagIndexingEtaBasis::PlannedChunks => {
             if input.planning_complete
-                && work.progress_ratio >= 0.2
+                && (work.progress_ratio >= 0.2
+                    || (rate_sample_count >= 6 && rate_chunk_count >= 96))
                 && rate_sample_count >= 5
                 && rate_chunk_count >= 50
                 && rate_variation <= 0.15
@@ -7550,8 +7905,11 @@ fn rag_indexing_eta_confidence(
             {
                 (RagIndexingEtaConfidence::High, "planned-stable")
             } else if input.planning_complete
-                && rate_sample_count >= 3
-                && work.progress_ratio >= 0.05
+                && ((rate_sample_count >= 3
+                    && (work.progress_ratio >= 0.05
+                        || rate_chunk_count >= 8
+                        || completed_files >= 2))
+                    || (rate_sample_count >= 1 && rate_chunk_count >= 16))
             {
                 if rate_variation > 0.35 {
                     (RagIndexingEtaConfidence::Medium, "planned-variable-rate")
@@ -7563,7 +7921,10 @@ fn rag_indexing_eta_confidence(
             }
         }
         RagIndexingEtaBasis::CalibratedEstimate => {
-            if rate_sample_count >= 3 && work.progress_ratio >= 0.05 {
+            if (rate_sample_count >= 3
+                && (work.progress_ratio >= 0.05 || rate_chunk_count >= 8 || completed_files >= 3))
+                || (rate_sample_count >= 1 && rate_chunk_count >= 16 && completed_files >= 1)
+            {
                 if observed_rag_indexing_eta_calibration(input)
                     .is_some_and(|calibration| calibration.residual > 0.35)
                 {
@@ -7757,6 +8118,25 @@ struct RagFileTextProbeInput {
     readable: bool,
     /// file 시작 부분 text sample.
     sample: String,
+    /// 단일 byte decoder의 전체 검증 결과. 기존 sample wire도 유지한다.
+    text_valid: Option<bool>,
+    /// 디코딩·호스트 읽기 실패 원인. 본문은 보존하지 않는다.
+    reason: Option<String>,
+}
+
+/// 단일 스캔의 후보·실패·정책 제외·확정 바이너리 원장.
+#[derive(Default)]
+struct RagFileIndexabilityPlan {
+    /// 본문 추출에 넘길 파일.
+    candidate_indices: Vec<usize>,
+    /// 기존 확장자 요약 API 입력.
+    summary_inputs: Vec<RagFileTypeInput>,
+    /// 지원 텍스트 또는 미판별 자료의 읽기·디코딩 실패.
+    failures: Vec<(usize, String)>,
+    /// 사용자 정책·민감 파일·빈 파일 제외.
+    policy_excluded_indices: Vec<usize>,
+    /// 바이트 판별로 확인된 미지원 바이너리.
+    unsupported_indices: Vec<usize>,
 }
 
 /// RAG file type count 출력 row.
@@ -8086,12 +8466,13 @@ fn serialize_vector_store_stats_plan_json(plan: &VectorStoreStatsPlan) -> String
 /// RAG status summary plan을 JSON 문자열로 serialize한다.
 fn serialize_rag_status_plan_json(plan: &RagStatusPlan) -> String {
     format!(
-        "{{\"totalDocuments\":{},\"healthyDocuments\":{},\"missingDocuments\":{},\"staleDocuments\":{},\"unknownDocuments\":{},\"excludedDocuments\":{},\"totalVectors\":{},\"updateRequiredDocuments\":{}}}",
+        "{{\"totalDocuments\":{},\"healthyDocuments\":{},\"missingDocuments\":{},\"staleDocuments\":{},\"unknownDocuments\":{},\"failedDocuments\":{},\"excludedDocuments\":{},\"totalVectors\":{},\"updateRequiredDocuments\":{}}}",
         plan.total_documents,
         plan.healthy_documents,
         plan.missing_documents,
         plan.stale_documents,
         plan.unknown_documents,
+        plan.failed_documents,
         plan.excluded_documents,
         plan.total_vectors,
         serialize_rag_document_updates_json(&plan.update_required_documents),
@@ -8132,7 +8513,7 @@ fn serialize_index_pending_plan_json(plan: &IndexPendingPlan) -> String {
 /// RAG indexing ETA plan을 JSON 문자열로 serialize한다.
 fn serialize_rag_indexing_eta_plan_json(plan: &RagIndexingEtaPlan) -> String {
     format!(
-        "{{\"totalFiles\":{},\"completedFiles\":{},\"currentFileProgress\":{},\"progressRatio\":{},\"elapsedMs\":{},\"remainingMs\":{},\"estimatedCompletionMs\":{},\"confidence\":\"{}\",\"basis\":\"{}\",\"lowerRemainingMs\":{},\"upperRemainingMs\":{},\"confidenceReason\":\"{}\",\"etaConfidenceReason\":\"{}\"}}",
+        "{{\"totalFiles\":{},\"completedFiles\":{},\"currentFileProgress\":{},\"progressRatio\":{},\"elapsedMs\":{},\"remainingMs\":{},\"estimatedCompletionMs\":{},\"confidence\":\"{}\",\"basis\":\"{}\",\"lowerRemainingMs\":{},\"upperRemainingMs\":{},\"confidenceReason\":\"{}\",\"etaConfidenceReason\":\"{}\",\"lifecycle\":\"{}\",\"pipelineRemainingMs\":{},\"inferenceRemainingMs\":{},\"pipelineConfidence\":\"{}\"}}",
         plan.total_files,
         plan.completed_files,
         finite_json_number(plan.current_file_progress).unwrap_or_else(|| "0".to_owned()),
@@ -8146,6 +8527,10 @@ fn serialize_rag_indexing_eta_plan_json(plan: &RagIndexingEtaPlan) -> String {
         optional_finite_json_number_string(plan.upper_remaining_ms),
         escape_json_string(plan.confidence_reason),
         escape_json_string(plan.confidence_reason),
+        plan.lifecycle.as_str(),
+        optional_finite_json_number_string(plan.pipeline_remaining_ms),
+        optional_finite_json_number_string(plan.inference_remaining_ms),
+        plan.pipeline_confidence.as_str(),
     )
 }
 
@@ -8286,14 +8671,19 @@ fn serialize_rag_exclude_recommendations_json(rows: &[RagExcludeRecommendationPl
 }
 
 /// RAG 후보 판정 plan을 JSON object로 serialize한다.
-fn serialize_rag_file_indexability_plan_json(
-    candidate_indices: &[usize],
-    summary_inputs: &[RagFileTypeInput],
-) -> String {
+fn serialize_rag_file_indexability_plan_json(plan: &RagFileIndexabilityPlan) -> String {
+    let failures: Vec<JsonValue> = plan
+        .failures
+        .iter()
+        .map(|(index, reason)| serde_json::json!({"index":index,"reason":reason}))
+        .collect();
     format!(
-        "{{\"candidateIndices\":{},\"summaryInputs\":{}}}",
-        serialize_usize_array_json(candidate_indices),
-        serialize_rag_file_type_inputs_json(summary_inputs),
+        "{{\"candidateIndices\":{},\"summaryInputs\":{},\"failures\":{},\"policyExcludedIndices\":{},\"unsupportedIndices\":{}}}",
+        serialize_usize_array_json(&plan.candidate_indices),
+        serialize_rag_file_type_inputs_json(&plan.summary_inputs),
+        serde_json::json!(failures),
+        serialize_usize_array_json(&plan.policy_excluded_indices),
+        serialize_usize_array_json(&plan.unsupported_indices),
     )
 }
 
@@ -11216,10 +11606,56 @@ fn plan_rag_file_content_probe_indices(
         .iter()
         .filter(|file| {
             !is_rag_file_excluded_before_probe(file, exclude_paths, &excluded_extensions)
-                && classify_rag_file_without_probe(file) == RagFileProbeDecision::NeedsProbe
+                && matches!(
+                    classify_rag_file_without_probe(file),
+                    RagFileProbeDecision::NeedsProbe | RagFileProbeDecision::Indexable
+                )
+                && !is_extractable_source_extension(&rag_file_extension(file))
         })
         .map(|file| file.index)
         .collect()
+}
+
+/// 본문 판정 이전의 명시적 색인 계획입니다. 후보를 검증 완료로 해석하지 않습니다.
+#[must_use]
+#[wasm_bindgen]
+pub fn plan_rag_indexing_manifest_json(
+    files_json: &str,
+    exclude_paths_json: &str,
+    exclude_exts_json: &str,
+) -> String {
+    let Some(files) = parse_rag_file_eligibility_inputs_json(files_json) else {
+        return "null".to_owned();
+    };
+    let Some(exclude_paths) = parse_string_array_json(exclude_paths_json) else {
+        return "null".to_owned();
+    };
+    let Some(exclude_exts) = parse_string_array_json(exclude_exts_json) else {
+        return "null".to_owned();
+    };
+    let excluded = normalized_extension_set(&exclude_exts);
+    let mut candidates = Vec::new();
+    let mut policy_excluded = Vec::new();
+    let mut failures = Vec::new();
+    for file in &files {
+        if is_rag_file_excluded_before_probe(file, &exclude_paths, &excluded)
+            || is_sensitive_rag_file(file)
+            || file.size == 0
+        {
+            policy_excluded.push(file.index);
+        } else {
+            match classify_rag_file_without_probe(file) {
+                RagFileProbeDecision::NotIndexable("too-large") => {
+                    failures.push(serde_json::json!({"index":file.index,"reason":"memory-budget"}));
+                }
+                RagFileProbeDecision::Indexable | RagFileProbeDecision::NeedsProbe => {
+                    candidates.push(file.index);
+                }
+                RagFileProbeDecision::NotIndexable(_) => policy_excluded.push(file.index),
+            }
+        }
+    }
+    serde_json::json!({"candidateIndices":candidates,"policyExcludedIndices":policy_excluded,"unsupportedIndices":[],"failures":failures,"summaryInputs":[]}).to_string()
 }
 
 /// RAG 후보 file index와 summary 입력 row를 계산한다.
@@ -11228,40 +11664,85 @@ fn plan_rag_file_indexability(
     exclude_paths: &[String],
     exclude_exts: &[String],
     text_probes: &[RagFileTextProbeInput],
-) -> (Vec<usize>, Vec<RagFileTypeInput>) {
+) -> RagFileIndexabilityPlan {
     let excluded_extensions = normalized_extension_set(exclude_exts);
     let probe_by_index = text_probes
         .iter()
         .map(|probe| (probe.index, probe))
         .collect::<BTreeMap<_, _>>();
-    let mut candidate_indices = Vec::<usize>::new();
-    let mut summary_inputs = Vec::<RagFileTypeInput>::new();
-
+    let mut plan = RagFileIndexabilityPlan::default();
     for file in files {
         if is_rag_file_excluded_before_probe(file, exclude_paths, &excluded_extensions) {
+            plan.policy_excluded_indices.push(file.index);
             continue;
         }
-
-        let indexable = match classify_rag_file_without_probe(file) {
-            RagFileProbeDecision::Indexable => true,
-            RagFileProbeDecision::NotIndexable(reason) => {
-                summary_inputs.push(rag_file_type_input(file, false, Some(reason)));
-                continue;
-            }
-            RagFileProbeDecision::NeedsProbe => probe_by_index
-                .get(&file.index)
-                .is_some_and(|probe| probe.readable && is_probably_text_sample(&probe.sample)),
-        };
-
-        if indexable {
-            candidate_indices.push(file.index);
-            summary_inputs.push(rag_file_type_input(file, true, None));
+        if is_sensitive_rag_file(file) {
+            plan.policy_excluded_indices.push(file.index);
+            plan.summary_inputs
+                .push(rag_file_type_input(file, false, Some("sensitive")));
+            continue;
+        }
+        let decision = classify_rag_file_without_probe(file);
+        let probe = probe_by_index.get(&file.index);
+        let reason = if file.frontmatter_unreadable {
+            Some(
+                probe
+                    .and_then(|probe| probe.reason.as_deref())
+                    .unwrap_or("frontmatter-unreadable"),
+            )
         } else {
-            summary_inputs.push(rag_file_type_input(file, false, Some("unreadable")));
+            match decision {
+                RagFileProbeDecision::NotIndexable("empty") => {
+                    plan.policy_excluded_indices.push(file.index);
+                    plan.summary_inputs
+                        .push(rag_file_type_input(file, false, Some("empty")));
+                    continue;
+                }
+                RagFileProbeDecision::NotIndexable("too-large") => Some("memory-budget"),
+                RagFileProbeDecision::NotIndexable(reason) => Some(reason),
+                RagFileProbeDecision::Indexable | RagFileProbeDecision::NeedsProbe => match probe {
+                    Some(probe) if !probe.readable => {
+                        Some(probe.reason.as_deref().unwrap_or("read-failed"))
+                    }
+                    Some(probe)
+                        if !probe
+                            .text_valid
+                            .unwrap_or_else(|| is_probably_text_sample(&probe.sample)) =>
+                    {
+                        Some(probe.reason.as_deref().unwrap_or("ambiguous-encoding"))
+                    }
+                    None if decision == RagFileProbeDecision::NeedsProbe => {
+                        Some("probe-unavailable")
+                    }
+                    _ => None,
+                },
+            }
+        };
+        if let Some(reason) = reason {
+            if reason == "binary" {
+                plan.unsupported_indices.push(file.index);
+            } else {
+                plan.failures.push((file.index, reason.to_owned()));
+            }
+            // 실패를 확정 바이너리나 확장자 제외 추천으로 위장하지 않는다.
+            plan.summary_inputs.push(rag_file_type_input(
+                file,
+                false,
+                Some(if reason == "binary" {
+                    "binary"
+                } else if decision == RagFileProbeDecision::NotIndexable("too-large") {
+                    "too-large"
+                } else {
+                    "unreadable"
+                }),
+            ));
+        } else {
+            plan.candidate_indices.push(file.index);
+            plan.summary_inputs
+                .push(rag_file_type_input(file, true, None));
         }
     }
-
-    (candidate_indices, summary_inputs)
+    plan
 }
 
 /// RAG 후보 판정에서 file metadata만으로 결정할 수 있는 상태.
@@ -11282,7 +11763,6 @@ fn is_rag_file_excluded_before_probe(
     excluded_extensions: &BTreeSet<String>,
 ) -> bool {
     file.frontmatter_excluded
-        || file.frontmatter_unreadable
         || is_vault_path_excluded(&file.file_path, exclude_paths.iter().map(String::as_str))
         || excluded_extensions.contains(&rag_file_extension(file))
 }
@@ -11296,8 +11776,8 @@ fn classify_rag_file_without_probe(file: &RagFileEligibilityInput) -> RagFilePro
         return RagFileProbeDecision::NotIndexable("empty");
     }
     let extension = rag_file_extension(file);
-    // XLSX의 원본 크기는 워커의 전체 메모리 예산 안에서 판정합니다.
-    if extension == "xlsx" {
+    // XLSX·XLTX의 원본 크기는 워커의 전체 메모리 예산 안에서 판정합니다.
+    if matches!(extension.as_str(), "xlsx" | "xltx") {
         return RagFileProbeDecision::Indexable;
     }
     if is_extractable_source_extension(&extension) {
@@ -11307,53 +11787,128 @@ fn classify_rag_file_without_probe(file: &RagFileEligibilityInput) -> RagFilePro
             RagFileProbeDecision::Indexable
         };
     }
-    if is_known_binary_extension(&extension) {
-        return RagFileProbeDecision::NotIndexable("binary");
-    }
-    if is_known_text_extension(&extension) || is_known_text_file_name(&file.file_name) {
-        return RagFileProbeDecision::Indexable;
-    }
     if file.size > MAX_RAG_UNKNOWN_TEXT_PROBE_BYTES {
         return RagFileProbeDecision::NotIndexable("too-large");
+    }
+    // 기존 wire 확장자 판정을 유지하되 호스트는 알려진 평문도 반드시 byte probe한다.
+    if is_known_text_extension(&extension) || is_known_text_file_name(&file.file_name) {
+        return RagFileProbeDecision::Indexable;
     }
     RagFileProbeDecision::NeedsProbe
 }
 
 /// Formats that cannot become useful text through `Vault.cachedRead` stay out of RAG.
+/// 추출기 지원 확장자(`extractable`)와는 겹치지 않으며, 그 경계는 회귀 테스트가 고정합니다.
+const KNOWN_BINARY_EXTENSIONS: &[&str] = &[
+    "doc",
+    "xls",
+    "ppt",
+    "hwp",
+    "fig",
+    "sketch",
+    "xd",
+    "psd",
+    "ai",
+    "eps",
+    "zip",
+    "7z",
+    "rar",
+    "gz",
+    "tgz",
+    "bz2",
+    "xz",
+    "zst",
+    "tar",
+    "iso",
+    "dmg",
+    "pkg",
+    "deb",
+    "rpm",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+    "tiff",
+    "tif",
+    "ico",
+    "heic",
+    "heif",
+    "avif",
+    "raw",
+    "cr2",
+    "nef",
+    "mp3",
+    "mp4",
+    "webm",
+    "mov",
+    "avi",
+    "mkv",
+    "wav",
+    "flac",
+    "ogg",
+    "m4a",
+    "aac",
+    "wma",
+    "wmv",
+    "flv",
+    "m4v",
+    "mpg",
+    "mpeg",
+    "3gp",
+    "woff",
+    "woff2",
+    "ttf",
+    "otf",
+    "eot",
+    "wasm",
+    "exe",
+    "dll",
+    "so",
+    "dylib",
+    "bin",
+    "dat",
+    "db",
+    "sqlite",
+    "sqlite3",
+    "parquet",
+    "avro",
+    "orc",
+    "feather",
+    "arrow",
+    "npy",
+    "npz",
+    "pkl",
+    "pickle",
+    "pt",
+    "pth",
+    "onnx",
+    "safetensors",
+    "gguf",
+    "class",
+    "jar",
+    "war",
+    "pyc",
+    "pyo",
+    "o",
+    "obj",
+    "a",
+    "lib",
+    "blend",
+    "fbx",
+    "glb",
+    "gltf",
+    "stl",
+    "dwg",
+    "dxf",
+    "swf",
+    "fla",
+];
+
+/// Formats that cannot become useful text through `Vault.cachedRead` stay out of RAG.
 fn is_known_binary_extension(extension: &str) -> bool {
-    matches!(
-        extension,
-        "pdf"
-            | "doc"
-            | "xls"
-            | "ppt"
-            | "zip"
-            | "7z"
-            | "rar"
-            | "gz"
-            | "tar"
-            | "png"
-            | "jpg"
-            | "jpeg"
-            | "gif"
-            | "webp"
-            | "bmp"
-            | "tiff"
-            | "mp3"
-            | "mp4"
-            | "mov"
-            | "avi"
-            | "mkv"
-            | "wav"
-            | "flac"
-            | "woff"
-            | "woff2"
-            | "ttf"
-            | "otf"
-            | "wasm"
-            | "exe"
-            | "dll"
-    )
+    KNOWN_BINARY_EXTENSIONS.contains(&extension)
 }
 
 /// summary plan에 넘길 file type input row를 만든다.
@@ -11402,60 +11957,237 @@ fn is_sensitive_rag_file(file: &RagFileEligibilityInput) -> bool {
         || matches!(extension.as_str(), "env" | "pem" | "key")
 }
 
-/// 확장자 기반으로 바로 text file임을 판단한다.
+/// 메모장·vi로 바로 열리는 평문 텍스트 확장자 정본 목록이다.
+const KNOWN_TEXT_EXTENSIONS: &[&str] = &[
+    "md",
+    "txt",
+    "markdown",
+    "mdown",
+    "mkd",
+    "mkdn",
+    "mdx",
+    "rmd",
+    "qmd",
+    "text",
+    "org",
+    "rst",
+    "tex",
+    "bib",
+    "adoc",
+    "asciidoc",
+    "srt",
+    "vtt",
+    "ass",
+    "ssa",
+    "lrc",
+    "eml",
+    "ics",
+    "vcf",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "vue",
+    "svelte",
+    "astro",
+    "json",
+    "jsonc",
+    "json5",
+    "jsonl",
+    "ndjson",
+    "hjson",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "styl",
+    "html",
+    "htm",
+    "xhtml",
+    "hbs",
+    "ejs",
+    "pug",
+    "jade",
+    "twig",
+    "liquid",
+    "njk",
+    "mustache",
+    "xml",
+    "svg",
+    "plist",
+    "xsd",
+    "xsl",
+    "xslt",
+    "dtd",
+    "wsdl",
+    "rss",
+    "atom",
+    "opml",
+    "canvas",
+    "excalidraw",
+    "ipynb",
+    "drawio",
+    "webmanifest",
+    "graphql",
+    "gql",
+    "proto",
+    "prisma",
+    "mermaid",
+    "mmd",
+    "puml",
+    "plantuml",
+    "dot",
+    "gv",
+    "kdl",
+    "ron",
+    "cue",
+    "dhall",
+    "hcl",
+    "tf",
+    "tfvars",
+    "bicep",
+    "py",
+    "pyi",
+    "java",
+    "go",
+    "rs",
+    "rb",
+    "erb",
+    "php",
+    "cs",
+    "fs",
+    "fsi",
+    "fsx",
+    "vb",
+    "cpp",
+    "cxx",
+    "cc",
+    "c",
+    "h",
+    "hpp",
+    "hxx",
+    "m",
+    "mm",
+    "swift",
+    "kt",
+    "kts",
+    "scala",
+    "sbt",
+    "groovy",
+    "gradle",
+    "clj",
+    "cljs",
+    "cljc",
+    "edn",
+    "ex",
+    "exs",
+    "erl",
+    "hrl",
+    "hs",
+    "lhs",
+    "ml",
+    "mli",
+    "r",
+    "jl",
+    "lua",
+    "pl",
+    "pm",
+    "tcl",
+    "awk",
+    "sed",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "ps1",
+    "psm1",
+    "psd1",
+    "bat",
+    "cmd",
+    "vbs",
+    "sql",
+    "zig",
+    "nim",
+    "v",
+    "d",
+    "dart",
+    "sol",
+    "move",
+    "cairo",
+    "wgsl",
+    "glsl",
+    "hlsl",
+    "vert",
+    "frag",
+    "shader",
+    "asm",
+    "s",
+    "nix",
+    "cmake",
+    "mk",
+    "makefile",
+    "csv",
+    "tsv",
+    "yaml",
+    "yml",
+    "toml",
+    "ini",
+    "conf",
+    "config",
+    "cfg",
+    "cnf",
+    "properties",
+    "log",
+    "patch",
+    "diff",
+    "snapshot",
+    "lock",
+    "sum",
+    "mod",
+    "dockerfile",
+    "containerfile",
+    "gitignore",
+    "dockerignore",
+    "npmignore",
+    "eslintignore",
+    "prettierignore",
+    "editorconfig",
+    "gitattributes",
+    "gitmodules",
+    "mailmap",
+    "nvmrc",
+    "browserslistrc",
+    "prettierrc",
+    "eslintrc",
+    "babelrc",
+    "stylelintrc",
+    "flake8",
+    "pylintrc",
+    "tpl",
+    "template",
+    "example",
+    "sample",
+    "bak",
+    "kubeconfig",
+    "pid",
+    "sha256",
+    "sha512",
+    "md5",
+    "asc",
+    "fragment",
+];
+
+/// 확장자 기반으로 바로 평문 text file임을 판단한다.
 fn is_known_text_extension(extension: &str) -> bool {
-    matches!(
-        extension,
-        "md" | "txt"
-            | "markdown"
-            | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "json"
-            | "jsonc"
-            | "css"
-            | "scss"
-            | "sass"
-            | "less"
-            | "html"
-            | "htm"
-            | "xml"
-            | "svg"
-            | "py"
-            | "java"
-            | "go"
-            | "rs"
-            | "rb"
-            | "php"
-            | "cs"
-            | "cpp"
-            | "c"
-            | "h"
-            | "hpp"
-            | "swift"
-            | "kt"
-            | "kts"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "fish"
-            | "ps1"
-            | "sql"
-            | "csv"
-            | "tsv"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "ini"
-            | "conf"
-            | "config"
-            | "log"
-            | "gitignore"
-            | "dockerignore"
-    )
+    KNOWN_TEXT_EXTENSIONS.contains(&extension)
+}
+
+/// 확실하게 지원되는 RAG 확장자(평문 텍스트 또는 전용 추출기 지원 문서)인지 확인한다.
+fn is_supported_rag_extension(extension: &str) -> bool {
+    let normalized = normalize_file_extension(extension);
+    is_known_text_extension(&normalized) || is_extractable_source_extension(&normalized)
 }
 
 /// 확장자가 없는 dotfile 이름 기반 text file 판정.
@@ -11467,7 +12199,7 @@ fn is_known_text_file_name(file_name: &str) -> bool {
 
 /// unknown extension file의 text sample을 판정한다.
 fn is_probably_text_sample(sample: &str) -> bool {
-    if sample.is_empty() || sample.contains('\0') {
+    if sample.is_empty() || !text_decode::valid_text(sample) {
         return false;
     }
 
@@ -11484,8 +12216,13 @@ fn is_probably_text_sample(sample: &str) -> bool {
 }
 
 /// exclude recommendation으로 제안 가능한 확장자인지 확인한다.
+/// 확실하게 지원되는 확장자(평문 텍스트·전용 추출 문서)와 이미 자동 제외되는 바이너리 확장자는 제외 추천에서 뺀다.
 fn is_recommendable_exclude_extension(extension: &str) -> bool {
-    !extension.is_empty() && extension != "md" && extension != "markdown"
+    let normalized = normalize_file_extension(extension);
+    !normalized.is_empty()
+        && !is_protected_rag_document_extension(&normalized)
+        && !is_supported_rag_extension(&normalized)
+        && !is_known_binary_extension(&normalized)
 }
 
 /// 사용자가 확장자 제외로 반복 판정을 줄일 수 있는 reason code인지 확인한다.
@@ -13136,12 +13873,136 @@ fn parse_raw_string_array_json(payload: &str) -> Option<Vec<String>> {
     Some(strings)
 }
 
-/// finite number JSON array를 파싱한다.
+/// 실제 단위 관측의 단계 ETA이며 미관측 후속 작업을 추정하지 않습니다.
+#[wasm_bindgen]
+#[must_use]
+pub fn plan_rag_runtime_work_eta_json(payload: &str) -> String {
+    let Some(plan) = plan_rag_runtime_work_eta(payload) else {
+        return String::new();
+    };
+    plan.to_string()
+}
+
+/// unknown null과 안전 정수 수량을 구별합니다.
+fn rag_runtime_optional_count(value: &JsonValue) -> Result<Option<f64>, ()> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = rag_eta_safe_number(value.as_f64().ok_or(())?).ok_or(())?;
+    if value.fract() == 0.0 {
+        Ok(Some(value))
+    } else {
+        Err(())
+    }
+}
+
+/// 숫자·관측 순서·현재 단계의 경계를 검증하고 실제 처리율만 계산합니다.
+fn plan_rag_runtime_work_eta(payload: &str) -> Option<JsonValue> {
+    let input: JsonValue = serde_json::from_str(payload).ok()?;
+    let object = input.as_object()?;
+    let terminal = match object.get("terminal") {
+        None => false,
+        Some(value) => value.as_bool()?,
+    };
+    let start = rag_eta_safe_number(object.get("startedAtMs")?.as_f64()?)?;
+    let now = rag_eta_safe_number(object.get("nowMs")?.as_f64()?)?;
+    if now < start {
+        return None;
+    }
+    let processed = rag_runtime_optional_count(object.get("processedUnits")?).ok()?;
+    let total = rag_runtime_optional_count(object.get("totalUnits")?).ok()?;
+    if matches!((processed, total), (Some(p), Some(t)) if p > t) {
+        return None;
+    }
+    let samples = object.get("samples")?.as_array()?;
+    if samples.len() > 64 {
+        return None;
+    }
+    let mut observations = Vec::new();
+    for sample in samples {
+        let at = rag_eta_safe_number(sample.get("atMs")?.as_f64()?)?;
+        let units = rag_runtime_optional_count(sample.get("units")?).ok()??;
+        if at < start || at > now || processed.is_none_or(|p| units > p) {
+            return None;
+        }
+        if observations
+            .last()
+            .is_some_and(|&(previous_at, previous_units)| {
+                at <= previous_at || units <= previous_units
+            })
+        {
+            return None;
+        }
+        observations.push((at, units));
+    }
+    if observations
+        .last()
+        .is_some_and(|&(_, units)| Some(units) != processed)
+    {
+        return None;
+    }
+    let last = observations.last().copied();
+    // 최초 0 표본은 진척이 아닙니다.
+    let age = last
+        .filter(|&(_, units)| units > 0.0)
+        .map(|(at, _)| now - at);
+    let mut reason = "insufficient-samples";
+    let mut confidence = "calculating";
+    let mut rate = None;
+    let mut remaining = None;
+    if let (Some(&(first_at, first_units)), Some((last_at, last_units))) =
+        (observations.first(), last)
+        && observations.len() >= 2
+        && last_at > first_at
+        && last_units > first_units
+    {
+        let measured = (last_units - first_units) * 1000.0 / (last_at - first_at);
+        if !measured.is_finite() || measured <= 0.0 {
+            return None;
+        }
+        let intervals = usize_to_f64(observations.len().checked_sub(1)?)?;
+        let stale_after = 30_000.0_f64.max((last_at - first_at) * 3.0 / intervals);
+        if now - last_at > stale_after {
+            reason = "stalled";
+        } else {
+            rate = Some(measured);
+            confidence = if observations.len() >= 8 {
+                "high"
+            } else if observations.len() >= 4 {
+                "medium"
+            } else {
+                "low"
+            };
+            reason = "observed-rate";
+            if let (Some(p), Some(t)) = (processed, total) {
+                if p < t {
+                    remaining = Some((t - p) * 1000.0 / measured);
+                } else {
+                    reason = "awaiting-settlement";
+                }
+            }
+        }
+    }
+    if total.is_none() && reason != "stalled" {
+        reason = "unknown-total";
+    }
+    if terminal {
+        remaining = None;
+        rate = None;
+        confidence = "calculating";
+        reason = "interrupted";
+    }
+    Some(
+        serde_json::json!({ "elapsedMs": now - start, "lastProgressAgeMs": age, "remainingMs": remaining,
+        "ratePerSecond": rate, "confidence": confidence, "etaReason": reason }),
+    )
+}
+
 /// RAG indexing ETA input JSON을 파싱한다.
 fn parse_rag_indexing_eta_input_json(payload: &str) -> Option<RagIndexingEtaInput> {
     let value = serde_json::from_str::<JsonValue>(payload).ok()?;
     let object = value.as_object()?;
-    Some(RagIndexingEtaInput {
+    let mut input = RagIndexingEtaInput {
         now_ms: json_finite_number_field(object, "nowMs")?,
         started_at_ms: json_finite_number_field(object, "startedAtMs")?,
         total_files: json_usize_field(object, "totalFiles")?,
@@ -13180,7 +14041,196 @@ fn parse_rag_indexing_eta_input_json(payload: &str) -> Option<RagIndexingEtaInpu
             object.get("historicalChunkEstimateRatio"),
         ),
         historical_variance: optional_finite_json_number(object.get("historicalVariance")),
-    })
+        pipeline: None,
+    };
+    if let Some(value) = object.get("pipeline") {
+        if !rag_eta_legacy_arrays_valid(&input) {
+            return None;
+        }
+        input.pipeline = Some(parse_rag_eta_pipeline(value, &input)?);
+    }
+    Some(input)
+}
+
+/// 새 pipeline에서도 이전 호스트 배열을 무제한 또는 손실 정수로 받지 않는다.
+fn rag_eta_legacy_arrays_valid(input: &RagIndexingEtaInput) -> bool {
+    let durations = [
+        &input.completed_batch_durations_ms,
+        &input.completed_file_durations_ms,
+        &input.completed_file_overhead_durations_ms,
+    ];
+    let counts = [
+        &input.completed_batch_chunk_counts,
+        &input.completed_file_chunk_counts,
+        &input.completed_file_estimated_chunk_counts,
+        &input.completed_file_actual_chunk_counts,
+    ];
+    durations
+        .iter()
+        .all(|values| values.len() <= 64 && values.iter().all(|value| *value >= 0.0))
+        && counts.iter().all(|values| {
+            values.len() <= 64
+                && values.iter().all(|value| {
+                    u64::try_from(*value).is_ok_and(|value| value <= 9_007_199_254_740_991)
+                })
+        })
+}
+
+/// 관측 시각의 소수를 보존하며 수량의 정수 검증은 전용 파서가 맡는다.
+fn rag_eta_safe_number(value: f64) -> Option<f64> {
+    (value.is_finite() && (0.0..=9_007_199_254_740_991.0).contains(&value)).then_some(value)
+}
+
+/// 손실 없이 전달된 비음수 정수 필드만 받는다.
+fn rag_eta_safe_usize(object: &JsonMap<String, JsonValue>, key: &str) -> Option<usize> {
+    let value = object.get(key)?.as_u64()?;
+    if value > 9_007_199_254_740_991 {
+        return None;
+    }
+    usize::try_from(value).ok()
+}
+
+/// pipeline이 있으면 누락 필드를 legacy 기본값으로 메우지 않는다.
+fn parse_rag_eta_pipeline(
+    value: &JsonValue,
+    input: &RagIndexingEtaInput,
+) -> Option<RagIndexingEtaPipeline> {
+    let object = value.as_object()?;
+    rag_eta_safe_number(input.now_ms)?;
+    rag_eta_safe_number(input.started_at_ms)?;
+    for count in [
+        input.total_files,
+        input.completed_files,
+        input.current_file_total_chunks,
+        input.current_file_embedded_chunks,
+        input.total_estimated_chunks,
+        input.completed_estimated_chunks,
+        input.current_file_estimated_chunks,
+        input.total_planned_chunks,
+        input.completed_planned_chunks,
+    ] {
+        rag_eta_safe_number(usize_to_f64(count)?)?;
+    }
+    let lifecycle = RagIndexingEtaLifecycle::parse(object.get("lifecycle")?)?;
+    let backend = RagIndexingEtaBackend::parse(object.get("backend")?)?;
+    let observed_at_ms = rag_eta_safe_number(json_finite_number_field(object, "observedAtMs")?)?;
+    if input.started_at_ms > observed_at_ms || observed_at_ms > input.now_ms {
+        return None;
+    }
+    let mut pipeline = RagIndexingEtaPipeline {
+        lifecycle,
+        total_known: object.get("totalKnown")?.as_bool()?,
+        processed_files: rag_eta_safe_usize(object, "processedFiles")?,
+        failed_files: rag_eta_safe_usize(object, "failedFiles")?,
+        partial_files: rag_eta_safe_usize(object, "partialFiles")?,
+        processed_estimated_chunks: rag_eta_safe_usize(object, "processedEstimatedChunks")?,
+        processed_planned_chunks: rag_eta_safe_usize(object, "processedPlannedChunks")?,
+        observed_at_ms,
+        backend,
+        window_samples: Vec::new(),
+        inference_samples: Vec::new(),
+    };
+    if !rag_eta_pipeline_counts_valid(input, &pipeline) {
+        return None;
+    }
+    let windows = object.get("windowSamples")?.as_array()?;
+    let inference = object.get("inferenceSamples")?.as_array()?;
+    if windows.len() > 64 || inference.len() > 64 {
+        return None;
+    }
+    let mut previous_end = input.started_at_ms;
+    for value in windows {
+        let sample = value.as_object()?;
+        let started_at_ms = rag_eta_safe_number(json_finite_number_field(sample, "startedAtMs")?)?;
+        let ended_at_ms = rag_eta_safe_number(json_finite_number_field(sample, "endedAtMs")?)?;
+        let logical_chunks = rag_eta_safe_usize(sample, "logicalChunks")?;
+        let physical_work_units = match sample.get("physicalWorkUnits")? {
+            JsonValue::Null => None,
+            _ => Some(rag_eta_safe_usize(sample, "physicalWorkUnits")?),
+        };
+        if started_at_ms < previous_end
+            || ended_at_ms <= started_at_ms
+            || ended_at_ms > observed_at_ms
+            || logical_chunks == 0
+        {
+            return None;
+        }
+        pipeline.window_samples.push(RagIndexingEtaWindow {
+            started_at_ms,
+            ended_at_ms,
+            logical_chunks,
+            physical_work_units,
+        });
+        previous_end = ended_at_ms;
+    }
+    for value in inference {
+        let sample = value.as_object()?;
+        let sample_backend = RagIndexingEtaBackend::parse(sample.get("backend")?)?;
+        let work_units = rag_eta_safe_usize(sample, "workUnits")?;
+        let duration_ms = json_finite_number_field(sample, "durationMs")?;
+        let ended_at_ms = rag_eta_safe_number(json_finite_number_field(sample, "endedAtMs")?)?;
+        if sample_backend != backend
+            || !matches!(
+                backend,
+                RagIndexingEtaBackend::Cpu | RagIndexingEtaBackend::Webgpu
+            )
+            || work_units == 0
+            || duration_ms <= 0.0
+            || ended_at_ms > input.now_ms
+            || ended_at_ms - duration_ms < input.started_at_ms
+        {
+            return None;
+        }
+        pipeline.inference_samples.push(RagIndexingEtaInference {
+            work_units,
+            duration_ms,
+            ended_at_ms,
+        });
+    }
+    Some(pipeline)
+}
+
+/// 스트리밍 중 미완성 계획의 총량은 확정 총량으로 취급하지 않는다.
+fn rag_eta_pipeline_counts_valid(
+    input: &RagIndexingEtaInput,
+    pipeline: &RagIndexingEtaPipeline,
+) -> bool {
+    if input.completed_files > pipeline.processed_files
+        || pipeline
+            .failed_files
+            .checked_add(pipeline.partial_files)
+            .is_none_or(|count| count > pipeline.processed_files)
+        || input.completed_files
+            > pipeline
+                .processed_files
+                .saturating_sub(pipeline.failed_files)
+                .saturating_sub(pipeline.partial_files)
+        || input.current_file_embedded_chunks > input.current_file_total_chunks
+        || input.completed_estimated_chunks > pipeline.processed_estimated_chunks
+        || input.completed_planned_chunks > pipeline.processed_planned_chunks
+        || (pipeline.total_known
+            && (pipeline.processed_files > input.total_files
+                || pipeline.processed_estimated_chunks > input.total_estimated_chunks))
+        || (input.planning_complete
+            && pipeline.processed_planned_chunks > input.total_planned_chunks)
+    {
+        return false;
+    }
+    let successful_estimate_matches =
+        input.completed_estimated_chunks == input.total_estimated_chunks;
+    let successful_plan_matches =
+        !input.planning_complete || input.completed_planned_chunks == input.total_planned_chunks;
+    pipeline.lifecycle != RagIndexingEtaLifecycle::Complete
+        || (pipeline.total_known
+            && pipeline.failed_files == 0
+            && pipeline.partial_files == 0
+            && input.completed_files == input.total_files
+            && pipeline.processed_files == input.total_files
+            && pipeline.processed_estimated_chunks == input.total_estimated_chunks
+            && successful_estimate_matches
+            && successful_plan_matches
+            && (!input.planning_complete
+                || pipeline.processed_planned_chunks == input.total_planned_chunks))
 }
 
 /// JSON object에서 required finite number field를 읽는다.
@@ -13325,6 +14375,10 @@ fn parse_rag_status_files(values: &[JsonValue]) -> Option<Vec<RagStatusFileInput
             return None;
         }
         files.push(RagStatusFileInput {
+            failure_reason: match object.get("failureReason") {
+                Some(value) => Some(value.as_str()?.to_owned()),
+                None => None,
+            },
             path: object.get("path")?.as_str()?.to_owned(),
             mtime,
             size,
@@ -13340,6 +14394,10 @@ fn parse_rag_status_records(values: &[JsonValue]) -> Option<Vec<RagStatusRecordI
         let object = value.as_object()?;
         let vector_count = usize::try_from(object.get("vectorCount")?.as_u64()?).ok()?;
         records.push(RagStatusRecordInput {
+            source_incomplete: object
+                .get("sourceIncomplete")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false),
             file_path: object.get("filePath")?.as_str()?.to_owned(),
             source_mtime: optional_finite_json_number(object.get("sourceMtime")),
             source_size: optional_finite_json_number(object.get("sourceSize")),
@@ -13487,6 +14545,14 @@ fn parse_rag_file_text_probe_inputs_json(payload: &str) -> Option<Vec<RagFileTex
                 .and_then(JsonValue::as_str)
                 .unwrap_or_default()
                 .to_owned(),
+            text_valid: match object.get("textValid") {
+                Some(value) => Some(value.as_bool()?),
+                None => None,
+            },
+            reason: match object.get("reason") {
+                Some(value) => Some(value.as_str()?.to_owned()),
+                None => None,
+            },
         });
     }
     Some(probes)
@@ -13811,12 +14877,19 @@ fn serialize_chunk_json(chunk: &Chunk) -> String {
 
 /// 문자가 `BM25` 토큰 부분 문자 클래스에 속하는지 반환한다.
 fn is_token_part_character(character: char) -> bool {
-    character.is_alphanumeric() || matches!(character, '_' | '-' | '/' | '\\' | '@' | '.')
+    character.is_alphanumeric()
+        || unicode_normalization::char::is_combining_mark(character)
+        || matches!(character, '_' | '-' | '/' | '\\' | '@' | '.')
+        || (!character.is_ascii()
+            && character.nfkc().any(|normalized| {
+                normalized.is_alphanumeric()
+                    || matches!(normalized, '_' | '-' | '/' | '\\' | '@' | '.')
+            }))
 }
 
 /// 하나의 연속 부분을 토큰화하고 지역 중복 토큰을 삽입 순서대로 제거한다.
 fn tokenize_part(part: &str) -> Vec<String> {
-    let part = normalize_nfc(part);
+    let part = normalize_search_text(part);
     let trimmed = part.trim();
     if !trimmed.chars().any(char::is_alphanumeric) {
         return Vec::new();
@@ -14019,7 +15092,7 @@ fn should_split_ascii_identifier(
 
 /// 영숫자가 아닌 가장자리를 제거하고 소문자화해 토큰을 정규화한다.
 fn normalize_token(token: &str) -> String {
-    normalize_nfc(token)
+    normalize_search_text(token)
         .trim()
         .trim_matches(|character: char| !character.is_alphanumeric())
         .to_lowercase()
@@ -14220,6 +15293,246 @@ mod tests {
                 "missing expected token {expected}; got {tokens:?}",
             );
         }
+    }
+
+    /// 검색 정규화는 호환 문자와 기존 정준 결합을 같은 토큰으로 수렴시킵니다.
+    #[test]
+    fn quality_normalization_tokenizer_compatibility_and_combining() {
+        for (source, plain) in [
+            ("ＲＡＤＩＡＮＣＥ", "RADIANCE"),
+            ("ﬃnal", "ffinal"),
+            ("①②", "12"),
+            ("ＣａｍｅｌＣａｓｅ", "CamelCase"),
+            ("cafe\u{301}", "café"),
+            ("a\u{315}\u{300}bc", "à\u{315}bc"),
+        ] {
+            assert_eq!(tokenize(source), tokenize(plain), "{source:?}");
+        }
+        assert_eq!(normalize_nfc("ＲＡＤＩＡＮＣＥ"), "ＲＡＤＩＡＮＣＥ");
+        assert_ne!(
+            create_content_hash("ＲＡＤＩＡＮＣＥ"),
+            create_content_hash("RADIANCE")
+        );
+    }
+
+    /// 정규화 검색·필드·집계는 batch와 개별 호출 및 직렬화 뒤에도 같습니다.
+    #[test]
+    fn quality_normalization_bm25_fields_batch_and_roundtrip() {
+        let mut index = Bm25RuntimeIndex::new(TOKENIZER_VERSION);
+        index.add_document_fields_json(
+            "synthetic::0",
+            "ＲＡＤＩＡＮＣＥ ﬃnal ①② cafe\u{301}",
+            "synthetic.md",
+            r#"{"title":"ＲＡＤＩＡＮＣＥ","headings":["ﬃnal"],"tags":["①②"]}"#,
+            TOKENIZER_VERSION,
+        );
+        let restored = Bm25RuntimeIndex::from_json(&index.to_json(), TOKENIZER_VERSION);
+        for query in [
+            "radiance",
+            "ＲＡＤＩＡＮＣＥ",
+            "ffinal",
+            "12",
+            "café",
+            "title:radiance",
+            "heading:ffinal",
+            "tag:12",
+        ] {
+            let search = index.search_json(query);
+            assert!(search.contains("synthetic::0"), "{query}: {search}");
+            assert_eq!(search, restored.search_json(query));
+            let aggregate = serde_json::from_str::<JsonValue>(&index.aggregate_json(query, 10))
+                .unwrap_or(JsonValue::Null);
+            let expected =
+                if query == "radiance" || query == "ＲＡＤＩＡＮＣＥ" || query == "ffinal" {
+                    2
+                } else {
+                    1
+                };
+            assert_eq!(
+                aggregate.get("totalOccurrences"),
+                Some(&serde_json::json!(expected)),
+                "{query}: {aggregate}"
+            );
+            assert_eq!(
+                index.aggregate_json(query, 10),
+                restored.aggregate_json(query, 10)
+            );
+            let batch = serde_json::from_str::<JsonValue>(
+                &index.batch_search_and_aggregate_json(
+                    &serde_json::json!({
+                        "queries": [{"query": query, "limit": 10}],
+                        "aggregates": [{"query": query, "limit": 10}],
+                    })
+                    .to_string(),
+                ),
+            )
+            .unwrap_or(JsonValue::Null);
+            assert_eq!(batch.pointer("/aggregates/0"), Some(&aggregate));
+            assert_eq!(
+                batch.pointer("/queries/0/hits/0/docId"),
+                Some(&serde_json::json!("synthetic::0"))
+            );
+        }
+        let mut plain = Bm25RuntimeIndex::new(TOKENIZER_VERSION);
+        plain.add_document(
+            "plain::0",
+            "radiance ffinal 12 café",
+            "plain.md",
+            TOKENIZER_VERSION,
+        );
+        for query in ["ＲＡＤＩＡＮＣＥ", "ＦＦＩＮＡＬ", "①②", "CAFE\u{301}"] {
+            assert!(plain.search_json(query).contains("plain::0"), "{query}");
+            let aggregate = serde_json::from_str::<JsonValue>(&plain.aggregate_json(query, 10))
+                .unwrap_or(JsonValue::Null);
+            assert_eq!(
+                aggregate.get("totalOccurrences"),
+                Some(&serde_json::json!(1)),
+                "{query}: {aggregate}"
+            );
+        }
+    }
+
+    /// 네이티브 후보 점수와 본문 구절도 같은 정규화 비교를 사용해야 합니다.
+    #[test]
+    fn quality_normalization_native_candidate_callers() {
+        for (query, original) in [
+            ("radiance", "ＲＡＤＩＡＮＣＥ routes east."),
+            ("ＲＡＤＩＡＮＣＥ", "radiance routes east."),
+            ("café", "cafe\u{301} routes east."),
+        ] {
+            assert_eq!(count_keyword_matches(query, original), 1);
+            for mode in ["all", "any", "phrase"] {
+                assert_eq!(
+                    plan_folder_lexical_evidence_indices_json(
+                        query,
+                        &serde_json::json!([format!("synthetic.md\n{original}")]).to_string(),
+                        10,
+                        mode
+                    ),
+                    "[0]",
+                    "{query}: {mode}"
+                );
+            }
+            let request = serde_json::json!({"queries": [query], "limit": 10, "match": "all", "field": "content"});
+            let samples = serde_json::json!([{"path": "synthetic.md", "content": original}]);
+            let result = native_search::plan_native_vault_lexical_batch_json(
+                &request.to_string(),
+                &samples.to_string(),
+                "null",
+            );
+            let value = serde_json::from_str::<JsonValue>(&result).unwrap_or(JsonValue::Null);
+            assert_eq!(
+                value.get("totalHits"),
+                Some(&serde_json::json!(1)),
+                "{result}"
+            );
+            assert_eq!(
+                value.pointer("/streams/0/0/passages/0/content"),
+                Some(&serde_json::json!(original)),
+                "{result}"
+            );
+        }
+    }
+
+    /// 새 토큰 계약도 이전 자료를 삭제하거나 최신이라고 다시 인증하지 않습니다.
+    #[test]
+    fn quality_normalization_legacy_version_guard() {
+        assert_eq!(TOKENIZER_VERSION, 4);
+        let mut old = Bm25RuntimeIndex::new(3);
+        old.add_document("legacy::0", "legacy plain text", "legacy.md", 3);
+        let restored = Bm25RuntimeIndex::from_json(&old.to_json(), TOKENIZER_VERSION);
+        assert_eq!(restored.tokenizer_version(), 3);
+        assert!(!restored.is_tokenizer_current(TOKENIZER_VERSION));
+        assert_eq!(restored.total_docs(), 1);
+        assert_eq!(restored.search_json("legacy"), old.search_json("legacy"));
+    }
+
+    #[test]
+    fn quality_upgrade_mutations_do_not_certify_mixed_tokenizers() {
+        for operation in 0..6 {
+            let mut index = Bm25RuntimeIndex::new(3);
+            index.add_document("kept", "alpha original", "kept.md", 3);
+            index.add_document("remove", "beta original", "remove.md", 3);
+            match operation {
+                0 => index.add_document("new", "gamma new", "new.md", TOKENIZER_VERSION),
+                1 => {
+                    index.add_document_fields_json(
+                        "new",
+                        "gamma new",
+                        "new.md",
+                        "{}",
+                        TOKENIZER_VERSION,
+                    );
+                }
+                2 => index.add_new_document("new", "gamma new", "new.md", TOKENIZER_VERSION),
+                3 => {
+                    assert_eq!(
+                        index.add_documents_json(
+                            r#"[{"id":"new","text":"gamma new","sourcePath":"new.md"}]"#,
+                            TOKENIZER_VERSION,
+                            true
+                        ),
+                        1
+                    );
+                }
+                4 => index.remove_document("remove", TOKENIZER_VERSION),
+                _ => index.remove_source("remove.md", TOKENIZER_VERSION),
+            }
+            assert_eq!(index.tokenizer_version(), 3, "operation {operation}");
+            assert!(!index.is_tokenizer_current(TOKENIZER_VERSION));
+            assert!(index.search_json("alpha").contains("kept"));
+            let restored = Bm25RuntimeIndex::from_json(&index.to_json(), TOKENIZER_VERSION);
+            assert!(!restored.is_tokenizer_current(TOKENIZER_VERSION));
+        }
+        let mut old = Bm25RuntimeIndex::new(3);
+        old.add_document("kept", "alpha original", "kept.md", 3);
+        old.add_document("remove", "beta original", "remove.md", 3);
+        for raw in [
+            plan_bm25_index_add_document_json(
+                &old.to_json(),
+                "new",
+                "gamma",
+                "new.md",
+                TOKENIZER_VERSION,
+            ),
+            plan_bm25_index_remove_document_json(&old.to_json(), "remove", TOKENIZER_VERSION),
+            plan_bm25_index_remove_source_json(&old.to_json(), "remove.md", TOKENIZER_VERSION),
+        ] {
+            let restored = Bm25RuntimeIndex::from_json(&raw, TOKENIZER_VERSION);
+            assert_eq!(restored.tokenizer_version(), 3);
+            assert!(restored.search_json("alpha").contains("kept"));
+        }
+    }
+
+    #[test]
+    fn quality_upgrade_native_phrase_inventory_keeps_normalized_hit() {
+        let result: JsonValue = serde_json::from_str(&plan_native_vault_lexical_batch_json(
+            r#"{"queries":["radiance"],"limit":10,"match":"phrase","field":"content"}"#,
+            r#"[{"path":"synthetic.md","content":"ＲＡＤＩＡＮＣＥ routes east."}]"#,
+            "null",
+        ))
+        .unwrap_or(JsonValue::Null);
+        assert_eq!(
+            result.pointer("/streams/0/0/passages/0/startLine"),
+            Some(&serde_json::json!(1))
+        );
+    }
+
+    /// 한국어 literal 발생과 정확 토큰 집계의 차이를 수정 없이 명시합니다.
+    #[test]
+    fn quality_normalization_korean_substring_is_not_exact_token_aggregate() {
+        let body = "항구시험의 조건\n항구시험은 예외\n항구시험의 관계\n항구시험은 상충";
+        assert_eq!(body.match_indices("항구시험").count(), 4);
+        let mut index = Bm25RuntimeIndex::new(TOKENIZER_VERSION);
+        index.add_document("korean::0", body, "korean.md", TOKENIZER_VERSION);
+        assert!(index.search_json("항구시험").contains("korean::0"));
+        let aggregate = serde_json::from_str::<JsonValue>(&index.aggregate_json("항구시험", 10))
+            .unwrap_or(JsonValue::Null);
+        assert_eq!(
+            aggregate.get("totalOccurrences"),
+            Some(&serde_json::json!(0))
+        );
+        assert!(!tokenize(body).iter().any(|token| token == "항구시험"));
     }
 
     /// BM25 term frequency JSON은 Rust tokenizer output의 중복 횟수를 보존해야 한다.
@@ -14559,6 +15872,99 @@ mod tests {
         );
     }
 
+    /// 확장자가 아닌 엄격한 바이트 검증 결과가 후보를 결정한다.
+    #[test]
+    fn text_decode_candidate_policy_uses_bytes_for_mixed_and_unknown_extensions() {
+        let extensions = [
+            "", "opaque", "obj", "stl", "dxf", "gltf", "dat", "png", "txt", "plist",
+        ];
+        let files = extensions
+            .iter()
+            .enumerate()
+            .map(|(index, extension)| {
+                serde_json::json!({
+                    "filePath": format!("synthetic-{index}.{extension}"),
+                    "fileName": format!("synthetic-{index}.{extension}"), "extension": extension,
+                    "size": 600 * 1024,
+                })
+            })
+            .collect::<Vec<_>>();
+        let payload = serde_json::json!(files).to_string();
+        let indices = (0..extensions.len()).collect::<Vec<_>>();
+        assert_eq!(
+            plan_rag_file_content_probe_indices_json(&payload, "[]", "[]"),
+            serde_json::json!(indices).to_string()
+        );
+        let probes = indices
+            .iter()
+            .map(|index| {
+                serde_json::json!({
+                    "index":index, "readable":true, "sample":"", "textValid":true,
+                })
+            })
+            .collect::<Vec<_>>();
+        let plan: JsonValue = serde_json::from_str(&plan_rag_file_indexability_json(
+            &payload,
+            "[]",
+            "[]",
+            &serde_json::json!(probes).to_string(),
+        ))
+        .unwrap_or(JsonValue::Null);
+        assert_eq!(
+            plan.get("candidateIndices"),
+            Some(&serde_json::json!(indices))
+        );
+        let rejected = indices
+            .iter()
+            .map(|index| {
+                serde_json::json!({
+                    "index":index, "readable":true, "sample":"", "textValid":false,
+                })
+            })
+            .collect::<Vec<_>>();
+        let plan: JsonValue = serde_json::from_str(&plan_rag_file_indexability_json(
+            &payload,
+            "[]",
+            "[]",
+            &serde_json::json!(rejected).to_string(),
+        ))
+        .unwrap_or(JsonValue::Null);
+        assert_eq!(plan.get("candidateIndices"), Some(&serde_json::json!([])));
+        let private = r#"[{"filePath":".env","fileName":".env","extension":"","size":100},{"filePath":"private.txt","fileName":"private.txt","extension":"txt","size":100},{"filePath":"excluded.log","fileName":"excluded.log","extension":"log","size":100}]"#;
+        assert_eq!(
+            plan_rag_file_content_probe_indices_json(private, r#"["private.txt"]"#, r#"["log"]"#),
+            "[]"
+        );
+    }
+
+    #[test]
+    fn rag_inventory_preserves_failures_separately_from_policy_and_binary() {
+        let files = r#"[{"filePath":"good.txt","fileName":"good.txt","extension":"txt","size":10},{"filePath":"damaged.txt","fileName":"damaged.txt","extension":"txt","size":10},{"filePath":"private.txt","fileName":"private.txt","extension":"txt","size":10},{"filePath":"raw.bin","fileName":"raw.bin","extension":"bin","size":10},{"filePath":"image.png","fileName":"image.png","extension":"png","size":10}]"#;
+        let probes = r#"[{"index":0,"readable":true,"textValid":true},{"index":1,"readable":true,"textValid":false,"reason":"corrupt-encoding"},{"index":3,"readable":true,"textValid":false,"reason":"ambiguous-encoding"},{"index":4,"readable":true,"textValid":false,"reason":"binary"}]"#;
+        let plan: JsonValue = serde_json::from_str(&plan_rag_file_indexability_json(
+            files,
+            r#"["private.txt"]"#,
+            "[]",
+            probes,
+        ))
+        .unwrap_or(JsonValue::Null);
+        assert_eq!(plan.get("candidateIndices"), Some(&serde_json::json!([0])));
+        assert_eq!(
+            plan.get("failures"),
+            Some(
+                &serde_json::json!([{"index":1,"reason":"corrupt-encoding"},{"index":3,"reason":"ambiguous-encoding"}])
+            )
+        );
+        assert_eq!(
+            plan.get("policyExcludedIndices"),
+            Some(&serde_json::json!([2]))
+        );
+        assert_eq!(
+            plan.get("unsupportedIndices"),
+            Some(&serde_json::json!([4]))
+        );
+    }
+
     /// RAG 후보 파일 판정과 unknown text probe 선택은 Rust에서 계산해야 한다.
     #[test]
     fn rag_file_indexability_is_planned_in_rust() {
@@ -14566,7 +15972,7 @@ mod tests {
 
         assert_eq!(
             plan_rag_file_content_probe_indices_json(files, r#"["Archive"]"#, r#"["png"]"#),
-            "[4,5]",
+            "[0,1,4,5,9]",
         );
         assert_eq!(
             plan_rag_file_indexability_json(
@@ -14575,7 +15981,7 @@ mod tests {
                 r#"["png"]"#,
                 r#"[{"index":4,"readable":true,"sample":"plain text content"},{"index":5,"readable":true,"sample":"\u0000binary"}]"#,
             ),
-            "{\"candidateIndices\":[0,1,4],\"summaryInputs\":[{\"filePath\":\"note.md\",\"extension\":\"MD\",\"indexable\":true},{\"filePath\":\"src/main.ts\",\"extension\":\"ts\",\"indexable\":true},{\"filePath\":\".env\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"empty.md\",\"extension\":\"md\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"custom.weird\",\"extension\":\"weird\",\"indexable\":true},{\"filePath\":\"bin.weird\",\"extension\":\"weird\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"empty.txt\",\"extension\":\"txt\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"large.opaque\",\"extension\":\"opaque\",\"indexable\":false,\"recommendationReason\":\"too-large\"}]}",
+            "{\"candidateIndices\":[0,1,4],\"summaryInputs\":[{\"filePath\":\"note.md\",\"extension\":\"MD\",\"indexable\":true},{\"filePath\":\"src/main.ts\",\"extension\":\"ts\",\"indexable\":true},{\"filePath\":\".env\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"empty.md\",\"extension\":\"md\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"custom.weird\",\"extension\":\"weird\",\"indexable\":true},{\"filePath\":\"bin.weird\",\"extension\":\"weird\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"empty.txt\",\"extension\":\"txt\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"large.opaque\",\"extension\":\"opaque\",\"indexable\":false,\"recommendationReason\":\"unreadable\"}],\"failures\":[{\"index\":5,\"reason\":\"ambiguous-encoding\"},{\"index\":9,\"reason\":\"probe-unavailable\"}],\"policyExcludedIndices\":[2,3,6,7,8],\"unsupportedIndices\":[]}",
         );
     }
 
@@ -14601,7 +16007,7 @@ mod tests {
             }]);
             assert_eq!(
                 plan_rag_file_indexability_json(&files.to_string(), "[]", "[]", "[]"),
-                r#"{"candidateIndices":[],"summaryInputs":[]}"#,
+                r#"{"candidateIndices":[],"summaryInputs":[],"failures":[],"policyExcludedIndices":[0],"unsupportedIndices":[]}"#,
             );
         }
         for value in [
@@ -14616,7 +16022,7 @@ mod tests {
         let files = r#"[{"filePath":"hidden.md","fileName":"hidden.md","extension":"md","size":10,"frontmatter":{"superpower-inside-exclude":true}},{"filePath":"public.md","fileName":"public.md","extension":"md","size":10,"frontmatter":{"superpower-inside-exclude":false}}]"#;
         assert_eq!(
             plan_rag_file_indexability_json(files, "[]", "[]", "[]"),
-            r#"{"candidateIndices":[1],"summaryInputs":[{"filePath":"public.md","extension":"md","indexable":true}]}"#,
+            r#"{"candidateIndices":[1],"summaryInputs":[{"filePath":"public.md","extension":"md","indexable":true}],"failures":[],"policyExcludedIndices":[0],"unsupportedIndices":[]}"#,
         );
     }
 
@@ -14626,14 +16032,140 @@ mod tests {
         let files = r#"[{"filePath":"manual.pdf","fileName":"manual.pdf","extension":"pdf","size":8000000},{"filePath":"archive.docx","fileName":"archive.docx","extension":"docx","size":1000},{"filePath":"book.epub","fileName":"book.epub","extension":"epub","size":1000},{"filePath":"raw.zip","fileName":"raw.zip","extension":"zip","size":1000},{"filePath":"photo.png","fileName":"photo.png","extension":"png","size":1000},{"filePath":"huge.epub","fileName":"huge.epub","extension":"epub","size":134217729}]"#;
         assert_eq!(
             plan_rag_file_content_probe_indices_json(files, "[]", "[]"),
-            "[]",
-            "extractable documents must not require a text probe"
+            "[3,4]",
+            "extractable documents bypass probes, but binary extensions must be probed"
         );
         let plan = plan_rag_file_indexability_json(files, "[]", "[]", "[]");
         assert_eq!(
             plan,
-            "{\"candidateIndices\":[0,1,2],\"summaryInputs\":[{\"filePath\":\"manual.pdf\",\"extension\":\"pdf\",\"indexable\":true},{\"filePath\":\"archive.docx\",\"extension\":\"docx\",\"indexable\":true},{\"filePath\":\"book.epub\",\"extension\":\"epub\",\"indexable\":true},{\"filePath\":\"raw.zip\",\"extension\":\"zip\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"photo.png\",\"extension\":\"png\",\"indexable\":false,\"recommendationReason\":\"binary\"},{\"filePath\":\"huge.epub\",\"extension\":\"epub\",\"indexable\":false,\"recommendationReason\":\"too-large\"}]}",
+            "{\"candidateIndices\":[0,1,2],\"summaryInputs\":[{\"filePath\":\"manual.pdf\",\"extension\":\"pdf\",\"indexable\":true},{\"filePath\":\"archive.docx\",\"extension\":\"docx\",\"indexable\":true},{\"filePath\":\"book.epub\",\"extension\":\"epub\",\"indexable\":true},{\"filePath\":\"raw.zip\",\"extension\":\"zip\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"photo.png\",\"extension\":\"png\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"huge.epub\",\"extension\":\"epub\",\"indexable\":false,\"recommendationReason\":\"too-large\"}],\"failures\":[{\"index\":3,\"reason\":\"probe-unavailable\"},{\"index\":4,\"reason\":\"probe-unavailable\"},{\"index\":5,\"reason\":\"memory-budget\"}],\"policyExcludedIndices\":[],\"unsupportedIndices\":[]}",
         );
+    }
+
+    /// 평문 텍스트 확장자와 추출 지원 확장자는 제외 추천에서 완전히 제외하고 미지원 확장자만 추천한다.
+    #[test]
+    fn supported_plain_text_and_extractable_extensions_are_excluded_from_recommendations() {
+        for ext in [
+            "md",
+            "markdown",
+            "mdown",
+            "mkd",
+            "mkdn",
+            "mdx",
+            "txt",
+            "text",
+            "json",
+            "jsonl",
+            "ndjson",
+            "patch",
+            "snapshot",
+            "canvas",
+            "excalidraw",
+            "ipynb",
+            "eml",
+            "srt",
+            "vtt",
+            "org",
+            "rst",
+            "tex",
+            "vue",
+            "svelte",
+            "pdf",
+            "epub",
+            "docx",
+            "dotx",
+            "odt",
+            "odp",
+            "ods",
+            "pptx",
+            "potx",
+            "ppsx",
+            "xlsx",
+            "xltx",
+            "hwpx",
+            "png",
+            "parquet",
+            "wasm",
+        ] {
+            assert!(
+                !is_recommendable_exclude_extension_json(ext),
+                "{ext} must not be recommended for exclusion"
+            );
+        }
+        for ext in ["weird", "opaque", "custombin"] {
+            assert!(
+                is_recommendable_exclude_extension_json(ext),
+                "{ext} should remain recommendable when unreadable or too large"
+            );
+        }
+
+        let summary = plan_rag_file_type_summary_json(
+            r#"[{"filePath":"huge.epub","extension":"epub","indexable":false,"recommendationReason":"too-large"},{"filePath":"broken.dotx","extension":"dotx","indexable":false,"recommendationReason":"unreadable"},{"filePath":"large.jsonl","extension":"jsonl","indexable":false,"recommendationReason":"too-large"},{"filePath":"large.patch","extension":"patch","indexable":false,"recommendationReason":"too-large"},{"filePath":"data.parquet","extension":"parquet","indexable":false,"recommendationReason":"binary"},{"filePath":"unknown.custombin","extension":"custombin","indexable":false,"recommendationReason":"unreadable"}]"#,
+            "확장자 없음",
+        );
+        assert_eq!(
+            summary,
+            "{\"targetTypes\":[],\"excludeRecommendations\":[{\"extension\":\"custombin\",\"label\":\".custombin\",\"count\":1,\"reason\":\"unreadable\"}],\"totalTargetFiles\":0}"
+        );
+    }
+
+    /// 지원·바이너리·추출기 목록은 서로 겹치지 않고, 지원 확장자는 후보 판정과 제외 추천이 같은 결론을 낸다.
+    #[test]
+    fn supported_binary_and_extractable_extension_lists_stay_consistent() {
+        for extension in KNOWN_TEXT_EXTENSIONS {
+            assert!(
+                !is_known_binary_extension(extension),
+                "{extension} must not be both text and binary"
+            );
+            assert!(
+                !is_extractable_source_extension(extension),
+                "{extension} must not be both text and extractable"
+            );
+        }
+        for extension in [
+            "epub", "docx", "dotx", "odt", "odp", "ods", "pptx", "potx", "ppsx", "xlsx", "xltx",
+            "hwpx", "pdf",
+        ] {
+            assert!(
+                is_extractable_source_extension(extension),
+                "{extension} must stay extractable"
+            );
+            assert!(
+                !is_known_binary_extension(extension),
+                "{extension} is extractable and must not be listed as binary"
+            );
+            assert!(
+                !is_known_text_extension(extension),
+                "{extension} must not be both text and extractable"
+            );
+        }
+
+        // 같은 확장자에 대해 후보 판정(Indexable)과 제외 추천(불가)이 같은 결론을 내야 한다.
+        for extension in KNOWN_TEXT_EXTENSIONS.iter().copied().chain([
+            "epub", "docx", "dotx", "odt", "odp", "ods", "pptx", "potx", "ppsx", "xlsx", "xltx",
+            "hwpx", "pdf",
+        ]) {
+            let file = RagFileEligibilityInput {
+                index: 0,
+                file_path: format!("synthetic/sample.{extension}"),
+                file_name: format!("sample.{extension}"),
+                extension: extension.to_owned(),
+                size: 1024,
+                frontmatter_excluded: false,
+                frontmatter_unreadable: false,
+            };
+            assert!(
+                !matches!(
+                    classify_rag_file_without_probe(&file),
+                    RagFileProbeDecision::NeedsProbe | RagFileProbeDecision::NotIndexable(_)
+                ),
+                "{extension} is supported and must be a direct candidate"
+            );
+            assert!(
+                !is_recommendable_exclude_extension(extension),
+                "{extension} is supported and must never be recommended for exclusion"
+            );
+        }
     }
 
     /// 민감한 설정/키 파일은 사용자가 따로 제외하지 않아도 기본 RAG 후보에서 빠져야 한다.
@@ -14643,7 +16175,7 @@ mod tests {
 
         assert_eq!(
             plan_rag_file_indexability_json(files, "[]", "[]", "[]"),
-            "{\"candidateIndices\":[6,7],\"summaryInputs\":[{\"filePath\":\".npmrc\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"id_ed25519\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"cert.pem\",\"extension\":\"pem\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"private.key\",\"extension\":\"key\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"secrets.json\",\"extension\":\"json\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"credentials.toml\",\"extension\":\"toml\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"app.config\",\"extension\":\"config\",\"indexable\":true},{\"filePath\":\"app.log\",\"extension\":\"log\",\"indexable\":true}]}",
+            "{\"candidateIndices\":[6,7],\"summaryInputs\":[{\"filePath\":\".npmrc\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"id_ed25519\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"cert.pem\",\"extension\":\"pem\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"private.key\",\"extension\":\"key\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"secrets.json\",\"extension\":\"json\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"credentials.toml\",\"extension\":\"toml\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"app.config\",\"extension\":\"config\",\"indexable\":true},{\"filePath\":\"app.log\",\"extension\":\"log\",\"indexable\":true}],\"failures\":[],\"policyExcludedIndices\":[0,1,2,3,4,5],\"unsupportedIndices\":[]}",
         );
     }
 
@@ -17327,7 +18859,23 @@ mod tests {
             plan_rag_status_json(
                 r#"{"includedFiles":[{"path":"healthy.md","mtime":100,"size":10},{"path":"missing.md","mtime":200,"size":20},{"path":"stale.md","mtime":300,"size":30},{"path":"legacy.md","mtime":400,"size":40},{"path":"embedding.md","mtime":500,"size":50}],"records":[{"filePath":"healthy.md","sourceMtime":100,"sourceSize":10,"contentHash":"healthy-hash","indexedAt":900,"embeddingProvider":"openai","embeddingModel":"text-embedding-3-small","hasCompleteMetadata":true,"vectorCount":2},{"filePath":"stale.md","sourceMtime":299,"sourceSize":30,"contentHash":"stale-hash","indexedAt":900,"embeddingProvider":"openai","embeddingModel":"text-embedding-3-small","hasCompleteMetadata":true,"vectorCount":3},{"filePath":"legacy.md","hasCompleteMetadata":false,"vectorCount":4},{"filePath":"embedding.md","sourceMtime":500,"sourceSize":50,"contentHash":"embedding-hash","indexedAt":900,"embeddingProvider":"ollama","embeddingModel":"nomic-embed-text","hasCompleteMetadata":true,"vectorCount":5}],"totalVaultFiles":7,"embeddingProvider":"openai","embeddingModel":"text-embedding-3-small","reasons":{"missing":"missing reason","legacy":"legacy reason","staleFile":"stale file reason","embeddingChanged":"embedding changed reason"}}"#
             ),
-            r#"{"totalDocuments":5,"healthyDocuments":1,"missingDocuments":1,"staleDocuments":2,"unknownDocuments":1,"excludedDocuments":2,"totalVectors":2,"updateRequiredDocuments":[{"path":"missing.md","status":"missing","reason":"missing reason","mtime":200,"size":20},{"path":"embedding.md","status":"stale","reason":"embedding changed reason","mtime":500,"size":50},{"path":"stale.md","status":"stale","reason":"stale file reason","mtime":300,"size":30},{"path":"legacy.md","status":"unknown","reason":"legacy reason","mtime":400,"size":40}]}"#,
+            r#"{"totalDocuments":5,"healthyDocuments":1,"missingDocuments":1,"staleDocuments":2,"unknownDocuments":1,"failedDocuments":0,"excludedDocuments":2,"totalVectors":2,"updateRequiredDocuments":[{"path":"missing.md","status":"missing","reason":"missing reason","mtime":200,"size":20},{"path":"embedding.md","status":"stale","reason":"embedding changed reason","mtime":500,"size":50},{"path":"stale.md","status":"stale","reason":"stale file reason","mtime":300,"size":30},{"path":"legacy.md","status":"unknown","reason":"legacy reason","mtime":400,"size":40}]}"#,
+        );
+    }
+
+    /// 부분 원문은 같은 revision에서도 healthy·실패 원문 수로 승격하지 않습니다.
+    #[test]
+    fn rag_status_preserves_terminal_partial_source() {
+        let output = plan_rag_status_json(
+            r#"{"includedFiles":[{"path":"partial.pdf","mtime":100,"size":1}],"records":[{"filePath":"partial.pdf","sourceMtime":100,"sourceSize":1,"contentHash":"hash","indexedAt":200,"embeddingProvider":"local","embeddingModel":"model","hasCompleteMetadata":true,"vectorCount":1,"sourceIncomplete":true}],"totalVaultFiles":1,"embeddingProvider":"local","embeddingModel":"model","reasons":{"missing":"missing","legacy":"legacy","staleFile":"stale","embeddingChanged":"embedding"}}"#,
+        );
+        let result: JsonValue = serde_json::from_str(&output).unwrap_or(JsonValue::Null);
+        assert_eq!(result.get("healthyDocuments"), Some(&serde_json::json!(0)));
+        assert_eq!(result.get("unknownDocuments"), Some(&serde_json::json!(1)));
+        assert_eq!(result.get("failedDocuments"), Some(&serde_json::json!(0)));
+        assert_eq!(
+            result.pointer("/updateRequiredDocuments/0/reason"),
+            Some(&serde_json::json!("source-partial"))
         );
     }
 
@@ -17338,7 +18886,34 @@ mod tests {
             plan_rag_status_json(
                 r#"{"includedFiles":[{"path":"empty.txt","mtime":100,"size":1}],"records":[{"filePath":"empty.txt","sourceMtime":100,"sourceSize":1,"contentHash":"hash-empty","indexedAt":200,"embeddingProvider":"ternlight","embeddingModel":"ternlight-base","hasCompleteMetadata":true,"vectorCount":0}],"totalVaultFiles":1,"embeddingProvider":"ternlight","embeddingModel":"ternlight-base","reasons":{"missing":"missing","legacy":"legacy","staleFile":"stale","embeddingChanged":"embedding"}}"#,
             ),
-            r#"{"totalDocuments":1,"healthyDocuments":1,"missingDocuments":0,"staleDocuments":0,"unknownDocuments":0,"excludedDocuments":0,"totalVectors":0,"updateRequiredDocuments":[]}"#,
+            r#"{"totalDocuments":1,"healthyDocuments":1,"missingDocuments":0,"staleDocuments":0,"unknownDocuments":0,"failedDocuments":0,"excludedDocuments":0,"totalVectors":0,"updateRequiredDocuments":[]}"#,
+        );
+    }
+
+    #[test]
+    fn rag_status_preserves_read_failure_over_existing_healthy_vectors() {
+        let plan: JsonValue = serde_json::from_str(&plan_rag_status_json(
+            r#"{"includedFiles":[{"path":"damaged.txt","mtime":100,"size":10,"failureReason":"corrupt-encoding"}],"records":[{"filePath":"damaged.txt","sourceMtime":100,"sourceSize":10,"contentHash":"hash","indexedAt":200,"embeddingProvider":"local","embeddingModel":"model","hasCompleteMetadata":true,"vectorCount":3}],"totalVaultFiles":3,"embeddingProvider":"local","embeddingModel":"model","reasons":{"missing":"missing","legacy":"legacy","staleFile":"stale","embeddingChanged":"embedding"}}"#,
+        )).unwrap_or(JsonValue::Null);
+        for (field, expected) in [
+            ("totalDocuments", 1),
+            ("failedDocuments", 1),
+            ("unknownDocuments", 1),
+            ("excludedDocuments", 2),
+            ("healthyDocuments", 0),
+            ("totalVectors", 0),
+        ] {
+            assert_eq!(
+                plan.get(field),
+                Some(&serde_json::json!(expected)),
+                "{field}"
+            );
+        }
+        assert_eq!(
+            plan.get("updateRequiredDocuments"),
+            Some(&serde_json::json!([
+                {"path":"damaged.txt","status":"unknown","reason":"corrupt-encoding","mtime":100,"size":10}
+            ]))
         );
     }
 
@@ -17439,7 +19014,7 @@ mod tests {
         );
 
         let complete = rag_eta_test_plan(&rag_eta_test_input(
-            r#""nowMs":9000,"startedAtMs":0,"totalFiles":0,"completedFiles":0,"currentFileTotalChunks":0,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":0,"completedEstimatedChunks":0,"currentFileEstimatedChunks":0,"totalPlannedChunks":0,"completedPlannedChunks":0,"planningComplete":true,"completedBatchDurationsMs":[],"completedBatchChunkCounts":[],"completedFileDurationsMs":[],"completedFileChunkCounts":[],"completedFileEstimatedChunkCounts":[],"completedFileActualChunkCounts":[]"#,
+            r#""nowMs":9000,"startedAtMs":0,"totalFiles":0,"completedFiles":0,"currentFileTotalChunks":0,"currentFileEmbeddedChunks":0,"totalEstimatedChunks":0,"completedEstimatedChunks":0,"currentFileEstimatedChunks":0,"totalPlannedChunks":0,"completedPlannedChunks":0,"planningComplete":true,"completedBatchDurationsMs":[],"completedBatchChunkCounts":[],"completedFileDurationsMs":[],"completedFileChunkCounts":[],"completedFileEstimatedChunkCounts":[],"completedFileActualChunkCounts":[],"pipeline":{"lifecycle":"complete","totalKnown":true,"processedFiles":0,"failedFiles":0,"partialFiles":0,"processedEstimatedChunks":0,"processedPlannedChunks":0,"observedAtMs":9000,"backend":"unknown","windowSamples":[],"inferenceSamples":[]}"#,
         ));
         assert_eq!(
             rag_eta_test_string(&complete, "confidence"),
@@ -17560,6 +19135,787 @@ mod tests {
         let rate =
             super::average_completed_file_chunk_ms(&[3000.0, 5000.0], &[10, 20], &[1000.0, 1000.0]);
         assert!(rate.is_some_and(|rate| (rate.ms_per_chunk - 200.0).abs() < 0.001));
+    }
+
+    /// 누락된 fixture 경로는 조용히 새 값으로 만들지 않는다.
+    fn rag_eta_set(value: &mut JsonValue, path: &str, replacement: JsonValue) {
+        let target = value.pointer_mut(path);
+        assert!(target.is_some(), "fixture path missing: {path}");
+        if let Some(target) = target {
+            *target = replacement;
+        }
+    }
+
+    /// 볼트와 무관한 내구 window와 실제 추론 관측 입력이다.
+    fn rag_eta_pipeline_input() -> JsonValue {
+        serde_json::json!({
+            "nowMs": 1000, "startedAtMs": 0, "totalFiles": 3, "completedFiles": 1,
+            "currentFileTotalChunks": 100, "currentFileEmbeddedChunks": 50,
+            "totalEstimatedChunks": 300, "completedEstimatedChunks": 100,
+            "currentFileEstimatedChunks": 100, "totalPlannedChunks": 300,
+            "completedPlannedChunks": 100, "planningComplete": true,
+            "completedBatchDurationsMs": [1], "completedBatchChunkCounts": [100],
+            "completedFileDurationsMs": [], "completedFileChunkCounts": [],
+            "completedFileEstimatedChunkCounts": [], "completedFileActualChunkCounts": [],
+            "completedFileOverheadDurationsMs": [], "historicalMsPerChunk": 1,
+            "historicalChunkEstimateRatio": null, "historicalVariance": null,
+            "pipeline": {"lifecycle": "running", "totalKnown": true,
+                "processedFiles": 1, "failedFiles": 0, "partialFiles": 0,
+                "processedEstimatedChunks": 100, "processedPlannedChunks": 100,
+                "observedAtMs": 1000, "backend": "cpu",
+                "windowSamples": [{"startedAtMs": 0, "endedAtMs": 1000,
+                    "logicalChunks": 100, "physicalWorkUnits": 20}],
+                "inferenceSamples": [{"backend": "cpu", "workUnits": 20,
+                    "durationMs": 600, "endedAtMs": 900}]}
+        })
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_accepts_fractional_monotonic_clock() {
+        let mut input = rag_eta_pipeline_input();
+        for (path, value) in [
+            ("/nowMs", 1000.25),
+            ("/startedAtMs", 0.125),
+            ("/pipeline/observedAtMs", 1000.25),
+            ("/pipeline/windowSamples/0/startedAtMs", 0.125),
+            ("/pipeline/windowSamples/0/endedAtMs", 1000.125),
+            ("/pipeline/inferenceSamples/0/endedAtMs", 1000.125),
+            ("/pipeline/inferenceSamples/0/durationMs", 600.25),
+        ] {
+            rag_eta_set(&mut input, path, serde_json::json!(value));
+        }
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            2000.0
+        ));
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "inferenceRemainingMs",
+            1201.0
+        ));
+        rag_eta_set(
+            &mut input,
+            "/pipeline/processedFiles",
+            serde_json::json!(1.5),
+        );
+        assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_separates_wall_inference_and_tail() {
+        let plan = rag_eta_test_plan(&rag_eta_pipeline_input().to_string());
+        assert_eq!(rag_eta_test_string(&plan, "lifecycle"), Some("running"));
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            2000.0
+        ));
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "inferenceRemainingMs",
+            1200.0
+        ));
+        for key in [
+            "remainingMs",
+            "estimatedCompletionMs",
+            "lowerRemainingMs",
+            "upperRemainingMs",
+        ] {
+            assert_eq!(plan.get(key), Some(&JsonValue::Null));
+        }
+        assert_eq!(
+            rag_eta_test_string(&plan, "confidence"),
+            Some("calculating")
+        );
+        assert_eq!(
+            rag_eta_test_string(&plan, "pipelineConfidence"),
+            Some("low")
+        );
+        assert_eq!(
+            rag_eta_test_string(&plan, "confidenceReason"),
+            Some("finalization-unobserved")
+        );
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_heartbeat_stalls_without_observation() {
+        let mut input = rag_eta_pipeline_input();
+        rag_eta_set(&mut input, "/nowMs", serde_json::json!(1500));
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            1500.0
+        ));
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "inferenceRemainingMs",
+            1200.0
+        ));
+        rag_eta_set(&mut input, "/nowMs", serde_json::json!(3001));
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(plan.get("pipelineRemainingMs"), Some(&JsonValue::Null));
+        assert_eq!(
+            rag_eta_test_string(&plan, "confidenceReason"),
+            Some("stalled-observation")
+        );
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "inferenceRemainingMs",
+            1200.0
+        ));
+        assert_eq!(
+            rag_eta_test_string(&plan, "pipelineConfidence"),
+            Some("low")
+        );
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_uses_processed_not_success_or_current_chunks() {
+        let mut input = rag_eta_pipeline_input();
+        rag_eta_set(&mut input, "/pipeline/processedFiles", serde_json::json!(2));
+        rag_eta_set(&mut input, "/pipeline/failedFiles", serde_json::json!(1));
+        rag_eta_set(
+            &mut input,
+            "/pipeline/processedPlannedChunks",
+            serde_json::json!(200),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            1000.0
+        ));
+        rag_eta_set(&mut input, "/planningComplete", serde_json::json!(false));
+        rag_eta_set(
+            &mut input,
+            "/pipeline/processedEstimatedChunks",
+            serde_json::json!(200),
+        );
+        rag_eta_set(
+            &mut input,
+            "/historicalChunkEstimateRatio",
+            serde_json::json!(0.5),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            500.0
+        ));
+        rag_eta_set(&mut input, "/historicalChunkEstimateRatio", JsonValue::Null);
+        rag_eta_set(
+            &mut input,
+            "/completedFileEstimatedChunkCounts",
+            serde_json::json!([200]),
+        );
+        rag_eta_set(
+            &mut input,
+            "/completedFileActualChunkCounts",
+            serde_json::json!([100]),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            900.0
+        ));
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_no_legacy_or_stale_inference() {
+        let mut input = rag_eta_pipeline_input();
+        for backend in ["remote", "unknown"] {
+            rag_eta_set(&mut input, "/pipeline/backend", serde_json::json!(backend));
+            rag_eta_set(
+                &mut input,
+                "/pipeline/inferenceSamples",
+                serde_json::json!([]),
+            );
+            let plan = rag_eta_test_plan(&input.to_string());
+            assert_eq!(plan.get("inferenceRemainingMs"), Some(&JsonValue::Null));
+            assert!(rag_eta_test_number_matches(
+                &plan,
+                "pipelineRemainingMs",
+                2000.0
+            ));
+        }
+        rag_eta_set(&mut input, "/pipeline/windowSamples", serde_json::json!([]));
+        assert_eq!(
+            rag_eta_test_plan(&input.to_string()).get("pipelineRemainingMs"),
+            Some(&JsonValue::Null)
+        );
+        let mut stale = rag_eta_pipeline_input();
+        rag_eta_set(&mut stale, "/totalPlannedChunks", serde_json::json!(1300));
+        rag_eta_set(&mut stale, "/nowMs", serde_json::json!(5900));
+        let plan = rag_eta_test_plan(&stale.to_string());
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "inferenceRemainingMs",
+            7200.0
+        ));
+        rag_eta_set(&mut stale, "/nowMs", serde_json::json!(5901));
+        let plan = rag_eta_test_plan(&stale.to_string());
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            7099.0
+        ));
+        assert_eq!(
+            rag_eta_test_plan(&stale.to_string()).get("inferenceRemainingMs"),
+            Some(&JsonValue::Null)
+        );
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_distinguishes_null_and_cache_only() {
+        let mut input = rag_eta_pipeline_input();
+        rag_eta_set(
+            &mut input,
+            "/pipeline/windowSamples/0/physicalWorkUnits",
+            JsonValue::Null,
+        );
+        assert_eq!(
+            rag_eta_test_plan(&input.to_string()).get("inferenceRemainingMs"),
+            Some(&JsonValue::Null)
+        );
+        rag_eta_set(
+            &mut input,
+            "/pipeline/windowSamples/0/physicalWorkUnits",
+            serde_json::json!(0),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "inferenceRemainingMs",
+            0.0
+        ));
+        rag_eta_set(
+            &mut input,
+            "/pipeline/inferenceSamples",
+            serde_json::json!([]),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(plan.get("inferenceRemainingMs"), Some(&JsonValue::Null));
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            2000.0
+        ));
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_requires_final_proof() {
+        let mut input = rag_eta_pipeline_input();
+        for key in [
+            "totalFiles",
+            "completedFiles",
+            "totalEstimatedChunks",
+            "completedEstimatedChunks",
+            "totalPlannedChunks",
+            "completedPlannedChunks",
+            "currentFileTotalChunks",
+            "currentFileEmbeddedChunks",
+            "currentFileEstimatedChunks",
+        ] {
+            rag_eta_set(&mut input, &format!("/{key}"), serde_json::json!(0));
+        }
+        for key in [
+            "processedFiles",
+            "processedEstimatedChunks",
+            "processedPlannedChunks",
+        ] {
+            rag_eta_set(
+                &mut input,
+                &format!("/pipeline/{key}"),
+                serde_json::json!(0),
+            );
+        }
+        for lifecycle in [
+            "unknown",
+            "running",
+            "finalizing",
+            "paused",
+            "cancelled",
+            "failed",
+            "partial",
+        ] {
+            rag_eta_set(
+                &mut input,
+                "/pipeline/lifecycle",
+                serde_json::json!(lifecycle),
+            );
+            let plan = rag_eta_test_plan(&input.to_string());
+            assert_eq!(rag_eta_test_string(&plan, "lifecycle"), Some(lifecycle));
+            assert_eq!(plan.get("remainingMs"), Some(&JsonValue::Null));
+            assert_eq!(
+                rag_eta_test_string(&plan, "confidence"),
+                Some("calculating")
+            );
+        }
+        rag_eta_set(
+            &mut input,
+            "/pipeline/lifecycle",
+            serde_json::json!("complete"),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(rag_eta_test_string(&plan, "confidence"), Some("complete"));
+        assert!(rag_eta_test_number_matches(&plan, "remainingMs", 0.0));
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            0.0
+        ));
+        rag_eta_set(&mut input, "/pipeline/totalKnown", serde_json::json!(false));
+        assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+        if let Some(object) = input.as_object_mut() {
+            object.remove("pipeline");
+        }
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(rag_eta_test_string(&plan, "lifecycle"), Some("unknown"));
+        assert_eq!(plan.get("remainingMs"), Some(&JsonValue::Null));
+        rag_eta_set(&mut input, "/totalFiles", serde_json::json!(3));
+        rag_eta_set(&mut input, "/completedFiles", serde_json::json!(3));
+        assert_eq!(
+            rag_eta_test_plan(&input.to_string()).get("remainingMs"),
+            Some(&JsonValue::Null)
+        );
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_complete_requires_matching_success_ledgers() {
+        let mut input = rag_eta_pipeline_input();
+        for (path, value) in [
+            ("/completedFiles", 3),
+            ("/completedEstimatedChunks", 300),
+            ("/completedPlannedChunks", 300),
+            ("/currentFileTotalChunks", 0),
+            ("/currentFileEmbeddedChunks", 0),
+            ("/pipeline/processedFiles", 3),
+            ("/pipeline/processedEstimatedChunks", 300),
+            ("/pipeline/processedPlannedChunks", 300),
+        ] {
+            rag_eta_set(&mut input, path, serde_json::json!(value));
+        }
+        rag_eta_set(
+            &mut input,
+            "/pipeline/lifecycle",
+            serde_json::json!("complete"),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(rag_eta_test_string(&plan, "confidence"), Some("complete"));
+        for path in ["/completedEstimatedChunks", "/completedPlannedChunks"] {
+            let mut mismatched = input.clone();
+            rag_eta_set(&mut mismatched, path, serde_json::json!(0));
+            assert!(
+                super::plan_rag_indexing_eta_json(&mismatched.to_string()).is_empty(),
+                "{path}"
+            );
+        }
+        rag_eta_set(&mut input, "/planningComplete", serde_json::json!(false));
+        rag_eta_set(&mut input, "/completedPlannedChunks", serde_json::json!(0));
+        rag_eta_set(
+            &mut input,
+            "/pipeline/processedPlannedChunks",
+            serde_json::json!(0),
+        );
+        assert_eq!(
+            rag_eta_test_string(&rag_eta_test_plan(&input.to_string()), "confidence"),
+            Some("complete")
+        );
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_rejects_invalid_wire() {
+        let original = rag_eta_pipeline_input();
+        for (key, value) in [
+            ("lifecycle", serde_json::json!("settled")),
+            ("backend", serde_json::json!("gpu")),
+            ("totalKnown", JsonValue::Null),
+            ("processedFiles", serde_json::json!(-1)),
+            ("processedFiles", serde_json::json!(4)),
+            ("processedFiles", serde_json::json!(0.5)),
+            (
+                "processedFiles",
+                serde_json::json!(9_007_199_254_740_992_u64),
+            ),
+            ("failedFiles", serde_json::json!(2)),
+            ("partialFiles", serde_json::json!(2)),
+            ("processedEstimatedChunks", serde_json::json!(301)),
+            ("processedPlannedChunks", serde_json::json!(301)),
+            ("observedAtMs", serde_json::json!(1001)),
+            ("observedAtMs", serde_json::json!(-1)),
+            ("observedAtMs", serde_json::json!(0.5)),
+            ("windowSamples", JsonValue::Null),
+            ("inferenceSamples", serde_json::json!({})),
+        ] {
+            let mut input = original.clone();
+            rag_eta_set(&mut input, &format!("/pipeline/{key}"), value);
+            assert!(
+                super::plan_rag_indexing_eta_json(&input.to_string()).is_empty(),
+                "{key}: {input}"
+            );
+        }
+        for key in [
+            "lifecycle",
+            "totalKnown",
+            "processedFiles",
+            "failedFiles",
+            "partialFiles",
+            "processedEstimatedChunks",
+            "processedPlannedChunks",
+            "observedAtMs",
+            "backend",
+            "windowSamples",
+            "inferenceSamples",
+        ] {
+            let mut input = original.clone();
+            if let Some(object) = input
+                .pointer_mut("/pipeline")
+                .and_then(JsonValue::as_object_mut)
+            {
+                object.remove(key);
+            }
+            assert!(
+                super::plan_rag_indexing_eta_json(&input.to_string()).is_empty(),
+                "missing {key}"
+            );
+        }
+        for invalid in [
+            JsonValue::Null,
+            serde_json::json!([]),
+            serde_json::json!(false),
+        ] {
+            let mut input = original.clone();
+            rag_eta_set(&mut input, "/pipeline", invalid);
+            assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+        }
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_rejects_invalid_samples_and_overlap() {
+        let original = rag_eta_pipeline_input();
+        for (collection, key, value) in [
+            ("windowSamples", "startedAtMs", serde_json::json!(1000)),
+            ("windowSamples", "endedAtMs", serde_json::json!(1001)),
+            ("windowSamples", "logicalChunks", serde_json::json!(0)),
+            ("windowSamples", "physicalWorkUnits", serde_json::json!(-1)),
+            ("inferenceSamples", "backend", serde_json::json!("webgpu")),
+            ("inferenceSamples", "durationMs", serde_json::json!(0)),
+            ("inferenceSamples", "durationMs", serde_json::json!(901)),
+            ("inferenceSamples", "endedAtMs", serde_json::json!(1001)),
+            ("inferenceSamples", "workUnits", serde_json::json!(0)),
+        ] {
+            let mut input = original.clone();
+            rag_eta_set(
+                &mut input,
+                &format!("/pipeline/{collection}/0/{key}"),
+                value,
+            );
+            assert!(
+                super::plan_rag_indexing_eta_json(&input.to_string()).is_empty(),
+                "{collection}/{key}"
+            );
+        }
+        let mut input = original.clone();
+        rag_eta_set(
+            &mut input,
+            "/pipeline/windowSamples",
+            serde_json::json!([
+                original
+                    .pointer("/pipeline/windowSamples/0")
+                    .cloned()
+                    .unwrap_or(JsonValue::Null),
+                original
+                    .pointer("/pipeline/windowSamples/0")
+                    .cloned()
+                    .unwrap_or(JsonValue::Null)
+            ]),
+        );
+        assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+        input = original;
+        rag_eta_set(
+            &mut input,
+            "/pipeline/lifecycle",
+            serde_json::json!("complete"),
+        );
+        assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_bounds_samples_and_keeps_confidence() {
+        let mut input = rag_eta_pipeline_input();
+        rag_eta_set(&mut input, "/nowMs", serde_json::json!(6400));
+        rag_eta_set(
+            &mut input,
+            "/pipeline/observedAtMs",
+            serde_json::json!(6400),
+        );
+        let windows: Vec<_> = (0..64)
+            .map(|index| {
+                serde_json::json!({
+                    "startedAtMs": index * 100, "endedAtMs": (index + 1) * 100,
+                    "logicalChunks": 10, "physicalWorkUnits": 2
+                })
+            })
+            .collect();
+        rag_eta_set(
+            &mut input,
+            "/pipeline/windowSamples",
+            serde_json::json!(windows),
+        );
+        rag_eta_set(
+            &mut input,
+            "/pipeline/inferenceSamples",
+            serde_json::json!(vec![
+                serde_json::json!({
+                    "backend": "cpu", "workUnits": 2, "durationMs": 60, "endedAtMs": 6400
+                });
+                64
+            ]),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(
+            rag_eta_test_string(&plan, "pipelineConfidence"),
+            Some("high")
+        );
+        assert_eq!(
+            rag_eta_test_string(&plan, "confidence"),
+            Some("calculating")
+        );
+        let mut medium = input.clone();
+        if let Some(samples) = medium
+            .pointer_mut("/pipeline/windowSamples")
+            .and_then(JsonValue::as_array_mut)
+        {
+            samples.truncate(3);
+        }
+        let plan = rag_eta_test_plan(&medium.to_string());
+        assert_eq!(
+            rag_eta_test_string(&plan, "pipelineConfidence"),
+            Some("medium")
+        );
+        for collection in ["windowSamples", "inferenceSamples"] {
+            let mut invalid = input.clone();
+            let sample = invalid
+                .pointer(&format!("/pipeline/{collection}/0"))
+                .cloned()
+                .unwrap_or(JsonValue::Null);
+            if let Some(samples) = invalid
+                .pointer_mut(&format!("/pipeline/{collection}"))
+                .and_then(JsonValue::as_array_mut)
+            {
+                samples.push(sample);
+            }
+            assert!(super::plan_rag_indexing_eta_json(&invalid.to_string()).is_empty());
+        }
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_streaming_counts_and_nonempty_proof() {
+        let mut input = rag_eta_pipeline_input();
+        rag_eta_set(&mut input, "/planningComplete", serde_json::json!(false));
+        rag_eta_set(&mut input, "/totalPlannedChunks", serde_json::json!(0));
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert!(rag_eta_test_number_matches(
+            &plan,
+            "pipelineRemainingMs",
+            2000.0
+        ));
+        rag_eta_set(&mut input, "/pipeline/totalKnown", serde_json::json!(false));
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(plan.get("pipelineRemainingMs"), Some(&JsonValue::Null));
+        assert_eq!(plan.get("remainingMs"), Some(&JsonValue::Null));
+        input = rag_eta_pipeline_input();
+        rag_eta_set(&mut input, "/completedFiles", serde_json::json!(3));
+        rag_eta_set(&mut input, "/pipeline/processedFiles", serde_json::json!(3));
+        rag_eta_set(
+            &mut input,
+            "/completedEstimatedChunks",
+            serde_json::json!(300),
+        );
+        rag_eta_set(
+            &mut input,
+            "/completedPlannedChunks",
+            serde_json::json!(300),
+        );
+        rag_eta_set(
+            &mut input,
+            "/pipeline/processedEstimatedChunks",
+            serde_json::json!(300),
+        );
+        rag_eta_set(
+            &mut input,
+            "/pipeline/processedPlannedChunks",
+            serde_json::json!(300),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(plan.get("remainingMs"), Some(&JsonValue::Null));
+        assert_eq!(plan.get("pipelineRemainingMs"), Some(&JsonValue::Null));
+        rag_eta_set(
+            &mut input,
+            "/pipeline/lifecycle",
+            serde_json::json!("complete"),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(rag_eta_test_string(&plan, "confidence"), Some("complete"));
+        assert!(rag_eta_test_number_matches(&plan, "remainingMs", 0.0));
+        for counter in ["failedFiles", "partialFiles"] {
+            let mut invalid = input.clone();
+            rag_eta_set(
+                &mut invalid,
+                &format!("/pipeline/{counter}"),
+                serde_json::json!(1),
+            );
+            assert!(super::plan_rag_indexing_eta_json(&invalid.to_string()).is_empty());
+        }
+        input = rag_eta_pipeline_input();
+        rag_eta_set(
+            &mut input,
+            "/pipeline/lifecycle",
+            serde_json::json!("finalizing"),
+        );
+        let plan = rag_eta_test_plan(&input.to_string());
+        assert_eq!(plan.get("pipelineRemainingMs"), Some(&JsonValue::Null));
+        assert_eq!(plan.get("remainingMs"), Some(&JsonValue::Null));
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_rejects_malformed_shapes_and_clocks() {
+        let original = rag_eta_pipeline_input();
+        for collection in ["windowSamples", "inferenceSamples"] {
+            for invalid in [
+                JsonValue::Null,
+                serde_json::json!(false),
+                serde_json::json!({}),
+            ] {
+                let mut input = original.clone();
+                rag_eta_set(
+                    &mut input,
+                    &format!("/pipeline/{collection}"),
+                    serde_json::json!([invalid]),
+                );
+                assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+            }
+            let keys = if collection == "windowSamples" {
+                vec![
+                    "startedAtMs",
+                    "endedAtMs",
+                    "logicalChunks",
+                    "physicalWorkUnits",
+                ]
+            } else {
+                vec!["backend", "workUnits", "durationMs", "endedAtMs"]
+            };
+            for key in keys {
+                let mut input = original.clone();
+                if let Some(sample) = input
+                    .pointer_mut(&format!("/pipeline/{collection}/0"))
+                    .and_then(JsonValue::as_object_mut)
+                {
+                    sample.remove(key);
+                }
+                assert!(
+                    super::plan_rag_indexing_eta_json(&input.to_string()).is_empty(),
+                    "missing {key}"
+                );
+            }
+        }
+        for (path, value) in [
+            ("/nowMs", serde_json::json!(-1)),
+            ("/startedAtMs", serde_json::json!(1001)),
+            ("/totalFiles", serde_json::json!(9_007_199_254_740_992_u64)),
+            ("/pipeline/processedFiles", serde_json::json!("1")),
+            (
+                "/pipeline/windowSamples/0/logicalChunks",
+                serde_json::json!(0.5),
+            ),
+            (
+                "/pipeline/windowSamples/0/physicalWorkUnits",
+                serde_json::json!(0.5),
+            ),
+            (
+                "/pipeline/windowSamples/0/physicalWorkUnits",
+                serde_json::json!(9_007_199_254_740_992_u64),
+            ),
+            (
+                "/pipeline/windowSamples/0/startedAtMs",
+                serde_json::json!(-1),
+            ),
+            (
+                "/pipeline/inferenceSamples/0/workUnits",
+                serde_json::json!(0.5),
+            ),
+            (
+                "/pipeline/inferenceSamples/0/workUnits",
+                serde_json::json!(9_007_199_254_740_992_u64),
+            ),
+            (
+                "/pipeline/inferenceSamples/0/endedAtMs",
+                serde_json::json!(-1),
+            ),
+            (
+                "/pipeline/inferenceSamples/0/durationMs",
+                serde_json::json!(-1),
+            ),
+        ] {
+            let mut input = original.clone();
+            rag_eta_set(&mut input, path, value);
+            assert!(
+                super::plan_rag_indexing_eta_json(&input.to_string()).is_empty(),
+                "{path}"
+            );
+        }
+        let raw = original
+            .to_string()
+            .replace("\"durationMs\":600", "\"durationMs\":1e999");
+        assert!(super::plan_rag_indexing_eta_json(&raw).is_empty());
+    }
+
+    #[test]
+    fn rag_indexing_eta_pipeline_bounds_legacy_host_arrays_too() {
+        for (key, count_array) in [
+            ("completedBatchDurationsMs", false),
+            ("completedBatchChunkCounts", true),
+            ("completedFileDurationsMs", false),
+            ("completedFileChunkCounts", true),
+            ("completedFileEstimatedChunkCounts", true),
+            ("completedFileActualChunkCounts", true),
+            ("completedFileOverheadDurationsMs", false),
+        ] {
+            let mut input = rag_eta_pipeline_input();
+            rag_eta_set(
+                &mut input,
+                &format!("/{key}"),
+                serde_json::json!(vec![1; 64]),
+            );
+            assert!(
+                !super::plan_rag_indexing_eta_json(&input.to_string()).is_empty(),
+                "64 {key}"
+            );
+            rag_eta_set(
+                &mut input,
+                &format!("/{key}"),
+                serde_json::json!(vec![1; 65]),
+            );
+            assert!(
+                super::plan_rag_indexing_eta_json(&input.to_string()).is_empty(),
+                "65 {key}"
+            );
+            if count_array {
+                rag_eta_set(
+                    &mut input,
+                    &format!("/{key}"),
+                    serde_json::json!([9_007_199_254_740_992_u64]),
+                );
+                assert!(
+                    super::plan_rag_indexing_eta_json(&input.to_string()).is_empty(),
+                    "unsafe {key}"
+                );
+            }
+        }
     }
 
     /// MCP 연결 상태 계산은 `Rust`가 담당한다.
@@ -17750,5 +20106,147 @@ mod tests {
                 BM25_B.mul_add(doc_length / avg_doc_length, 1.0 - BM25_B),
                 tf,
             ))
+    }
+}
+
+#[cfg(test)]
+mod runtime_work_eta_tests {
+    use super::plan_rag_runtime_work_eta_json;
+    use serde_json::{Value, json};
+    /// 실제 legacy hydration의 합성 단위·clock입니다.
+    fn input() -> Value {
+        json!({"startedAtMs": 0.25, "nowMs": 1000.75, "processedUnits": 128, "totalUnits": 135_835,
+        "samples": [{"atMs":0.25,"units":0},{"atMs":1000.75,"units":128}]})
+    }
+    /// 잘못된 wire는 null로 보존하여 assertion이 실패하게 합니다.
+    fn plan(value: &Value) -> Value {
+        serde_json::from_str(&plan_rag_runtime_work_eta_json(&value.to_string()))
+            .unwrap_or(Value::Null)
+    }
+    /// fixture의 기존 필드만 바꿉니다.
+    fn set(value: &mut Value, path: &str, replacement: Value) {
+        let target = value.pointer_mut(path);
+        assert!(target.is_some(), "fixture path: {path}");
+        if let Some(target) = target {
+            *target = replacement;
+        }
+    }
+    /// null과 수치를 구별합니다.
+    fn number(value: &Value, key: &str) -> Option<f64> {
+        value.get(key).and_then(Value::as_f64)
+    }
+    /// null 출력도 누락과 구별합니다.
+    fn is_null(value: &Value, key: &str) -> bool {
+        value.get(key).is_some_and(Value::is_null)
+    }
+    #[test]
+    fn runtime_work_eta_fractional_clock_and_early_low_rate() {
+        let p = plan(&input());
+        assert_eq!(number(&p, "elapsedMs"), Some(1000.5));
+        assert_eq!(p.get("confidence"), Some(&json!("low")));
+        assert!(
+            number(&p, "ratePerSecond").is_some_and(|r| (r - 128_000.0 / 1000.5).abs() < 0.00001)
+        );
+        assert!(number(&p, "remainingMs").is_some_and(|r| r > 1_000_000.0));
+    }
+    #[test]
+    fn runtime_work_eta_heartbeat_preserves_observation_and_stalls() {
+        let mut v = input();
+        set(&mut v, "/nowMs", json!(2000.75));
+        let p = plan(&v);
+        assert_eq!(number(&p, "lastProgressAgeMs"), Some(1000.0));
+        assert_eq!(p.get("remainingMs"), plan(&input()).get("remainingMs"));
+        set(&mut v, "/nowMs", json!(31_001));
+        let p = plan(&v);
+        assert_eq!(p.get("etaReason"), Some(&json!("stalled")));
+        assert!(is_null(&p, "remainingMs") && is_null(&p, "ratePerSecond"));
+    }
+    #[test]
+    fn runtime_work_eta_unknown_total_keeps_rate_without_future_eta() {
+        let mut v = input();
+        set(&mut v, "/totalUnits", Value::Null);
+        let p = plan(&v);
+        assert_eq!(p.get("etaReason"), Some(&json!("unknown-total")));
+        assert!(is_null(&p, "remainingMs") && number(&p, "ratePerSecond").is_some());
+    }
+    #[test]
+    fn runtime_work_eta_atomic_zero_and_total_are_not_completion() {
+        let mut v = input();
+        set(&mut v, "/samples", json!([]));
+        set(&mut v, "/processedUnits", Value::Null);
+        assert!(is_null(&plan(&v), "remainingMs"));
+        set(&mut v, "/processedUnits", json!(0));
+        set(&mut v, "/totalUnits", json!(0));
+        assert!(is_null(&plan(&v), "remainingMs"));
+        v = input();
+        set(&mut v, "/totalUnits", json!(128));
+        let p = plan(&v);
+        assert!(is_null(&p, "remainingMs"));
+        assert_eq!(p.get("etaReason"), Some(&json!("awaiting-settlement")));
+    }
+    #[test]
+    fn runtime_work_eta_rejects_unsafe_overcount_and_bad_clocks() {
+        for (key, value) in [
+            ("/processedUnits", json!(135_836)),
+            ("/totalUnits", json!(9_007_199_254_740_992.0)),
+            ("/processedUnits", json!(1.5)),
+            ("/nowMs", json!(0)),
+            ("/startedAtMs", json!(-1)),
+        ] {
+            let mut v = input();
+            set(&mut v, key, value);
+            assert!(
+                plan_rag_runtime_work_eta_json(&v.to_string()).is_empty(),
+                "{key}"
+            );
+        }
+        let mut v = input();
+        set(&mut v, "/samples/1/atMs", json!(1001));
+        assert!(plan_rag_runtime_work_eta_json(&v.to_string()).is_empty());
+        set(
+            &mut v,
+            "/samples",
+            json!([{"atMs":0.25,"units":0},{"atMs":0.25,"units":128}]),
+        );
+        assert!(plan_rag_runtime_work_eta_json(&v.to_string()).is_empty());
+    }
+    #[test]
+    fn runtime_work_eta_terminal_and_confidence_follow_actual_samples() {
+        let mut v = input();
+        if let Some(object) = v.as_object_mut() {
+            object.insert("terminal".into(), json!(true));
+        }
+        let p = plan(&v);
+        assert!(is_null(&p, "remainingMs") && is_null(&p, "ratePerSecond"));
+        assert_eq!(p.get("etaReason"), Some(&json!("interrupted")));
+        for (count, confidence) in [(4, "medium"), (8, "high")] {
+            v = input();
+            set(&mut v, "/nowMs", json!(count * 1000));
+            set(&mut v, "/processedUnits", json!(count * 128));
+            set(
+                &mut v,
+                "/samples",
+                json!(
+                    (1..=count)
+                        .map(|index| json!({"atMs":index*1000,"units":index*128}))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            assert_eq!(plan(&v).get("confidence"), Some(&json!(confidence)));
+        }
+    }
+
+    #[test]
+    fn runtime_work_eta_requires_actual_increasing_bounded_samples() {
+        let mut v = input();
+        set(&mut v, "/processedUnits", json!(0));
+        set(&mut v, "/samples", json!([{"atMs":0.25,"units":0}]));
+        assert!(is_null(&plan(&v), "ratePerSecond"));
+        set(
+            &mut v,
+            "/samples",
+            json!(vec![json!({"atMs":0.25,"units":0}); 65]),
+        );
+        assert!(plan_rag_runtime_work_eta_json(&v.to_string()).is_empty());
     }
 }

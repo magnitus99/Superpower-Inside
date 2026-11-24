@@ -1,4 +1,6 @@
+import { handleSourceWorkerRequest, type SourceWorkerRequest } from './source-worker-entry';
 import { initSync, XlsxSourceText } from '../../.local/generated/rag-wasm/rag_wasm';
+import { handleLiteralWorkerRequest, type LiteralWorkerRequest } from './literal-worker-entry';
 
 interface XlsxWorkerRequest {
   bytes: Uint8Array;
@@ -6,7 +8,15 @@ interface XlsxWorkerRequest {
 }
 
 /** 파일 하나의 처리만 소유하며 종료하면 WASM의 최대 메모리도 해제됩니다. */
-self.onmessage = (event: MessageEvent<XlsxWorkerRequest>): void => {
+self.onmessage = (event: MessageEvent<XlsxWorkerRequest | SourceWorkerRequest | LiteralWorkerRequest>): void => {
+  if (event.data && typeof event.data === 'object' && (('protocol' in event.data && event.data.protocol === 'literal-source-v1') || ('operation' in event.data && ['init', 'append', 'seal', 'page', 'summary'].includes(event.data.operation)))) {
+    handleLiteralWorkerRequest(event.data);
+    return;
+  }
+  if ('operation' in event.data) {
+    handleSourceWorkerRequest(event.data);
+    return;
+  }
   try {
     const binary = atob(event.data.wasmBase64);
     const wasmBytes = new Uint8Array(binary.length);
@@ -20,9 +30,10 @@ self.onmessage = (event: MessageEvent<XlsxWorkerRequest>): void => {
         return;
       }
       const segmentsJson = document.segments_json();
+      const metadataPartsJson = document.metadata_parts_json();
       const bytes = document.take_text_bytes();
       if (!(bytes.buffer instanceof ArrayBuffer)) throw new Error('XLSX buffer is unavailable.');
-      self.postMessage({ ok: true, bytes, segmentsJson }, { transfer: [bytes.buffer] });
+      self.postMessage({ ok: true, bytes, segmentsJson, metadataPartsJson }, { transfer: [bytes.buffer] });
     } finally {
       document.free();
     }

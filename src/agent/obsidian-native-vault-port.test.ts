@@ -51,10 +51,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       createFile('Synthetic/First.txt', 'Quartz cooling requires two cycles.'),
       createFile('Synthetic/Second.txt', 'Quartz cooling requires a closed valve.'),
     ];
-    const cachedRead = vi.fn((source: TFile & { content: string }) =>
-      Promise.resolve(source.content),
+    const readBinary = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(source.content)),
     );
-    const port = createNativeVaultPort(createApp(files, {}, cachedRead));
+    const port = createNativeVaultPort(createApp(files, {}, readBinary));
     const search = {
       action: 'search' as const,
       query: 'quartz',
@@ -69,16 +69,16 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       expect(result.content).toBe(file.content);
     }
     await port.search({ ...search, query: 'valve' });
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(readBinary).toHaveBeenCalledTimes(2);
   });
 
   it('원문 캐시가 있어도 변경된 revision과 현재 읽기 제외 정책을 적용한다', async () => {
     const file = createFile('Synthetic/Changing.txt', 'Quartz cooling requires two cycles.');
-    const cachedRead = vi.fn((source: TFile & { content: string }) =>
-      Promise.resolve(source.content),
+    const readBinary = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(source.content)),
     );
     let allowed = true;
-    const port = createNativeVaultPort(createApp([file], {}, cachedRead), () =>
+    const port = createNativeVaultPort(createApp([file], {}, readBinary), () =>
       Promise.resolve(allowed ? [file] : []),
     );
     const read = { action: 'read' as const, path: file.path, startLine: 1, endLine: null };
@@ -88,43 +88,43 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect((await port.read(read)).content).toBe(file.content);
     allowed = false;
     await expect(port.read(read)).rejects.toThrow();
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(readBinary).toHaveBeenCalledTimes(2);
   });
 
   it('원문 캐시의 문서 수 상한을 넘으면 가장 오래 사용하지 않은 문서를 다시 읽는다', async () => {
     const files = Array.from({ length: 129 }, (_, index) =>
       createFile(`Synthetic/Cache-${index}.txt`, 'Quartz cooling requires two cycles.'),
     );
-    const cachedRead = vi.fn((source: TFile & { content: string }) =>
-      Promise.resolve(source.content),
+    const readBinary = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(source.content)),
     );
-    const port = createNativeVaultPort(createApp(files, {}, cachedRead));
+    const port = createNativeVaultPort(createApp(files, {}, readBinary));
     for (const file of files) {
       await port.read({ action: 'read', path: file.path, startLine: 1, endLine: null });
     }
     await port.read({ action: 'read', path: files[128].path, startLine: 1, endLine: null });
-    expect(cachedRead).toHaveBeenCalledTimes(129);
+    expect(readBinary).toHaveBeenCalledTimes(129);
     await port.read({ action: 'read', path: files[0].path, startLine: 1, endLine: null });
-    expect(cachedRead).toHaveBeenCalledTimes(130);
+    expect(readBinary).toHaveBeenCalledTimes(130);
   });
 
   it('취소된 읽기가 늦게 완료되어도 다음 질문의 원문 캐시로 사용하지 않는다', async () => {
     const file = createFile('Synthetic/Delayed.txt', 'A documented cooling condition.');
-    const pending = createDeferred<string>();
-    const cachedRead = vi.fn((source: TFile & { content: string }) =>
-      Promise.resolve(source.content),
+    const pending = createDeferred<ArrayBuffer>();
+    const readBinary = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(source.content)),
     );
-    cachedRead.mockImplementationOnce(() => pending.promise);
-    const port = createNativeVaultPort(createApp([file], {}, cachedRead));
+    readBinary.mockImplementationOnce(() => pending.promise);
+    const port = createNativeVaultPort(createApp([file], {}, readBinary));
     const request = { action: 'read' as const, path: file.path, startLine: 1, endLine: null };
     const controller = new AbortController();
     const reading = port.read(request, controller.signal);
-    await vi.waitFor(() => expect(cachedRead).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(readBinary).toHaveBeenCalledOnce());
     controller.abort();
     await expect(reading).rejects.toMatchObject({ name: 'AbortError' });
-    pending.resolve(file.content);
+    pending.resolve(sourceBytes(file.content));
     expect((await port.read(request)).content).toBe(file.content);
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(readBinary).toHaveBeenCalledTimes(2);
   });
 
   it.each(['deleted', 'replaced'] as const)(
@@ -132,10 +132,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     async (state) => {
       const file = createFile('Synthetic/Stale-list.txt', 'quartz cooling evidence');
       let current: TFile | null = file;
-      const cachedRead = vi.fn((source: TFile & { content: string }) =>
-        Promise.resolve(source.content),
+      const readBinary = vi.fn((source: TFile & { content: string }) =>
+        Promise.resolve(sourceBytes(source.content)),
       );
-      const app = createApp([file], {}, cachedRead);
+      const app = createApp([file], {}, readBinary);
       app.vault.getAbstractFileByPath = () => current;
       const port = createNativeVaultPort(app, () => Promise.resolve([file]));
       const request = {
@@ -151,7 +151,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       const result = await port.search(request);
       expect(result.hits).toEqual([]);
       expect(result.unreadableFiles).toBe(1);
-      expect(cachedRead).toHaveBeenCalledOnce();
+      expect(readBinary).toHaveBeenCalledOnce();
     },
   );
 
@@ -160,10 +160,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       createFile('Synthetic/Large-A.txt', 'x'.repeat(2_200_000)),
       createFile('Synthetic/Large-B.txt', 'y'.repeat(2_200_000)),
     ];
-    const cachedRead = vi.fn((source: TFile & { content: string }) =>
-      Promise.resolve(source.content),
+    const readBinary = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(source.content)),
     );
-    const port = createNativeVaultPort(createApp(files, {}, cachedRead));
+    const port = createNativeVaultPort(createApp(files, {}, readBinary));
     const search = {
       action: 'search' as const,
       query: 'quartz',
@@ -174,7 +174,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     };
     await port.search(search);
     await port.search({ ...search, path: files[0].path });
-    expect(cachedRead).toHaveBeenCalledTimes(3);
+    expect(readBinary).toHaveBeenCalledTimes(3);
   });
 
   it.each(['Synthetic/Record #3.txt', 'Synthetic/A|B.txt', 'Synthetic/Rate%20Plan.txt'])(
@@ -194,14 +194,14 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
   it('긴 문서를 이어 읽을 때 같은 revision의 전체 본문과 메타데이터를 다시 계산하지 않는다', async () => {
     const file = createFile('Synthetic/Long.txt', 'A documented condition.\n'.repeat(1201));
-    const cachedRead = vi.fn((source: TFile & { content: string }) =>
-      Promise.resolve(source.content),
+    const readBinary = vi.fn((source: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(source.content)),
     );
-    const port = createNativeVaultPort(createApp([file], {}, cachedRead));
+    const port = createNativeVaultPort(createApp([file], {}, readBinary));
     for (const startLine of [1, 401, 801, 1201]) {
       await port.read({ action: 'read', path: file.path, startLine, endLine: null });
     }
-    expect(cachedRead).toHaveBeenCalledOnce();
+    expect(readBinary).toHaveBeenCalledOnce();
     file.content = 'A revised condition.';
     file.stat.mtime++;
     const updated = await port.read({
@@ -211,7 +211,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       endLine: null,
     });
     expect(updated.content).toBe(file.content);
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(readBinary).toHaveBeenCalledTimes(2);
   });
   it('정상 인덱스의 후보가 있어도 전체 텍스트에서 뒤쪽의 어휘 일치를 함께 찾는다', async () => {
     const files = [
@@ -453,8 +453,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
   it('경로 검색은 본문을 읽지 않고 파일명 일치만 반환한다', async () => {
     const files = [createFile('Aurora.md', '무관한 본문'), createFile('Other.md', 'Aurora')];
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
-    const result = await createNativeVaultPort(createApp(files, {}, cachedRead)).search({
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
+    const result = await createNativeVaultPort(createApp(files, {}, readBinary)).search({
       action: 'search',
       query: 'Aurora',
       path: '',
@@ -465,7 +467,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
     expect(result.hits.map((hit) => hit.path)).toEqual(['Aurora.md']);
     expect(result.hits[0]?.citationStatus).toBe('candidate');
-    expect(cachedRead).not.toHaveBeenCalled();
+    expect(readBinary).not.toHaveBeenCalled();
   });
 
   it('본문 필드는 파일명으로만 일치한 인덱스 후보를 섞지 않는다', async () => {
@@ -1002,8 +1004,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       },
     ] satisfies QueryResult[];
     const query = vi.fn(() => Promise.resolve(indexedResults));
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
-    const app = createApp([alpha], {}, cachedRead);
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
+    const app = createApp([alpha], {}, readBinary);
     const port = createNativeVaultPort(app, undefined, () => createReadyQueryEngineDouble(query));
 
     const result = await port.search({
@@ -1028,7 +1032,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       truncated: true,
     });
     expect(query).toHaveBeenCalledWith('고객 문제', 2, undefined, undefined, {});
-    expect(cachedRead).toHaveBeenCalledOnce();
+    expect(readBinary).toHaveBeenCalledOnce();
   });
 
   it('인덱스가 찾은 유효한 구간을 현재 Vault 본문으로 즉시 검증한다', async () => {
@@ -1053,8 +1057,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
         },
       ]),
     );
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
-    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () =>
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
+    const port = createNativeVaultPort(createApp([alpha], {}, readBinary), undefined, () =>
       createReadyQueryEngineDouble(query),
     );
 
@@ -1084,7 +1090,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
         status: 'verified',
       }),
     ]);
-    expect(cachedRead).toHaveBeenCalledOnce();
+    expect(readBinary).toHaveBeenCalledOnce();
   });
 
   it('인덱스 후보의 현재 본문을 읽지 못하면 검증되지 않은 locator로 보존한다', async () => {
@@ -1092,8 +1098,8 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     const query = vi.fn(() =>
       Promise.resolve([createQueryResult(alpha.path, 'alpha-unreadable', 0, ['vector'], 'vector')]),
     );
-    const cachedRead = vi.fn(() => Promise.reject(new Error('read failed')));
-    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () =>
+    const readBinary = vi.fn(() => Promise.reject(new Error('read failed')));
+    const port = createNativeVaultPort(createApp([alpha], {}, readBinary), undefined, () =>
       createReadyQueryEngineDouble(query),
     );
 
@@ -1126,14 +1132,14 @@ describe('Obsidian 네이티브 Vault 포트', () => {
         ),
       ),
     );
-    const cachedRead = vi.fn(async (file: TFile & { content: string }) => {
+    const readBinary = vi.fn(async (file: TFile & { content: string }) => {
       activeReads++;
       maxActiveReads = Math.max(maxActiveReads, activeReads);
       await Promise.resolve();
       activeReads--;
-      return file.content;
+      return sourceBytes(file.content);
     });
-    const port = createNativeVaultPort(createApp(files, {}, cachedRead), undefined, () =>
+    const port = createNativeVaultPort(createApp(files, {}, readBinary), undefined, () =>
       createReadyQueryEngineDouble(query),
     );
 
@@ -1267,10 +1273,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     ] satisfies QueryResult[];
     const query = vi.fn(() => Promise.resolve(indexedResults));
     const file = createFile('archive/Ledger.md', '원장 본문');
-    const cachedRead = vi.fn((candidate: TFile & { content: string }) =>
-      Promise.resolve(candidate.content),
+    const readBinary = vi.fn((candidate: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(candidate.content)),
     );
-    const app = createApp([file], {}, cachedRead);
+    const app = createApp([file], {}, readBinary);
     const port = createNativeVaultPort(app, undefined, () => createReadyQueryEngineDouble(query));
 
     const result = await port.search({
@@ -1288,7 +1294,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       }),
     ]);
     expect(result.hits[0]).not.toHaveProperty('requiresRead');
-    expect(cachedRead).toHaveBeenCalledOnce();
+    expect(readBinary).toHaveBeenCalledOnce();
   });
 
   it('정상 인덱스가 비어도 원문에서 일치하는 문서를 복구한다', async () => {
@@ -1297,9 +1303,11 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       createFile('Projects/Beta.md', '고객 문제'),
     ];
     const query = vi.fn(() => Promise.resolve([]));
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     const listCandidateFiles = vi.fn(() => Promise.resolve(files));
-    const port = createNativeVaultPort(createApp(files, {}, cachedRead), listCandidateFiles, () =>
+    const port = createNativeVaultPort(createApp(files, {}, readBinary), listCandidateFiles, () =>
       createReadyQueryEngineDouble(query),
     );
 
@@ -1320,7 +1328,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
     expect(query).toHaveBeenCalledOnce();
     expect(listCandidateFiles).toHaveBeenCalledTimes(3);
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(readBinary).toHaveBeenCalledTimes(2);
   });
 
   it('여러 indexed query 결과를 entry 기준 RRF로 융합하고 bounded provenance를 보존한다', async () => {
@@ -1408,9 +1416,11 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
   it('indexed 결과가 비어 있고 진단이 stale이면 live lexical fallback을 실행한다', async () => {
     const alpha = createFile('Projects/Alpha.md', '핵심 고객 문제');
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     const query = vi.fn(() => Promise.resolve([]));
-    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
+    const port = createNativeVaultPort(createApp([alpha], {}, readBinary), undefined, () => ({
       query,
       getLastRetrievalDiagnostics: () => [createRetrievalDiagnostic('stale')],
     }));
@@ -1429,18 +1439,20 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       selectionReason: 'keyword',
       recommendedReadRange: { startLine: 1, endLine: 1 },
     });
-    expect(cachedRead).toHaveBeenCalledOnce();
+    expect(readBinary).toHaveBeenCalledOnce();
   });
 
   it('여러 검색어 중 하나라도 core retrieval이 timeout이면 live lexical fallback을 실행한다', async () => {
     const alpha = createFile('Projects/Alpha.md', '두 번째 질문 근거');
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     let completedQueries = 0;
     const query = vi.fn(() => {
       completedQueries++;
       return Promise.resolve([]);
     });
-    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
+    const port = createNativeVaultPort(createApp([alpha], {}, readBinary), undefined, () => ({
       query,
       getLastRetrievalDiagnostics: () => [
         {
@@ -1461,14 +1473,16 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
     expect(query).toHaveBeenCalledTimes(2);
     expect(result.hits[0]?.path).toBe(alpha.path);
-    expect(cachedRead).toHaveBeenCalledOnce();
+    expect(readBinary).toHaveBeenCalledOnce();
   });
 
   it('vector가 stale이고 BM25가 timeout이면 live lexical 근거를 함께 탐색한다', async () => {
     const alpha = createFile('Projects/Alpha.md', '현재 고객 근거');
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     const query = vi.fn(() => Promise.resolve([]));
-    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
+    const port = createNativeVaultPort(createApp([alpha], {}, readBinary), undefined, () => ({
       query,
       getLastRetrievalDiagnostics: () => [
         createRetrievalDiagnostic('stale', 'vector'),
@@ -1488,14 +1502,16 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       path: alpha.path,
       retrievalSources: ['live-lexical'],
     });
-    expect(cachedRead).toHaveBeenCalledOnce();
+    expect(readBinary).toHaveBeenCalledOnce();
   });
 
   it('core vector가 ready여도 검색 결과가 비면 원문을 확인한다', async () => {
     const alpha = createFile('Projects/Alpha.md', '핵심 고객 문제');
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     const query = vi.fn(() => Promise.resolve([]));
-    const port = createNativeVaultPort(createApp([alpha], {}, cachedRead), undefined, () => ({
+    const port = createNativeVaultPort(createApp([alpha], {}, readBinary), undefined, () => ({
       query,
       getLastRetrievalDiagnostics: () => [
         createRetrievalDiagnostic('partial', 'structural'),
@@ -1512,14 +1528,16 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
 
     expect(result.hits.map((hit) => hit.path)).toEqual([alpha.path]);
-    expect(cachedRead).toHaveBeenCalledWith(alpha);
+    expect(readBinary).toHaveBeenCalledWith(alpha);
   });
 
   it('stale indexed semantic 근거와 live lexical 새 노트를 bounded RRF로 함께 보존한다', async () => {
     const oldNote = createFile('Projects/Old.md', '현재 본문에는 검색어가 없다.');
     const newNote = createFile('Projects/New.md', '새로운 고객 이탈 근거');
     const sharedNote = createFile('Projects/Shared.md', '공유 고객 이탈 근거');
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     const query = vi.fn(() =>
       Promise.resolve([
         createQueryResult(oldNote.path, 'old-entry', 7, ['vector'], 'vector'),
@@ -1527,7 +1545,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       ]),
     );
     const port = createNativeVaultPort(
-      createApp([oldNote, newNote, sharedNote], {}, cachedRead),
+      createApp([oldNote, newNote, sharedNote], {}, readBinary),
       undefined,
       () => ({
         query,
@@ -1565,7 +1583,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       }),
     ]);
     expect(result.citations.map((citation) => citation.filePath)).toHaveLength(3);
-    expect(cachedRead).toHaveBeenCalledTimes(3);
+    expect(readBinary).toHaveBeenCalledTimes(3);
   });
 
   it('production vector file record가 stale 또는 missing이면 live lexical을 함께 탐색한다', async () => {
@@ -1601,9 +1619,11 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       0,
       { embeddingModel: 'test-model' },
     );
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     const port = createNativeVaultPort(
-      createApp([indexedNote, newNote], {}, cachedRead),
+      createApp([indexedNote, newNote], {}, readBinary),
       undefined,
       () => engine,
     );
@@ -1622,7 +1642,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     expect(result.hits.find((hit) => hit.path === newNote.path)?.retrievalSources).toEqual([
       'live-lexical',
     ]);
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(readBinary).toHaveBeenCalledTimes(2);
   });
 
   it('메타데이터가 같아도 해시가 다른 인덱스 구간은 검증된 근거로 승격하지 않는다', async () => {
@@ -1657,9 +1677,11 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       0,
       { embeddingModel: 'test-model' },
     );
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     const port = createNativeVaultPort(
-      createApp([indexedNote], {}, cachedRead),
+      createApp([indexedNote], {}, readBinary),
       undefined,
       () => engine,
     );
@@ -1674,19 +1696,21 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
     expect(result.hits[0]?.path).toBe(indexedNote.path);
     expect(result.hits[0]).toMatchObject({ citationStatus: 'candidate', requiresRead: true });
-    expect(cachedRead).toHaveBeenCalledOnce();
+    expect(readBinary).toHaveBeenCalledOnce();
   });
 
   it('ready 인덱스 결과가 모두 숨김 대상이면 같은 검색 범위의 원문을 확인한다', async () => {
     const visible = createFile('Notes/Visible.md', '현재 근거');
     const hidden = createFile('Notes/Hidden.md', '숨긴 근거');
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     const listCandidateFiles = vi.fn(() => Promise.resolve([visible]));
     const query = vi.fn(() =>
       Promise.resolve([createQueryResult(hidden.path, 'hidden-entry', 1, ['vector'], 'vector')]),
     );
     const port = new ObsidianNativeVaultToolPort(
-      createApp([visible, hidden], {}, cachedRead),
+      createApp([visible, hidden], {}, readBinary),
       {
         listCandidateFiles,
         isCandidateFile: (file) => Promise.resolve(file.path === visible.path),
@@ -1706,7 +1730,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
 
     expect(result.hits.map((hit) => hit.path)).toEqual([visible.path]);
     expect(listCandidateFiles).toHaveBeenCalled();
-    expect(cachedRead).toHaveBeenCalledWith(visible);
+    expect(readBinary).toHaveBeenCalledWith(visible);
   });
 
   it('stale 인덱스가 비면 파일 경로까지 포함한 live lexical 후보를 돌려준다', async () => {
@@ -1717,9 +1741,11 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     ];
     const query = vi.fn(() => Promise.resolve([]));
     const listCandidateFiles = vi.fn(() => Promise.resolve(files));
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
     const port = createNativeVaultPort(
-      createApp(files, {}, cachedRead),
+      createApp(files, {}, readBinary),
       listCandidateFiles,
       () => ({
         query,
@@ -1758,7 +1784,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
     });
     expect(query).toHaveBeenCalledOnce();
     expect(listCandidateFiles).toHaveBeenCalledTimes(4);
-    expect(cachedRead).toHaveBeenCalledTimes(3);
+    expect(readBinary).toHaveBeenCalledTimes(3);
   });
 
   it('인덱스 질의가 실패할 때만 lexical fallback으로 후보 파일을 읽는다', async () => {
@@ -1767,8 +1793,10 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       createFile('Projects/Beta.md', '무관한 문서'),
     ];
     const query = vi.fn(() => Promise.reject(new Error('index unavailable')));
-    const cachedRead = vi.fn((file: TFile & { content: string }) => Promise.resolve(file.content));
-    const port = createNativeVaultPort(createApp(files, {}, cachedRead), undefined, () => ({
+    const readBinary = vi.fn((file: TFile & { content: string }) =>
+      Promise.resolve(sourceBytes(file.content)),
+    );
+    const port = createNativeVaultPort(createApp(files, {}, readBinary), undefined, () => ({
       query,
     }));
 
@@ -1786,7 +1814,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       requiresRead: true,
     });
     expect(query).toHaveBeenCalledOnce();
-    expect(cachedRead).toHaveBeenCalledTimes(2);
+    expect(readBinary).toHaveBeenCalledTimes(2);
   });
 
   it('indexed synthetic 일치 행 대신 실제 chunkRange를 400행 상한으로 권장한다', async () => {
@@ -1928,7 +1956,7 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       maxActiveReads = Math.max(maxActiveReads, activeReads);
       await Promise.resolve();
       activeReads--;
-      return file.content;
+      return sourceBytes(file.content);
     });
 
     const result = await createNativeVaultPort(app).search({
@@ -1945,13 +1973,13 @@ describe('Obsidian 네이티브 Vault 포트', () => {
   });
 
   it('lexical read batch가 대기 중 취소되면 즉시 중단하고 다음 batch를 읽지 않는다', async () => {
-    const readBatch = createDeferred<string>();
+    const readBatch = createDeferred<ArrayBuffer>();
     const files = Array.from({ length: 9 }, (_, index) =>
       createFile(`Notes/${index}.md`, `문서 ${index}`),
     );
-    const cachedRead = vi.fn(() => readBatch.promise);
+    const readBinary = vi.fn(() => readBatch.promise);
     const controller = new AbortController();
-    const port = createNativeVaultPort(createApp(files, {}, cachedRead));
+    const port = createNativeVaultPort(createApp(files, {}, readBinary));
 
     const execution = port.search(
       {
@@ -1963,13 +1991,13 @@ describe('Obsidian 네이티브 Vault 포트', () => {
       },
       controller.signal,
     );
-    await vi.waitFor(() => expect(cachedRead).toHaveBeenCalledTimes(8));
+    await vi.waitFor(() => expect(readBinary).toHaveBeenCalledTimes(8));
 
     controller.abort();
 
     await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
-    expect(cachedRead).toHaveBeenCalledTimes(8);
-    readBatch.resolve('문서');
+    expect(readBinary).toHaveBeenCalledTimes(8);
+    readBatch.resolve(sourceBytes('문서'));
   });
 
   it('검색 결과가 제한되면 전체 스캔 수와 잘림 여부를 함께 반환한다', async () => {
@@ -2223,8 +2251,8 @@ function createFolder(path: string): TFolder {
 function createApp(
   files: Array<TFile & { content: string }>,
   resolvedLinks: Record<string, Record<string, number>> = {},
-  cachedRead: (file: TFile & { content: string }) => Promise<string> = (file) =>
-    Promise.resolve(file.content),
+  readBinary: (file: TFile & { content: string }) => Promise<ArrayBuffer> = (file) =>
+    Promise.resolve(sourceBytes(file.content)),
   folders: readonly TFolder[] = [],
 ): App {
   const byPath = new Map([...files, ...folders].map((file) => [file.path, file]));
@@ -2233,7 +2261,7 @@ function createApp(
       getFiles: () => files,
       getMarkdownFiles: () => files.filter((file) => file.extension === 'md'),
       getAbstractFileByPath: (path: string) => byPath.get(path) ?? null,
-      cachedRead,
+      readBinary,
     },
     metadataCache: {
       resolvedLinks,
@@ -2257,4 +2285,8 @@ function createDeferred<T>(): {
       resolvePromise?.(value);
     },
   };
+}
+
+function sourceBytes(text: string): ArrayBuffer {
+  return new TextEncoder().encode(text).buffer;
 }

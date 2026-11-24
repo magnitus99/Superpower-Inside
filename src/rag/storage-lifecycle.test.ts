@@ -77,12 +77,25 @@ describe('RAG IndexedDB storage lifecycle', () => {
       indexNamespace: createRagIndexNamespace({ chunkSize: 500, overlap: 100 }),
     });
 
-    expect(createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT)).toBe('idx-v4:1000:100');
+    expect(createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT)).toBe('idx-v5:1000:100');
     expect(createRagIndexNamespace({ chunkSize: 500, overlap: 100 })).toContain('500');
     expect(changed.active.vector).not.toBe(legacy.active.vector);
     expect(changed.active.bm25).not.toBe(legacy.active.bm25);
     expect(changed.active.corpus).not.toBe(legacy.active.corpus);
     expect(changed.active.embeddingCache).toBe(legacy.active.embeddingCache);
+  });
+
+  it('같은 계약의 full rebuild도 active DB를 덮지 않고 모델 캐시만 공유한다', () => {
+    const input = {
+      pluginId: 'superpower-inside', vaultIdentity: '/synthetic/vault', legacyVaultName: 'synthetic',
+      embeddingNamespace: 'model-a', indexNamespace: createRagIndexNamespace(DEFAULT_CHUNK_CONTRACT),
+    };
+    const a = createRagStorageLayout({ ...input, buildId: 'A' });
+    const b = createRagStorageLayout({ ...input, buildId: 'B' });
+    expect(a.active.corpus).not.toBe(b.active.corpus);
+    expect(a.active.vector).not.toBe(b.active.vector);
+    expect(a.active.bm25).not.toBe(b.active.bm25);
+    expect(a.active.embeddingCache).toBe(b.active.embeddingCache);
   });
 
   it('deletes only stale current-vault generations and known legacy stores', async () => {

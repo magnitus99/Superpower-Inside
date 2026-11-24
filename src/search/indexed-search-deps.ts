@@ -21,6 +21,7 @@ import {
   type IndexedSearchSource,
 } from './engine-adapter';
 import type { SearchCandidateState, SearchPort } from './engine-port';
+import { LiteralInventoryError, type LiteralInventoryHandle } from '../rag/literal-inventory';
 
 /** 색인 본문·BM25 기록·파일 인덱스 기록을 함께 들고 있는 저장소. */
 export interface IndexedSearchCorpus extends IndexedVaultCorpus {
@@ -37,8 +38,34 @@ export interface IndexedSearchDepsHost {
   /** 허용 범위 전체 수. 비용 큰 볼트 열거를 피할 때 사용합니다. */
   getCandidateCount?: () => number | undefined;
   settings?: Pick<SuperpowerInsideSettings, 'rag' | 'chat'>;
-  /** 재색인·초기화 중에는 부분 색인으로 답하지 않습니다. */
+  getCurrentSettings?: () => Pick<SuperpowerInsideSettings, 'rag' | 'chat'>;
+  /** lease 없는 legacy host의 미완성 색인 차단입니다. serving-only lease에는 적용하지 않습니다. */
   isIndexing?: () => boolean;
+  /** 요청마다 최신 active를 얻고 결과 소비가 끝날 때 해제합니다. */
+  acquireSnapshot?: () => IndexedSearchRuntimeLease | null;
+}
+
+export interface IndexedSearchRuntimeLease {
+  ragEngine: RAGQueryEngine | null;
+  documentCorpus: IndexedSearchCorpus | null;
+  chunkConfig?: Pick<SuperpowerInsideSettings['rag'], 'chunkSize' | 'overlap'>;
+  queryMinScore?: number;
+  isCurrent?: () => boolean;
+  release: () => void;
+}
+
+/** 기존 PluginLike 계약을 바꾸지 않고 선택적 generation API를 사용합니다. */
+export function acquirePluginSearchSnapshot(host: {
+  ragEngine: RAGQueryEngine | null;
+  documentCorpus?: IndexedSearchCorpus | null;
+  acquireRagSearchSnapshot?: () => IndexedSearchRuntimeLease | null;
+}): IndexedSearchRuntimeLease {
+  if (host.acquireRagSearchSnapshot) return host.acquireRagSearchSnapshot() ?? {
+    ragEngine: null, documentCorpus: null, release: () => undefined,
+  };
+  return {
+    ragEngine: host.ragEngine, documentCorpus: host.documentCorpus ?? null, release: () => undefined,
+  };
 }
 
 const MAIN_CANDIDATE_LIMIT = 256;
@@ -106,10 +133,9 @@ export function createVaultSourceReader(
             }),
           );
         } catch (error) {
-          appLogger.debug('Current source chunking failed; using raw verification window.', {
+          void error;
+          appLogger.debug('Current source chunking failed; rejecting verification chunks.', {
             source: 'search.source-read',
-            data: { extension: file.extension ?? '' },
-            error,
           });
         }
       }
@@ -117,14 +143,18 @@ export function createVaultSourceReader(
         revision: `${after.mtime}:${after.size}`,
         text: source.text,
         contentHash: createContentHash(source.text),
-        ...(chunks.length > 0 ? { chunks } : {}),
+        ...(chunkConfig ? { chunks } : {}),
+        sourceMetadata: {
+          segments: source.segments,
+          ...(source.metadataParts ? { metadataParts: source.metadataParts } : {}),
+          ...(source.completeness ? { completeness: source.completeness } : {}),
+        },
       };
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') throw error;
       appLogger.debug('Vault source read failed; treating the document as stale.', {
         source: 'search.source-read',
-        data: { extension: path.split('.').pop() ?? '' },
-        error,
+        // 추출기 오류에 원문·경로가 포함될 수 있으므로 복제하지 않습니다.
       });
       return { revision: null, text: null };
     }
@@ -147,10 +177,85 @@ export async function collectIndexedSearchSource(
 ): Promise<
   (IndexedSearchSource & { diagnostics?: readonly RetrievalProviderDiagnostic[] }) | null
 > {
+  const lease = host.acquireSnapshot?.();
+  if (host.acquireSnapshot && !lease) return null;
+  // acquireSnapshot은 완성된 serving 세대만 반환하는 계약입니다.
+  const captured = lease ? { ...host, ...lease, acquireSnapshot: undefined, isIndexing: () => false } : host;
+  try {
+    const source = await collectCapturedIndexedSearchSource(
+      captured, query, signal, question, forceRefreshSources, semanticTimeoutMs,
+      loadQueryVariants, restriction, lease?.chunkConfig,
+    );
+    if (!source) lease?.release();
+    return source ? ownLiteralSearchSource(source, lease) : null;
+  } catch (error) {
+    lease?.release();
+    throw error;
+  }
+}
+
+function ownLiteralSearchSource(
+  source: IndexedSearchSource & { diagnostics?: readonly RetrievalProviderDiagnostic[] },
+  lease?: IndexedSearchRuntimeLease | null,
+): IndexedSearchSource & { diagnostics?: readonly RetrievalProviderDiagnostic[] } {
+  const handles = new Set<LiteralInventoryHandle>();
+  const pending = new Set<Promise<LiteralInventoryHandle>>();
+  const open = source.openLiteralInventory;
+  let released = false;
+  let closing: Promise<void> | undefined;
+  return {
+    ...source,
+    ...(lease?.isCurrent ? { isCurrent: lease.isCurrent } : {}),
+    ...(open ? { openLiteralInventory: (needles: readonly string[], signal?: AbortSignal, allowedPaths?: readonly string[]) => {
+      if (released) return Promise.reject(new LiteralInventoryError('inventory-closed'));
+      const task = Promise.resolve().then(() => open(needles, signal, allowedPaths)).then(async (handle) => {
+        if (released) { await handle.close(); throw new LiteralInventoryError('inventory-closed'); }
+        handles.add(handle);
+        return handle;
+      });
+      pending.add(task);
+      void task.then(() => pending.delete(task), () => pending.delete(task));
+      return task;
+    } } : {}),
+    release: () => {
+      if (released) return closing;
+      released = true;
+      if (handles.size === 0 && pending.size === 0) { lease?.release(); return; }
+      closing = (async () => {
+        try {
+          await Promise.allSettled([...pending]);
+          const results = await Promise.allSettled([...handles].map((handle) => handle.close()));
+          if (results.some((result) => result.status === 'rejected')) throw new LiteralInventoryError('inventory-cleanup-failed');
+        } finally { lease?.release(); }
+      })();
+      return closing;
+    },
+  };
+}
+
+async function collectCapturedIndexedSearchSource(
+  host: IndexedSearchDepsHost,
+  query: string,
+  signal: AbortSignal | undefined,
+  question: string,
+  forceRefreshSources: boolean,
+  semanticTimeoutMs: number,
+  loadQueryVariants: (() => Promise<readonly string[]>) | undefined,
+  restriction: { scopes: readonly string[]; filters?: RustIndexedEvidenceFilters } | undefined,
+  chunkConfig?: Pick<SuperpowerInsideSettings['rag'], 'chunkSize' | 'overlap'>,
+): Promise<(IndexedSearchSource & { diagnostics?: readonly RetrievalProviderDiagnostic[] }) | null> {
   const corpus = host.documentCorpus;
   if (!corpus) return null;
   const startedAt = performance.now();
-  const sourceReader = createVaultSourceReader(host.app, forceRefreshSources, host.settings?.rag);
+  // shortcut: 청킹만 세대에 고정합니다. 이전 extractor 선택은 source-access의 버전 API가 필요합니다.
+  const readSource = createVaultSourceReader(host.app, forceRefreshSources, chunkConfig ?? host.settings?.rag);
+  const sourceReader: ReturnType<typeof createVaultSourceReader> = async (path, sourceSignal) => {
+    const allowed = await listCandidatePaths(host);
+    if (allowed && !allowed.includes(path)) return { revision: null, text: null };
+    const source = await readSource(path, sourceSignal);
+    const currentAllowed = await listCandidatePaths(host);
+    return currentAllowed && !currentAllowed.includes(path) ? { revision: null, text: null } : source;
+  };
   const allIndexedPaths = await corpus.getIndexedFilePaths();
   const allowedPaths = await resolveIndexedSearchPaths(host, allIndexedPaths, restriction);
   const indexedPaths = allowedPaths;
@@ -239,6 +344,7 @@ export async function collectIndexedSearchSource(
       ? bm25Batch.inventories
       : await collectMatchInventory(host.ragEngine, searchPlan, signal, indexedPaths);
   const matchMs = performance.now() - matchStartedAt;
+  const literalEngine = host.ragEngine;
   appLogger.debug('Indexed search source collected.', {
     source: 'search.source',
     data: {
@@ -255,6 +361,8 @@ export async function collectIndexedSearchSource(
   });
   return {
     corpus,
+    literalQuery: query,
+    ...(literalEngine && typeof literalEngine.openLiteralInventory === 'function' ? { openLiteralInventory: (needles: readonly string[], signal?: AbortSignal, allowedPaths?: readonly string[]) => literalEngine.openLiteralInventory(needles, signal, allowedPaths) } : {}),
     queryVariants: queryVariants?.slice(0, MAX_QUERY_VARIANTS),
     getIndexedPaths: () => Promise.resolve(indexedPaths),
     candidates: candidateResolution.exhaustiveReview
@@ -522,8 +630,9 @@ async function listCandidatePaths(
   host: IndexedSearchDepsHost,
 ): Promise<readonly string[] | undefined> {
   if (host.getCandidatePaths) return host.getCandidatePaths();
-  if (!host.settings) return undefined;
-  const files = await getRagCandidateFiles(host.app.vault, host.settings.rag, host.settings.chat);
+  const settings = host.getCurrentSettings?.() ?? host.settings;
+  if (!settings) return undefined;
+  const files = await getRagCandidateFiles(host.app.vault, settings.rag, settings.chat);
   return files.map((file) => file.path);
 }
 
@@ -535,10 +644,18 @@ export function createPluginSearchPort(host: IndexedSearchDepsHost): SearchPort 
       request.query,
       request.signal,
       request.query,
-      false,
+      true,
     );
     if (!source) return null;
-    return createIndexedSearchPort({ ...source, verifyCurrentSource: false })(request);
+    try {
+      const response = await createIndexedSearchPort({ ...source, verifyCurrentSource: true })(request);
+      const paths = await source.getIndexedPaths();
+      const currentPaths = await resolveIndexedSearchPaths(host, paths);
+      // 검색 중 축소된 접근 정책의 구절·집계를 정상 결과로 내보내지 않습니다.
+      return currentPaths.length === paths.length ? response : null;
+    } finally {
+      await source.release?.();
+    }
   };
 }
 
