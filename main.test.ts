@@ -700,6 +700,222 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.embeddingProvider).toBeNull();
   });
 
+  async function livePartialCheckpointFixture() {
+    const { TFile } = await import('obsidian');
+    const text = 'synthetic live partial body';
+    const file = Object.assign(new TFile(), { path: 'Synthetic/live-partial.md', basename: 'live-partial', extension: 'md', stat: { ctime: 1, mtime: 1, size: text.length } });
+    const plugin = await lexicalRuntime({ files: [file], contents: new Map([[file.path, text]]) });
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    // Corrupt a real projection through its writer: the checkpoint must actually read the source
+    // and retain the mismatch as partial, rather than certifying a mocked/empty complete proof.
+    const row = (await plugin.documentCorpus!.getFileIndexRecords())[0];
+    const documents = await plugin.documentCorpus!.getDocumentsByFilePath(file.path);
+    await runtime.io!.run(() => plugin.documentCorpus!.replaceFileDocuments(file.path,
+      documents.map((document) => ({ ...document, text: document.text + ' stale projection' })), row.sourceMetadata, row.sourceMetadataHash));
+    await plugin['refreshRagRuntimeCheckpoint'](runtime);
+    const manifest = plugin['getRagGenerationManifest']();
+    const partial = await manifest.read();
+    expect(partial.active?.terminal).toBe('partial');
+    expect(partial.active?.proof?.failures).toContainEqual({ path: file.path, reason: 'lexical-projection-not-current' });
+    return { plugin, runtime, manifest, partial, file };
+  }
+
+  it('원문 검증 워크플로: live partial의 무변이 checkpoint 반복은 scan과 manifest revision을 늘리지 않는다', async () => {
+    const { plugin, runtime, manifest, partial } = await livePartialCheckpointFixture();
+    const source = await import('./src/rag/source-snapshot');
+    const read = vi.spyOn(source, 'readSourceFileSnapshot');
+    const collect = vi.spyOn(plugin as never as { collectRagRuntimeProof(...args: unknown[]): Promise<unknown> }, 'collectRagRuntimeProof');
+    try {
+      for (let request = 0; request < 3; request++) await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      const after = await manifest.read();
+      expect.soft(collect.mock.calls.length).toBe(0);
+      expect.soft(read.mock.calls.length).toBe(0);
+      expect.soft(after.revision).toBe(partial.revision);
+      expect(after.active).toEqual(partial.active);
+      expect(plugin.getRagGenerationSnapshot().coverage).toBe('partial');
+    } finally { read.mockRestore(); collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 워크플로: 진행 중 partial checkpoint의 동일 입력 중복 요청은 한 번만 정착한다', async () => {
+    const { plugin, runtime, manifest, partial, file } = await livePartialCheckpointFixture();
+    // A real corpus transaction requires one new verification while the projection remains partial.
+    const documents = await plugin.documentCorpus!.getDocumentsByFilePath(file.path);
+    const row = (await plugin.documentCorpus!.getFileIndexRecords()).find((record) => record.filePath === file.path)!;
+    await runtime.io!.run(() => plugin.documentCorpus!.replaceFileDocuments(file.path, documents, row.sourceMetadata, row.sourceMetadataHash));
+    const original = plugin['collectRagRuntimeProof'].bind(plugin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const collect = vi.spyOn(plugin as never as { collectRagRuntimeProof(...args: unknown[]): Promise<unknown> }, 'collectRagRuntimeProof');
+    collect.mockImplementation(async (...args) => {
+      await gate;
+      return original(...args as Parameters<typeof original>);
+    });
+    const pending = plugin['refreshRagRuntimeCheckpoint'](runtime);
+    try {
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      const duplicates = Array.from({ length: 5 }, () => plugin['refreshRagRuntimeCheckpoint'](runtime));
+      release();
+      await Promise.all([pending, ...duplicates]);
+      const after = await manifest.read();
+      expect.soft(collect).toHaveBeenCalledOnce();
+      expect.soft(after.revision).toBe(partial.revision + 1);
+      expect(after.active?.terminal).toBe('partial');
+      expect(after.active?.proof?.failures).toEqual(partial.active?.proof?.failures);
+    } finally { release(); await pending; collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['source', 'policy', 'projection'] as const)('원문 검증 워크플로: live partial 뒤 %s 변경은 같은 seal 재사용으로 숨기지 않는다', async (change) => {
+    const { plugin, runtime, manifest, partial, file } = await livePartialCheckpointFixture();
+    const collect = vi.spyOn(plugin as never as { collectRagRuntimeProof(...args: unknown[]): Promise<unknown> }, 'collectRagRuntimeProof');
+    try {
+      if (change === 'source') {
+        // Keep stat and bytes unchanged: the observed event alone invalidates verification history.
+        plugin['unregisterRAGEvents']();
+        plugin.app.vault.trigger('modify', file);
+      } else if (change === 'policy') plugin.settings.rag.excludePaths = ['Synthetic'];
+      else {
+        const documents = await plugin.documentCorpus!.getDocumentsByFilePath(file.path);
+        const row = (await plugin.documentCorpus!.getFileIndexRecords())[0];
+        await runtime.io!.run(() => plugin.documentCorpus!.replaceFileDocuments(file.path,
+          documents.map((document) => ({ ...document, text: document.text + ' another mutation' })), row.sourceMetadata, row.sourceMetadataHash));
+      }
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      const after = await manifest.read();
+      expect(collect).toHaveBeenCalledOnce();
+      expect(after.revision).toBe(partial.revision + 1);
+      expect(after.active?.terminal).toBe('partial');
+      expect(after.active?.proof?.failures).toContainEqual({ path: file.path, reason: change === 'policy' ? 'source-not-candidate' : 'lexical-projection-not-current' });
+      if (change === 'projection') expect(after.active?.proof?.seal?.corpus).not.toEqual(partial.active?.proof?.seal?.corpus);
+    } finally { collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['paused', 'unload'] as const)('원문 검증 워크플로: %s 뒤 partial checkpoint는 scan이나 manifest를 게시하지 않는다', async (boundary) => {
+    const { plugin, runtime, manifest, partial } = await livePartialCheckpointFixture();
+    const collect = vi.spyOn(plugin as never as { collectRagRuntimeProof(...args: unknown[]): Promise<unknown> }, 'collectRagRuntimeProof');
+    Object.assign(plugin, boundary === 'paused' ? { ragAutoRecoveryPausedByUser: true } : { unloaded: true });
+    try {
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(collect).not.toHaveBeenCalled();
+      expect(await manifest.read()).toEqual(partial);
+    } finally { collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 워크플로: CAS 거절된 partial proof는 다음 요청의 검증 이력으로 승격하지 않는다', async () => {
+    const { plugin, runtime, manifest, partial } = await livePartialCheckpointFixture();
+    plugin.settings.rag.excludePaths = ['Synthetic'];
+    const cas = vi.spyOn(manifest, 'refreshActive').mockResolvedValueOnce(null);
+    const collect = vi.spyOn(plugin as never as { collectRagRuntimeProof(...args: unknown[]): Promise<unknown> }, 'collectRagRuntimeProof');
+    try {
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(await manifest.read()).toEqual(partial);
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(collect).toHaveBeenCalledTimes(2);
+      expect(cas).toHaveBeenCalledTimes(2);
+      expect((await manifest.read()).revision).toBe(partial.revision + 1);
+    } finally { cas.mockRestore(); collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['paused', 'unload', 'owner'] as const)('원문 검증 워크플로: 검증 도중 %s 교체는 늦은 partial proof 게시를 막는다', async (boundary) => {
+    const { plugin, runtime, manifest, partial } = await livePartialCheckpointFixture();
+    plugin.settings.rag.excludePaths = ['Synthetic'];
+    const original = plugin['collectRagRuntimeProof'].bind(plugin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const collect = vi.spyOn(plugin as never as { collectRagRuntimeProof(...args: unknown[]): Promise<unknown> }, 'collectRagRuntimeProof');
+    let collected = false;
+    collect.mockImplementation(async (...args) => {
+      const proof = await original(...args as Parameters<typeof original>);
+      collected = true;
+      await gate;
+      return proof;
+    });
+    const pending = plugin['refreshRagRuntimeCheckpoint'](runtime);
+    try {
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      // Wait for the real proof to finish, not merely for its spy to be entered.
+      await vi.waitFor(() => expect(collected).toBe(true));
+      if (boundary === 'paused') Object.assign(plugin, { ragAutoRecoveryPausedByUser: true });
+      else if (boundary === 'unload') Object.assign(plugin, { unloaded: true });
+      else plugin.ragEngine = null;
+      release();
+      await pending;
+      expect(await manifest.read()).toEqual(partial);
+    } finally { release(); await pending; collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 워크플로: cold partial 복원은 저장 seal이 같아도 새 BM25 session에서 원문을 읽는다', async () => {
+    const { plugin, runtime, partial, file } = await livePartialCheckpointFixture();
+    const { default: PluginClass } = await import('./main.ts');
+    const source = await import('./src/rag/source-snapshot');
+    const read = vi.spyOn(source, 'readSourceFileSnapshot');
+    const restored = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    Object.assign(restored, { app: plugin.app, manifest: { id: 'superpower-inside' }, settings: structuredClone(plugin.settings) });
+    try {
+      await restored['restorePersistedRagGeneration']();
+      expect(read.mock.calls.some(([, current]) => current.path === file.path)).toBe(true);
+      expect(restored.getRagGenerationSnapshot().coverage).toBe('partial');
+      expect(restored.getRagGenerationSnapshot().serving?.proof?.failures).toEqual(partial.active?.proof?.failures);
+      const checkpoint = await restored.bm25Index!.getCheckpoint();
+      const previous = partial.active!.proof!.seal!.lexical;
+      expect(previous.state).toBe('enabled');
+      if (previous.state !== 'enabled') throw new Error('Synthetic lexical checkpoint missing');
+      expect(checkpoint.applied?.sessionId).not.toBe(previous.applied.sessionId);
+    } finally {
+      read.mockRestore();
+      await restored['drainRagRuntimeSnapshot'](restored['captureRagRuntimeSnapshot']());
+      await plugin['drainRagRuntimeSnapshot'](runtime);
+    }
+  });
+
+  async function denseReadWorkflowFixture() {
+    const { TFile } = await import('obsidian');
+    const { OpenAIEmbeddingProvider } = await import('./src/llm/embedding');
+    const text = 'synthetic read currentness body';
+    const file = Object.assign(new TFile(), { path: 'Synthetic/read-currentness.md', basename: 'read-currentness', extension: 'md', stat: { ctime: 1, mtime: 1, size: text.length } });
+    const plugin = await lexicalRuntime({ files: [file], contents: new Map([[file.path, text]]) });
+    plugin.settings.providerProfiles = [createOpenAiEmbeddingProfile('synthetic-key')];
+    plugin.settings.rag = createRagWithEmbedding(plugin.settings.rag);
+    const embed = vi.spyOn(OpenAIEmbeddingProvider.prototype, 'embedBatch').mockImplementation((texts) => Promise.resolve(texts.map(() => [1, 0])));
+    try {
+      await plugin.startRagUpdate();
+      expect(embed).toHaveBeenCalledOnce();
+      expect(plugin.getRagGenerationSnapshot().coverage).toBe('complete');
+    } finally { embed.mockRestore(); }
+    plugin['automaticRagRecovery']!.dispose();
+    return { plugin, runtime: plugin['captureRagRuntimeSnapshot'](), file };
+  }
+
+  it.each(['stats', 'automatic-count'] as const)('원문 검증 워크플로: 실제 무변이 %s 조회는 foreign read currentness를 유지한다', async (entry) => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    const current = plugin['captureRagReadCurrentness'](runtime);
+    const seal = await plugin['readRagRuntimeSeal'](runtime);
+    const manifest = await plugin['getRagGenerationManifest']().read();
+    try {
+      if (entry === 'stats') await plugin['computeAndEmitRagStats']();
+      else expect(await plugin['automaticRagRecovery']!['host'].countPendingDocuments()).toMatchObject({ pendingDocumentCount: 0 });
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect.soft(current()).toBe(true);
+      expect(await plugin['readRagRuntimeSeal'](runtime)).toEqual(seal);
+      expect(await plugin['getRagGenerationManifest']().read()).toEqual(manifest);
+    } finally { await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 워크플로: stats의 legacy file-index repair는 실제 write로 foreign read를 무효화한다', async () => {
+    const { plugin, runtime, file } = await denseReadWorkflowFixture();
+    const store = plugin.vectorStore as IndexedDbVectorStore;
+    // Simulate the documented legacy shape (vectors present, file-index absent).
+    await runtime.io!.run(() => store['db'].fileIndex.clear());
+    const current = plugin['captureRagReadCurrentness'](runtime);
+    const before = (await store.getDurabilityCheckpoint()).receipt;
+    try {
+      await plugin['computeAndEmitRagStats']();
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(current()).toBe(false);
+      expect((await store.getDurabilityCheckpoint()).receipt).not.toEqual(before);
+      expect((await store.getFileIndexRecords()).map((row) => row.filePath)).toContain(file.path);
+    } finally { await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
   it('metadata changed는 같은 본문 alias를 다시 반영하고 새 seal을 발행한다', async () => {
     const { default: PluginClass } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
