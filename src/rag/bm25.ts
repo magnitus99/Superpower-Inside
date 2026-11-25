@@ -291,6 +291,7 @@ export class IndexedDbBM25Index {
   private lastSnapshotAt = 0;
   private snapshotCaptureInFlight = false;
   private workerGeneration = 0;
+  private closed = false;
   private persistenceQueue: Promise<void> = Promise.resolve();
   private persistedOrder = 0;
   private proofSession = crypto.randomUUID();
@@ -354,6 +355,7 @@ export class IndexedDbBM25Index {
   }
 
   async initializeEmptyDurabilityReceipt(): Promise<StoreMutationReceipt | null> {
+    this.requireActive();
     if (this.legacyAdapter && await this.legacyAdapter.exists(this.legacyPath)) return null;
     const nested = Dexie.currentTransaction?.db === this.db;
     let created = false;
@@ -383,6 +385,7 @@ export class IndexedDbBM25Index {
   }
 
   private async commitMutation<T>(operation: () => Promise<T>, projection?: { revision: number; resets: boolean }): Promise<T> {
+    this.requireActive();
     const nested = Dexie.currentTransaction?.db === this.db;
     const generation = this.workerGeneration;
     const committed = await this.db.transaction('rw', this.db.tables, async () => {
@@ -419,6 +422,7 @@ export class IndexedDbBM25Index {
   }
 
   load(onProgress?: (progress: { stage: 'restoring-keyword-snapshot' | 'restoring-keyword-documents'; processedUnits: number | null; totalUnits: number | null; unit: 'documents' | 'steps' }) => void): Promise<void> {
+    if (this.closed) return Promise.reject(new Error('rag-bm25-session-retired'));
     const generation = ++this.workerGeneration;
     this.loading = true;
     this.snapshotCaptureInFlight = false;
@@ -447,11 +451,13 @@ export class IndexedDbBM25Index {
       if (generation === this.workerGeneration) { this.prefixValid = false; this.loaded = false; }
       finish(); throw error;
     });
-    this.loadBarrier = completion;
+    if (generation === this.workerGeneration) this.loadBarrier = completion;
     return completion;
   }
 
   private async loadRuntime(generation: number, publish: (progress: { stage: 'restoring-keyword-snapshot' | 'restoring-keyword-documents'; processedUnits: number | null; totalUnits: number | null; unit: 'documents' | 'steps' }) => void): Promise<void> {
+    this.requireActive();
+    if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
     this.runtime?.dispose();
     this.runtime = null;
     this.workerRuntime?.close();
@@ -466,8 +472,11 @@ export class IndexedDbBM25Index {
     this.activeManifest = null;
     const initialReceipt = this.getDurabilityReceipt();
     const existingPending = [...this.pendingOperations];
+    let ownerWorker: BM25WorkerRuntime | null = null;
     const requireSession = (): void => {
+      this.requireActive();
       if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+      if (ownerWorker) this.requireWorkerSession(generation, ownerWorker);
     };
     const prepareBase = async (): Promise<StoreMutationReceipt | null> => {
       const receipt = await initialReceipt;
@@ -484,7 +493,9 @@ export class IndexedDbBM25Index {
       const linked = snapshot.manifest && isStoreMutationReceipt(snapshot.manifest.sourceReceipt) &&
         snapshot.manifest.sourceReceipt.incarnation === original?.incarnation && snapshot.manifest.lastOrder <= this.persistedOrder;
       const full = fullRead || snapshot.raw.trim().length === 0;
-      const empty = full && await this.db.documents.count() === 0 && await this.db.mutations.count() === 0;
+      const documents = full ? await this.db.documents.count() : null;
+      requireSession();
+      const empty = documents === 0 && await this.db.mutations.count() === 0;
       requireSession();
       this.prefixValid = this.headContinuity && sameBm25Receipt(receipt, this.boundReceipt) &&
         (original !== null ? full || !!linked : empty);
@@ -495,19 +506,21 @@ export class IndexedDbBM25Index {
     if (this.workerFactory || canUseBM25Worker()) {
       let restoringSnapshot = false;
       const worker = new BM25WorkerRuntime(this.workerFactory, undefined, (progress) => {
-        if (!this.loading) return;
+        if (!this.loading || this.closed || generation !== this.workerGeneration || worker !== this.workerRuntime || worker.isClosed) return;
         if (restoringSnapshot && progress.processedDocuments === 0) publish({ stage: 'restoring-keyword-snapshot', unit: 'steps', processedUnits: 1, totalUnits: 2 });
         else publish({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: progress.processedDocuments, totalUnits: progress.expectedDocuments });
       });
       this.workerRuntime = worker;
+      ownerWorker = worker;
       const initialization = (async () => {
         const original = await prepareBase();
-        const snapshot = await this.loadSnapshot();
+        const snapshot = await this.loadSnapshot(requireSession);
         requireSession();
         const raw = snapshot.raw.trim();
         const usableRaw = raw.length > 0 && raw.length <= this.maxSnapshotBytes ? raw : '';
         const manifest = usableRaw.length > 0 ? snapshot.manifest : undefined;
         publish({ stage: 'restoring-keyword-snapshot', processedUnits: 1, totalUnits: 1, unit: 'steps' });
+        requireSession();
         restoringSnapshot = usableRaw.length > 0;
         const expectedDocuments = manifest?.docCount ?? await this.db.documents.count();
         requireSession();
@@ -517,13 +530,18 @@ export class IndexedDbBM25Index {
           manifest?.lastOrder,
           expectedDocuments,
         );
+        requireSession();
         if (restoringSnapshot && !state.snapshotRejected) publish({ stage: 'restoring-keyword-snapshot', unit: 'steps', processedUnits: 2, totalUnits: 2 });
+        requireSession();
         restoringSnapshot = false;
         let finalState = state;
         if (state.snapshotRejected) {
           // 손상 스냅샷은 폐기하고 저장된 원문에서 전량 복구한다.
-          await this.dropSnapshot();
-          finalState = await worker.initialize(this.db.name, '', undefined, await this.db.documents.count());
+          await this.dropSnapshot(true);
+          requireSession();
+          const expectedDocuments = await this.db.documents.count();
+          requireSession();
+          finalState = await worker.initialize(this.db.name, '', undefined, expectedDocuments);
         }
         requireSession();
         this.applyWorkerState(finalState);
@@ -533,13 +551,16 @@ export class IndexedDbBM25Index {
           this.ordersSinceSnapshot = 0;
           this.removalsSinceSnapshot = 0;
           await this.commitChangedRows(() => this.db.meta.where('key').equals(BM25_SNAPSHOT_KEY).delete());
+          requireSession();
         }
         this.runtime = null;
         this.loaded = true;
         if (snapshot.source === 'legacy' && raw.length <= this.maxSnapshotBytes) {
           await this.persistSnapshotRaw(raw);
+          requireSession();
         }
         await this.sweepOrphanSnapshotBlocks();
+        requireSession();
         await finishBase(snapshot, original, state.snapshotRejected === true);
       })();
       // 초기화 중 들어온 파일 변경도 hydration 완료 뒤 같은 worker에 순서대로 적용한다.
@@ -549,18 +570,20 @@ export class IndexedDbBM25Index {
         await initialization;
         return;
       } catch (error) {
-        worker.close();
+        const failure = error instanceof Error ? error : new Error(String(error));
+        worker.close(failure);
+        if (generation === this.workerGeneration && worker === this.workerRuntime) this.workerFailure ??= worker.closeReason ?? failure;
         // 닫힌 작업자를 남겨 다음 준비에서도 재초기화를 시도할 수 있게 합니다.
         if (generation === this.workerGeneration) this.loaded = false;
         throw error;
       }
     }
     const original = await prepareBase();
-    const snapshot = await this.loadSnapshot();
+    const snapshot = await this.loadSnapshot(requireSession);
     requireSession();
     if (snapshot.manifest) {
       // 작업자 없는 세션은 tombstone 델타를 남길 수 없으므로 스냅샷을 버리고 원문에서 재구성한다.
-      await this.dropSnapshot();
+      await this.dropSnapshot(true);
       requireSession();
     }
     const raw = (snapshot.manifest ? '' : snapshot.raw).trim();
@@ -578,6 +601,7 @@ export class IndexedDbBM25Index {
       this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
     }
     publish({ stage: 'restoring-keyword-snapshot', unit: 'steps', processedUnits: 1, totalUnits: 1 });
+    requireSession();
     await this.replayPersistedOperations(requireSession, (processed, total) => publish({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: processed, totalUnits: total }));
     requireSession();
     this.loaded = true;
@@ -590,6 +614,7 @@ export class IndexedDbBM25Index {
   }
 
   async persist(): Promise<void> {
+    this.requireActive();
     if (this.batchDepth > 0) {
       this.batchDirty = true;
       return;
@@ -599,6 +624,7 @@ export class IndexedDbBM25Index {
 
   /** 외부 배치 안에서도 호출 시점의 내구 커밋과 작업자 적용 ACK를 기다립니다. */
   flush(): Promise<void> {
+    if (this.closed) return Promise.reject(new Error('rag-bm25-session-retired'));
     const applied = this.workerQueue;
     const checkpoint = this.issuedRevision;
     this.pendingBarriers++;
@@ -628,6 +654,7 @@ export class IndexedDbBM25Index {
   }
 
   private async persistNow(checkpoint: number): Promise<void> {
+    this.requireActive();
     const generation = this.workerGeneration;
     if (this.loadBarrier) await this.loadBarrier;
     if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
@@ -668,10 +695,11 @@ export class IndexedDbBM25Index {
   }
 
   async clear(): Promise<void> {
+    this.requireActive();
     const revision = ++this.issuedRevision;
     if (this.workerRuntime) {
       this.enqueueWorkerMutation(async (worker) => {
-        this.applyWorkerState(await worker.clear({ revision }));
+        this.applyWorkerState(await worker.clear({ revision }), worker);
       });
     } else if (!this.loading && !this.rebuilding) {
       this.runtime?.dispose();
@@ -683,6 +711,7 @@ export class IndexedDbBM25Index {
   }
 
   async deleteDatabase(): Promise<void> {
+    this.closed = true;
     this.workerGeneration++;
     this.prefixValid = false;
     this.loading = false;
@@ -708,6 +737,7 @@ export class IndexedDbBM25Index {
   }
 
   close(): void {
+    this.closed = true;
     this.workerGeneration++;
     this.prefixValid = false;
     this.loading = false;
@@ -732,7 +762,11 @@ export class IndexedDbBM25Index {
   }
 
   async rebuild(documents: readonly BM25DocumentInput[]): Promise<void> {
+    this.requireActive();
+    const generation = this.workerGeneration;
     if (this.loadBarrier) await this.loadBarrier;
+    this.requireActive();
+    if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
     if (this.rebuilding) throw new Error('BM25 rebuild is already in progress.');
     this.rebuilding = true;
     const revision = ++this.issuedRevision;
@@ -742,7 +776,7 @@ export class IndexedDbBM25Index {
         if (this.workerRuntime) {
           const workerDocuments = documents.map((document) => ({ ...document, ...documentFields(document), sourcePath: document.sourcePath ?? document.id }));
           for (const document of documents) this.queueDocument(normalizeCorpusDocument(document), false, revision);
-          this.enqueueWorkerMutation(async (worker) => { this.applyWorkerState(await worker.rebuild(workerDocuments, { revision })); });
+          this.enqueueWorkerMutation(async (worker) => { this.applyWorkerState(await worker.rebuild(workerDocuments, { revision }), worker); });
         } else {
           this.runtime?.dispose();
           this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
@@ -765,22 +799,29 @@ export class IndexedDbBM25Index {
   }
 
   async rebuildFrom(createDocuments: () => Promise<readonly BM25DocumentInput[]>): Promise<void> {
+    this.requireActive();
     if (this.rebuildReplayOperations !== null) {
       throw new Error('BM25 rebuild is already in progress.');
     }
-    this.rebuildReplayOperations = [];
+    const generation = this.workerGeneration;
+    const replayOperations: BM25PendingOperation[] = [];
+    this.rebuildReplayOperations = replayOperations;
     let rebuildStarted = false;
     let rebuildError: Error | null = null;
     try {
       const documents = await createDocuments();
+      this.requireActive();
+      if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
       rebuildStarted = true;
       await this.rebuild(documents);
     } catch (error) {
       rebuildError = error instanceof Error ? error : new Error(String(error));
+    } finally {
+      if (this.rebuildReplayOperations === replayOperations) this.rebuildReplayOperations = null;
     }
 
-    const replayOperations = this.rebuildReplayOperations ?? [];
-    this.rebuildReplayOperations = null;
+    this.requireActive();
+    if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
     if (rebuildStarted && replayOperations.length > 0) {
       await this.replayOperationsAfterRebuild(replayOperations);
     }
@@ -792,6 +833,7 @@ export class IndexedDbBM25Index {
   }
 
   addCorpusDocument(document: BM25CorpusDocument): void {
+    this.requireActive();
     const revision = ++this.issuedRevision;
     if (this.workerRuntime) {
       this.enqueueWorkerMutation(async (worker) => {
@@ -803,6 +845,7 @@ export class IndexedDbBM25Index {
             text: document.text,
             sourcePath: document.sourcePath,
           }, { revision }),
+          worker,
         );
       });
     } else if (!this.loading && !this.rebuilding) {
@@ -813,6 +856,7 @@ export class IndexedDbBM25Index {
 
   /** 소스 교체는 유한 크기 메시지로 보내며 기존 역색인·위치 계산을 그대로 사용합니다. */
   replaceSourceDocuments(sourcePath: string, documents: readonly BM25CorpusDocument[]): void {
+    this.requireActive();
     if (documents.some((document) => document.sourcePath !== sourcePath))
       throw new Error('BM25 source replacement path mismatch.');
     const wireBytes = documents.map((document) => JSON.stringify(document).length * 2);
@@ -836,7 +880,7 @@ export class IndexedDbBM25Index {
       const removeFirst = replace;
       const context = { revision, part: part++, finalPart };
       this.enqueueWorkerMutation(async (worker) => {
-        this.applyWorkerState(await worker.replaceSource(sourcePath, pending, removeFirst, context));
+        this.applyWorkerState(await worker.replaceSource(sourcePath, pending, removeFirst, context), worker);
       });
       batch = [];
       bytes = 0;
@@ -853,10 +897,11 @@ export class IndexedDbBM25Index {
   }
 
   removeDocument(docId: string): void {
+    this.requireActive();
     const revision = ++this.issuedRevision;
     if (this.workerRuntime) {
       this.enqueueWorkerMutation(async (worker) => {
-        this.applyWorkerState(await worker.removeDocument(docId, { revision }));
+        this.applyWorkerState(await worker.removeDocument(docId, { revision }), worker);
       });
     } else if (!this.loading && !this.rebuilding) {
       this.ensureRuntime().removeDocument(docId, TOKENIZER_VERSION);
@@ -865,10 +910,11 @@ export class IndexedDbBM25Index {
   }
 
   removeDocumentsBySource(sourcePath: string): void {
+    this.requireActive();
     const revision = ++this.issuedRevision;
     if (this.workerRuntime) {
       this.enqueueWorkerMutation(async (worker) => {
-        this.applyWorkerState(await worker.removeSource(sourcePath, { revision }));
+        this.applyWorkerState(await worker.removeSource(sourcePath, { revision }), worker);
       });
     } else if (!this.loading && !this.rebuilding) {
       this.ensureRuntime().removeSource(sourcePath, TOKENIZER_VERSION);
@@ -1004,16 +1050,26 @@ export class IndexedDbBM25Index {
   }
 
   async recoverClosedWorker(): Promise<void> {
+    this.requireActive();
     // 복구할 작업자가 없으면 초기 적재·변이 대기열에 호출자를 붙잡아 두지 않습니다.
-    if (!this.workerRuntime?.isClosed) return;
+    const worker = this.workerRuntime;
+    if (!worker?.isClosed) return;
+    const generation = this.workerGeneration;
+    const requireOwner = (): void => this.requireWorkerSession(generation, worker, true);
     this.recovery ??= this.workerQueue
       // 초기화 실패로 거절된 대기열도 복구 진입을 막지 않습니다.
       .catch(() => undefined)
       .then(async () => {
+        requireOwner();
         // 기록 대기 중인 변경을 먼저 저장하고 같은 코퍼스에서 작업자만 복원한다.
-        const saving = this.persistenceQueue.then(() => this.persistNow(this.issuedRevision));
+        const saving = this.persistenceQueue.then(async () => {
+          requireOwner();
+          await this.persistNow(this.issuedRevision);
+          requireOwner();
+        });
         this.persistenceQueue = saving.catch(() => undefined);
         await saving;
+        requireOwner();
         await this.load();
       })
       .finally(() => {
@@ -1103,6 +1159,7 @@ export class IndexedDbBM25Index {
   }
 
   private ensureRuntime(): RustBm25RuntimeIndex {
+    this.requireActive();
     if (this.runtime === null) {
       this.runtime = RustBm25RuntimeIndex.empty(TOKENIZER_VERSION);
     }
@@ -1110,6 +1167,19 @@ export class IndexedDbBM25Index {
       throw new Error('Rust BM25 runtime is unavailable');
     }
     return this.runtime;
+  }
+
+  private requireActive(): void {
+    if (this.closed) throw new Error('rag-bm25-session-retired');
+  }
+
+  private requireWorkerSession(generation: number, worker: BM25WorkerRuntime, allowClosed = false): void {
+    this.requireActive();
+    if (generation !== this.workerGeneration || worker !== this.workerRuntime) throw new Error('rag-bm25-session-retired');
+    if (!allowClosed) {
+      if (this.workerFailure) throw this.workerFailure;
+      if (worker.isClosed) throw worker.closeReason ?? new Error('BM25 worker is closed.');
+    }
   }
 
   private enqueueWorkerMutation(operation: (worker: BM25WorkerRuntime) => Promise<void>): void {
@@ -1124,14 +1194,14 @@ export class IndexedDbBM25Index {
     if (!worker) return Promise.resolve();
     const generation = this.workerGeneration;
     const task = this.workerQueue.then(() => {
-      if (generation !== this.workerGeneration || worker !== this.workerRuntime) throw new Error('rag-bm25-session-retired');
+      this.requireWorkerSession(generation, worker);
       return operation(worker);
     });
     this.workerQueue = task.then(
       () => undefined,
       (error: unknown) => {
         if (generation === this.workerGeneration && worker === this.workerRuntime) {
-          this.workerFailure = error instanceof Error ? error : new Error(String(error));
+          this.workerFailure ??= worker.closeReason ?? (error instanceof Error ? error : new Error(String(error)));
           this.workerReady = false;
           worker.close(this.workerFailure);
         }
@@ -1144,7 +1214,8 @@ export class IndexedDbBM25Index {
     ready?: boolean;
     tokenizerCurrent?: boolean;
     totalDocs?: number;
-  }): void {
+  }, worker?: BM25WorkerRuntime): void {
+    if (worker) this.requireWorkerSession(this.workerGeneration, worker);
     this.workerReady = state.ready ?? false;
     this.workerTokenizerCurrent = state.tokenizerCurrent ?? false;
     this.workerTotalDocs = state.totalDocs ?? 0;
@@ -1256,10 +1327,10 @@ export class IndexedDbBM25Index {
         this.enqueueWorkerMutation(async (worker) => {
           if (operation.kind === 'upsert-document') {
             const document = toCorpusDocument(operation.record);
-            this.applyWorkerState(await worker.add({ ...document, ...documentFields(document) }, context));
-          } else if (operation.record.kind === 'clear') this.applyWorkerState(await worker.clear(context));
-          else if (operation.record.kind === 'remove-doc') this.applyWorkerState(await worker.removeDocument(operation.record.target, context));
-          else this.applyWorkerState(await worker.removeSource(operation.record.target, context));
+            this.applyWorkerState(await worker.add({ ...document, ...documentFields(document) }, context), worker);
+          } else if (operation.record.kind === 'clear') this.applyWorkerState(await worker.clear(context), worker);
+          else if (operation.record.kind === 'remove-doc') this.applyWorkerState(await worker.removeDocument(operation.record.target, context), worker);
+          else this.applyWorkerState(await worker.removeSource(operation.record.target, context), worker);
         });
       });
     }
@@ -1425,7 +1496,7 @@ export class IndexedDbBM25Index {
   }
 
   /** 스냅샷과 tombstone 로그를 버리고 다음 복구를 전량 재구성으로 되돌립니다. */
-  private async dropSnapshot(): Promise<void> {
+  private async dropSnapshot(requireSuccess = false): Promise<void> {
     this.activeManifest = null;
     this.ordersSinceSnapshot = 0;
     this.removalsSinceSnapshot = 0;
@@ -1439,6 +1510,7 @@ export class IndexedDbBM25Index {
         return removed + blocks + removals;
       });
     } catch (error) {
+      if (requireSuccess) throw error;
       this.logger?.warn('BM25 snapshot cleanup failed.', {
         error,
       });
@@ -1468,6 +1540,7 @@ export class IndexedDbBM25Index {
   }
 
   private async commitChangedRows(operation: () => Promise<number>): Promise<number> {
+    this.requireActive();
     const nested = Dexie.currentTransaction?.db === this.db;
     const generation = this.workerGeneration;
     const committed = await this.db.transaction('rw', this.db.tables, async () => {
@@ -1536,36 +1609,54 @@ export class IndexedDbBM25Index {
     await this.commitMutation(() => this.db.meta.put({ key: BM25_SNAPSHOT_KEY, value: raw, updated: Date.now() }));
   }
 
-  private async loadSnapshot(): Promise<BM25Snapshot> {
+  private async loadSnapshot(requireSession?: () => void): Promise<BM25Snapshot> {
+    const generation = this.workerGeneration;
+    const worker = this.workerRuntime;
+    requireSession ??= () => {
+      this.requireActive();
+      if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
+      if (worker) this.requireWorkerSession(generation, worker);
+    };
     const manifest = await this.readManifest();
-    if (!manifest && await this.db.meta.get(BM25_SNAPSHOT_MANIFEST_KEY)) return { raw: '', source: 'empty' };
+    requireSession();
+    const storedManifest = !manifest ? await this.db.meta.get(BM25_SNAPSHOT_MANIFEST_KEY) : null;
+    requireSession();
+    if (storedManifest) return { raw: '', source: 'empty' };
     if (manifest) {
       if (manifest.byteLength > this.maxSnapshotBytes) {
         // 메모리 상한을 넘는 스냅샷은 다음 기회를 위해 남겨 두고 원문에서 복구한다.
         return { raw: '', source: 'empty' };
       }
       const manifestRaw = await this.readSnapshotBlocks(manifest);
+      requireSession();
       if (manifestRaw !== null) return { raw: manifestRaw, source: 'manifest', manifest };
       this.logger?.warn('BM25 snapshot blocks are missing; falling back to stored documents.', {
         data: { blocks: manifest.blockCount },
       });
-      await this.dropSnapshot();
+      await this.dropSnapshot(true);
+      requireSession();
     }
     const stored = await this.db.meta.get(BM25_SNAPSHOT_KEY);
+    requireSession();
     if (stored?.value) {
       return { raw: stored.value, source: 'indexeddb' };
     }
     if (!this.legacyAdapter) {
       return { raw: '', source: 'empty' };
     }
-    if (!(await this.legacyAdapter.exists(this.legacyPath))) {
+    const exists = await this.legacyAdapter.exists(this.legacyPath);
+    requireSession();
+    if (!exists) {
       return { raw: '', source: 'empty' };
     }
     const stat = await statLegacyPath(this.legacyAdapter, this.legacyPath);
+    requireSession();
     if (stat?.type === 'file' && stat.size > this.maxSnapshotBytes) {
       return { raw: '', source: 'empty' };
     }
-    return { raw: await this.legacyAdapter.read(this.legacyPath), source: 'legacy' };
+    const raw = await this.legacyAdapter.read(this.legacyPath);
+    requireSession();
+    return { raw, source: 'legacy' };
   }
 }
 

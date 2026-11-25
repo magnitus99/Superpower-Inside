@@ -1485,6 +1485,20 @@ export interface I18nKeys {
   ragSharedServing: string;
   ragSharedFirstIndex: string;
   ragSharedSettling: string;
+  ragSharedFailureReason: string;
+  ragSharedFailureStage: string;
+  ragSharedFailureStageMissing: string;
+  ragSharedNotApplicable: string;
+  ragSharedRestoreFailed: string;
+  ragSharedRestoreFailedDetail: string;
+  ragSharedHistoricalFailed: string;
+  ragSharedHistoricalDetail: string;
+  ragSharedHistoricalFailedValue: string;
+  ragSharedUpdateRequired: string;
+  ragSharedUpdateRequiredDetail: string;
+  ragSharedRestoring: string;
+  ragSharedNoActiveWork: string;
+  ragSharedFailureMissing: string;
   ragSharedFailed: string;
   ragSharedPartial: string;
   ragSharedStopped: string;
@@ -3564,6 +3578,20 @@ const ko: I18nKeys = {
   ragSharedServing: '기존 색인으로 검색 중',
   ragSharedFirstIndex: '첫 색인을 만드는 중',
   ragSharedSettling: '새 색인으로 전환 중',
+  ragSharedFailureReason: '실패 이유',
+  ragSharedFailureStage: '실패 단계',
+  ragSharedFailureStageMissing: '기록되지 않음',
+  ragSharedNotApplicable: '해당 없음',
+  ragSharedRestoreFailed: '키워드 검색을 복원하지 못했습니다',
+  ragSharedRestoreFailedDetail: '저장된 원문은 보존됩니다. 키워드 검색 복원은 완료되지 않았습니다.',
+  ragSharedHistoricalFailed: '이전 색인 구축 실패',
+  ragSharedHistoricalDetail: '이전 구축의 기록이며 현재 실행 중인 작업의 실패가 아닙니다.',
+  ragSharedHistoricalFailedValue: '이전 구축 실패',
+  ragSharedUpdateRequired: '색인 업데이트가 필요합니다',
+  ragSharedUpdateRequiredDetail: '기존 모델 연결을 확인할 수 없어 자동으로 다시 구축하지 않았습니다. 연결 확인 후 설정의 업데이트 시작을 사용하세요.',
+  ragSharedRestoring: '기존 검색을 복원하는 중',
+  ragSharedNoActiveWork: '진행 중인 작업 없음',
+  ragSharedFailureMissing: '상세 원인이 기록되지 않았습니다',
   ragSharedFailed: '업데이트하지 못했습니다',
   ragSharedPartial: '일부 자료만 반영되었습니다',
   ragSharedStopped: '업데이트를 중단했습니다',
@@ -5788,6 +5816,20 @@ const en: I18nKeys = {
   ragSharedServing: 'Searching with the existing index',
   ragSharedFirstIndex: 'Building the first index',
   ragSharedSettling: 'Switching to the new index',
+  ragSharedFailureReason: 'Failure reason',
+  ragSharedFailureStage: 'Failed stage',
+  ragSharedFailureStageMissing: 'Not recorded',
+  ragSharedNotApplicable: 'Not applicable',
+  ragSharedRestoreFailed: 'Keyword search could not be restored',
+  ragSharedRestoreFailedDetail: 'Stored source text is preserved. Keyword search restoration is incomplete.',
+  ragSharedHistoricalFailed: 'A previous index build failed',
+  ragSharedHistoricalDetail: 'This is a previous build record, not a failure in a currently running task.',
+  ragSharedHistoricalFailedValue: 'Previous build failed',
+  ragSharedUpdateRequired: 'An index update is required',
+  ragSharedUpdateRequiredDetail: 'The previous model connection could not be verified, so no automatic rebuild was started. Verify the connection, then start an update in settings.',
+  ragSharedRestoring: 'Restoring existing search',
+  ragSharedNoActiveWork: 'No task running',
+  ragSharedFailureMissing: 'No detailed cause was recorded',
   ragSharedFailed: 'The update could not finish',
   ragSharedPartial: 'Some sources are only partially available',
   ragSharedStopped: 'The update was stopped',

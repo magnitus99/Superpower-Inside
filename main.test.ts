@@ -66,6 +66,197 @@ vi.mock('obsidian', () => {
 });
 
 describe('SuperpowerInsidePlugin RAG runtime', () => {
+  it.each(['retire', 'unload', 'building-cancel'] as const)('BM25 physical load는 %s drain까지 정착을 보호한다', async (boundary) => {
+    const plugin = await lexicalRuntime();
+    const { RagRuntimeWorkBarrier } = await import('./src/rag/runtime-generation');
+    const runtime = { ...plugin['captureRagRuntimeSnapshot'](), io: new RagRuntimeWorkBarrier(), ragEngine: null };
+    let finish!: () => void;
+    const load = vi.spyOn(runtime.bm25Index!, 'load').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const close = vi.spyOn(runtime.bm25Index!, 'close');
+    const corpusClose = vi.spyOn(runtime.documentCorpus!, 'close');
+    const loading = plugin['startBM25BackgroundLoad'](runtime.bm25Index!, runtime);
+    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    if (boundary === 'unload') Object.assign(plugin, { unloaded: true });
+    if (boundary === 'building-cancel') { plugin['buildingRagRuntime'] = runtime; plugin.cancelRagIndexing({ byUser: true }); }
+    const drain = plugin['drainRagRuntimeSnapshot'](runtime);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(close).not.toHaveBeenCalled(); expect(corpusClose).not.toHaveBeenCalled();
+    } finally { finish(); await loading; await drain; load.mockRestore(); }
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('chat recovery의 실제 Promise와 legacy barrier는 retire까지 store를 보존한다', async () => {
+    const plugin = await lexicalRuntime();
+    plugin['activeRagRuntime'] = null;
+    vi.spyOn(plugin.bm25Index!, 'hasFailure', 'get').mockReturnValue(true);
+    let finish!: () => void;
+    const recovery = vi.spyOn(plugin.bm25Index!, 'recoverClosedWorker').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const preparing = plugin.prepareRagForChat();
+    await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    const close = vi.spyOn(runtime.documentCorpus!, 'close');
+    const drain = plugin['drainRagRuntimeSnapshot'](runtime);
+    try { await new Promise((resolve) => setTimeout(resolve, 10)); expect(close).not.toHaveBeenCalled(); }
+    finally { finish(); await preparing; await drain; recovery.mockRestore(); }
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('사용자 중단 뒤 scheduled/chat BM25 자동복구를 시작하지 않는다', async () => {
+    const plugin = await lexicalRuntime();
+    plugin.cancelRagIndexing({ byUser: true });
+    const recover = vi.spyOn(plugin.bm25Index!, 'recoverClosedWorker');
+    plugin['scheduleBm25WorkerRecovery']();
+    await plugin.prepareRagForChat();
+    expect(recover).not.toHaveBeenCalled();
+    await plugin['drainRagRuntimeSnapshot'](plugin['captureRagRuntimeSnapshot']());
+  });
+
+  it('scripted worker late initialize ACK는 host retire의 physical drain 뒤에만 닫힌다', async () => {
+    const plugin = await lexicalRuntime();
+    const { IndexedDbBM25Index } = await import('./src/rag/bm25');
+    const { RagRuntimeWorkBarrier } = await import('./src/rag/runtime-generation');
+    const Dexie = (await import('dexie')).default;
+    type Request = import('./src/rag/bm25-worker-runtime').BM25WorkerRequest;
+    type Response = import('./src/rag/bm25-worker-runtime').BM25WorkerResponse;
+    let initialize!: Request;
+    let respond!: (event: MessageEvent<Response>) => void;
+    const dispose = vi.fn();
+    const name = 'synthetic-host-late-ack-' + crypto.randomUUID();
+    const index = new IndexedDbBM25Index(name, undefined, undefined, { workerFactory: () => ({
+      worker: { terminate: vi.fn(), postMessage: (message) => { initialize = message; }, setOnMessage: (handler) => { respond = handler; }, setOnError: () => undefined }, dispose,
+    }) });
+    const runtime = { ...plugin['captureRagRuntimeSnapshot'](), io: new RagRuntimeWorkBarrier(), bm25Index: index, ragEngine: null, documentCorpus: null, vaultDocumentCorpus: null };
+    const oldEngine = plugin.ragEngine;
+    const oldClose = vi.spyOn(plugin.documentCorpus!, 'close');
+    const observe = vi.spyOn(plugin as never as { observeRagRuntimeWork(...args: unknown[]): void }, 'observeRagRuntimeWork');
+    const close = vi.spyOn(index, 'close');
+    const loading = plugin['startBM25BackgroundLoad'](index, runtime);
+    await vi.waitFor(() => expect(initialize?.operation).toBe('initialize'));
+    const drain = plugin['drainRagRuntimeSnapshot'](runtime);
+    const calls = observe.mock.calls.length;
+    const ack = (): void => respond({ data: { id: initialize.id, sessionId: initialize.sessionId, appliedRevision: 0, pendingRevision: null, nextPart: 0, ready: true, tokenizerCurrent: true, totalDocs: 0 } } as MessageEvent<Response>);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(close).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled();
+      ack();
+      expect((await loading).error).toBeNull();
+      await drain;
+      expect(close).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce();
+      ack();
+      expect(observe.mock.calls.length).toBe(calls);
+      expect(plugin.ragEngine).toBe(oldEngine); expect(oldClose).not.toHaveBeenCalled();
+    } finally {
+      ack(); await loading; await drain; observe.mockRestore();
+      await plugin['drainRagRuntimeSnapshot'](plugin['captureRagRuntimeSnapshot']());
+      await Dexie.delete(name);
+    }
+  });
+
+  it('BM25 load barrier 밖 checkpoint는 자신을 기다리지 않고 완료한다', async () => {
+    const plugin = await lexicalRuntime();
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    const loading = plugin['startBM25BackgroundLoad'](runtime.bm25Index!, runtime);
+    const checkpoint = runtime.io!.checkpoint(async (stable) => {
+      expect((await loading).error).toBeNull(); expect(stable()).toBe(true);
+    });
+    await checkpoint;
+    await plugin['drainRagRuntimeSnapshot'](runtime);
+  });
+
+  it('scheduled BM25 복구는 한 기회에 최대 두 번만 실행한다', async () => {
+    const plugin = await lexicalRuntime();
+    Object.assign(plugin, { bm25RecoveryAttempts: 0, bm25RecoveryInFlight: false, bm25RecoveryExhausted: false });
+    const recovery = vi.spyOn(plugin.bm25Index!, 'recoverClosedWorker').mockRejectedValue(new Error('synthetic worker failure'));
+    // 실제 실패 상태를 대신해 ready getter만 고정합니다. 복구 횟수/lease/barrier는 host 구현입니다.
+    const ready = vi.spyOn(plugin.bm25Index!, 'isReady', 'get').mockReturnValue(false);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      plugin['scheduleBm25WorkerRecovery']();
+      await vi.waitFor(() => expect(plugin['bm25RecoveryInFlight']).toBe(false));
+    }
+    expect(recovery).toHaveBeenCalledTimes(2);
+    expect(plugin['bm25RecoveryExhausted']).toBe(true);
+    recovery.mockRestore(); ready.mockRestore();
+    await plugin['drainRagRuntimeSnapshot'](plugin['captureRagRuntimeSnapshot']());
+  });
+
+  it('scheduled recovery 대기 중 retire는 store와 진행/proof를 보존한다', async () => {
+    const plugin = await lexicalRuntime();
+    Object.assign(plugin, { bm25RecoveryAttempts: 0, bm25RecoveryInFlight: false, bm25RecoveryExhausted: false, refreshBus: { emit: vi.fn() } });
+    let finish!: () => void;
+    const recovery = vi.spyOn(plugin.bm25Index!, 'recoverClosedWorker').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    const generation = runtime.generation;
+    const close = vi.spyOn(runtime.documentCorpus!, 'close');
+    plugin['scheduleBm25WorkerRecovery']();
+    await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
+    const drain = plugin['drainRagRuntimeSnapshot'](runtime);
+    try { await new Promise((resolve) => setTimeout(resolve, 10)); expect(close).not.toHaveBeenCalled(); }
+    finally { finish(); await drain; recovery.mockRestore(); }
+    expect(plugin['activeRagRuntime']!.generation).toEqual(generation);
+    expect(plugin.refreshBus.emit).not.toHaveBeenCalled();
+  });
+
+  it('정상 chat 준비는 BM25 no-op 복구로 read currentness를 무효화하지 않는다', async () => {
+    const plugin = await lexicalRuntime();
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    const current = runtime.io!.captureReadSnapshot();
+    await plugin.prepareRagForChat();
+    expect(current()).toBe(true);
+    await plugin['drainRagRuntimeSnapshot'](runtime);
+  });
+
+  it.each(['building-cancel', 'unload'] as const)('실제 새 building의 지연 load는 %s 뒤 정착 전에 닫히지 않는다', async (boundary) => {
+    const plugin = await lexicalRuntime();
+    const { IndexedDbBM25Index } = await import('./src/rag/bm25');
+    const oldEngine = plugin.ragEngine;
+    const original = IndexedDbBM25Index.prototype.load;
+    let finish!: () => void;
+    const load = vi.spyOn(IndexedDbBM25Index.prototype, 'load').mockImplementation(function (this: IndexedDbBM25Index, observer) {
+      return new Promise<void>((resolve, reject) => { finish = () => { void original.call(this, observer).then(resolve, reject); }; });
+    });
+    const building = plugin.rebuildRagGeneration().catch(() => undefined);
+    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    const runtime = plugin['buildingRagRuntime']!;
+    const close = vi.spyOn(runtime.bm25Index!, 'close');
+    const corpusClose = vi.spyOn(runtime.documentCorpus!, 'close');
+    if (boundary === 'building-cancel') plugin.cancelRagIndexing({ byUser: true });
+    else {
+      Object.assign(plugin, { mcpRetryTimers: new Map(), mcpConnectionRunId: 0, refreshBus: { emit: vi.fn(), destroy: vi.fn() } });
+      plugin.onunload();
+    }
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(close).not.toHaveBeenCalled(); expect(corpusClose).not.toHaveBeenCalled();
+      if (boundary === 'building-cancel') expect(plugin.ragEngine).toBe(oldEngine);
+    } finally { finish(); await building; load.mockRestore(); }
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    if (boundary === 'building-cancel') {
+      expect(plugin.ragEngine).toBe(oldEngine);
+      expect(plugin['ragAutoRecoveryPausedByUser']).toBe(true);
+      await plugin['drainRagRuntimeSnapshot'](plugin['captureRagRuntimeSnapshot']());
+    }
+  });
+
+  it('닫힌 barrier의 퇴역 owner는 snapshot 복원으로 다시 admission하지 않는다', async () => {
+    const plugin = await lexicalRuntime();
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    const drain = plugin['drainRagRuntimeSnapshot'](runtime);
+    expect(plugin['restoreRagRuntimeSnapshot'](runtime)).toBe(false);
+    await drain;
+  });
+
+  it('기존 초기화 오류와 기록된 단계를 공통 실패 요약으로 전달한다', async () => {
+    const { default: PluginClass } = await import('./main.ts');
+    const plugin = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    Object.assign(plugin, { lastRagRuntimeInitError: 'Synthetic arbitrary initialization failure', lastRagRuntimeInitStage: 'synthetic-init-step' });
+    const generation = { revision: 0, coverage: null, semanticAvailable: false, availability: 'failed' as const, serving: null, building: { generation: null, status: 'failed' as const, indexing: null } };
+    expect(plugin.getRagIndexingProgressSummary(generation)).toMatchObject({ lastInitError: plugin.lastRagRuntimeInitError, lastInitStage: plugin.lastRagRuntimeInitStage });
+    plugin.lastRagRuntimeInitError = null;
+    plugin.lastRagRuntimeInitStage = null;
+    expect(plugin.getRagIndexingProgressSummary(generation)?.lastInitError ?? null).toBeNull();
+  });
+
   async function lexicalRuntime(options: Parameters<typeof createApp>[0] = {}) {
     const { default: PluginClass } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
@@ -77,7 +268,10 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     return plugin;
   }
 
-  it.each(['legacy', 'persisted'] as const)('%s 실제 복원은 building 전 보류된 BM25 load를 canonical 작업으로 게시한다', async (mode) => {
+  it.each([
+    { mode: 'legacy', fail: false }, { mode: 'persisted', fail: false },
+    { mode: 'legacy', fail: true }, { mode: 'persisted', fail: true },
+  ] as const)('$mode 복원 fail=$fail은 실제 작업과 현재 원인을 게시한다', async ({ mode, fail }) => {
     const { default: PluginClass } = await import('./main.ts');
     const { DEFAULT_SETTINGS } = await import('./src/settings');
     const { IndexedDbBM25Index } = await import('./src/rag/bm25');
@@ -101,21 +295,36 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     let progress!: NonNullable<Parameters<IndexedDbBM25Index['load']>[0]>;
     const load = vi.spyOn(IndexedDbBM25Index.prototype, 'load').mockImplementation((observer) => {
       progress = observer!;
-      observer?.({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 0, totalUnits: 135835 });
-      return new Promise<void>((resolve) => { release = resolve; });
+      observer?.({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 0, totalUnits: 4096 });
+      return new Promise<void>((resolve, reject) => { release = () => fail ? reject(new Error('synthetic restore unreachable')) : resolve(); });
     });
+    plugin['ragRestoreFailure'] = { error: 'previous restore', stage: 'opening-storage' };
     const restoring = plugin['restorePersistedRagGeneration']();
     try {
+      expect(plugin.getRagGenerationSnapshot()).toMatchObject({ restoring: true, restoreFailure: null });
       expect(plugin.getSearchStatusSnapshot().indexing?.work?.stage).toBe('opening-storage');
       await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
       expect(plugin.getRagGenerationSnapshot().building).toBeNull();
-      progress({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 128, totalUnits: 135835 });
+      progress({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 128, totalUnits: 4096 });
       const snapshot = plugin.getSearchStatusSnapshot();
-      expect(snapshot.indexing).toMatchObject({ activity: 'preparing', work: { stage: 'restoring-keyword-documents', processedUnits: 128, totalUnits: 135835 } });
+      expect(snapshot.indexing).toMatchObject({ activity: 'preparing', work: { stage: 'restoring-keyword-documents', processedUnits: 128, totalUnits: 4096 } });
       expect(plugin.getRagIndexingProgressSummary()?.work?.processedUnits).toBe(snapshot.indexing?.work?.processedUnits);
+      plugin['lastBuildingGeneration'] = { ...plugin['restoringRagRuntime']!.generation!, terminal: 'failed' };
+      plugin['lastBuildingGenerationSource'] = 'saved';
+      plugin.lastRagRuntimeInitError = 'unrelated init error';
+      expect(plugin.getRagIndexingProgressSummary()?.activity).toBe('preparing');
       release(); await restoring;
+      expect(plugin.getRagGenerationSnapshot()).toMatchObject({ restoring: false, building: { source: 'saved' } });
+      expect(plugin.lastRagRuntimeInitError).toBe('unrelated init error');
+      if (fail) {
+        expect(plugin.getRagGenerationSnapshot().restoreFailure).toMatchObject({ error: 'synthetic restore unreachable', stage: 'restoring-keyword-documents' });
+        expect(plugin.getRagIndexingProgressSummary()).toMatchObject({ activity: 'failed', servingAvailable: true, failure: { source: 'restore', error: 'synthetic restore unreachable', stage: 'restoring-keyword-documents' } });
+      } else {
+        expect(plugin.getRagGenerationSnapshot().restoreFailure ?? null).toBeNull();
+        expect(plugin.getRagIndexingProgressSummary()).toMatchObject({ failure: { source: 'saved', error: null, stage: null } });
+      }
       expect(plugin.getRagIndexingProgressSummary()?.work ?? null).toBeNull();
-      progress({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 256, totalUnits: 135835 });
+      progress({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 256, totalUnits: 4096 });
       expect(plugin.getRagIndexingProgressSummary()?.work ?? null).toBeNull();
     } finally {
       release?.(); await restoring;
@@ -126,15 +335,73 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     }
   });
 
+  it('검증된 검색 세대를 게시하면 이전 복원 오류를 남기지 않는다', async () => {
+    const plugin = await lexicalRuntime();
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    runtime.bm25Index!.addDocument('synthetic-restore-ready', 'synthetic restored evidence', 'synthetic.md');
+    await runtime.bm25Index!.persist();
+    plugin['ragRestoreFailure'] = { error: 'synthetic previous restore failure', stage: 'restoring-keyword-documents' };
+    try {
+      expect(runtime.bm25Index?.isReady).toBe(true);
+      expect(plugin['restoreRagRuntimeSnapshot'](runtime)).toBe(true);
+      expect(plugin.getRagGenerationSnapshot().restoreFailure).toBeNull();
+    } finally { await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('복원 외부 실패도 현재 owner의 관측 단계로 기록한다', async () => {
+    const { default: PluginClass } = await import('./main.ts');
+    const plugin = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    Object.assign(plugin, { ragRuntimeInitRunId: 1 });
+    const read = vi.fn().mockRejectedValue(new Error('synthetic manifest failure'));
+    vi.spyOn(plugin as never, 'getRagGenerationManifest').mockReturnValue({ read } as never);
+    try {
+      await expect(plugin['restorePersistedRagGeneration']()).rejects.toThrow('synthetic manifest failure');
+      expect(plugin.getRagGenerationSnapshot()).toMatchObject({
+        restoring: false, availability: 'failed', restoreFailure: { error: 'synthetic manifest failure', stage: 'opening-storage' },
+      });
+    } finally { plugin['endRagRuntimeWork'](); }
+  });
+
+  it('복원 진단은 owner·실행·중단·unload 경계를 넘지 않는다', async () => {
+    const { default: PluginClass } = await import('./main.ts');
+    const { IndexingCancelledError } = await import('./src/rag/indexer');
+    const plugin = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    const owner = {}, other = {};
+    Object.assign(plugin, { ragRuntimeInitRunId: 1, ragRestoreOwner: owner });
+    plugin['beginRagRuntimeWork'](owner);
+    const record = (error: unknown = new Error('late restore')) => plugin['recordRagRestoreFailure'](error, owner, 1);
+    try {
+      record(new IndexingCancelledError());
+      expect(plugin.getRagGenerationSnapshot().restoreFailure).toBeNull();
+      for (const state of [
+        { ragRestoreOwner: other }, { ragRuntimeInitRunId: 2 }, { unloaded: true },
+        { ragResetInProgress: true }, { ragAutoRecoveryPausedByUser: true },
+      ]) {
+        Object.assign(plugin, state);
+        record();
+        expect(plugin.getRagGenerationSnapshot().restoreFailure).toBeNull();
+        Object.assign(plugin, { ragRestoreOwner: owner, ragRuntimeInitRunId: 1, unloaded: false, ragResetInProgress: false, ragAutoRecoveryPausedByUser: false });
+      }
+      plugin['beginRagRuntimeWork'](other);
+      record();
+      expect(plugin.getRagGenerationSnapshot().restoreFailure).toBeNull();
+      plugin['beginRagRuntimeWork'](owner);
+      plugin['observeRagRuntimeWork'](owner, 'restoring-corpus', 'files');
+      record();
+      plugin['recordRagRestoreFailure'](new Error('secondary closed'), owner, 1);
+      expect(plugin.getRagGenerationSnapshot().restoreFailure).toEqual({ error: 'late restore', stage: 'restoring-corpus' });
+    } finally { plugin['endRagRuntimeWork'](); }
+  });
+
   it('작업 owner 교체·중단·unload는 늦은 진척을 무시하되 기존 물리 drain을 종료하지 않는다', async () => {
     const { default: PluginClass } = await import('./main.ts');
     const plugin = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
     Object.assign(plugin, { ragRuntimeInitRunId: 1, refreshBus: { emit: vi.fn() } });
     const old = {}, current = {};
     plugin['beginRagRuntimeWork'](old);
-    plugin['observeRagRuntimeWork'](old, 'restoring-keyword-documents', 'documents', 128, 135835);
+    plugin['observeRagRuntimeWork'](old, 'restoring-keyword-documents', 'documents', 128, 4096);
     plugin['beginRagRuntimeWork'](current);
-    plugin['observeRagRuntimeWork'](old, 'embedding', 'documents', 256, 135835);
+    plugin['observeRagRuntimeWork'](old, 'embedding', 'documents', 256, 4096);
     expect(plugin.getRagIndexingProgressSummary()?.work?.stage).toBe('opening-storage');
     let finish!: () => void;
     const physical = new Promise<void>((resolve) => { finish = resolve; });
@@ -586,6 +853,32 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       expect(batch).toHaveBeenCalledTimes(previous.batch);
       expect(embed).toHaveBeenCalledTimes(previous.embed);
     } finally { batch.mockRestore(); embed.mockRestore(); }
+  });
+
+  it('현재 hydrate 실패가 저장된 과거 실패에 가려지지 않고 manifest를 보존한다', async () => {
+    const first = await lexicalRuntime();
+    const { default: PluginClass } = await import('./main.ts');
+    const { IndexedDbBM25Index } = await import('./src/rag/bm25');
+    const second = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    Object.assign(second, { app: first.app, manifest: { id: 'superpower-inside' }, settings: structuredClone(first.settings) });
+    await second['restorePersistedRagGeneration']();
+    const serving = second.getRagGenerationSnapshot().serving!;
+    second['lastBuildingGeneration'] = { ...serving, id: crypto.randomUUID(), terminal: 'failed' };
+    second['lastBuildingGenerationSource'] = 'saved';
+    const manifest = second['getRagGenerationManifest']();
+    const before = await manifest.read();
+    const load = vi.spyOn(IndexedDbBM25Index.prototype, 'load').mockRejectedValueOnce(new Error('synthetic hydrate failure'));
+    try {
+      await expect(second.initRAG()).rejects.toThrow('synthetic hydrate failure');
+      expect(second.getRagGenerationSnapshot()).toMatchObject({ serving: { id: serving.id }, building: { source: 'live', status: 'failed' } });
+      expect(second.getRagIndexingProgressSummary()?.failure).toMatchObject({ source: 'init', error: 'synthetic hydrate failure' });
+      expect(await manifest.read()).toEqual(before);
+    } finally {
+      load.mockRestore();
+      first['unregisterRAGEvents'](); second['unregisterRAGEvents']();
+      await first['drainRagRuntimeSnapshot'](first['captureRagRuntimeSnapshot']());
+      await second['drainRagRuntimeSnapshot'](second['captureRagRuntimeSnapshot']());
+    }
   });
 
   it('cold 동일 계약은 같은 descriptor를 hydrate하고 전체 source refresh나 새 UUID를 만들지 않는다', async () => {

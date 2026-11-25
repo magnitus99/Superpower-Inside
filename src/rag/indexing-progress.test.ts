@@ -235,3 +235,54 @@ describe('runtime work canonical summary', () => {
     expect(summarizeRagActivity({ status: null, keywordRestore: null, generation: { availability: 'usable', building: null }, work: null })).toBeNull();
   });
 });
+
+
+describe('실패 진단 전달', () => {
+  it('구축 세대를 만들기 전 실패도 기존 진단값으로 표시한다', () => {
+    expect(summarizeRagActivity({ status: null, keywordRestore: null,
+      generation: { availability: 'failed', building: null },
+      lastInitError: 'Synthetic early initialization failure', lastInitStage: 'starting',
+    })).toMatchObject({ activity: 'failed', servingAvailable: false, totalFilesKnown: false,
+      lastInitError: 'Synthetic early initialization failure', lastInitStage: 'starting' });
+  });
+  it.each(['failed', 'building', 'cancelled', 'paused'] as const)('%s에는 실패 상태에서만 기록된 진단을 붙인다', terminal => {
+    const input = { status: null, keywordRestore: null, lastInitError: 'Synthetic arbitrary failure', lastInitStage: 'synthetic-init-step',
+      generation: { availability: 'usable' as const, building: { generation: null, status: terminal, indexing: null } } };
+    const result = summarizeRagActivity(input);
+    if (terminal === 'failed') expect(result).toMatchObject({ lastInitError: input.lastInitError, lastInitStage: input.lastInitStage });
+    else { expect(result?.lastInitError).toBeUndefined(); expect(result?.lastInitStage).toBeUndefined(); }
+  });
+});
+
+describe('복원과 과거 실패의 출처', () => {
+  it('복원 진행은 저장된 실패 이력보다 우선하고 사용자 중단은 유지한다', () => {
+    const generation = { availability: 'restoring' as const, restoring: true,
+      building: { generation: null, source: 'saved' as const, status: 'failed' as const, indexing: null } };
+    expect(summarizeRagActivity({ status: null, keywordRestore: null, generation })).toMatchObject({ activity: 'preparing', restoring: true });
+    expect(summarizeRagActivity({ status: null, keywordRestore: null, generation, pausedByUser: true })).toMatchObject({ activity: 'paused' });
+  });
+  it('업데이트 필요는 실제 진행이나 복원 실패를 만들지 않는다', () => {
+    const result = summarizeRagActivity({ status: null, keywordRestore: null,
+      generation: { availability: 'usable', building: null, updateRequired: true } });
+    expect(result).toMatchObject({ updateRequired: true, servingAvailable: true });
+    expect(result?.activity).not.toBe('indexing');
+    expect(result?.failure).toBeUndefined();
+  });
+  it('현재 복원 실패는 과거 failed와 무관한 init 오류보다 우선한다', () => {
+    const summary = summarizeRagActivity({ status: null, keywordRestore: null,
+      generation: { availability: 'usable', building: { generation: null, source: 'saved', status: 'failed', indexing: null }, restoreFailure: { error: 'synthetic unreachable', stage: 'restoring-keyword-documents' } },
+      lastInitError: 'unrelated', lastInitStage: 'loading-model',
+    });
+    expect(summary).toMatchObject({ activity: 'failed', servingAvailable: true, failure: { source: 'restore', error: 'synthetic unreachable', stage: 'restoring-keyword-documents' } });
+  });
+  it('과거 실패는 현재 init 오류를 빌리지 않는다', () => {
+    expect(summarizeRagActivity({ status: null, keywordRestore: null,
+      generation: { availability: 'usable', building: { generation: null, source: 'saved', status: 'failed', indexing: null } }, lastInitError: 'unrelated',
+    })).toMatchObject({ failure: { source: 'saved', error: null, stage: null } });
+  });
+  it('live 구축 실패는 현재 init 원인을 보존한다', () => {
+    expect(summarizeRagActivity({ status: null, keywordRestore: null,
+      generation: { availability: 'usable', building: { generation: null, source: 'live', status: 'failed', indexing: null }, restoreFailure: { error: 'old restore', stage: 'opening-storage' } }, lastInitError: 'new init', lastInitStage: 'loading-model',
+    })).toMatchObject({ failure: { source: 'init', error: 'new init', stage: 'loading-model' } });
+  });
+});

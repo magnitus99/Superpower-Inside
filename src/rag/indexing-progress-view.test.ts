@@ -298,7 +298,7 @@ describe('전체 준비 작업', () => {
     const render = (patch: Partial<RagIndexingProgressSummary>) => renderRagIndexingProgress(container as unknown as HTMLElement, { ...summary, ...patch });
     render({ work });
     const visible = container.querySelector('.superpower-inside-indexing-stage')!;
-    expect(visible.children.length).toBe(3);
+    expect(visible.children.filter(child => !child.className.includes('superpower-inside-hidden')).length).toBe(3);
     const button = container.querySelector('button')!; button.focus();
     for (const stage of ['restoring-keyword-documents', 'loading-model', 'verifying', 'publishing', 'waiting'] as const) {
       render({ work: { ...work, stage } });
@@ -317,5 +317,141 @@ describe('전체 준비 작업', () => {
     expect(current.rows.find(row => row.key === 'workCount')?.value).toContain('41,984 / 135,835');
     expect(current.rows.find(row => row.key === 'workTime')?.value).toContain('9m');
     expect(current.rows.find(row => row.key === 'workTime')?.value).toContain(t('ragWorkEarlyEstimate'));
+  });
+});
+
+
+describe('실패 상세 기본 표시', () => {
+  it.each(['ko', 'en'] as const)('현재 복원·과거 이력·명시 업데이트를 구분한다 (%s)', language => {
+    setLanguage(language);
+    const restored = display({ activity: 'failed', lastInitError: 'unrelated init',
+      failure: { source: 'restore', error: 'synthetic trap', stage: 'restoring-keyword-documents' } });
+    expect(restored.headline).toBe(t('ragSharedRestoreFailed'));
+    expect(restored.rows.find(row => row.key === 'failureReason')?.value).toBe('synthetic trap');
+    expect(restored.rows.find(row => row.key === 'failureStage')?.value).toBe(t('ragWorkRestoreDocuments'));
+    const historical = display({ activity: 'failed', updateRequired: true, lastInitError: 'unrelated init',
+      failure: { source: 'saved', error: null, stage: null } });
+    expect(historical.headline).toBe(t('ragSharedHistoricalFailed'));
+    expect(historical.tone).toBe('warning');
+    expect(historical.detail).toContain(t('ragSharedUpdateRequiredDetail'));
+    expect(historical.rows.find(row => row.key === 'failureReason')?.value).toBe(t('ragSharedFailureMissing'));
+    expect(display({ activity: 'preparing', restoring: true }).headline).toBe(t('ragSharedRestoring'));
+    const required = display({ activity: 'partial', updateRequired: true });
+    expect(required.headline).toBe(t('ragSharedUpdateRequired'));
+    expect(required.detail).toBe(t('ragSharedUpdateRequiredDetail'));
+    for (const inactive of [restored, historical, required]) {
+      expect(inactive.rows.find(row => row.key === 'stage')?.value).toBe(t('ragSharedNoActiveWork'));
+      expect(inactive.rows.find(row => row.key === 'workCount')?.value).toBe(t('ragSharedFailureStageMissing'));
+      expect(inactive.rows.find(row => row.key === 'workTime')?.value).toBe(t('ragSharedFailureStageMissing'));
+    }
+  });
+  it.each(['ko', 'en'] as const)('임의 오류·미기록·기록된 단계만 표시한다 (%s)', language => {
+    setLanguage(language);
+    const failed = { activity: 'failed' as const, lastInitError: '<synthetic> arbitrary failure', lastInitStage: 'opening-storage' };
+    expect(value('failureReason', failed)).toBe(failed.lastInitError);
+    expect(value('failureStage', failed)).toBe(t('ragWorkOpenStorage'));
+    expect(value('failureReason', { activity: 'failed' })).toBe(t('ragSharedFailureMissing'));
+    expect(value('failureReason', { activity: 'failed', lastInitError: '  ' })).toBe(t('ragSharedFailureMissing'));
+    expect(value('failureStage', { activity: 'failed', stage: 'embedding' })).toBe(t('ragSharedFailureStageMissing'));
+    expect(value('failureStage', { ...failed, lastInitStage: 'synthetic-unmapped-step' })).toBe('synthetic-unmapped-step');
+    const credential = 'Bearer ' + 'synthetic'.repeat(3);
+    expect(value('failureReason', { ...failed, lastInitError: credential })).toBe('[REDACTED]');
+    expect(value('failureStage', { ...failed, lastInitStage: credential })).toBe('[REDACTED]');
+    for (const activity of ['preparing', 'indexing', 'settling', 'partial', 'cancelled', 'paused'] as const) {
+      expect(value('failureReason', { ...failed, activity })).toBeUndefined();
+      expect(value('failureStage', { ...failed, activity })).toBeUndefined();
+    }
+  });
+  it('접힘 밖 실패 행을 갱신하고 재시작 중 감추며 DOM·펼침·focus를 유지한다', () => {
+    const container = new Element();
+    const render = (patch: Partial<RagIndexingProgressSummary>) => renderRagIndexingProgress(container as unknown as HTMLElement, { ...summary, ...patch });
+    render({ activity: 'failed', lastInitError: '<synthetic> first failure', lastInitStage: 'opening-storage' });
+    const root = container.querySelector('.superpower-inside-indexing-progress')!;
+    const stage = root.querySelector('.superpower-inside-indexing-stage')!;
+    const reason = stage.querySelector('.superpower-inside-indexing-value-failureReason')!;
+    const reasonRow = stage.querySelector('.superpower-inside-indexing-row-failureReason')!;
+    const panel = root.querySelector('.superpower-inside-indexing-details')!;
+    const button = root.querySelector('button')!;
+    expect(reason).not.toBeNull();
+    expect(reason.textContent).toBe('<synthetic> first failure');
+    expect(reasonRow.className).not.toContain('superpower-inside-hidden');
+    expect(panel.querySelector('.superpower-inside-indexing-value-failureReason')).toBeNull();
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    button.focus(); button.listeners.get('click')!();
+    render({ activity: 'preparing', lastInitError: 'synthetic stale failure' });
+    expect(reasonRow.className).toContain('superpower-inside-hidden');
+    expect(reason.textContent).toBe('');
+    render({ activity: 'failed', lastInitError: 'synthetic second failure', lastInitStage: null });
+    expect(stage.querySelector('.superpower-inside-indexing-value-failureReason')).toBe(reason);
+    expect(reason.textContent).toBe('synthetic second failure');
+    expect(reasonRow.className).not.toContain('superpower-inside-hidden');
+    expect(stage.querySelector('.superpower-inside-indexing-value-failureStage')?.textContent).toBe(t('ragSharedFailureStageMissing'));
+    expect(root.querySelector('button')).toBe(button);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(container.ownerDocument.activeElement).toBe(button);
+    render({ activity: 'failed' });
+    expect(reason.textContent).toBe(t('ragSharedFailureMissing'));
+  });
+});
+
+describe('작업 없는 펼친 상세의 미기록 수치와 해당 없는 ETA', () => {
+  const inactiveCases: Partial<RagIndexingProgressSummary>[] = [
+    { activity: 'failed', failure: { source: 'saved', error: null, stage: null } },
+    { activity: 'failed', failure: { source: 'restore', error: 'synthetic restore failure', stage: 'opening-storage' } },
+    { activity: 'partial', updateRequired: true },
+  ];
+  // 진행 없는 실제 producer의 자리값 0은 확인된 완료 수가 아니다.
+  const unknownCounts = {
+    completedFiles: 0,
+    totalFiles: 0,
+    totalFilesKnown: false,
+    processedFiles: null, failedFiles: null, partialFiles: null, skippedFiles: null,
+  };
+  it.each(['ko', 'en'] as const)('saved/restore/updateRequired 상세를 펼쳐 구별한다 (%s)', language => {
+    setLanguage(language);
+    const notRecorded = language === 'ko' ? '기록되지 않음' : 'Not recorded';
+    const notApplicable = language === 'ko' ? '해당 없음' : 'Not applicable';
+    for (const inactive of inactiveCases) {
+      const container = new Element();
+      renderRagIndexingProgress(container as unknown as HTMLElement, { ...summary, ...unknownCounts, ...inactive });
+      const toggle = container.querySelector('button')!;
+      toggle.focus(); toggle.listeners.get('click')!();
+      const panel = container.querySelector('.superpower-inside-indexing-details')!;
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      expect(panel.className).not.toContain('superpower-inside-hidden');
+      for (const key of ['completed', 'processed', 'failed', 'partial', 'skipped']) {
+        expect(panel.querySelector(`.superpower-inside-indexing-value-${key}`)?.textContent).toBe(notRecorded);
+      }
+      for (const key of ['pipelineEta', 'overallEta']) {
+        expect(panel.querySelector(`.superpower-inside-indexing-value-${key}`)?.textContent).toBe(notApplicable);
+      }
+      expect(container.ownerDocument.activeElement).toBe(toggle);
+    }
+  });
+  it.each(['ko', 'en'] as const)('확인된 0과 수치는 보존하되 총량 미상의 완료 수는 승격하지 않는다 (%s)', language => {
+    setLanguage(language);
+    for (const inactive of inactiveCases) {
+      for (const n of [0, 1200]) {
+        const patch = { ...inactive, completedFiles: n, totalFiles: n, totalFilesKnown: true,
+          processedFiles: n, failedFiles: n, partialFiles: n, skippedFiles: n };
+        const formatted = n === 0 ? '0' : '1,200';
+        expect(value('completed', patch)).toBe(`${formatted} / ${formatted}`);
+        expect(value('completed', { ...patch, totalFilesKnown: false })).toBe(language === 'ko' ? '기록되지 않음' : 'Not recorded');
+        for (const key of ['processed', 'failed', 'partial', 'skipped']) expect(value(key, patch)).toBe(formatted);
+        expect(value('completed', { ...patch, ...unknownCounts })).toBe(t('ragSharedFailureStageMissing'));
+      }
+    }
+  });
+  it.each(['ko', 'en'] as const)('실제 active unknown과 중단·live 초기화 실패 표시는 유지한다 (%s)', language => {
+    setLanguage(language);
+    for (const activity of ['preparing', 'indexing', 'paused', 'cancelled', 'failed'] as const) {
+      const patch = { ...unknownCounts, activity,
+        ...(activity === 'failed' ? { failure: { source: 'init' as const, error: 'synthetic init failure', stage: null } } : {}) };
+      for (const key of ['completed', 'processed', 'failed', 'partial', 'skipped']) expect(value(key, patch)).toBe(t('ragSharedUnknown'));
+      const eta = activity === 'failed' ? t('ragSharedFailedValue')
+        : activity === 'cancelled' ? t('ragSharedStoppedValue')
+          : activity === 'paused' ? t('chatReadinessIndexingPhasePaused') : t('ragIndexingProgressEtaCalculating');
+      for (const key of ['pipelineEta', 'overallEta']) expect(value(key, { ...patch, pipelineRemainingMs: null })).toBe(eta);
+    }
   });
 });

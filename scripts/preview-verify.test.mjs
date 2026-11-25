@@ -6,7 +6,13 @@ import {
   parsePreviewResult,
 } from './preview-verify.mjs';
 
+import { createIndexingPreviewSummary } from './obsidian-preview/progress.mjs';
+
 describe('헤드리스 Chrome 검수', () => {
+  it('실패 사유가 있는 화면과 미기록 화면을 별개로 검수한다', () => {
+    expect(createIndexingPreviewSummary('failed')).toMatchObject({ activity: 'failed', lastInitError: expect.any(String), lastInitStage: 'opening-storage' });
+    expect(createIndexingPreviewSummary('failed-missing')).toMatchObject({ activity: 'failed', lastInitError: null, lastInitStage: null });
+  });
   it('고정 뷰포트·테마·빈/오류 상태를 포함한다', () => {
     expect(PREVIEW_CASES.map((scenario) => scenario.name)).toEqual([
       'quota-settings-light',
@@ -36,6 +42,16 @@ describe('헤드리스 Chrome 검수', () => {
       'progress-chat-settling',
       'progress-chat-partial',
       'progress-chat-failed',
+      'progress-chat-failed-collapsed',
+      'progress-search-failed-dark',
+      'progress-settings-failed',
+      'progress-failed-missing-en',
+      'restore-failed-settings',
+      'restore-history-chat',
+      'restore-history-settings-expanded',
+      'restore-required-search-expanded',
+      'restore-required-search',
+      'restore-progress-saved',
       'progress-chat-user-paused',
       'progress-chat-performance-paused',
       'progress-search-serving',
@@ -52,6 +68,13 @@ describe('헤드리스 Chrome 검수', () => {
     ]);
     expect(PREVIEW_CASES.every((scenario) => scenario.query.includes('check'))).toBe(true);
     expect(PREVIEW_CASES.some((scenario) => scenario.width <= 360)).toBe(true);
+  });
+
+  it('현재 복원 오류·과거 이력·명시 업데이트·복원 진행을 분리한다', () => {
+    expect(createIndexingPreviewSummary('restore-failed')).toMatchObject({ failure: { source: 'restore' }, updateRequired: true });
+    expect(createIndexingPreviewSummary('restore-history')).toMatchObject({ failure: { source: 'saved', error: null } });
+    expect(createIndexingPreviewSummary('restore-required')).toMatchObject({ updateRequired: true });
+    expect(createIndexingPreviewSummary('restore-progress')).toMatchObject({ restoring: true, activity: 'preparing' });
   });
 
   it('플랫폼별 Chrome 후보와 실행 파일 선택을 분리한다', () => {

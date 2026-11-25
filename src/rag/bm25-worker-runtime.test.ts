@@ -16,6 +16,20 @@ import {
 afterEach(() => vi.useRealTimers());
 
 describe('BM25 worker runtime', () => {
+  it('최초 close 원인은 재종료와 닫힌 worker 요청에도 보존한다', async () => {
+    const fixture = createFakeWorker();
+    const runtime = new BM25WorkerRuntime(fixture.create);
+    const original = new Error('synthetic original shutdown');
+    const pending = runtime.initialize('synthetic-db', '');
+    const outcome = pending.catch((error: unknown) => error);
+    runtime.close(original);
+    runtime.close(new Error('synthetic secondary shutdown'));
+    expect(await outcome).toBe(original);
+    expect(runtime.closeReason).toBe(original);
+    await expect(runtime.initialize('synthetic-db', '')).rejects.toThrow('closed');
+    expect(runtime.closeReason).toBe(original);
+  });
+
   it('현재 entry와 실제 Rust checkpoint는 초기화·추가·rebuild·분할 source의 실제 prefix를 담는다', async () => {
     const built = await build({
       entryPoints: ['src/rag/bm25-worker-entry.ts'],

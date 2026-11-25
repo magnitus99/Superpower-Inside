@@ -3,6 +3,7 @@ import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IndexedDbBM25Index, getBM25DocumentFields, tokenize, type BM25DocumentInput } from './bm25';
+import { BM25WorkerRuntime } from './bm25-worker-runtime';
 import type {
   BM25WorkerAdapter,
   BM25WorkerFactory,
@@ -1204,6 +1205,23 @@ describe('IndexedDbBM25Index', () => {
     expect([...bm25.search('freshbeta').keys()]).toEqual(['note.md::0']);
   });
 
+  it.each(['worker', 'no-worker'] as const)('재빌드 자료 준비 중 reload는 이전 재구축 잠금을 정리한다 (%s)', async (mode) => {
+    const index = new IndexedDbBM25Index(createDbName(), createAdapter(), undefined,
+      mode === 'worker' ? { workerFactory: createScriptedWorker('').factory } : {});
+    let finish!: (documents: BM25DocumentInput[]) => void;
+    try {
+      await index.load();
+      const preparing = index.rebuildFrom(() => new Promise<BM25DocumentInput[]>((resolve) => { finish = resolve; }));
+      const rejected = expect(preparing).rejects.toThrow('rag-bm25-session-retired');
+      await index.load();
+      finish([]);
+      await rejected;
+      expect(index['rebuildReplayOperations']).toBeNull();
+      await index.rebuildFrom(() => Promise.resolve([{ id: 'fresh', text: 'synthetic fresh evidence', sourcePath: 'fresh.md' }]));
+      expect(await index.getCorpusDocumentsByIds(['fresh'])).toHaveLength(1);
+    } finally { index.close(); }
+  });
+
   it('재빌드 corpus를 준비하는 동안 들어온 증분 변경은 bulk 교체 뒤 다시 적용한다', async () => {
     const bm25 = new IndexedDbBM25Index(createDbName(), createAdapter());
     await bm25.load();
@@ -1848,3 +1866,197 @@ async function seedSnapshotManifest(
     db.close();
   }
 }
+
+describe('BM25 lifecycle 경계', () => {
+  function gate() {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { promise, release };
+  }
+
+  function fixture() {
+    const requests: BM25WorkerRequest[] = [];
+    const errors: ((event: ErrorEvent) => void)[] = [];
+    let rejectSnapshot = false;
+    let failMutation = false;
+    const workerFactory: BM25WorkerFactory = () => {
+      let respond!: (event: MessageEvent<BM25WorkerResponse>) => void;
+      return {
+        worker: {
+          postMessage: (message) => {
+            requests.push(message);
+            queueMicrotask(() => respond({ data: {
+              id: message.id,
+              ...applyScriptedPrefix(message, !(failMutation && message.operation === 'add')),
+              ...(failMutation && message.operation === 'add' ? { error: 'synthetic first mutation failure' } : { ready: true, tokenizerCurrent: true, totalDocs: 0 }),
+              ...(rejectSnapshot && message.operation === 'initialize' ? { snapshotRejected: true } : {}),
+            } } as MessageEvent<BM25WorkerResponse>));
+          },
+          terminate: vi.fn(),
+          setOnMessage: (handler) => { respond = handler; },
+          setOnError: (handler) => { errors.push(handler); },
+        },
+        dispose: vi.fn(),
+      };
+    };
+    const index = new IndexedDbBM25Index(createDbName(), undefined, undefined, { workerFactory });
+    const internals = index as unknown as {
+      loadSnapshot(): Promise<{ raw: string; source: 'empty' }>;
+      dropSnapshot(): Promise<void>;
+      persistNow(checkpoint: number): Promise<void>;
+      workerQueue: Promise<void>;
+      commitChangedRows(operation: () => Promise<number>): Promise<number>;
+      readPersistedOrder(): Promise<number>;
+      db: { documents: { count(): Promise<number> } };
+      persistenceQueue: Promise<void>;
+    };
+    return { index, internals, requests, errors, rejectSnapshots: () => { rejectSnapshot = true; }, failMutations: () => { failMutation = true; }, resumeMutations: () => { failMutation = false; } };
+  }
+
+  it.each(['close', 'reload'] as const)('초기 진행 callback의 %s도 퇴역 load의 worker 생성을 막는다', async (action) => {
+    const f = fixture();
+    let replacement: Promise<void> | undefined;
+    const outcome = f.index.load(() => {
+      if (action === 'close') f.index.close();
+      else replacement = f.index.load();
+    }).catch((error: unknown) => error);
+    try {
+      await replacement;
+      expect(await outcome).toMatchObject({ message: 'rag-bm25-session-retired' });
+      expect(f.errors).toHaveLength(action === 'close' ? 0 : 1);
+      if (action === 'reload') expect(f.index.isReady).toBe(true);
+    } finally { f.index.close(); await outcome; }
+  });
+
+  it.each(['receipt', 'order', 'snapshot', 'count'] as const)('%s await 중 worker 장애는 initialize 호출 없이 최초 원인으로 실패한다', async (phase) => {
+    const f = fixture();
+    const waiting = gate();
+    const entered = gate();
+    const hold = async <T>(value: T): Promise<T> => { entered.release(); await waiting.promise; return value; };
+    const spy = phase === 'receipt' ? vi.spyOn(f.index, 'getDurabilityReceipt').mockImplementationOnce(() => hold(null))
+      : phase === 'order' ? vi.spyOn(f.internals, 'readPersistedOrder').mockImplementationOnce(() => hold(0))
+      : phase === 'snapshot' ? vi.spyOn(f.internals, 'loadSnapshot').mockImplementationOnce(() => hold({ raw: '', source: 'empty' }))
+      : vi.spyOn(f.internals.db.documents, 'count').mockImplementationOnce(() => hold(0));
+    const initialize = vi.spyOn(BM25WorkerRuntime.prototype, 'initialize');
+    const loading = f.index.load();
+    const outcome = loading.catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      f.errors[0]({ message: 'synthetic original worker failure' } as ErrorEvent);
+      waiting.release();
+      expect(await outcome).toMatchObject({ message: 'synthetic original worker failure' });
+      expect(initialize).not.toHaveBeenCalled();
+      expect(f.requests).toEqual([]);
+      expect((await f.index.getCheckpoint()).applied).toBeNull();
+    } finally { waiting.release(); await outcome; spy.mockRestore(); initialize.mockRestore(); f.index.close(); }
+  });
+
+  it.each(['close', 'reload', 'failure'].flatMap((action) => ['drop', 'count'].map((phase) => ({ action, phase }))))('snapshot fallback $phase 대기 중 $action은 옛 worker 재초기화를 막는다', async ({ action, phase }) => {
+    const f = fixture();
+    f.rejectSnapshots();
+    const waiting = gate(); const entered = gate();
+    const hold = async (): Promise<number> => { entered.release(); await waiting.promise; return 0; };
+    vi.spyOn(f.internals, 'dropSnapshot').mockImplementationOnce(async () => {
+      if (phase === 'drop') await hold();
+      else vi.spyOn(f.internals.db.documents, 'count').mockImplementationOnce(hold);
+    });
+    const initialize = vi.spyOn(BM25WorkerRuntime.prototype, 'initialize');
+    const progress = vi.fn();
+    const outcome = f.index.load(progress).catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      if (action === 'close') f.index.close();
+      else if (action === 'reload') await f.index.load();
+      else f.errors[0]({ message: 'synthetic fallback failure' } as ErrorEvent);
+      const calls = initialize.mock.calls.length;
+      const publications = progress.mock.calls.length;
+      waiting.release();
+      expect(await outcome).toBeInstanceOf(Error);
+      expect(initialize).toHaveBeenCalledTimes(calls);
+      expect(progress).toHaveBeenCalledTimes(publications);
+      if (action === 'reload') expect(f.index.isReady).toBe(true);
+    } finally { waiting.release(); await outcome; initialize.mockRestore(); f.index.close(); }
+  });
+
+  it('A 실패 뒤 B/C는 runtime을 호출하지 않고 최초 실패와 pending 원문을 보존한다', async () => {
+    const f = fixture(); await f.index.load(); f.failMutations();
+    const add = vi.spyOn(BM25WorkerRuntime.prototype, 'add');
+    try {
+      for (const id of ['A', 'B', 'C']) f.index.addDocument(id, 'synthetic ' + id);
+      await expect(f.index.flush()).rejects.toThrow('synthetic first mutation failure');
+      expect(add).toHaveBeenCalledTimes(1);
+      await expect(f.index.flush()).rejects.toThrow('synthetic first mutation failure');
+      expect((await f.index.getCheckpoint()).applied).toBeNull();
+      f.resumeMutations();
+      await f.index.recoverClosedWorker();
+      expect(await f.index.getCorpusDocumentsByIds(['A', 'B', 'C'])).toEqual([
+        expect.objectContaining({ id: 'A', text: 'synthetic A' }),
+        expect.objectContaining({ id: 'B', text: 'synthetic B' }),
+        expect.objectContaining({ id: 'C', text: 'synthetic C' }),
+      ]);
+      expect(f.index.isReady).toBe(true);
+      expect(add).toHaveBeenCalledTimes(1);
+    } finally { add.mockRestore(); f.index.close(); }
+  });
+
+  it.each(['close', 'reload'].flatMap((action) => ['queue', 'saving', 'saved'].map((phase) => ({ action, phase }))))('복구 $phase 대기 중 $action은 예약된 복구가 새 session을 만들지 못한다', async ({ action, phase }) => {
+    const f = fixture(); await f.index.load();
+    f.errors[0]({ message: 'synthetic worker failure' } as ErrorEvent);
+    const waiting = gate(); const entered = gate();
+    if (phase === 'queue') f.internals.workerQueue = waiting.promise;
+    else if (phase === 'saving') f.internals.persistenceQueue = waiting.promise;
+    else {
+      const persist = f.internals.persistNow.bind(f.index);
+      vi.spyOn(f.internals, 'persistNow').mockImplementationOnce(async (checkpoint) => {
+        await persist(checkpoint); entered.release(); await waiting.promise;
+      });
+    }
+    const outcome = f.index.recoverClosedWorker().catch((error: unknown) => error);
+    try {
+      if (phase === 'saved') await entered.promise;
+      else { await Promise.resolve(); await Promise.resolve(); }
+      if (action === 'close') f.index.close(); else await f.index.load();
+      const created = f.errors.length;
+      waiting.release();
+      expect(await outcome).toMatchObject({ message: 'rag-bm25-session-retired' });
+      expect(f.errors).toHaveLength(created);
+      if (action === 'reload') expect(f.index.isReady).toBe(true);
+    } finally { waiting.release(); await outcome; f.index.close(); }
+  });
+
+  it('snapshot fallback DB 실패는 최초 원인으로 정착하고 재초기화하지 않는다', async () => {
+    const f = fixture(); f.rejectSnapshots();
+    const original = new Error('synthetic fallback database failure');
+    const write = vi.spyOn(f.internals, 'commitChangedRows').mockRejectedValueOnce(original);
+    try {
+      await expect(f.index.load()).rejects.toBe(original);
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(f.requests.map((request) => request.operation)).toEqual(['initialize']);
+      expect(f.index.isReady).toBe(false);
+    } finally { f.index.close(); }
+  });
+
+  it('초기 DB 실패는 원인 그대로 한 번 실패하고 worker를 초기화하지 않는다', async () => {
+    const f = fixture();
+    const original = new Error('synthetic database failure');
+    const receipt = vi.spyOn(f.index, 'getDurabilityReceipt').mockRejectedValueOnce(original);
+    try {
+      await expect(f.index.load()).rejects.toBe(original);
+      expect(receipt).toHaveBeenCalledTimes(1);
+      expect(f.requests).toEqual([]);
+      expect(f.index.isReady).toBe(false);
+    } finally { f.index.close(); }
+  });
+
+  it.each(['close', 'delete'] as const)('%s 이후 load/recover/mutation은 terminal owner를 부활시키지 않는다', async (action) => {
+    const f = fixture(); await f.index.load();
+    if (action === 'close') f.index.close(); else await f.index.deleteDatabase();
+    try {
+      await expect(f.index.load()).rejects.toThrow('rag-bm25-session-retired');
+      await expect(f.index.recoverClosedWorker()).rejects.toThrow('rag-bm25-session-retired');
+      expect(() => f.index.addDocument('late', 'synthetic late')).toThrow('rag-bm25-session-retired');
+      await expect(f.index.rebuild([])).rejects.toThrow('rag-bm25-session-retired');
+      expect(f.errors).toHaveLength(1);
+    } finally { f.index.close(); }
+  });
+});

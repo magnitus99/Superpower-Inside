@@ -8664,6 +8664,10 @@ button.superpower-inside-indexing-toggle:focus-visible {
   min-width: 0;
 }
 
+.superpower-inside-indexing-row.superpower-inside-hidden {
+  display: none;
+}
+
 .superpower-inside-indexing-row dt,
 .superpower-inside-indexing-row dd {
   min-width: 0;

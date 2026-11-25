@@ -67,6 +67,10 @@ source worker는 바이트 decode·컨테이너 추출·hash·chunk 준비에 �
 
 공통 readiness는 구축 진행이 아니라 요청에 사용할 serving 세대를 기준으로 한다. 사용 가능한 serving이 있으면 building·refresh·pending update 중에도 그 고정된 세대를 사용하고 부분 building을 섞지 않는다. serving이 없을 때 preparing/indexing을 표시하며 corpus 또는 BM25가 존재한다는 사실만으로 dense/hybrid를 포함한 전체 준비 완료를 인증하지 않는다. 취소·교체·읽기 실패와 정상 빈 결과를 구분한다.
 
+호스트 복원의 최초 오류와 관측 단계는 현재 owner·run에 귀속된 메모리 전용 진단으로 보존하고 기존 초기화 오류나 저장 manifest에 덮어쓰지 않는다. 복원 시작은 이전 진단을 지우며, 늦은 owner·취소·unload는 새 진단을 게시하지 않는다. 실제 복원 진행·실패는 과거 building 이력보다 우선하고, 현재 live 구축의 실패는 해당 초기화 사유를 사용한다. 같은 계약의 hydrate 실패도 manifest 변경 없이 live 실패로 게시한다. 저장 이력은 당시 원인·단계를 기록하지 않았다면 현재 오류를 빌리지 않는다. 준비된 BM25 또는 완료 세대를 게시하면 이전 복원 오류를 숨긴다.
+
+기존 임베딩 계약에 연결 binding이 없으면 자동 재구축을 시작하지 않는 보호를 유지한다. 호스트는 이 조건을 명시적 업데이트 필요 상태로 전달하며, 그 사실만으로 원문 누락이나 실행 중인 구축을 추정하지 않는다. 오류 출처·상태의 화면 표현은 `interface-design`이 소유한다.
+
 청킹 세대와 legacy 직렬화 호환성을 보존한다. Markdown의 헤딩·코드블록·위키링크·임베드 경계를 단순 줄바꿈 분할로 대체하지 않는다. 캐시와 색인은 재생성 가능한 생성물이지만 사용자 노트·세션은 아니다.
 
 ## 영속 변경과 세대 증명
@@ -78,6 +82,10 @@ corpus·BM25·vector 저장소는 DB-local incarnation·mutation UUID receipt로
 BM25의 호스트 논리 revision, transaction 안에서 할당하는 DB 저장 order, wire 요청 ID는 서로 다른 순서다. 작업자 session에서 연속된 revision·part의 실제 Rust/DB 적용이 성공한 뒤 마지막 part ACK만 applied revision을 전진시킨다. 새 session·검색·진행·직렬화 응답이나 최신 nonce echo는 기존 mutation 적용 증명이 아니다. snapshot은 실제 직렬화한 prefix와 저장 head/order/session의 CAS가 맞을 때 block·manifest를 함께 게시하며, 다른 owner의 head 뒤에 자기 delta 하나를 썼다는 이유로 전체 projection을 인증하지 않는다.
 
 main은 active/building 저장소를 분리하고 현재 검색이 고정한 handle을 writer·query·provider의 실제 작업이 끝날 때까지 보존한다. writer는 병렬 동작을 유지하되 완료 checkpoint는 기존 작업 뒤에서 새 admission을 막는다. debounce 전 source·metadata 사건도 즉시 checkpoint epoch를 무효화한다. 완료 manifest에는 현재 원문·청크·projection·정책·owner 검증과 재확인한 store receipt, 현재 BM25 session/applied revision, 명시적인 lexical/vector enabled·disabled·ephemeral 상태가 필요하다. 증분 갱신은 manifest revision·active ID·직전 seal CAS로 같은 세대를 갱신하며 building을 덮어쓰지 않는다. building cutover는 기존 writer/checkpoint 뒤 최신 manifest에서 자기 building ID·상태·owner를 재확인하여 무관한 active proof 갱신과 소유권 상실을 구별한다. 영속 commit 뒤 게시가 무효화되면 commit 이후 revision·active ID·seal·살아 있는 이전 owner를 같은 transaction에서 확인해 이전 active 포인터만 복원하고 다음 building과 중단 상태는 보존한다. 닫힌·삭제 중인·교체된 owner는 복원하지 않는다. 동일 계약 hydrate도 이전 complete를 복사하지 않고 새 session과 현재 원문을 checkpoint에서 재검증한다. cold restore는 저장 receipt 일치만으로 새 작업자 session을 승격하지 않고 현재 원문과 실제 hydration을 다시 확인한다. 누락·재생성·legacy·불일치 저장소는 기존 lexical serving을 제한 상태로 보존하고 자동 삭제·재임베딩으로 합격 처리하지 않는다. 실패·partial은 전체 complete가 아니다.
+
+BM25 worker 장애와 index owner의 퇴역은 구분한다. 살아 있는 owner의 장애만 기존 제한 복구로 새 작업자 세션을 만들 수 있으며, 명시 close·삭제·교체 뒤의 이전 continuation은 worker를 생성하거나 새 세션을 교체하지 않는다. 초기 복원·snapshot fallback·변이의 비동기 경계에서 generation·worker identity·종료 상태를 재확인하고, 실패한 같은 세션의 후속 연산은 실제 worker에 보내지 않는다. 상위 실패 기록은 작업자의 최초 종료 사유를 보존해 후속 closed 오류로 덮지 않는다. 저장된 원문·receipt·order와 아직 정착하지 않은 변경 원장은 실패를 숨기거나 거짓 ACK를 만드는 대신 기존 내구·복구 계약으로 처리한다.
+
+background BM25 load와 장애 복구의 실제 Promise도 같은 runtime의 기존 barrier·lease 수명에 귀속한다. 퇴역은 새 admission·진행·성공 게시를 막되 이미 시작한 물리 작업의 정착 전에 worker·store를 닫지 않는다. 완료 checkpoint는 자신이 기다리는 작업 안에서 다시 시작하지 않으며, 정상 준비의 no-op 복구로 read currentness를 무효화하지 않는다. 사용자 중단과 기존 복구 횟수 제한은 유지한다.
 
 ## 증분 색인 불변식
 

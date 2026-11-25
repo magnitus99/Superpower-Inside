@@ -9,6 +9,11 @@ export type RagIndexingActivity = 'preparing' | 'indexing' | 'settling' | 'pause
 
 /** 채팅·검색 화면이 진행 상황을 보여 줄 때 쓰는 색인 요약입니다. */
 export interface RagIndexingProgressSummary {
+  lastInitError?: string | null;
+  lastInitStage?: string | null;
+  failure?: { source: 'restore' | 'saved' | 'init'; error: string | null; stage: string | null };
+  restoring?: boolean;
+  updateRequired?: boolean;
   work?: RagRuntimeWorkProgress | null;
   phase: RagIndexingSchedulerStatus['phase'];
   completedFiles: number;
@@ -44,13 +49,39 @@ export interface RagIndexingProgressSummary {
 export function summarizeRagActivity(input: {
   status: RagIndexingSchedulerStatus | null;
   keywordRestore: { processedDocuments: number; expectedDocuments: number | null } | null;
-  generation?: Pick<RagGenerationSnapshot, 'availability' | 'building'>;
+  generation?: Pick<RagGenerationSnapshot, 'availability' | 'building' | 'restoreFailure' | 'restoring' | 'updateRequired'>;
+  lastInitError?: string | null;
+  lastInitStage?: string | null;
   work?: RagRuntimeWorkProgress | null;
   pausedByUser?: boolean;
 }): RagIndexingProgressSummary | null {
-  const summary = input.generation || input.pausedByUser ? summarizeGenerationActivity(input) : summarizeLegacyActivity(input);
-  if (!input.work) return summary;
-  return { ...(summary ?? { phase: 'preparing', completedFiles: 0, totalFiles: 0, currentFileEmbeddedChunks: null, currentFileTotalChunks: null, etaRemainingMs: null, activity: 'preparing', totalFilesKnown: false }), servingAvailable: input.generation?.availability === 'usable', work: input.work };
+  const generation = input.generation;
+  const live = generation?.building?.source === 'live';
+  let summary = (generation || input.pausedByUser ? summarizeGenerationActivity(input) : summarizeLegacyActivity(input))
+    ?? (generation?.availability === 'failed' && !input.pausedByUser
+      ? { ...summarizeProgress({ phase: 'idle', progress: null }), activity: 'failed' as const, servingAvailable: false, totalFilesKnown: false }
+      : null);
+  const stopped = summary?.activity === 'paused' || summary?.activity === 'cancelled';
+  if (!stopped && !live && generation?.restoring) {
+    summary = { ...summarizeProgress({ phase: 'preparing', progress: null }), activity: 'preparing', servingAvailable: generation.availability === 'usable', totalFilesKnown: false };
+  } else if (!stopped && !live && generation?.restoreFailure) {
+    summary = { ...summarizeProgress({ phase: 'preparing', progress: null }), activity: 'failed', servingAvailable: generation.availability === 'usable', totalFilesKnown: false };
+  } else if (!summary && generation?.updateRequired) {
+    summary = { ...summarizeProgress({ phase: 'idle', progress: null }), activity: 'partial', servingAvailable: generation.availability === 'usable', totalFilesKnown: false };
+  }
+  let diagnosed = summary;
+  if (summary?.activity === 'failed') {
+    const failure: NonNullable<RagIndexingProgressSummary['failure']> = !live && generation?.restoreFailure
+      ? { source: 'restore', ...generation.restoreFailure }
+      : generation?.building?.source === 'saved'
+        ? { source: 'saved', error: null, stage: null }
+        : { source: 'init', error: input.lastInitError ?? null, stage: input.lastInitStage ?? null };
+    diagnosed = { ...summary, failure, ...(failure.source === 'init' ? { lastInitError: input.lastInitError, lastInitStage: input.lastInitStage } : {}) };
+  }
+  if (diagnosed && generation?.restoring && !stopped && !live) diagnosed = { ...diagnosed, restoring: true };
+  if (diagnosed && generation?.updateRequired && !live) diagnosed = { ...diagnosed, updateRequired: true };
+  if (!input.work) return diagnosed;
+  return { ...(diagnosed ?? { phase: 'preparing', completedFiles: 0, totalFiles: 0, currentFileEmbeddedChunks: null, currentFileTotalChunks: null, etaRemainingMs: null, activity: 'preparing', totalFilesKnown: false }), servingAvailable: input.generation?.availability === 'usable', work: input.work };
 }
 
 function summarizeLegacyActivity(input: {

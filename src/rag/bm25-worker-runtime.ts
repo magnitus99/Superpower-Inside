@@ -151,6 +151,7 @@ export class BM25WorkerRuntime {
   private lastInitializeRequestId = 0;
   private activeRequestId: number | null = null;
   private closed = false;
+  private closeReasonValue: Error | null = null;
   private hydration: { processedDocuments: number; expectedDocuments: number | null } | null = null;
 
   constructor(
@@ -308,6 +309,7 @@ export class BM25WorkerRuntime {
   close(reason = new Error('BM25 worker was closed.')): void {
     if (this.closed) return;
     this.closed = true;
+    this.closeReasonValue = reason;
     this.hydration = null;
     this.appliedRevisionValue = null;
     this.pendingRevisionValue = null;
@@ -320,6 +322,11 @@ export class BM25WorkerRuntime {
     }
     this.pending.clear();
     this.activeRequestId = null;
+  }
+
+  /** 최초 종료 원인은 후속 요청이나 재종료로 바꾸지 않습니다. */
+  get closeReason(): Error | null {
+    return this.closeReasonValue;
   }
 
   get isClosed(): boolean {

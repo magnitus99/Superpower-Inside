@@ -12,6 +12,7 @@ export type { BM25WorkerRequest, BM25WorkerResponse } from './bm25-worker-runtim
 const HYDRATION_PROGRESS_INTERVAL = 128;
 
 let initialized = false;
+let fatalRuntimeError: WebAssembly.RuntimeError | null = null;
 let runtime: Bm25RuntimeIndex | null = null;
 let sessionId: string | null = null;
 let appliedRevision: number | null = null;
@@ -74,6 +75,7 @@ self.onmessage = (event: MessageEvent<BM25WorkerRequest>): void => {
 
 async function handleMessage(request: BM25WorkerRequest): Promise<void> {
   try {
+    if (fatalRuntimeError) throw fatalRuntimeError;
     validateRequest(request);
     if (!initialized) {
       if (!request.wasmBase64) throw new Error('BM25 worker WASM payload is missing.');
@@ -94,6 +96,7 @@ async function handleMessage(request: BM25WorkerRequest): Promise<void> {
     }
     self.postMessage({ id: request.id, ...response, ...proofState() } satisfies BM25WorkerResponse);
   } catch (error) {
+    if (error instanceof WebAssembly.RuntimeError) fatalRuntimeError ??= error;
     appliedRevision = null;
     pendingRevision = null;
     nextPart = 0;
@@ -129,7 +132,8 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
           throw new Error('BM25 snapshot document count mismatch.');
         }
         replaceRuntime(restored);
-      } catch {
+      } catch (error) {
+        if (error instanceof WebAssembly.RuntimeError) throw error;
         // 손상된 스냅샷은 버리고 저장된 원문에서 전량 복구한다.
         replaceRuntime(new Bm25RuntimeIndex(TOKENIZER_VERSION));
         rejected = true;

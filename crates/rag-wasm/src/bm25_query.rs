@@ -603,7 +603,7 @@ fn score_term(
         else {
             continue;
         };
-        matched.push((doc_id.clone(), term_frequency));
+        matched.push((doc_id.to_string(), term_frequency));
     }
     let Some(document_frequency) = usize_to_f64(matched.len()) else {
         return;
@@ -712,7 +712,7 @@ fn score_phrase(
         let Some(term_frequency) = usize_to_f64(occurrences) else {
             continue;
         };
-        matched.push((doc_id.clone(), term_frequency));
+        matched.push((doc_id.to_string(), term_frequency));
     }
     let Some(document_frequency) = usize_to_f64(matched.len()) else {
         return;
@@ -882,7 +882,7 @@ pub fn aggregate_matches(index: &Bm25IndexData, query: &str) -> Vec<Bm25MatchAgg
                     if occurrences == 0 {
                         continue;
                     }
-                    let entry = counts.entry(doc_id.clone()).or_default();
+                    let entry = counts.entry(doc_id.to_string()).or_default();
                     *entry = entry.saturating_add(occurrences);
                 }
             }
@@ -900,7 +900,7 @@ pub fn aggregate_matches(index: &Bm25IndexData, query: &str) -> Vec<Bm25MatchAgg
                     if occurrences == 0 {
                         continue;
                     }
-                    let entry = counts.entry(doc_id.clone()).or_default();
+                    let entry = counts.entry(doc_id.to_string()).or_default();
                     *entry = entry.saturating_add(occurrences);
                 }
             }

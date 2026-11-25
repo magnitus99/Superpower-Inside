@@ -1,4 +1,5 @@
 import { t } from '../i18n';
+import { formatLogError } from '../utils/logger';
 import { formatRagEtaDuration, type RagIndexingProgressSummary, type RagRuntimeWorkProgress } from './indexing-progress';
 
 export interface RagIndexingProgressDisplay {
@@ -12,10 +13,10 @@ export interface RagIndexingProgressDisplay {
 
 const numberFormat = new Intl.NumberFormat('en-US');
 
-function count(value: number | null | undefined): string {
+function count(value: number | null | undefined, fallback = t('ragSharedUnknown')): string {
   return value !== null && value !== undefined && Number.isFinite(value) && value >= 0
     ? numberFormat.format(value)
-    : t('ragSharedUnknown');
+    : fallback;
 }
 
 const workStages = {
@@ -99,6 +100,9 @@ export function getRagIndexingProgressDisplay(
   summary: RagIndexingProgressSummary,
 ): RagIndexingProgressDisplay {
   const activity = summary.activity ?? (summary.phase === 'paused' ? 'paused' : 'indexing');
+  const active = activity === 'indexing' || activity === 'preparing';
+  const failureError = summary.failure ? summary.failure.error : summary.lastInitError;
+  const failureStage = summary.failure ? summary.failure.stage : summary.lastInitStage;
   const serving = summary.servingAvailable;
   let headline = t(
     serving === true
@@ -132,6 +136,15 @@ export function getRagIndexingProgressDisplay(
     headline = t('ragSharedFailed');
     tone = 'danger';
     terminal = t('ragSharedFailedValue');
+    if (summary.failure?.source === 'restore') {
+      headline = t('ragSharedRestoreFailed');
+      detail = t('ragSharedRestoreFailedDetail');
+    } else if (summary.failure?.source === 'saved') {
+      headline = t('ragSharedHistoricalFailed');
+      detail = t('ragSharedHistoricalDetail');
+      tone = 'warning';
+      terminal = t('ragSharedHistoricalFailedValue');
+    }
   } else if (activity === 'partial') {
     headline = t('ragSharedPartial');
     tone = 'warning';
@@ -156,12 +169,21 @@ export function getRagIndexingProgressDisplay(
         : headline;
   }
   if (activity === 'paused' && summary.pauseReason === 'user') detail = `${detail} ${t('ragSharedStoppedDetail')}`;
-  const active = activity === 'indexing' || activity === 'preparing';
+  if (summary.restoring && activity === 'preparing') headline = t('ragSharedRestoring');
+  if (summary.updateRequired && !active && activity !== 'paused' && activity !== 'cancelled') {
+    if (activity !== 'failed') {
+      headline = t('ragSharedUpdateRequired'); tone = 'warning';
+      detail = t('ragSharedUpdateRequiredDetail');
+    } else detail = `${detail} ${t('ragSharedUpdateRequiredDetail')}`;
+  }
+  const noActiveWork = !active && activity !== 'paused' && activity !== 'cancelled' &&
+    (!!summary.updateRequired || !!summary.failure && summary.failure.source !== 'init');
+  const missingCount = t(noActiveWork ? 'ragSharedFailureStageMissing' : 'ragSharedUnknown');
   const calculating = t('ragIndexingProgressEtaCalculating');
-  const pipelineEta = active
+  const pipelineEta = noActiveWork ? t('ragSharedNotApplicable') : active
     ? estimate(summary.pipelineRemainingMs, summary.pipelineConfidence)
     : (terminal ?? calculating);
-  const overallEta = active
+  const overallEta = noActiveWork ? t('ragSharedNotApplicable') : active
     ? estimate(
         summary.etaRemainingMs,
         // legacy 요약의 ETA는 이미 host에서 신뢰도를 거른 값입니다.
@@ -169,34 +191,42 @@ export function getRagIndexingProgressDisplay(
       )
     : (terminal ?? calculating);
   const totalKnown = summary.totalFilesKnown ?? summary.totalFiles > 0;
-  const phase = !summary.work && activity === 'settling' ? t('ragSharedStageCommitting') : stage(summary);
+  const phase = noActiveWork ? t('ragSharedNoActiveWork') : !summary.work && activity === 'settling' ? t('ragSharedStageCommitting') : stage(summary);
   return {
     headline,
     detail,
     tone,
     phase,
     rows: [
-      { key: 'stage', label: t(summary.work ? 'ragWorkStageLabel' : 'ragSharedStageLabel'), value: phase },
-      { key: 'workCount', label: t('ragWorkCountLabel'), value: summary.work ? workCount(summary.work) : t('ragSharedUnknown') },
-      { key: 'workTime', label: t('ragWorkTimeLabel'), value: summary.work ? workTime(summary.work, terminal) : (terminal ?? calculating) },
+      ...(activity === 'failed' ? [
+        { key: 'failureReason', label: t('ragSharedFailureReason'), value: formatLogError(failureError?.trim() || undefined) ?? t('ragSharedFailureMissing') },
+        { key: 'failureStage', label: t('ragSharedFailureStage'), value: failureStage?.trim()
+          ? Object.hasOwn(workStages, failureStage)
+            ? t(workStages[failureStage as RagRuntimeWorkProgress['stage']])
+            : formatLogError(failureStage) ?? t('ragSharedFailureStageMissing')
+          : t('ragSharedFailureStageMissing') },
+      ] : []),
+      { key: 'stage', label: t(summary.work || noActiveWork ? 'ragWorkStageLabel' : 'ragSharedStageLabel'), value: phase },
+      { key: 'workCount', label: t('ragWorkCountLabel'), value: noActiveWork ? t('ragSharedFailureStageMissing') : summary.work ? workCount(summary.work) : t('ragSharedUnknown') },
+      { key: 'workTime', label: t('ragWorkTimeLabel'), value: noActiveWork ? t('ragSharedFailureStageMissing') : summary.work ? workTime(summary.work, terminal) : (terminal ?? calculating) },
       {
         key: 'completed',
         label: t('ragSharedCompletedLabel'),
         value: totalKnown
           ? t('ragIndexingProgressFilesValue', {
-              completed: count(summary.completedFiles),
-              total: count(summary.totalFiles),
+              completed: count(summary.completedFiles, missingCount),
+              total: count(summary.totalFiles, missingCount),
             })
-          : t('ragSharedUnknown'),
+          : missingCount,
       },
       {
         key: 'processed',
         label: t('ragSharedProcessedLabel'),
-        value: count(summary.processedFiles),
+        value: count(summary.processedFiles, missingCount),
       },
-      { key: 'failed', label: t('ragSharedFailedLabel'), value: count(summary.failedFiles) },
-      { key: 'partial', label: t('ragSharedPartialLabel'), value: count(summary.partialFiles) },
-      { key: 'skipped', label: t('ragSharedSkippedLabel'), value: count(summary.skippedFiles) },
+      { key: 'failed', label: t('ragSharedFailedLabel'), value: count(summary.failedFiles, missingCount) },
+      { key: 'partial', label: t('ragSharedPartialLabel'), value: count(summary.partialFiles, missingCount) },
+      { key: 'skipped', label: t('ragSharedSkippedLabel'), value: count(summary.skippedFiles, missingCount) },
       { key: 'pipelineEta', label: t('ragSharedPipelineEtaLabel'), value: pipelineEta },
       { key: 'overallEta', label: t('ragSharedOverallEtaLabel'), value: overallEta },
     ],
@@ -236,9 +266,9 @@ export function renderRagIndexingProgress(
       attr: { id: `superpower-inside-indexing-details-${++nextDetailsId}` },
     });
     const list = panel.createEl('dl', { cls: 'superpower-inside-indexing-facts' });
-    for (const row of display.rows) {
-      const item = (['stage', 'workCount', 'workTime'].includes(row.key) ? stageList : list).createDiv({
-        cls: 'superpower-inside-indexing-row',
+    for (const row of [{ key: 'failureReason' }, { key: 'failureStage' }, ...display.rows.filter(row => !['failureReason', 'failureStage'].includes(row.key))]) {
+      const item = (['failureReason', 'failureStage', 'stage', 'workCount', 'workTime'].includes(row.key) ? stageList : list).createDiv({
+        cls: `superpower-inside-indexing-row superpower-inside-indexing-row-${row.key}`,
       });
       item.createEl('dt', { cls: `superpower-inside-indexing-label-${row.key}` });
       item.createEl('dd', { cls: `superpower-inside-indexing-value-${row.key}` });
@@ -267,6 +297,11 @@ export function renderRagIndexingProgress(
   for (const row of display.rows) {
     updateText(root.querySelector(`.superpower-inside-indexing-label-${row.key}`), row.label);
     updateText(root.querySelector(`.superpower-inside-indexing-value-${row.key}`), row.value);
+  }
+  for (const key of ['failureReason', 'failureStage']) {
+    const visible = display.rows.some(row => row.key === key);
+    root.querySelector<HTMLElement>(`.superpower-inside-indexing-row-${key}`)?.toggleClass(hiddenClass, !visible);
+    if (!visible) updateText(root.querySelector(`.superpower-inside-indexing-value-${key}`), '');
   }
   const note = root.querySelector<HTMLElement>('.superpower-inside-indexing-scope');
   updateText(note, display.etaNote ?? '');

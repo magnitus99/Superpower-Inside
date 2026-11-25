@@ -57,12 +57,17 @@ export interface RagGenerationState {
 }
 
 export interface RagGenerationSnapshot {
+  /** 이번 호스트 복원의 메모리 전용 진단입니다. 저장 record에는 넣지 않습니다. */
+  restoreFailure?: { error: string; stage: string | null } | null;
+  restoring?: boolean;
+  updateRequired?: boolean;
   revision: number;
   serving: RagGenerationRecord | null;
   availability: 'none' | 'restoring' | 'usable' | 'failed';
   coverage: 'complete' | 'partial' | 'legacy-limited' | null;
   semanticAvailable: boolean;
   building: {
+    source?: 'live' | 'saved';
     generation: RagGenerationRecord | null;
     status: RagGenerationTerminal | 'paused';
     indexing: RagIndexingSchedulerStatus | null;

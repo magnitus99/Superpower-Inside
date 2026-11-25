@@ -27,6 +27,8 @@ BM25 정확 집계는 토큰 위치와 구문을 세며 원문 부분문자열 �
 
 scanner는 한 원문·한 정규화 행·한 출력 페이지만 유지한다. 순서 있는 원문 블록의 실제 hash8·길이·charge를 seal한 뒤에만 결과를 배출하고, 페이지에 넣지 못한 발생의 cursor를 소비하지 않는다. `LiteralInventoryTotals`는 완전한 source summary만 UTF-16 경로 순서·중복·needle identity·expected source 수·안전 정수 overflow를 검사해 합산한다. 누락·부분·미완료·한도 실패는 성공 0이나 BM25 숫자로 대체하지 않는다. needle 1..128(각 UTF-16 4096·합 65536), header 1MiB, summary 16MiB, 페이지 1..256건·1..1MiB를 보정 없이 검증한다. 같은 일치 조건의 발견·집계 대조와 남은 검증 상태는 `engineering-contract`가 소유한다.
 
+BM25의 inverted·위치 posting은 같은 문서 식별자 문자열 할당을 공유해 긴 식별자가 posting 수만큼 중복 상주하지 않게 한다. 이 내부 표현은 삽입·교체·삭제와 legacy/compact 복원에 동일하게 적용하며 metadata·문자열 값 정렬·점수·위치·기존 JSON 형식은 보존한다. 식별자 중복 절감은 전체 색인·JSON peak·RSS의 전역 메모리 상한을 보장하지 않는다.
+
 ## 실패·생성물 경계
 
 요구 계약은 WASM 초기화·wire 실패를 TypeScript 계산으로 대신하지 않고 기존 오류·빈 결과·비활성 상태로 드러내는 것이다. indexed-evidence wrapper는 실패 시 null을 반환한다.
@@ -36,6 +38,8 @@ scanner는 한 원문·한 정규화 행·한 출력 페이지만 유지한다. 
 다만 `src/utils/rag-exclude-validation.ts`의 제외 경로·확장자 검증·정규화와 `src/chat/mcp-tools.ts`의 MCP 도구 인자 파싱·결과 정규화·빈 결과 판정(`parseToolArguments`·`normalizeToolResult`·`isMcpToolResultEmpty`)은 Rust를 먼저 사용하면서 실패 시 TypeScript 계산으로 닫는 경로가 남아 있다. 반면 같은 파일의 `isRecommendableExcludeExtension`은 Rust 실패 시 추천 불가(false)로 닫으므로 TS 재구현이 없다. 앞의 두 경로는 위 실패 계약과 아직 일치하지 않으므로, WASM을 사용할 수 없을 때 설정 검증과 도구 실행이 TS 결과로 계속 동작한다. 제거 전까지 이 차이를 완료로 해석하지 않는다. 같은 파일의 `classifyMcpToolError`는 Rust 분류가 실패하면 원문을 그대로 반환할 뿐 분류 계산을 TS로 재구현하지 않으므로 이 목록에서 제외한다. 검색·agent 리팩터링으로 TS 호출자가 사라진 wire export 10개는 glue에 남아 있으나, 이들의 입출력 매핑·타입 검증은 현재 대상이 아니다.
 
 한도 정규화·요약·간격 wrapper는 WASM 초기화·wire 검증 실패에서 null을 반환한다. 호스트는 간격의 null을 기본 30초로 재계산해 사용자 설정에 저장하지 않는다. 로드·저장은 오류로 닫고, 이미 적용된 간격과 타이머를 보존한다. 정상적인 미설정 입력의 기본 30초와 정수 제한은 Rust의 성공 결과로만 얻는다.
+
+BM25 worker의 치명적인 WebAssembly.RuntimeError 뒤에는 같은 instance로 스냅샷 대체 생성·free·재초기화를 계속하지 않는다. 최초 trap을 보존하고 이후 요청도 추가 WASM 호출 없이 실패로 정착하며, 정상적인 손상 snapshot의 기존 원문 복원과 치명적 trap은 구분한다. 새 계산 instance의 수명·원문 보존·진단 게시 경계는 `retrieval-index`가 소유한다.
 
 WASM glue·base64는 수동 편집하지 않고 `npm run wasm:build`로 같은 소스 상태에서 `.local/generated/`에 생성한다. 컴파일·bindgen 중간물은 `engineering-contract`의 저장소 생성물 경계를 따른다. build/dev의 선행 WASM 빌드와 저장 형식의 legacy load·round-trip을 유지한다. PDF worker의 추출·페이지 매핑 예외는 `superpower-architecture`를 따른다.
 

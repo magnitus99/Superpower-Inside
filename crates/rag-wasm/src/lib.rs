@@ -9,6 +9,7 @@ use regex::Regex;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use std::borrow::{Borrow, Cow};
 use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
+use std::rc::Rc;
 use unicode_normalization::UnicodeNormalization;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -4865,10 +4866,10 @@ struct Bm25Hit {
 struct Bm25IndexData {
     /// tokenizer contract version.
     tokenizer_version: u32,
-    /// term -> doc id -> term frequency.
-    inverted: BTreeMap<String, BTreeMap<String, f64>>,
+    /// term -> doc id -> term frequency. 문서 식별자 할당은 위치 posting과 공유한다.
+    inverted: BTreeMap<String, BTreeMap<Rc<str>, f64>>,
     /// term -> doc id -> 문서 token stream 안의 위치 목록(오름차순).
-    positions: BTreeMap<String, BTreeMap<String, Vec<u32>>>,
+    positions: BTreeMap<String, BTreeMap<Rc<str>, Vec<u32>>>,
     /// doc id -> 필드별 token 구간. key가 있으면 위치 정보가 완전하다.
     doc_field_runs: BTreeMap<String, Vec<Bm25FieldRun>>,
     /// doc id -> document token count.
@@ -5508,6 +5509,7 @@ fn insert_bm25_document_fields(
     let (stream, position_runs) = build_bm25_document_stream(text, source_path, fields);
     let (token_count, frequencies) =
         accumulate_token_frequencies(stream.iter().map(|(term, _field)| term.as_str()));
+    let posting_doc_id = Rc::<str>::from(doc_id);
     for (term, frequency) in frequencies {
         let Some(frequency) = usize_to_f64(frequency) else {
             continue;
@@ -5516,7 +5518,7 @@ fn insert_bm25_document_fields(
             .inverted
             .entry(term)
             .or_default()
-            .insert(doc_id.to_owned(), frequency);
+            .insert(Rc::clone(&posting_doc_id), frequency);
     }
     if let Some(runs) = position_runs {
         // 위치 목록을 모두 만든 뒤에만 commit해 부분 위치가 남지 않게 한다.
@@ -5526,7 +5528,7 @@ fn insert_bm25_document_fields(
                     .positions
                     .entry(term)
                     .or_default()
-                    .insert(doc_id.to_owned(), positions);
+                    .insert(Rc::clone(&posting_doc_id), positions);
             }
             index.doc_field_runs.insert(doc_id.to_owned(), runs);
         }
@@ -5703,7 +5705,7 @@ fn search_bm25_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore>
             }
             let doc_length = index
                 .doc_lengths
-                .get(doc_id)
+                .get(doc_id.as_ref())
                 .copied()
                 .filter(|value| value.is_finite() && *value > 0.0)
                 .unwrap_or(1.0);
@@ -5711,13 +5713,13 @@ fn search_bm25_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore>
             if score <= 0.0 || !score.is_finite() {
                 continue;
             }
-            let score_index = match score_index_by_doc_id.entry(doc_id.clone()) {
+            let score_index = match score_index_by_doc_id.entry(doc_id.to_string()) {
                 Entry::Occupied(entry) => *entry.get(),
                 Entry::Vacant(entry) => {
                     let next_index = scores.len();
                     entry.insert(next_index);
                     scores.push(Bm25SearchScore {
-                        doc_id: doc_id.clone(),
+                        doc_id: doc_id.to_string(),
                         score: 0.0,
                     });
                     next_index
@@ -13131,7 +13133,7 @@ fn serialize_bm25_compact_index_json(index: &Bm25IndexData) -> String {
     for (term, posting) in &index.inverted {
         let mut posting_values = Vec::<String>::new();
         for (doc_id, frequency) in posting {
-            let Some(doc_index) = doc_index_by_id.get(doc_id.as_str()).copied() else {
+            let Some(doc_index) = doc_index_by_id.get(doc_id.as_ref()).copied() else {
                 continue;
             };
             let Some(frequency_json) = finite_json_number(*frequency) else {
@@ -13146,7 +13148,7 @@ fn serialize_bm25_compact_index_json(index: &Bm25IndexData) -> String {
         let mut position_values = Vec::<String>::new();
         if let Some(positions_by_doc) = index.positions.get(term) {
             for (doc_id, positions) in positions_by_doc {
-                let Some(doc_index) = doc_index_by_id.get(doc_id.as_str()).copied() else {
+                let Some(doc_index) = doc_index_by_id.get(doc_id.as_ref()).copied() else {
                     continue;
                 };
                 let Some(encoded) = encode_bm25_positions(positions) else {
@@ -13206,7 +13208,7 @@ fn encode_bm25_positions(positions: &[u32]) -> Option<String> {
 }
 
 /// BM25 inverted index를 JSON 문자열로 serialize한다.
-fn serialize_bm25_inverted_json(inverted: &BTreeMap<String, BTreeMap<String, f64>>) -> String {
+fn serialize_bm25_inverted_json(inverted: &BTreeMap<String, BTreeMap<Rc<str>, f64>>) -> String {
     let body = inverted
         .iter()
         .map(|(term, posting)| {
@@ -13222,13 +13224,13 @@ fn serialize_bm25_inverted_json(inverted: &BTreeMap<String, BTreeMap<String, f64
 }
 
 /// string -> finite number map을 JSON 문자열로 serialize한다.
-fn serialize_string_number_map_json(values: &BTreeMap<String, f64>) -> String {
+fn serialize_string_number_map_json<K: Borrow<str> + Ord>(values: &BTreeMap<K, f64>) -> String {
     let body = values
         .iter()
         .filter_map(|(key, value)| {
             Some(format!(
                 "\"{}\":{}",
-                escape_json_string(key),
+                escape_json_string(key.borrow()),
                 finite_json_number(*value)?
             ))
         })
@@ -13601,7 +13603,8 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or_default();
     let docs = object.get("docs")?.as_array()?;
-    let mut doc_ids = Vec::<String>::with_capacity(docs.len());
+    let mut doc_ids = Vec::<Rc<str>>::with_capacity(docs.len());
+    let mut posting_doc_ids = BTreeSet::<Rc<str>>::new();
     let mut doc_lengths = BTreeMap::<String, f64>::new();
     let mut doc_sources = BTreeMap::<String, String>::new();
     let mut doc_field_runs = BTreeMap::<String, Vec<Bm25FieldRun>>::new();
@@ -13634,13 +13637,21 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
                 doc_stream_lengths.insert(id.clone(), stream_length);
             }
         }
-        doc_ids.push(id.clone());
+        let posting_id = posting_doc_ids
+            .get(id.as_str())
+            .cloned()
+            .unwrap_or_else(|| {
+                let key = Rc::<str>::from(id.as_str());
+                posting_doc_ids.insert(Rc::clone(&key));
+                key
+            });
+        doc_ids.push(posting_id);
         doc_lengths.insert(id.clone(), length);
         doc_sources.insert(id, source_path);
     }
 
-    let mut inverted = BTreeMap::<String, BTreeMap<String, f64>>::new();
-    let mut positions = BTreeMap::<String, BTreeMap<String, Vec<u32>>>::new();
+    let mut inverted = BTreeMap::<String, BTreeMap<Rc<str>, f64>>::new();
+    let mut positions = BTreeMap::<String, BTreeMap<Rc<str>, Vec<u32>>>::new();
     for term_value in object.get("terms")?.as_array()? {
         let term_object = term_value.as_object()?;
         let term = term_object.get("term")?.as_str()?.trim().to_owned();
@@ -13648,7 +13659,7 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
             continue;
         }
         let postings = term_object.get("postings")?.as_array()?;
-        let mut posting = BTreeMap::<String, f64>::new();
+        let mut posting = BTreeMap::<Rc<str>, f64>::new();
         for pair in postings.chunks(2) {
             let [doc_index_value, frequency_value] = pair else {
                 return None;
@@ -13738,11 +13749,11 @@ fn parse_bm25_field_runs(value: Option<&JsonValue>) -> Option<Bm25ParsedRuns> {
 /// 위치 배열을 검증하며 문서별 위치 목록으로 파싱한다.
 fn parse_bm25_term_positions(
     value: &JsonValue,
-    doc_ids: &[String],
+    doc_ids: &[Rc<str>],
     doc_stream_lengths: &BTreeMap<String, u32>,
-) -> Option<BTreeMap<String, Vec<u32>>> {
+) -> Option<BTreeMap<Rc<str>, Vec<u32>>> {
     let entries = value.as_array()?;
-    let mut positions_by_doc = BTreeMap::<String, Vec<u32>>::new();
+    let mut positions_by_doc = BTreeMap::<Rc<str>, Vec<u32>>::new();
     for entry in entries {
         let [doc_index_value, first_value, rest @ ..] = entry.as_array()?.as_slice() else {
             return None;
@@ -13751,7 +13762,7 @@ fn parse_bm25_term_positions(
             .as_u64()
             .and_then(|value| usize::try_from(value).ok())?;
         let doc_id = doc_ids.get(doc_index)?.clone();
-        let stream_length = doc_stream_lengths.get(&doc_id).copied()?;
+        let stream_length = doc_stream_lengths.get(doc_id.as_ref()).copied()?;
         let first = first_value
             .as_u64()
             .and_then(|value| u32::try_from(value).ok())?;
@@ -13793,13 +13804,23 @@ const fn is_known_bm25_field(field: u8) -> bool {
 /// BM25 inverted object를 파싱한다.
 fn parse_bm25_inverted_object(
     object: &JsonMap<String, JsonValue>,
-) -> BTreeMap<String, BTreeMap<String, f64>> {
+) -> BTreeMap<String, BTreeMap<Rc<str>, f64>> {
     let mut inverted = BTreeMap::new();
+    let mut doc_ids = BTreeMap::<&str, Rc<str>>::new();
     for (term, posting_value) in object {
         let Some(posting_object) = posting_value.as_object() else {
             continue;
         };
-        let posting = parse_string_number_object(posting_object);
+        let posting = posting_object
+            .iter()
+            .filter_map(|(key, value)| {
+                let number = value.as_f64().filter(|number| number.is_finite())?;
+                let doc_id = doc_ids
+                    .entry(key.as_str())
+                    .or_insert_with(|| Rc::from(key.as_str()));
+                Some((Rc::clone(doc_id), number))
+            })
+            .collect::<BTreeMap<_, _>>();
         if !posting.is_empty() {
             inverted.insert(term.clone(), posting);
         }
@@ -17186,6 +17207,119 @@ mod tests {
         assert!(
             parsed.get("inverted").is_none(),
             "compact v3 payload should not persist legacy inverted object",
+        );
+    }
+
+    /// 한 문서의 긴 식별자는 모든 posting에서 한 할당을 공유해야 한다.
+    fn assert_bm25_posting_keys_shared(index: &Bm25IndexData, doc_id: &str) {
+        let mut pointers =
+            index
+                .inverted
+                .values()
+                .filter_map(|posting| posting.get_key_value(doc_id).map(|(key, _)| key.as_ptr()))
+                .chain(index.positions.values().filter_map(|posting| {
+                    posting.get_key_value(doc_id).map(|(key, _)| key.as_ptr())
+                }));
+        let first = pointers.next();
+        assert!(first.is_some(), "합성 문서에 posting이 있어야 한다");
+        let remaining: Vec<_> = pointers.collect();
+        assert!(!remaining.is_empty(), "여러 posting을 비교해야 한다");
+        assert!(
+            remaining.iter().all(|pointer| Some(*pointer) == first),
+            "동일 문서의 inverted/positions key는 같은 문자열 할당이어야 한다",
+        );
+    }
+
+    /// 삽입·교체·양쪽 저장 형식에서 식별자 공유와 외부 결과를 보존한다.
+    #[test]
+    fn bm25_posting_keys_share_document_allocation() {
+        let doc_id = format!("synthetic-{}::0", "long-identifier-".repeat(40));
+        let mut index = Bm25RuntimeIndex::new(2);
+        index.add_document(&doc_id, "alpha beta alpha beta", "shared.md", 2);
+        index.add_document("synthetic-second", "alpha beta", "shared.md", 2);
+        assert_bm25_posting_keys_shared(&index.index, &doc_id);
+        let aggregate =
+            serde_json::from_str::<JsonValue>(&index.aggregate_json("\"alpha beta\"", 10))
+                .unwrap_or(JsonValue::Null);
+        assert_eq!(
+            aggregate.get("totalDocuments").and_then(JsonValue::as_u64),
+            Some(1),
+            "동일 출처는 한 문서로 집계"
+        );
+        assert_eq!(
+            aggregate.get("totalChunks").and_then(JsonValue::as_u64),
+            Some(2),
+            "두 청크 보존"
+        );
+        assert_eq!(
+            aggregate
+                .get("totalOccurrences")
+                .and_then(JsonValue::as_u64),
+            Some(3),
+            "구문 발생 횟수 보존"
+        );
+        let compact = index.to_json();
+        let restored = Bm25RuntimeIndex::from_json(&compact, 2);
+        assert_bm25_posting_keys_shared(&restored.index, &doc_id);
+        assert_eq!(
+            restored.to_json(),
+            compact,
+            "compact 직렬화는 동일해야 한다"
+        );
+        for query in ["alpha", "body:alpha", "\"alpha beta\""] {
+            assert_eq!(
+                restored.search_json(query),
+                index.search_json(query),
+                "점수·필드·구문 결과 보존"
+            );
+            assert_eq!(
+                restored.aggregate_json(query, 10),
+                index.aggregate_json(query, 10),
+                "동일 출처 집계 보존"
+            );
+        }
+        let legacy = serialize_bm25_index_json(&index.index);
+        let restored_legacy = Bm25RuntimeIndex::from_json(&legacy, 2);
+        assert_bm25_posting_keys_shared(&restored_legacy.index, &doc_id);
+        assert_eq!(
+            serialize_bm25_index_json(&restored_legacy.index),
+            legacy,
+            "legacy 직렬화 보존"
+        );
+        assert_eq!(
+            serialize_bm25_search_scores_json(&search_bm25_index(
+                &restored_legacy.index,
+                "alpha beta"
+            )),
+            serialize_bm25_search_scores_json(&search_bm25_index(&index.index, "alpha beta")),
+            "legacy 점수 보존",
+        );
+        index.add_document(&doc_id, "gamma delta", "shared.md", 2);
+        assert_bm25_posting_keys_shared(&index.index, &doc_id);
+        assert!(
+            !index
+                .index
+                .inverted
+                .get("alpha")
+                .is_some_and(|posting| posting.contains_key(doc_id.as_str())),
+            "교체된 posting 제거"
+        );
+        index.remove_document(&doc_id, 2);
+        assert!(
+            index
+                .index
+                .inverted
+                .values()
+                .all(|posting| !posting.contains_key(doc_id.as_str())),
+            "빈도 posting 제거"
+        );
+        assert!(
+            index
+                .index
+                .positions
+                .values()
+                .all(|posting| !posting.contains_key(doc_id.as_str())),
+            "위치 posting 제거"
         );
     }
 

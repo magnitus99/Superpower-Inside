@@ -14,6 +14,11 @@ export function createIndexingPreviewSummary(name) {
       'settling',
       'partial',
       'failed',
+      'failed-missing',
+      'restore-failed',
+      'restore-history',
+      'restore-required',
+      'restore-progress',
       'user-paused',
       'performance-paused',
     ].includes(name)
@@ -76,7 +81,18 @@ export function createIndexingPreviewSummary(name) {
       failedFiles: 0,
       partialFiles: 0,
     };
-  if (name === 'partial' || name === 'failed')
+  if (name.startsWith('restore-')) {
+    const base = { ...summary, totalFilesKnown: false, completedFiles: 0, totalFiles: 0, processedFiles: null, failedFiles: null, partialFiles: null, skippedFiles: null, pipelineRemainingMs: null, etaRemainingMs: null };
+    if (name === 'restore-progress') return { ...base, activity: 'preparing', restoring: true, servingAvailable: false,
+      work: { stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: 128, totalUnits: 4096, elapsedMs: 1000, lastProgressAgeMs: 100, remainingMs: null, ratePerSecond: null, confidence: 'calculating', etaReason: 'insufficient-samples' } };
+    if (name === 'restore-required') return { ...base, activity: 'partial', updateRequired: true };
+    return { ...base, activity: 'failed', updateRequired: true, failure: name === 'restore-failed'
+      ? { source: 'restore', error: 'SyntheticError: restoration interrupted', stage: 'restoring-keyword-documents' }
+      : { source: 'saved', error: null, stage: null } };
+  }
+  if (name === 'failed' || name === 'failed-missing')
+    return { ...summary, activity: 'failed', stage: 'settled', lastInitError: name === 'failed' ? 'SyntheticError: PREVIEW_STORAGE_CHANNEL_CLOSED — The storage connection closed before this operation could finish.' : null, lastInitStage: name === 'failed' ? 'opening-storage' : null };
+  if (name === 'partial')
     return { ...summary, activity: name, stage: 'settled' };
   if (name.endsWith('-paused'))
     return {
@@ -122,7 +138,7 @@ export async function checkIndexingProgress({ container, summary, update, expand
   const panel = root.querySelector('.superpower-inside-indexing-details');
   const headline = root.querySelector('.superpower-inside-indexing-headline');
   const values = [...root.querySelectorAll('dd')];
-  check(values.length === 10, '고정 단계·원장·부분/전체 ETA 행');
+  check(values.length === 12, '고정 실패 진단·단계·원장·부분/전체 ETA 행');
   check(
     button.getAttribute('aria-expanded') === 'false' && getComputedStyle(panel).display === 'none',
     '기본 접힘',
@@ -137,7 +153,16 @@ export async function checkIndexingProgress({ container, summary, update, expand
     '헤드라인만 live',
   );
   const visibleRows = root.querySelector('.superpower-inside-indexing-stage');
-  check(visibleRows.querySelectorAll('dd').length === 3 && !visibleRows.closest('.superpower-inside-indexing-details'), '접혀도 현재 작업·작업량·시간 표시');
+  check(visibleRows.querySelectorAll('dd').length === 5 && !visibleRows.closest('.superpower-inside-indexing-details'), '접혀도 실패 진단·현재 작업·작업량·시간 표시');
+  const reason = root.querySelector('.superpower-inside-indexing-value-failureReason');
+  const failureStage = root.querySelector('.superpower-inside-indexing-value-failureStage');
+  check(!!reason && !!failureStage && !reason.closest('.superpower-inside-indexing-details'), '실패 이유와 단계는 접힘 영역 밖');
+  check((reason.getClientRects().length > 0) === (summary.activity === 'failed'), '실패에서만 사유 표시');
+  if (summary.activity === 'failed') {
+    check(reason.textContent.trim().length > 0 && failureStage.textContent.trim().length > 0, '사유와 단계 또는 미기록 대체 문구');
+    const error = summary.failure ? summary.failure.error : summary.lastInitError;
+    if (error) check(reason.textContent === error, '임의 합성 오류 사유 전달');
+  }
   check(!root.closest('[aria-live]'), '숫자까지 감싸는 live region 없음');
   button.focus();
   button.click();
@@ -145,6 +170,16 @@ export async function checkIndexingProgress({ container, summary, update, expand
     button.getAttribute('aria-expanded') === 'true' && getComputedStyle(panel).display !== 'none',
     '실제 펼침',
   );
+  if (summary.updateRequired && (summary.activity === 'failed' || summary.activity === 'partial')) {
+    for (const key of ['completed', 'processed', 'failed', 'partial', 'skipped']) {
+      const value = root.querySelector(`.superpower-inside-indexing-value-${key}`).textContent;
+      check(['기록되지 않음', 'Not recorded'].includes(value), `비활성 상세 ${key} 미기록`);
+    }
+    for (const key of ['pipelineEta', 'overallEta']) {
+      const value = root.querySelector(`.superpower-inside-indexing-value-${key}`).textContent;
+      check(['해당 없음', 'Not applicable'].includes(value), `비활성 상세 ${key} 해당 없음`);
+    }
+  }
   const before = headline.textContent;
   const mutations = [];
   const observer = new MutationObserver((records) => mutations.push(...records));
