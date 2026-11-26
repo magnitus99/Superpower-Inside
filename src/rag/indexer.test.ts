@@ -2694,3 +2694,14 @@ describe('pipeline 실제 wall·수명 관측', () => {
     } finally { clock.mockRestore(); }
   });
 });
+
+it('자동 count의 비변이 옵션은 status와 partial 계획 두 getter까지 전달된다', async () => {
+  const vault = createVault(new Map([['Synthetic/read-only.md', 'synthetic body']]));
+  const store = new MemoryVectorStore();
+  const provider: EmbeddingProvider = { embed: () => Promise.resolve([1, 0]), embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])) };
+  const indexer = new VaultIndexer(vault, store, provider, createRagConfig(), createChatConfig());
+  const getter = vi.spyOn(store, 'getFileIndexRecords');
+  await indexer.getAutomaticRecoveryPendingState({}, { repair: false });
+  expect(getter).toHaveBeenCalledTimes(2);
+  expect(getter.mock.calls).toEqual([[{ repair: false }], [{ repair: false }]]);
+});

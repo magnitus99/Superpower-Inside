@@ -2,8 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    // Git에서 제외한 로컬 마케팅 작업물의 Node 테스트는 제품 Vitest 대상이 아닙니다.
-    exclude: ['**/node_modules/**', '**/.test-vault/**', '**/.agents/**', '**/marketing/**'],
+    // Git에서 제외한 로컬 작업 산출물의 테스트는 제품 Vitest 대상이 아닙니다.
+    exclude: ['**/node_modules/**', '**/.test-vault/**', '**/.agents/**', '**/marketing/**', '**/.thinkrail/**'],
     setupFiles: ['./src/test/setup.ts'],
     // 실제 소켓·자식 프로세스 테스트가 CPU 포화로 연결 예산을 잃지 않게 합니다.
     maxWorkers: 4,

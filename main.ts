@@ -76,6 +76,7 @@ import {
 } from './src/llm/embedding';
 import {
   IndexedDbVectorStore,
+  FileIndexRepairRequiredError,
   type VectorStore,
 } from './src/rag/store';
 import {
@@ -223,6 +224,11 @@ function hasDeletableIndexedDbStore(store: unknown): store is DeletableIndexedDb
 }
 
 
+interface RagAutoIndexTick {
+  beforeWrite?: () => () => void;
+  repairNeedsCheckpoint?: boolean;
+}
+
 interface RagRuntimeSnapshot {
   io?: RagRuntimeWorkBarrier;
   sourcePolicyIdentity?: string;
@@ -266,6 +272,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private ragRuntimeDisposalModels?: WeakMap<Promise<void>, LocalEmbeddingModelId>;
   private ragCheckpointRuns?: WeakMap<RagRuntimeWorkBarrier, Promise<void>>;
   private ragCheckpointRequests?: WeakMap<RagRuntimeWorkBarrier, number>;
+  private ragFileIndexRepairs?: WeakMap<RagRuntimeWorkBarrier, Promise<void>>;
+  private ragAutoIndexTicks?: WeakMap<RAGIndexingScheduler, RagAutoIndexTick>;
+  private ragVerifiedProofs?: WeakMap<RagRuntimeWorkBarrier, { proof: RagGenerationProof; manifestProof: RagGenerationProof; isCurrent: (runtime: RagRuntimeSnapshot) => boolean }>;
   private deletingLocalModels?: Set<string>;
   private ragManifestRestored = false;
   private ragGenerationRestorePromise: Promise<void> | null = null;
@@ -1164,9 +1173,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const release = engine ? acquireRuntimeLease(engine) : () => undefined;
     try {
       const runtime = this.captureRagRuntimeSnapshot();
-      const reading = () => calculateRagStatus(this.app.vault, vectorStore, this.settings.rag, this.settings.chat);
-      const summary = await (runtime.io ? runtime.io.run(reading) : reading());
-      if (runtime.io) void this.refreshRagRuntimeCheckpoint(runtime);
+      const reading = () => calculateRagStatus(this.app.vault, vectorStore, this.settings.rag, this.settings.chat, undefined, undefined, { repair: false });
+      const summary = await this.readRagRuntimeWithRepair(runtime, reading);
       if (this.unloaded || this.vectorStore !== vectorStore || this.ragEngine !== engine) return;
       this.eventDrivenRagStats = summary;
       if (this.refreshBus) {
@@ -2086,6 +2094,84 @@ export default class SuperpowerInsidePlugin extends Plugin {
     };
   }
 
+  private readAutomaticRecoveryPendingState(runtime: RagRuntimeSnapshot, repair = true, signal?: AbortSignal) {
+    const indexer = runtime.vaultIndexer;
+    if (!indexer) throw new Error('RAG recovery indexer unavailable');
+    return indexer.getAutomaticRecoveryPendingState({ signal, isCurrent: this.captureRagReadCurrentness(runtime) }, { repair });
+  }
+
+  private async readRagRuntimeWithRepair<T>(
+    runtime: RagRuntimeSnapshot,
+    reading: () => Promise<T>,
+    requireAdmission?: () => void,
+  ): Promise<T> {
+    const io = runtime.io;
+    if (!io) return reading();
+    const release = runtime.ragEngine ? acquireRuntimeLease(runtime.ragEngine) : () => undefined;
+    const read = () => {
+      requireAdmission?.();
+      return io.runRead(async () => {
+        const current = this.captureRagReadCurrentness(runtime);
+        const requireCurrent = () => {
+          requireAdmission?.();
+          if (!current() || this.ragEngine !== runtime.ragEngine || (this.activeRagRuntime && this.activeRagRuntime.io !== io)) throw new IndexingCancelledError();
+        };
+        requireCurrent();
+        const result = await reading();
+        requireCurrent();
+        return result;
+      });
+    };
+    try {
+      try { return await read(); }
+      catch (error) {
+        if (!(error instanceof FileIndexRepairRequiredError)) throw error;
+        requireAdmission?.();
+        // 조회 admission 밖에서만 복구하며 동시 관측자는 같은 쓰기 하나를 공유합니다.
+        const repairs = this.ragFileIndexRepairs ??= new WeakMap<RagRuntimeWorkBarrier, Promise<void>>();
+        let repair = repairs.get(io);
+        if (!repair) {
+          this.requireRagAutomaticRecoveryWriteCurrent(runtime);
+          repair = io.run(async () => {
+            requireAdmission?.();
+            this.requireRagAutomaticRecoveryWriteCurrent(runtime);
+            await runtime.vectorStore!.getFileIndexRecords();
+          }).then(() => {
+            // 공유 쓰기가 proof를 한 번만 인계합니다. 조회 완료 순서는 tick을 방해하지 않습니다.
+            const tick = runtime.ragIndexingScheduler && this.ragAutoIndexTicks?.get(runtime.ragIndexingScheduler);
+            if (tick) tick.repairNeedsCheckpoint = true;
+            else void this.refreshRagRuntimeCheckpoint(runtime);
+          }).finally(() => { repairs.delete(io); });
+          repairs.set(io, repair);
+        }
+        await repair;
+        return await read();
+      }
+    } finally {
+      release();
+    }
+  }
+
+  private rememberRagRuntimeProof(runtime: RagRuntimeSnapshot, proof: RagGenerationProof, manifestProof = proof): void {
+    const io = runtime.io;
+    if (!io) return;
+    const sourceStable = io.captureInvalidationSnapshot();
+    const policy = this.getRagSourcePolicyIdentity();
+    const stable = (): boolean => sourceStable() && !this.unloaded && !this.ragResetInProgress && policy === this.getRagSourcePolicyIdentity();
+    const { generation, documentCorpus, bm25Index, vectorStore, vaultIndexer, ragEngine } = runtime;
+    const contract = JSON.stringify(generation?.contract);
+    (this.ragVerifiedProofs ??= new WeakMap()).set(io, { proof: structuredClone(proof), manifestProof: structuredClone(manifestProof), isCurrent: (current) => stable() &&
+      current.generation?.id === generation?.id && JSON.stringify(current.generation?.contract) === contract &&
+      current.documentCorpus === documentCorpus && current.bm25Index === bm25Index && current.vectorStore === vectorStore &&
+      current.vaultIndexer === vaultIndexer && current.ragEngine === ragEngine });
+  }
+
+  private requireRagAutomaticRecoveryWriteCurrent(runtime: RagRuntimeSnapshot): void {
+    if (this.unloaded || this.ragResetInProgress || this.ragAutoRecoveryPausedByUser ||
+        this.ragEngine !== runtime.ragEngine || (this.activeRagRuntime && this.activeRagRuntime.io !== runtime.io) ||
+        !runtime.io?.captureReadSnapshot()() || !this.matchesRagStorageContract(runtime)) throw new IndexingCancelledError();
+  }
+
   private captureRagReadCurrentness(runtime: RagRuntimeSnapshot): () => boolean {
     const stable = runtime.io?.captureReadSnapshot();
     const policy = this.getRagSourcePolicyIdentity();
@@ -2111,8 +2197,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     } };
   }
 
-  private getRagSourcePolicyIdentity(): string {
-    return JSON.stringify({ paths: getEffectiveExcludePaths(this.settings.rag, this.settings.chat, this.app.vault.configDir), extensions: this.settings.rag.excludeExts });
+  private getRagSourcePolicyIdentity(config: Pick<SuperpowerInsideSettings, 'rag' | 'chat'> = this.settings): string {
+    return JSON.stringify({ paths: getEffectiveExcludePaths(config.rag, config.chat, this.app.vault.configDir), extensions: config.rag.excludeExts });
+  }
+
+  private matchesRagIndexerSourcePolicy(runtime: RagRuntimeSnapshot): boolean {
+    // checkpoint가 갱신하는 proof 정책이 아니라 indexer를 만든 실제 config와 비교합니다.
+    return !runtime.config || this.getRagSourcePolicyIdentity(runtime.config) === this.getRagSourcePolicyIdentity();
   }
 
   private observeRagRuntimeSources(runtime: RagRuntimeSnapshot): void {
@@ -2265,21 +2356,32 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const observedWork = this.ragRuntimeWork;
     const task = (async () => {
       let requested: number;
+      let unchanged: () => boolean;
       do {
         requested = requests.get(io) ?? 0;
+        unchanged = this.captureRagReadCurrentness(runtime);
         try {
           await runtime.ragIndexingScheduler?.waitForIdle();
           await io.checkpoint(async (stable) => {
         const policy = this.getRagSourcePolicyIdentity();
         const requireCurrent = (): void => {
-          if (!stable() || policy !== this.getRagSourcePolicyIdentity() || this.unloaded || this.ragResetInProgress || this.ragAutoRecoveryPausedByUser || this.ragEngine !== runtime.ragEngine || !this.matchesRagStorageContract(runtime)) throw new IndexingCancelledError();
+          if (!stable() || policy !== this.getRagSourcePolicyIdentity() || this.unloaded || this.ragResetInProgress || this.ragAutoRecoveryPausedByUser || this.ragEngine !== runtime.ragEngine || (this.activeRagRuntime && this.activeRagRuntime.io !== io) || !this.matchesRagStorageContract(runtime)) throw new IndexingCancelledError();
         };
         requireCurrent();
         const manifest = this.getRagGenerationManifest();
         const previous = await manifest.read();
-        if (previous.active?.id !== runtime.generation!.id) return;
-        if (this.activeRagRuntime?.generation?.terminal === 'complete' && this.activeRagRuntime.sourcePolicyIdentity === policy && !this.activeRagRuntime.coverageLimited &&
-            sameRagDurabilitySeal(previous.active.proof?.seal ?? null, await this.readRagRuntimeSeal(runtime))) return;
+        if (previous.pausedByUser || previous.active?.id !== runtime.generation!.id || JSON.stringify(previous.active.contract) !== JSON.stringify(runtime.generation!.contract)) return;
+        const cached = this.ragVerifiedProofs?.get(io);
+        if (cached?.isCurrent(runtime) && !runtime.coverageLimited &&
+            JSON.stringify(previous.active.proof) === JSON.stringify(cached.manifestProof) &&
+            sameRagDurabilitySeal(cached.proof.seal ?? null, await this.readRagRuntimeSeal(runtime))) {
+          requireCurrent();
+          const latest = await manifest.read();
+          requireCurrent();
+          if (latest.pausedByUser || latest.active?.id !== previous.active.id || latest.revision !== previous.revision ||
+              JSON.stringify(latest.active.proof) !== JSON.stringify(cached.manifestProof)) return;
+          if (cached.isCurrent(runtime)) return;
+        }
         const proof = await this.collectRagRuntimeProof(runtime, requireCurrent, true);
         requireCurrent();
         const revision = await manifest.refreshActive(previous.revision, runtime.generation!.id, previous.active.proof?.seal ?? null, proof);
@@ -2290,12 +2392,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
         runtime.generation = record;
         runtime.coverageLimited = false;
         runtime.sourcePolicyIdentity = policy;
+        this.rememberRagRuntimeProof(runtime, proof);
         if (this.activeRagRuntime?.io === io) { this.activeRagRuntime.generation = record; this.activeRagRuntime.coverageLimited = false; this.activeRagRuntime.sourcePolicyIdentity = policy; }
           });
         } catch {
           this.getLogger().debug('Active RAG checkpoint remains unverified.', { source: 'rag.generation' });
         }
-      } while (requested !== requests.get(io) && !this.unloaded && this.ragEngine === runtime.ragEngine);
+      } while (requested !== requests.get(io) && !unchanged() && !this.unloaded && !this.ragResetInProgress && !this.ragAutoRecoveryPausedByUser && this.ragEngine === runtime.ragEngine);
     })().finally(() => { runs.delete(io); if (ownsWork && this.ragRuntimeWork === observedWork) this.endRagRuntimeWork(runtime); });
     runs.set(io, task);
     return task;
@@ -2475,7 +2578,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         runtime.generation = { ...generation, terminal: 'partial' };
         this.getLogger().warn('Stored lexical worker unavailable; preserving limited corpus-only search.', { source: 'rag.generation', error });
       }
-      if (generation.proof?.seal && generation.contract.vectorMode !== 'memory' &&
+      if (!this.ragAutoRecoveryPausedByUser && generation.proof?.seal && generation.contract.vectorMode !== 'memory' &&
           (generation.contract.vectorMode === 'disabled' || generation.contract.embeddingBinding !== undefined)) {
         let vectorProbe: IndexedDbVectorStore | null = null;
         try {
@@ -2487,7 +2590,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           await runtime.io!.checkpoint(async (stable) => {
             const policy = this.getRagSourcePolicyIdentity();
             const requireRestore = (): void => {
-              if (!stable() || policy !== this.getRagSourcePolicyIdentity() || this.unloaded || this.ragResetInProgress || this.ragRuntimeInitRunId !== restoreRunId || this.ragEngine) throw new IndexingCancelledError();
+              if (!stable() || this.ragAutoRecoveryPausedByUser || policy !== this.getRagSourcePolicyIdentity() || this.unloaded || this.ragResetInProgress || this.ragRuntimeInitRunId !== restoreRunId || this.ragEngine) throw new IndexingCancelledError();
             };
             requireRestore();
             const observed = await this.readRagRuntimeSeal(runtime);
@@ -2512,7 +2615,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
         getCandidatePaths: async () => new Set((await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)).map((file) => file.path)),
       });
       if (this.ragRestoreOwner !== owner || this.unloaded || this.ragResetInProgress || this.ragRuntimeInitRunId !== restoreRunId) { this.disposeRagRuntimeSnapshot(runtime); return; }
-      this.restoreRagRuntimeSnapshot(runtime);
+      if (this.restoreRagRuntimeSnapshot(runtime) && !runtime.coverageLimited && runtime.generation?.proof) {
+        this.rememberRagRuntimeProof(runtime, runtime.generation.proof, generation.proof);
+      }
       this.refreshActiveArtifactDatabaseNames();
     } catch (error) {
       this.recordRagRestoreFailure(error, owner, restoreRunId);
@@ -2561,6 +2666,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     if (revision === null) throw new IndexingCancelledError();
     this.ragManifestRevision = revision;
     const active = this.activeRagRuntime;
+    active?.io?.invalidate(); // 명시 재시도는 같은 원문·receipt여도 새 검증을 요구합니다.
     if (active?.vaultIndexer && active.admitsEmbedding?.() !== false && this.matchesRagStorageContract(active)) {
       await this.backfillRagLiteralSources(active);
       active.automaticRagRecovery?.resume();
@@ -2683,13 +2789,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
     previousRuntime.ragIndexingScheduler?.cancel();
     this.unregisterRAGEvents();
     this.clearAutoUpdateTimer();
+    // indexer가 보관하는 배열을 UI의 직접 수정과 분리합니다. proof는 현재 설정을 검증합니다.
+    const indexerConfig = { ...this.settings.rag,
+      excludePaths: [...this.settings.rag.excludePaths], excludeExts: [...this.settings.rag.excludeExts],
+    };
+    Object.freeze(indexerConfig.excludePaths);
+    Object.freeze(indexerConfig.excludeExts);
     const runtime: RagRuntimeSnapshot = {
       documentCorpus: null, vaultDocumentCorpus: null, vectorStore: null,
       embeddingProvider: null, bm25Index: null, ragEngine: null, vaultIndexer: null,
       ragIndexingScheduler: null, automaticRagRecovery: null, ragPerformanceGuard: null,
       ragIndexingStatus: null, nextAutoUpdateAt: null,
       lastAutoUpdateSkippedReason: null, lastAutoUpdateResult: null,
-      config: { rag: { ...this.settings.rag }, chat: { ...this.settings.chat } },
+      config: { rag: indexerConfig, chat: { ...this.settings.chat } },
       io: new RagRuntimeWorkBarrier(),
       sourcePolicyIdentity: this.getRagSourcePolicyIdentity(),
       coverageLimited: hydrate ? previousRuntime.coverageLimited : false,
@@ -2814,7 +2926,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           });
           this.buildingRagRuntime = null;
           published = true;
-          try { this.restoreRagRuntimeSnapshot(runtime); }
+          try { if (this.restoreRagRuntimeSnapshot(runtime)) this.rememberRagRuntimeProof(runtime, runtime.generation!.proof!); }
           finally { this.refreshActiveArtifactDatabaseNames(); this.disposeRagRuntimeSnapshot(previousRuntime); }
           return;
         }
@@ -2873,7 +2985,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           this.buildingRagRuntime = null;
           this.lastBuildingGeneration = null;
           published = true;
-          try { this.restoreRagRuntimeSnapshot(runtime); }
+          try { if (this.restoreRagRuntimeSnapshot(runtime)) this.rememberRagRuntimeProof(runtime, proof); }
           finally {
             this.refreshActiveArtifactDatabaseNames();
             this.disposeRagRuntimeSnapshot(previousRuntime);
@@ -3155,7 +3267,25 @@ export default class SuperpowerInsidePlugin extends Plugin {
         removeFile: (filePath) => runtime.io!.run(() => runtime.vaultIndexer!.removeFile(filePath)),
         indexPending: (options) => {
           requireEmbeddingAdmission();
-          return runtime.io!.run(() => { requireEmbeddingAdmission(); return runtime.vaultIndexer!.indexPending(options); });
+          // Scheduler status callbacks can start a checkpoint synchronously before the writer.
+          const tick = options.automaticRecovery ? this.ragAutoIndexTicks?.get(runtime.ragIndexingScheduler!) : undefined;
+          const beforeWrite = tick?.beforeWrite;
+          if (tick && beforeWrite) {
+            // 이 작업의 idle checkpoint가 이미 끝난 복구까지 증명합니다.
+            tick.repairNeedsCheckpoint = false;
+          }
+          const afterGate = beforeWrite?.();
+          return runtime.io!.run(() => {
+            requireEmbeddingAdmission();
+            if (afterGate) {
+              if (options.isCurrent?.() === false) throw new IndexingCancelledError();
+              afterGate();
+            }
+            return runtime.vaultIndexer!.indexPending(options.automaticRecovery ? {
+              ...options,
+              isCurrent: () => options.isCurrent?.() !== false && this.matchesRagIndexerSourcePolicy(runtime),
+            } : options);
+          });
         },
         reindexAll: (options) => {
           requireEmbeddingAdmission();
@@ -3196,6 +3326,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
             ? (runtime.ragPerformanceGuard?.forceResume() ?? null)
             : (runtime.ragPerformanceGuard?.resume() ?? null),
         onStatusChange: (status) => {
+          const wasRunning = runtime.ragIndexingStatus?.running === true;
           const previousPhase = runtime.ragIndexingStatus?.phase;
           runtime.ragIndexingStatus = status;
           if (status.running) {
@@ -3208,7 +3339,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
           if (this.buildingRagRuntime === runtime && isCurrentRun()) this.refreshBus?.emit('rag', { status: 'partial' });
           if (!this.unloaded && this.ragEngine === runtime.ragEngine) {
             this.handleRagIndexingStatusChange(status);
-            if (!status.running) void this.refreshRagRuntimeCheckpoint(runtime).catch(() => {
+            if (wasRunning && !status.running) void this.refreshRagRuntimeCheckpoint(runtime).catch(() => {
               this.getLogger().debug('Active RAG checkpoint remains unverified.', { source: 'rag.generation' });
             });
           }
@@ -3236,33 +3367,49 @@ export default class SuperpowerInsidePlugin extends Plugin {
         return files.map((file) => file.path);
       };
       // 자동 실행·coverage debt·유지보수는 같은 Native partial admission을 소비합니다.
-      const readAutomaticRecoveryPendingState = async () => {
-        const indexer = runtime.vaultIndexer;
-        if (!indexer) throw new Error('RAG recovery indexer unavailable');
-        return indexer.getAutomaticRecoveryPendingState({ isCurrent: this.captureRagReadCurrentness(runtime) });
-      };
+      const readAutomaticRecoveryPendingState = (repair = true) => this.readAutomaticRecoveryPendingState(runtime, repair);
       const countAutomaticRecoveryPendingDocuments = async () => (await readAutomaticRecoveryPendingState()).pendingDocumentCount;
       runtime.automaticRagRecovery = new AutomaticRagRecoveryCoordinator({
         listCandidateFiles: listAutomaticRecoveryFiles,
         readCompletedFingerprint: () =>
           vectorStore.getMetaValue<string>(AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY),
         writeCompletedFingerprint: async (fingerprint) => {
-          await runtime.io!.run(() => vectorStore.setMetaValue(AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY, fingerprint));
+          if (await vectorStore.getMetaValue<string>(AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY) === fingerprint) return;
+          this.requireRagAutomaticRecoveryWriteCurrent(runtime);
+          await runtime.io!.run(() => {
+            this.requireRagAutomaticRecoveryWriteCurrent(runtime);
+            return vectorStore.setMetaValue(AUTOMATIC_RAG_RECOVERY_COMPLETION_KEY, fingerprint);
+          });
           void this.refreshRagRuntimeCheckpoint(runtime);
         },
         runPending: async () => {
           await scheduler.indexPending({ automaticRecovery: true });
         },
         waitForIdle: () => scheduler.waitForIdle(),
-        countPendingDocuments: () => runtime.io!.run(readAutomaticRecoveryPendingState),
+        countPendingDocuments: () => this.readRagRuntimeWithRepair(runtime, () => readAutomaticRecoveryPendingState(false)),
         runHealthyMaintenance: async (fingerprint, force, isCancelled) => {
           await scheduler.waitForIdle();
+          this.requireRagAutomaticRecoveryWriteCurrent(runtime);
+          if (isCancelled()) throw new IndexingCancelledError();
+          const readMaintenanceState = async () => JSON.stringify(await Promise.all([
+            runtime.documentCorpus!.getDurabilityReceipt(), bm25Index?.getCheckpoint(), vectorStore.getDurabilityCheckpoint(),
+          ]));
+          const before = await readMaintenanceState();
+          this.requireRagAutomaticRecoveryWriteCurrent(runtime);
+          if (isCancelled()) throw new IndexingCancelledError();
+          // 무변이 admission도 진행 중 검증을 무효화하므로 진입 직전에 기록합니다.
+          const interruptedCheckpoint = this.ragCheckpointRuns?.has(runtime.io!) === true;
           await runtime.io!.run(async () => {
+          this.requireRagAutomaticRecoveryWriteCurrent(runtime);
+          if (isCancelled()) throw new IndexingCancelledError();
           // 중단된 쓰기 원장은 내구 요청 등록 후 재색인·삭제로 복구한다.
           const indexer = runtime.vaultIndexer;
           if (indexer) {
             const isCurrent = this.captureRagReadCurrentness(runtime);
-            const requireCurrent = () => { if (isCancelled() || !isCurrent()) throw new IndexingCancelledError(); };
+            const requireCurrent = () => {
+              this.requireRagAutomaticRecoveryWriteCurrent(runtime);
+              if (isCancelled() || !isCurrent()) throw new IndexingCancelledError();
+            };
             const pendingWrites = await indexer.listPendingWriteRecovery();
             requireCurrent();
             const pendingState = await readAutomaticRecoveryPendingState();
@@ -3323,7 +3470,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
             isCancelled,
           );
           });
-          void this.refreshRagRuntimeCheckpoint(runtime);
+          if (before !== await readMaintenanceState() || interruptedCheckpoint) void this.refreshRagRuntimeCheckpoint(runtime);
         },
         timer: createWindowAutomaticRagRecoveryTimer(),
         onEvent: (event, detail) => this.logAutomaticRagRecoveryEvent(event, detail),
@@ -3761,9 +3908,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
       });
       return;
     }
+    const runtime = this.captureRagRuntimeSnapshot();
+    const io = runtime.io!;
     const stopIfRuntimeChanged = (): boolean => {
       const changed =
         this.unloaded ||
+        this.activeRagRuntime?.io !== io ||
+        this.ragEngine !== runtime.ragEngine ||
         this.vaultIndexer !== vaultIndexer ||
         this.vectorStore !== vectorStore ||
         this.ragIndexingScheduler !== scheduler ||
@@ -3776,8 +3927,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
       return changed;
     };
     this.nextAutoUpdateAt = Date.now() + this.settings.rag.autoUpdateIntervalMin * 60000;
+    const isBlocked = () => this.ragResetInProgress || this.ragAutoRecoveryPausedByUser ||
+      this.ragCheckpointRuns?.has(io) || this.ragGenerationRestorePromise || this.buildingRagRuntime;
+    const policyMatchesIndexer = () => this.matchesRagIndexerSourcePolicy(runtime);
+    const ticks = this.ragAutoIndexTicks ??= new WeakMap();
+    if (isBlocked() || !policyMatchesIndexer() || ticks.has(scheduler)) return;
     await performanceGuard?.measureEventLoopLag();
-    if (stopIfRuntimeChanged()) return;
+    if (stopIfRuntimeChanged() || isBlocked() || !policyMatchesIndexer() || ticks.has(scheduler)) return;
     if (this.isRagIndexing()) {
       this.lastAutoUpdateSkippedReason = t('ragAutoUpdateAlreadyRunning');
       this.getLogger().debug('Auto RAG indexing skipped because indexing is already running.', {
@@ -3800,17 +3956,25 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     // 대상 확인 단계는 숨기고, 실제 재색인 대상이 있을 때만 scheduler가 running을 표시합니다.
     const signal = scheduler.beginPreparation({ publishStatus: false });
+    const tick: RagAutoIndexTick = {};
+    ticks.set(scheduler, tick);
+    const requireTickCurrent = () => {
+      if (signal?.aborted || stopIfRuntimeChanged() || isBlocked() || !policyMatchesIndexer()) throw new IndexingCancelledError();
+      this.requireRagAutomaticRecoveryWriteCurrent(runtime);
+    };
+    const requireProbeAdmission = () => {
+      requireTickCurrent();
+      if (this.isRagIndexing()) throw new IndexingCancelledError();
+    };
+    let observedCurrent: (() => boolean) | undefined;
     try {
-      const status = await calculateRagStatus(
-        this.app.vault,
-        vectorStore,
-        this.settings.rag,
-        this.settings.chat,
-        signal,
-      );
-      signal?.throwIfAborted();
-      if (stopIfRuntimeChanged()) return;
-      if (status.updateRequiredDocuments.length === 0) {
+      const pending = await this.readRagRuntimeWithRepair(runtime, () => {
+        observedCurrent = this.captureRagReadCurrentness(runtime);
+        return this.readAutomaticRecoveryPendingState(runtime, false, signal);
+      }, requireProbeAdmission);
+      requireProbeAdmission();
+      if (!observedCurrent?.()) return;
+      if (pending.actionableDocumentCount === 0) {
         this.lastAutoUpdateSkippedReason = t('ragAutoUpdateNoTargets');
         this.getLogger().debug('Auto RAG indexing skipped because no documents need updates.', {
           source: 'rag.auto',
@@ -3820,11 +3984,21 @@ export default class SuperpowerInsidePlugin extends Plugin {
       }
       this.getLogger().info('Auto RAG indexing started.', {
         source: 'rag.auto',
-        data: { updateRequired: status.updateRequiredDocuments.length },
+        data: { updateRequired: pending.actionableDocumentCount },
       });
-      new Notice(t('autoUpdateIndexingStarted'));
-      const result = await scheduler.indexPending();
-      if (stopIfRuntimeChanged()) return;
+      requireProbeAdmission();
+      if (!observedCurrent()) return;
+      tick.beforeWrite = () => {
+        requireTickCurrent();
+        if (observedCurrent && !observedCurrent()) throw new IndexingCancelledError();
+        // 자기 writer admission은 관측 epoch를 올리므로 gate 뒤와 작업 재개 시 재사용하지 않습니다.
+        observedCurrent = undefined;
+        return requireTickCurrent;
+      };
+      const work = scheduler.indexPending({ automaticRecovery: true });
+      if (!signal?.aborted && !isBlocked()) new Notice(t('autoUpdateIndexingStarted'));
+      const result = await work;
+      if (signal?.aborted || stopIfRuntimeChanged() || this.ragResetInProgress || this.ragAutoRecoveryPausedByUser) return;
       this.lastAutoUpdateResult = result;
       this.lastAutoUpdateSkippedReason = null;
       this.getLogger().notice('Auto RAG indexing completed.', {
@@ -3834,11 +4008,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (result.indexed > 0) {
         new Notice(`${result.indexed}${t('autoUpdateIndexingDone')}`);
       }
-      void this.computeAndEmitRagStats();
     } catch (err) {
-      if (signal?.aborted) return;
-      if (stopIfRuntimeChanged()) return;
+      if (signal?.aborted || stopIfRuntimeChanged() || this.ragResetInProgress || this.ragAutoRecoveryPausedByUser) return;
       if (isIndexingCancelledError(err)) {
+        if (isBlocked()) return;
         const pausedState = performanceGuard?.getState() ?? null;
         if (pausedState?.mode === 'paused') {
           this.lastAutoUpdateSkippedReason = t('ragAutoUpdatePausedRetry', {
@@ -3861,7 +4034,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.getLogger().error('Auto RAG indexing failed.', { source: 'rag.auto', error: err });
       new Notice(`${t('autoUpdateIndexingFailed')}: ${msg}`, 10000);
     } finally {
+      ticks.delete(scheduler);
       scheduler.endPreparation(signal);
+      // 배치가 scheduler의 writer 진입점에 도달하지 않았다면 복구 자체의 증명을 요청합니다.
+      if (tick.repairNeedsCheckpoint) void this.refreshRagRuntimeCheckpoint(runtime);
     }
   }
 

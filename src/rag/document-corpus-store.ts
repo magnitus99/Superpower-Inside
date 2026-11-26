@@ -235,11 +235,12 @@ export class IndexedDbDocumentCorpusStore implements DocumentCorpusStore {
   }
 
   async getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]> {
-    const documents = await this.db.documents
-      .where('id')
-      .anyOf([...ids])
-      .toArray();
-    return documents.map(toDocumentEntry);
+    if (ids.length === 0) return [];
+    // anyOf cursor가 반환하던 primary-key 순서를 유지합니다.
+    const documents = await this.db.documents.bulkGet([...new Set(ids)].sort());
+    return documents
+      .filter((document): document is SourceDocument => document !== undefined)
+      .map(toDocumentEntry);
   }
 
   async getEntriesByFilePaths(paths: readonly string[]): Promise<VectorEntry[]> {

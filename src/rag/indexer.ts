@@ -1,7 +1,7 @@
 import type { MetadataCache, TAbstractFile, TFile, Vault } from 'obsidian';
 import type { EmbeddingInferenceSample, EmbeddingProvider } from '../llm/embedding';
 import { assertValidEmbeddingBatch } from '../llm/embedding-validation';
-import type { VectorStore, VectorEntry, FileIndexRecord } from './store';
+import type { VectorStore, VectorEntry, FileIndexRecord, FileIndexReadOptions } from './store';
 import {
   getRagIndexingManifest,
   getRagPreparedSourceRevision,
@@ -1496,9 +1496,9 @@ export class VaultIndexer {
     };
   }
 
-  private async planPendingFiles(inventory: RagFileInventory, options: IndexingOptions) {
+  private async planPendingFiles(inventory: RagFileInventory, options: IndexingOptions, readOptions?: FileIndexReadOptions) {
     const requireCurrent = this.captureRecoveryCurrentness(inventory.candidates, options);
-    const status = await calculateRagStatus(this.vault, this.vectorStore, this.ragConfig, this.chatConfig, options.signal, inventory);
+    const status = await calculateRagStatus(this.vault, this.vectorStore, this.ragConfig, this.chatConfig, options.signal, inventory, readOptions);
     requireCurrent();
     const recoveryPaths = (await this.vectorStore.readPendingWriteRecovery?.()) ?? [];
     requireCurrent();
@@ -1510,10 +1510,10 @@ export class VaultIndexer {
     return plan;
   }
 
-  private async planAutomaticRecovery(inventory: RagFileInventory, pendingIndices: readonly number[], options: IndexingOptions) {
+  private async planAutomaticRecovery(inventory: RagFileInventory, pendingIndices: readonly number[], options: IndexingOptions, readOptions?: FileIndexReadOptions) {
     const requireCurrent = this.captureRecoveryCurrentness(inventory.candidates, options);
     const [corpusRows, vectorRows] = await Promise.all([
-      this.documentCorpus?.getFileIndexRecords?.() ?? Promise.resolve([]), this.vectorStore.getFileIndexRecords(),
+      this.documentCorpus?.getFileIndexRecords?.() ?? Promise.resolve([]), this.vectorStore.getFileIndexRecords(readOptions),
     ]);
     requireCurrent();
     const corpus = new Map(corpusRows.map((row) => [row.filePath, row]));
@@ -1531,14 +1531,14 @@ export class VaultIndexer {
     return { ...plan, deferredPaths: plan.deferredIndices.map((index) => pendingFiles[index].path) };
   }
 
-  async getAutomaticRecoveryPendingState(options: IndexingOptions = {}) {
+  async getAutomaticRecoveryPendingState(options: IndexingOptions = {}, readOptions?: FileIndexReadOptions) {
     throwIfIndexingCancelled(options.signal, options.isCurrent);
     const manifest = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
     const inventory = { ...manifest, candidates: [...manifest.candidates, ...manifest.failures.map(({ file }) => file)] };
     const requireCurrent = this.captureRecoveryCurrentness(inventory.candidates, options);
-    const pending = await this.planPendingFiles(inventory, options);
+    const pending = await this.planPendingFiles(inventory, options, readOptions);
     requireCurrent();
-    const plan = await this.planAutomaticRecovery(inventory, pending.fileIndices, options);
+    const plan = await this.planAutomaticRecovery(inventory, pending.fileIndices, options, readOptions);
     requireCurrent();
     return plan;
   }

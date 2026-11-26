@@ -607,6 +607,68 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(plugin.getRagGenerationSnapshot().coverage).toBe('complete');
   });
 
+  it.each(['saved', 'in-flight'] as const)('cold 사용자 중단 %s는 강한 원문 검증 없이 기존 lexical serving을 보존한다', async (boundary) => {
+    const { TFile } = await import('obsidian');
+    const { default: PluginClass } = await import('./main.ts');
+    const source = await import('./src/rag/source-snapshot');
+    const files = ['first', 'next'].map((name) => Object.assign(new TFile(), {
+      path: `Synthetic/${name}.md`, basename: name, extension: 'md',
+      stat: { ctime: 1, mtime: 1, size: 15 },
+    }));
+    const first = await lexicalRuntime({ files, contents: new Map(files.map((file) => [file.path, 'synthetic alpha'])) });
+    const manifest = first['getRagGenerationManifest']();
+    const before = await manifest.read();
+    expect(before.active?.terminal).toBe('complete');
+    expect(before.active?.proof?.seal).toBeDefined();
+    const rows = await first.documentCorpus!.getFileIndexRecords();
+    if (boundary === 'saved') expect(await manifest.setPaused(before.revision, true)).not.toBeNull();
+    const restored = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    Object.assign(restored, { app: first.app, manifest: { id: 'superpower-inside' }, settings: structuredClone(first.settings) });
+    const collect = vi.spyOn(restored, 'collectRagRuntimeProof' as never);
+    const read = vi.spyOn(source, 'readSourceFileSnapshot');
+    const originalRead = vi.mocked(first.app.vault.readBinary).getMockImplementation()!;
+    const physicalRead = vi.spyOn(first.app.vault, 'readBinary');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    physicalRead.mockClear();
+    if (boundary === 'in-flight') physicalRead.mockImplementationOnce(async (file) => {
+      const bytes = await originalRead(file);
+      await gate;
+      return bytes;
+    });
+    let settled = false;
+    const restoring = restored['restorePersistedRagGeneration']().finally(() => { settled = true; });
+    try {
+      if (boundary === 'in-flight') {
+        await vi.waitFor(() => expect(physicalRead).toHaveBeenCalledOnce());
+        const runtime = restored['restoringRagRuntime']!;
+        const close = vi.spyOn(runtime.bm25Index!, 'close');
+        const corpusClose = vi.spyOn(runtime.documentCorpus!, 'close');
+        restored.cancelRagIndexing({ byUser: true });
+        await vi.waitFor(async () => expect((await manifest.read()).pausedByUser).toBe(true));
+        expect(settled).toBe(false);
+        expect(close).not.toHaveBeenCalled();
+        expect(corpusClose).not.toHaveBeenCalled();
+        release();
+      }
+      await restoring;
+      expect(collect).toHaveBeenCalledTimes(boundary === 'saved' ? 0 : 1);
+      expect(read).toHaveBeenCalledTimes(boundary === 'saved' ? 0 : 1);
+      expect(physicalRead).toHaveBeenCalledTimes(boundary === 'saved' ? 0 : 1);
+      expect(restored.bm25Index!.isReady).toBe(true);
+      expect(await restored.documentCorpus!.getFileIndexRecords()).toEqual(rows);
+      expect(restored['captureRagRuntimeSnapshot']().coverageLimited).toBe(true);
+      expect(restored.getRagGenerationSnapshot().serving).toMatchObject({ id: before.active!.id, terminal: 'partial', proof: before.active!.proof });
+      expect((await restored.ragEngine!.query('alpha')).length).toBeGreaterThan(0);
+      expect(await manifest.read()).toMatchObject({ pausedByUser: true, active: before.active });
+      expect(restored['ragRestoreFailure']).toBeFalsy();
+    } finally {
+      release(); await restoring; read.mockRestore(); collect.mockRestore(); physicalRead.mockRestore();
+      await restored['drainRagRuntimeSnapshot'](restored['captureRagRuntimeSnapshot']());
+      await first['drainRagRuntimeSnapshot'](first['captureRagRuntimeSnapshot']());
+    }
+  });
+
   it('cold 현재 seal은 새 모델 없이 인증하고 다른 corpus mutation이면 제한 상태를 보존한다', async () => {
     const first = await lexicalRuntime();
     const { default: PluginClass } = await import('./main.ts');
@@ -734,6 +796,62 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       expect(after.active).toEqual(partial.active);
       expect(plugin.getRagGenerationSnapshot().coverage).toBe('partial');
     } finally { read.mockRestore(); collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('no-progress writer: verified partial 뒤 무변이 admission은 query guard만 무효화한다', async () => {
+    const { plugin, runtime, manifest, partial } = await livePartialCheckpointFixture();
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    const source = await import('./src/rag/source-snapshot');
+    const read = vi.spyOn(source, 'readSourceFileSnapshot');
+    try {
+      const current = plugin['captureRagReadCurrentness'](runtime);
+      await runtime.io!.run(async () => undefined);
+      expect(current()).toBe(false);
+      for (let request = 0; request < 3; request++) await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect.soft(collect).not.toHaveBeenCalled();
+      expect.soft(read).not.toHaveBeenCalled();
+      expect(await manifest.read()).toEqual(partial);
+    } finally { collect.mockRestore(); read.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('no-progress writer: 실제 scheduler 무진척 뒤 partial 중복 요청은 전체 검증하지 않는다', async () => {
+    const { plugin, runtime, file } = await denseReadWorkflowFixture();
+    const row = (await runtime.documentCorpus!.getFileIndexRecords())[0];
+    const documents = await runtime.documentCorpus!.getDocumentsByFilePath(file.path);
+    await runtime.io!.run(() => runtime.documentCorpus!.replaceFileDocuments(file.path,
+      documents.map((document) => ({ ...document, text: document.text + ' stale' })), row.sourceMetadata, row.sourceMetadataHash));
+    await plugin['refreshRagRuntimeCheckpoint'](runtime);
+    const manifest = plugin['getRagGenerationManifest']();
+    const before = await manifest.read();
+    expect(before.active?.terminal).toBe('partial');
+    const seal = await plugin['readRagRuntimeSeal'](runtime);
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    const source = await import('./src/rag/source-snapshot');
+    const read = vi.spyOn(source, 'readSourceFileSnapshot');
+    try {
+      const result = await runtime.ragIndexingScheduler!.indexPending({ automaticRecovery: true });
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      expect(result.indexed).toBe(0);
+      expect(await plugin['readRagRuntimeSeal'](runtime)).toEqual(seal);
+      for (let request = 0; request < 3; request++) await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect.soft(collect).not.toHaveBeenCalled();
+      expect.soft(read).not.toHaveBeenCalled();
+      expect(await manifest.read()).toEqual(before);
+    } finally { collect.mockRestore(); read.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('no-progress writer: 같은 세대 명시 manual update는 무변경이어도 새 검증을 요구한다', async () => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    const seal = await plugin['readRagRuntimeSeal'](runtime);
+    const id = runtime.generation!.id;
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    try {
+      await plugin.startRagUpdate();
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      expect(plugin['activeRagRuntime']?.generation?.id).toBe(id);
+      expect(await plugin['readRagRuntimeSeal'](runtime)).toEqual(seal);
+      expect(collect).toHaveBeenCalledOnce();
+    } finally { collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
   });
 
   it('원문 검증 워크플로: 진행 중 partial checkpoint의 동일 입력 중복 요청은 한 번만 정착한다', async () => {
@@ -872,9 +990,12 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     const { OpenAIEmbeddingProvider } = await import('./src/llm/embedding');
     const text = 'synthetic read currentness body';
     const file = Object.assign(new TFile(), { path: 'Synthetic/read-currentness.md', basename: 'read-currentness', extension: 'md', stat: { ctime: 1, mtime: 1, size: text.length } });
-    const plugin = await lexicalRuntime({ files: [file], contents: new Map([[file.path, text]]) });
+    const contents = new Map([[file.path, text]]);
+    const plugin = await lexicalRuntime({ files: [file], contents });
     plugin.settings.providerProfiles = [createOpenAiEmbeddingProfile('synthetic-key')];
-    plugin.settings.rag = createRagWithEmbedding(plugin.settings.rag);
+    plugin.settings.rag = createRagWithEmbedding({ ...plugin.settings.rag,
+      excludePaths: [...plugin.settings.rag.excludePaths], excludeExts: [...plugin.settings.rag.excludeExts],
+    });
     const embed = vi.spyOn(OpenAIEmbeddingProvider.prototype, 'embedBatch').mockImplementation((texts) => Promise.resolve(texts.map(() => [1, 0])));
     try {
       await plugin.startRagUpdate();
@@ -882,8 +1003,394 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       expect(plugin.getRagGenerationSnapshot().coverage).toBe('complete');
     } finally { embed.mockRestore(); }
     plugin['automaticRagRecovery']!.dispose();
-    return { plugin, runtime: plugin['captureRagRuntimeSnapshot'](), file };
+    return { plugin, runtime: plugin['captureRagRuntimeSnapshot'](), file, contents };
   }
+
+  it('주기 tick은 barrier에서 진행 중인 proof를 기다리거나 무효화하지 않는다', async () => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    plugin['ragIndexAbortController'] = null;
+    const manifest = plugin['getRagGenerationManifest']();
+    const before = await manifest.read();
+    const [row] = await runtime.documentCorpus!.getFileIndexRecords();
+    const documents = await runtime.documentCorpus!.getDocumentsByFilePath(row.filePath);
+    await runtime.io!.run(() => runtime.documentCorpus!.replaceFileDocuments(row.filePath,
+      documents.map((document) => ({ ...document, text: document.text + ' stale' })), row.sourceMetadata, row.sourceMetadataHash));
+    const original = plugin['collectRagRuntimeProof'].bind(plugin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never).mockImplementationOnce((async (...args: Parameters<typeof original>) => { await gate; return original(...args); }) as never);
+    const run = vi.spyOn(runtime.io!, 'run');
+    const read = vi.spyOn(runtime.io!, 'runRead');
+    const raw = vi.spyOn(runtime.vectorStore!, 'getFileIndexRecords');
+    const schedule = vi.spyOn(runtime.ragIndexingScheduler!, 'indexPending');
+    const proof = plugin['refreshRagRuntimeCheckpoint'](runtime);
+    let tick: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      const current = runtime.io!.captureReadSnapshot();
+      expect(plugin.isRagIndexing()).toBe(false);
+      tick = plugin['autoIndex']();
+      let finished = false;
+      void tick.then(() => { finished = true; });
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 500 });
+      expect.soft(read).not.toHaveBeenCalled();
+      expect.soft(raw).not.toHaveBeenCalled();
+      expect.soft(schedule).not.toHaveBeenCalled();
+      expect.soft(run).not.toHaveBeenCalled();
+      expect(current()).toBe(true);
+      release();
+      await proof;
+      expect((await manifest.read()).revision).toBe(before.revision + 1);
+    } finally { release(); await proof; await tick; await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['deferred', 'actionable'] as const)('주기 tick은 실제 Native %s 판정을 따라 자동 배치만 시작한다', async (kind) => {
+    const { plugin, runtime, file } = await denseReadWorkflowFixture();
+    plugin['ragIndexAbortController'] = null;
+    const row = (await runtime.documentCorpus!.getFileIndexRecords())[0];
+    const documents = await runtime.documentCorpus!.getDocumentsByFilePath(file.path);
+    await runtime.io!.run(async () => {
+      await runtime.documentCorpus!.replaceFileDocuments(file.path, documents, { ...row.sourceMetadata!,
+        completeness: { status: 'partial', pageCount: 2, missingPageCount: 1, missingPages: [{ pageNumber: 2, reason: 'page-error' }], failures: [] },
+      }, row.sourceMetadataHash);
+      await runtime.vectorStore!.beginPendingWriteRecovery!([file.path]);
+    });
+    await plugin['refreshRagRuntimeCheckpoint'](runtime);
+    if (kind === 'actionable') runtime.vaultIndexer!.invalidateAutomaticRecoverySource(file.path);
+    const state = await runtime.vaultIndexer!.getAutomaticRecoveryPendingState({}, { repair: false });
+    expect(state.pendingDocumentCount).toBe(1);
+    expect(state.actionableDocumentCount).toBe(kind === 'actionable' ? 1 : 0);
+    const schedule = vi.spyOn(runtime.ragIndexingScheduler!, 'indexPending');
+    const index = vi.spyOn(runtime.vaultIndexer!, 'indexPending');
+    const run = vi.spyOn(runtime.io!, 'run');
+    const { OpenAIEmbeddingProvider } = await import('./src/llm/embedding');
+    const embed = vi.spyOn(OpenAIEmbeddingProvider.prototype, 'embedBatch').mockImplementation((texts) => Promise.resolve(texts.map(() => [1, 0])));
+    try {
+      await plugin['autoIndex']();
+      if (kind === 'actionable') {
+        expect(schedule).toHaveBeenCalledExactlyOnceWith({ automaticRecovery: true });
+        expect(index).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ automaticRecovery: true }));
+        expect(run).toHaveBeenCalledOnce();
+      } else {
+        expect(schedule).not.toHaveBeenCalled();
+        expect(index).not.toHaveBeenCalled();
+        expect(run).not.toHaveBeenCalled();
+      }
+    } finally { embed.mockRestore(); await plugin['ragCheckpointRuns']?.get(runtime.io!); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each([
+    ['unchanged', 'excludePaths'], ['owner-gate', 'excludePaths'],
+    ...(['excludePaths', 'excludeExts'] as const).flatMap((field) =>
+      (['delayed-save', 'preparation', 'admission', 'gate'] as const).map((boundary) => [boundary, field] as const)),
+  ] as const)('주기 tick은 실제 Native 대상의 %s 정책·owner 경계를 지킨다 (%s)', async (boundary, field) => {
+    const { plugin, runtime, file, contents } = await denseReadWorkflowFixture();
+    plugin['ragIndexAbortController'] = null;
+    contents.set(file.path, 'synthetic policy regression changed source');
+    file.stat.mtime++;
+    const indexer = runtime.vaultIndexer!;
+    expect((await indexer.getAutomaticRecoveryPendingState({}, { repair: false })).actionableDocumentCount).toBe(1);
+    const probe = vi.spyOn(indexer, 'getAutomaticRecoveryPendingState');
+    const index = vi.spyOn(indexer, 'indexPending');
+    const sourceRead = vi.spyOn(plugin.app.vault, 'cachedRead');
+    sourceRead.mockClear();
+    const { OpenAIEmbeddingProvider } = await import('./src/llm/embedding');
+    const embed = vi.spyOn(OpenAIEmbeddingProvider.prototype, 'embedBatch').mockImplementation((texts) => Promise.resolve(texts.map(() => [1, 0])));
+    const activeExclusions = plugin.settings.rag[field];
+    const exclude = () => { activeExclusions.push(field === 'excludePaths' ? 'Synthetic' : file.extension); };
+    const prepare = vi.spyOn(runtime.ragIndexingScheduler!, 'beginPreparation');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    if (boundary === 'preparation') Object.assign(plugin, { ragPerformanceGuard: { measureEventLoopLag: () => gate, getState: () => null } });
+    const originalRun = runtime.io!.run.bind(runtime.io!);
+    const run = vi.spyOn(runtime.io!, 'run');
+    let blocked: Promise<void> | undefined;
+    let save: Promise<unknown> | undefined;
+    const status = plugin['handleRagIndexingStatusChange'].bind(plugin);
+    const statusSpy = boundary === 'admission' ? vi.spyOn(plugin, 'handleRagIndexingStatusChange' as never).mockImplementation(((next: Parameters<typeof status>[0]) => {
+      if (next.phase === 'pending') exclude();
+      status(next);
+    }) as never) : undefined;
+    const persist = boundary === 'delayed-save' ? vi.spyOn(plugin, 'persistSettings' as never).mockImplementation((() => gate) as never) : undefined;
+    if (persist) {
+      exclude();
+      save = plugin.saveSettings({ reinitRag: false, reinitMcp: false });
+    }
+    if (boundary === 'gate' || boundary === 'owner-gate') run.mockImplementationOnce((operation) => {
+      blocked = runtime.io!.checkpoint(() => gate);
+      return originalRun(operation);
+    });
+    const tick = plugin['autoIndex']();
+    try {
+      if (boundary === 'preparation') { exclude(); release(); }
+      if (boundary === 'gate' || boundary === 'owner-gate') {
+        await vi.waitFor(() => expect(blocked).toBeDefined());
+        expect(index).not.toHaveBeenCalled();
+        if (boundary === 'gate') exclude();
+        else plugin.ragEngine = null;
+        release();
+      }
+      await tick;
+      if (boundary === 'unchanged') {
+        expect(index).toHaveBeenCalledOnce();
+        expect(embed).toHaveBeenCalledOnce();
+      } else {
+        expect.soft(index).not.toHaveBeenCalled();
+        expect.soft(embed).not.toHaveBeenCalled();
+        expect(sourceRead).not.toHaveBeenCalled();
+      }
+      if (boundary === 'delayed-save' || boundary === 'preparation') {
+        expect(prepare).not.toHaveBeenCalled();
+        expect(probe).not.toHaveBeenCalled();
+        expect(run).not.toHaveBeenCalled();
+        expect(plugin['activeRagRuntime']?.io).toBe(runtime.io);
+      } else expect(probe).toHaveBeenCalledOnce();
+      if (boundary === 'admission') expect(run).not.toHaveBeenCalled();
+      if (boundary !== 'unchanged' && boundary !== 'owner-gate') {
+        expect(plugin.settings.rag[field]).toBe(activeExclusions);
+        expect(indexer['ragConfig'][field]).not.toBe(activeExclusions);
+        expect(indexer['ragConfig'][field]).not.toContain(field === 'excludePaths' ? 'Synthetic' : file.extension);
+      }
+    } finally {
+      release(); await save; await blocked; await tick;
+      statusSpy?.mockRestore(); persist?.mockRestore(); embed.mockRestore();
+      await runtime.ragIndexingScheduler!.waitForIdle();
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      await plugin['drainRagRuntimeSnapshot'](runtime);
+    }
+  });
+
+  it.each(['unchanged', 'excludePaths', 'excludeExts'] as const)('주기 tick의 실제 writer 계획 I/O 대기 중 제외 정책을 재확인한다 (%s)', async (change) => {
+    const { plugin, runtime, file, contents } = await denseReadWorkflowFixture();
+    plugin['ragIndexAbortController'] = null;
+    contents.set(file.path, 'synthetic source changed during automatic planning');
+    file.stat.mtime++;
+    const store = runtime.vectorStore!;
+    const index = vi.spyOn(runtime.vaultIndexer!, 'indexPending');
+    const source = vi.spyOn(await import('./src/rag/source-snapshot'), 'readSourceFileSnapshot');
+    const saveCorpus = vi.spyOn(runtime.documentCorpus!, 'replaceBatchFileDocuments');
+    const saveVectors = vi.spyOn(store, 'replaceBatchFileEntries');
+    const { OpenAIEmbeddingProvider } = await import('./src/llm/embedding');
+    const embed = vi.spyOn(OpenAIEmbeddingProvider.prototype, 'embedBatch').mockImplementation((texts) => Promise.resolve(texts.map(() => [1, 0])));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const readRecords = store.getFileIndexRecords.bind(store);
+    let planning = false;
+    const records = vi.spyOn(store, 'getFileIndexRecords').mockImplementation(async (options) => {
+      const rows = await readRecords(options);
+      // Readonly 관측은 repair:false입니다. 실제 writer의 첫 planPendingFiles 읽기만 지연합니다.
+      if (options === undefined && !planning) {
+        planning = true;
+        await gate;
+      }
+      return rows;
+    });
+    const tick = plugin['autoIndex']();
+    try {
+      await vi.waitFor(() => expect(planning).toBe(true));
+      expect(index).toHaveBeenCalledOnce();
+      expect(source.mock.calls.some(([, , options]) => options?.preparation)).toBe(false);
+      expect(saveCorpus).not.toHaveBeenCalled();
+      expect(embed).not.toHaveBeenCalled();
+      if (change !== 'unchanged') plugin.settings.rag[change].push(change === 'excludePaths' ? 'Synthetic' : file.extension);
+      release();
+      await tick;
+      const expected = change === 'unchanged' ? 1 : 0;
+      expect.soft(source.mock.calls.filter(([, , options]) => options?.preparation)).toHaveLength(expected);
+      expect.soft(saveCorpus).toHaveBeenCalledTimes(expected);
+      expect.soft(saveVectors).toHaveBeenCalledTimes(expected);
+      expect.soft(embed).toHaveBeenCalledTimes(expected);
+    } finally {
+      release(); await tick;
+      records.mockRestore(); source.mockRestore(); embed.mockRestore();
+      await runtime.ragIndexingScheduler!.waitForIdle();
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      await plugin['drainRagRuntimeSnapshot'](runtime);
+    }
+  });
+
+  it.each(['actionable', 'no-target', 'cancelled-retry', 'failed-retry'] as const)('주기 tick의 실제 legacy repair는 %s 경로에서 새 완료 증명을 남긴다', async (kind) => {
+    const { plugin, runtime, file, contents } = await denseReadWorkflowFixture();
+    plugin['ragIndexAbortController'] = null;
+    const store = runtime.vectorStore as IndexedDbVectorStore;
+    await runtime.io!.run(() => store['db'].fileIndex.clear());
+    if (kind === 'actionable') {
+      contents.set(file.path, 'synthetic legacy repair changed source');
+      file.stat.mtime++;
+    }
+    const before = (await store.getDurabilityCheckpoint()).receipt;
+    const originalRecords = store.getFileIndexRecords.bind(store);
+    let reads = 0;
+    const records = vi.spyOn(store, 'getFileIndexRecords').mockImplementation(async (options) => {
+      const rows = await originalRecords(options);
+      ++reads;
+      if (reads === 2 && kind === 'cancelled-retry') runtime.io!.invalidate();
+      if (reads === 3 && kind === 'failed-retry') throw new Error('synthetic retry failure');
+      return rows;
+    });
+    const index = vi.spyOn(runtime.vaultIndexer!, 'indexPending');
+    const checkpoint = vi.spyOn(plugin, 'refreshRagRuntimeCheckpoint' as never);
+    const { OpenAIEmbeddingProvider } = await import('./src/llm/embedding');
+    const embed = vi.spyOn(OpenAIEmbeddingProvider.prototype, 'embedBatch').mockImplementation((texts) => Promise.resolve(texts.map(() => [1, 0])));
+    try {
+      await plugin['autoIndex']();
+      await runtime.ragIndexingScheduler!.waitForIdle();
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      expect(records.mock.calls.slice(0, 3)).toEqual([[{ repair: false }], [], [{ repair: false }]]);
+      expect(checkpoint).toHaveBeenCalledOnce();
+      expect(await store['db'].fileIndex.count()).toBe(1);
+      expect((await store.getDurabilityCheckpoint()).receipt).not.toEqual(before);
+      expect((await plugin['getRagGenerationManifest']().read()).active?.proof?.seal).toEqual(await plugin['readRagRuntimeSeal'](runtime));
+      if (kind === 'failed-retry') expect(plugin['lastAutoUpdateSkippedReason']).toBe('synthetic retry failure');
+      if (kind === 'actionable') {
+        expect(index).toHaveBeenCalledOnce();
+        expect(embed).toHaveBeenCalledOnce();
+      } else {
+        expect(index).not.toHaveBeenCalled();
+        expect(embed).not.toHaveBeenCalled();
+      }
+    } finally { embed.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('stats가 먼저 끝나도 동시 tick은 공유 legacy repair 뒤 실제 변경을 색인하고 증명한다', async () => {
+    const { FileIndexRepairRequiredError } = await import('./src/rag/store');
+    const { plugin, runtime, file, contents } = await denseReadWorkflowFixture();
+    plugin['ragIndexAbortController'] = null;
+    const store = runtime.vectorStore as IndexedDbVectorStore;
+    await runtime.io!.run(() => store['db'].fileIndex.clear());
+    const before = await plugin['readRagRuntimeSeal'](runtime);
+    contents.set(file.path, 'synthetic shared repair changed source');
+    file.stat.mtime++;
+    let releaseRepair!: () => void;
+    let releaseRetry!: () => void;
+    const repairGate = new Promise<void>((resolve) => { releaseRepair = resolve; });
+    const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; });
+    const originalRecords = store.getFileIndexRecords.bind(store);
+    const records = vi.spyOn(store, 'getFileIndexRecords').mockImplementation(async (options) => {
+      if (options?.repair !== false) await repairGate;
+      return originalRecords(options);
+    });
+    const indexer = runtime.vaultIndexer!;
+    const originalProbe = indexer.getAutomaticRecoveryPendingState.bind(indexer);
+    const probe = vi.spyOn(indexer, 'getAutomaticRecoveryPendingState')
+      .mockImplementationOnce(originalProbe)
+      .mockImplementationOnce(async (...args) => { await retryGate; return originalProbe(...args); });
+    const index = vi.spyOn(indexer, 'indexPending');
+    const run = vi.spyOn(runtime.io!, 'run');
+    const checkpoint = vi.spyOn(plugin, 'refreshRagRuntimeCheckpoint' as never);
+    const { OpenAIEmbeddingProvider } = await import('./src/llm/embedding');
+    const embed = vi.spyOn(OpenAIEmbeddingProvider.prototype, 'embedBatch').mockImplementation((texts) => Promise.resolve(texts.map(() => [1, 0])));
+    const stats = plugin['computeAndEmitRagStats']();
+    let tick: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      tick = plugin['autoIndex']();
+      await vi.waitFor(async () => {
+        expect(records.mock.results[2]).toBeDefined();
+        await expect(records.mock.results[2].value).rejects.toBeInstanceOf(FileIndexRepairRequiredError);
+      });
+      releaseRepair();
+      await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+      await stats;
+      expect(plugin['eventDrivenRagStats']?.updateRequiredDocuments.map((doc) => doc.path)).toContain(file.path);
+      expect.soft(checkpoint).not.toHaveBeenCalled();
+      releaseRetry();
+      await tick;
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      expect(index).toHaveBeenCalledOnce();
+      expect(embed).toHaveBeenCalledOnce();
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(checkpoint).toHaveBeenCalledOnce();
+      const seal = await plugin['readRagRuntimeSeal'](runtime);
+      expect(seal.corpus).not.toEqual(before.corpus);
+      expect(seal.lexical).not.toEqual(before.lexical);
+      expect(seal.vector).not.toEqual(before.vector);
+      expect((await plugin['getRagGenerationManifest']().read()).active?.proof?.seal).toEqual(seal);
+    } finally {
+      releaseRepair(); releaseRetry(); await stats; await tick;
+      embed.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime);
+    }
+  });
+
+  it.each(['pause', 'reset', 'lag-checkpoint'] as const)('주기 tick은 준비 전 %s 경계를 존중한다', async (boundary) => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    plugin['ragIndexAbortController'] = null;
+    const prepare = vi.spyOn(runtime.ragIndexingScheduler!, 'beginPreparation');
+    const read = vi.spyOn(runtime.io!, 'runRead');
+    let releaseLag!: () => void;
+    const lag = new Promise<void>((resolve) => { releaseLag = resolve; });
+    let releaseProof!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseProof = resolve; });
+    const measure = vi.fn(() => lag);
+    Object.assign(plugin, { ragPerformanceGuard: { measureEventLoopLag: measure, getState: () => null } });
+    let proof: Promise<void> | undefined;
+    const original = plugin['collectRagRuntimeProof'].bind(plugin);
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    if (boundary === 'pause') plugin.cancelRagIndexing({ byUser: true });
+    if (boundary === 'reset') plugin['ragResetInProgress'] = true;
+    const tick = plugin['autoIndex']();
+    try {
+      if (boundary === 'lag-checkpoint') {
+        expect(measure).toHaveBeenCalledOnce();
+        runtime.io!.invalidate();
+        collect.mockImplementationOnce((async (...args: Parameters<typeof original>) => { await gate; return original(...args); }) as never);
+        proof = plugin['refreshRagRuntimeCheckpoint'](runtime);
+        await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      } else expect(measure).not.toHaveBeenCalled();
+      releaseLag();
+      let finished = false;
+      void tick.then(() => { finished = true; });
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 500 });
+      expect(prepare).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+    } finally { releaseLag(); releaseProof(); await tick; await proof; await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['pause', 'reset', 'checkpoint', 'repair', 'admission'] as const)('주기 tick의 관측 중 %s 경계는 새 writer를 막는다', async (boundary) => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    plugin['ragIndexAbortController'] = null;
+    const store = runtime.vectorStore as IndexedDbVectorStore;
+    if (boundary === 'repair') await runtime.io!.run(() => store['db'].fileIndex.clear());
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let proof: Promise<void> | undefined;
+    const pending = boundary !== 'repair' ? await runtime.vaultIndexer!.getAutomaticRecoveryPendingState({}, { repair: false }) : undefined;
+    const original = store.getFileIndexRecords.bind(store);
+    const records = vi.spyOn(store, 'getFileIndexRecords').mockImplementationOnce(async (options) => {
+      await gate;
+      try { return await original(options); }
+      catch (error) { proof = plugin['refreshRagRuntimeCheckpoint'](runtime); throw error; }
+    });
+    const schedule = vi.spyOn(runtime.ragIndexingScheduler!, 'indexPending');
+    const run = vi.spyOn(runtime.io!, 'run');
+    if (boundary !== 'repair') {
+      vi.spyOn(runtime.vaultIndexer!, 'getAutomaticRecoveryPendingState').mockImplementationOnce(async () => {
+        await store.getFileIndexRecords({ repair: false });
+        return { ...pending!, actionableDocumentCount: 1 };
+      });
+    }
+    if (boundary === 'admission') {
+      const originalStatus = plugin['handleRagIndexingStatusChange'].bind(plugin);
+      vi.spyOn(plugin, 'handleRagIndexingStatusChange' as never).mockImplementation(((status: Parameters<typeof originalStatus>[0]) => {
+        if (status.phase === 'pending' && !proof) proof = plugin['refreshRagRuntimeCheckpoint'](runtime);
+        originalStatus(status);
+      }) as never);
+    }
+    const tick = plugin['autoIndex']();
+    try {
+      await vi.waitFor(() => expect(records).toHaveBeenCalledExactlyOnceWith({ repair: false }));
+      if (boundary === 'pause') plugin.cancelRagIndexing({ byUser: true });
+      if (boundary === 'reset') plugin['ragResetInProgress'] = true;
+      if (boundary === 'checkpoint') proof = plugin['refreshRagRuntimeCheckpoint'](runtime);
+      release();
+      await tick;
+      expect(run).not.toHaveBeenCalled();
+      if (boundary === 'admission') {
+        expect(schedule).toHaveBeenCalledExactlyOnceWith({ automaticRecovery: true });
+        expect(proof).toBeDefined();
+      } else expect(schedule).not.toHaveBeenCalled();
+    } finally { release(); await tick; await proof; await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
 
   it.each(['stats', 'automatic-count'] as const)('원문 검증 워크플로: 실제 무변이 %s 조회는 foreign read currentness를 유지한다', async (entry) => {
     const { plugin, runtime } = await denseReadWorkflowFixture();
@@ -914,6 +1421,415 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       expect((await store.getDurabilityCheckpoint()).receipt).not.toEqual(before);
       expect((await store.getFileIndexRecords()).map((row) => row.filePath)).toContain(file.path);
     } finally { await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: 같은 io라도 corpus identity 교체는 캐시를 재사용하지 않는다', async () => {
+    const { plugin, runtime } = await livePartialCheckpointFixture();
+    const replacement = { ...runtime, documentCorpus: Object.create(runtime.documentCorpus!) as typeof runtime.documentCorpus };
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    try {
+      await plugin['refreshRagRuntimeCheckpoint'](replacement);
+      expect(collect).toHaveBeenCalledOnce();
+    } finally { collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: 실패 중 동일 요청 수 증가는 무한 재시도가 아니며 명시 재시도는 보존한다', async () => {
+    const { plugin, runtime, manifest, partial } = await livePartialCheckpointFixture();
+    runtime.io!.invalidate();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never).mockImplementation((async () => { await gate; throw new Error('synthetic proof failure'); }) as never);
+    const first = plugin['refreshRagRuntimeCheckpoint'](runtime);
+    try {
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      const second = plugin['refreshRagRuntimeCheckpoint'](runtime);
+      release();
+      await Promise.all([first, second]);
+      expect(collect).toHaveBeenCalledOnce();
+      expect(await manifest.read()).toEqual(partial);
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(collect).toHaveBeenCalledTimes(2);
+    } finally { release(); await first; collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['reset', 'retired', 'owner-io'] as const)('원문 검증 방어: %s 뒤 캐시 적중도 게시하지 않는다', async (boundary) => {
+    const { plugin, runtime, manifest, partial } = await livePartialCheckpointFixture();
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    try {
+      if (boundary === 'reset') Object.assign(plugin, { ragResetInProgress: true });
+      else if (boundary === 'owner-io') plugin['activeRagRuntime']!.io = new (runtime.io!.constructor as typeof import('./src/rag/runtime-generation').RagRuntimeWorkBarrier)();
+      else runtime.io!.close();
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(collect).not.toHaveBeenCalled();
+      expect(await manifest.read()).toEqual(partial);
+    } finally { collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('복구 admission: 실제 typed legacy 조회 뒤 gate 중 사용자 중단은 복구를 막는다', async () => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    const store = runtime.vectorStore as IndexedDbVectorStore;
+    await runtime.io!.run(() => store['db'].fileIndex.clear());
+    const before = await store.getDurabilityCheckpoint();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let blocked: Promise<unknown> | undefined;
+    const repair = vi.spyOn(store, 'getFileIndexRecords');
+    const run = vi.spyOn(runtime.io!, 'run');
+    const read = plugin['readRagRuntimeWithRepair'](runtime, async () => {
+      try { return await store.getFileIndexRecords({ repair: false }); }
+      catch (error) { blocked = runtime.io!.checkpoint(async () => { await gate; }); throw error; }
+    });
+    const result = Promise.allSettled([read]);
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      plugin.cancelRagIndexing({ byUser: true });
+      release(); await blocked;
+      expect((await result)[0].status).toBe('rejected');
+      expect(repair.mock.calls.filter(([options]) => options?.repair !== false)).toHaveLength(0);
+      expect(await store.getDurabilityCheckpoint()).toEqual(before);
+      expect(await store['db'].fileIndex.count()).toBe(0);
+    } finally { release(); await result; repair.mockRestore(); run.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('복구 admission: 이미 시작한 legacy 복구는 중단·퇴역 뒤에도 lease 정착을 기다린다', async () => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    const store = runtime.vectorStore as IndexedDbVectorStore;
+    await runtime.io!.run(() => store['db'].fileIndex.clear());
+    const original = store.getFileIndexRecords.bind(store);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let started = false;
+    const repair = vi.spyOn(store, 'getFileIndexRecords').mockImplementation(async (options) => {
+      if (options?.repair === false) return original(options);
+      const rows = await original(options);
+      started = true;
+      await gate;
+      return rows;
+    });
+    const close = vi.spyOn(store, 'close');
+    const result = Promise.allSettled([plugin['readRagRuntimeWithRepair'](runtime, () => store.getFileIndexRecords({ repair: false }))]);
+    let drained = false;
+    let drain: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(started).toBe(true));
+      plugin.cancelRagIndexing({ byUser: true });
+      drain = plugin['drainRagRuntimeSnapshot'](runtime).then(() => { drained = true; });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(drained).toBe(false);
+      expect(close).not.toHaveBeenCalled();
+      release(); await result; await drain;
+      expect(drained).toBe(true);
+      expect(close).toHaveBeenCalledOnce();
+    } finally { release(); await result; await drain; repair.mockRestore(); close.mockRestore(); if (!drain) await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('복구 admission: paused 정상 readonly 조회는 계속 성공한다', async () => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    plugin.cancelRagIndexing({ byUser: true });
+    const run = vi.spyOn(runtime.io!, 'run');
+    try {
+      expect(await plugin['readRagRuntimeWithRepair'](runtime, () => runtime.vectorStore!.getFileIndexRecords({ repair: false }))).toHaveLength(1);
+      expect(run).not.toHaveBeenCalled();
+    } finally { run.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['get', 'gate'].flatMap((wait) => ['pause', 'owner', 'reset', 'unload', 'retire'].map((stop) => ({ wait, stop }))))('복구 admission: fingerprint $wait 대기 중 $stop은 setter를 시작하지 않는다', async ({ wait, stop }) => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    const host = plugin['automaticRagRecovery']!['host'];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const get = vi.spyOn(runtime.vectorStore!, 'getMetaValue');
+    const set = vi.spyOn(runtime.vectorStore!, 'setMetaValue');
+    const run = vi.spyOn(runtime.io!, 'run');
+    let blocked: Promise<unknown> | undefined;
+    if (wait === 'get') get.mockImplementationOnce(async () => { await gate; return undefined; });
+    else blocked = runtime.io!.checkpoint(async () => { await gate; });
+    const pending = host.writeCompletedFingerprint('synthetic-new-completion');
+    const result = Promise.allSettled([pending]);
+    try {
+      await vi.waitFor(() => wait === 'get' ? expect(get).toHaveBeenCalled() : expect(run).toHaveBeenCalledOnce());
+      if (stop === 'pause') plugin.cancelRagIndexing({ byUser: true });
+      else if (stop === 'owner') plugin['activeRagRuntime'] = { ...plugin['activeRagRuntime']!, io: new (runtime.io!.constructor as typeof import('./src/rag/runtime-generation').RagRuntimeWorkBarrier)() };
+      else if (stop === 'reset') plugin['ragResetInProgress'] = true;
+      else if (stop === 'unload') plugin['unloaded'] = true;
+      else runtime.io!.close();
+      release(); await blocked; await result;
+      expect(set).not.toHaveBeenCalled();
+      if (wait === 'get') expect(run).not.toHaveBeenCalled();
+    } finally { release(); await result; get.mockRestore(); set.mockRestore(); run.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['pause', 'owner', 'reset', 'unload', 'retire'] as const)('복구 admission: maintenance gate 중 %s는 실제 pending 원장을 보존한다', async (boundary) => {
+    const { plugin, runtime, file } = await denseReadWorkflowFixture();
+    const store = runtime.vectorStore as IndexedDbVectorStore;
+    await store['beginFileWrites']([file.path], 1);
+    const ledger = await store['db'].pendingWrites.toArray();
+    const before = await store.getDurabilityCheckpoint();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const blocked = runtime.io!.checkpoint(async () => { await gate; });
+    const probe = vi.spyOn(store, 'probePendingFileWrites');
+    const run = vi.spyOn(runtime.io!, 'run');
+    const pending = plugin['automaticRagRecovery']!['host'].runHealthyMaintenance('synthetic-maintenance', true, () => false);
+    const result = Promise.allSettled([pending]);
+    try {
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      if (boundary === 'pause') plugin.cancelRagIndexing({ byUser: true });
+      else if (boundary === 'owner') plugin['activeRagRuntime'] = { ...plugin['activeRagRuntime']!, io: new (runtime.io!.constructor as typeof import('./src/rag/runtime-generation').RagRuntimeWorkBarrier)() };
+      else if (boundary === 'reset') plugin['ragResetInProgress'] = true;
+      else if (boundary === 'unload') plugin['unloaded'] = true;
+      else runtime.io!.close();
+      release(); await blocked; await result;
+      expect(probe).not.toHaveBeenCalled();
+      expect(await store['db'].pendingWrites.toArray()).toEqual(ledger);
+      expect(await store.getDurabilityCheckpoint()).toEqual(before);
+    } finally { release(); await result; probe.mockRestore(); run.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: 동일 fingerprint 저장은 writer admission과 proof 요청을 만들지 않는다', async () => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    const host = plugin['automaticRagRecovery']!['host'];
+    const fingerprint = 'synthetic-completed-fingerprint';
+    await host.writeCompletedFingerprint(fingerprint);
+    await plugin['refreshRagRuntimeCheckpoint'](runtime);
+    const current = runtime.io!.captureReadSnapshot();
+    const run = vi.spyOn(runtime.io!, 'run');
+    const checkpoint = vi.spyOn(plugin, 'refreshRagRuntimeCheckpoint' as never);
+    try {
+      await host.writeCompletedFingerprint(fingerprint);
+      expect(current()).toBe(true);
+      expect(run).not.toHaveBeenCalled();
+      expect(checkpoint).not.toHaveBeenCalled();
+    } finally { run.mockRestore(); checkpoint.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each([false, true])('maintenance admission 회귀: 진행 중 검증 %s에서 동일 fingerprint 무변경 유지보수가 정착한다', async (inFlight) => {
+    const { plugin, runtime, file } = await denseReadWorkflowFixture();
+    const host = plugin['automaticRagRecovery']!['host'];
+    const { planRagAutomaticRecoveryRust } = await import('./src/rag/rust-core');
+    const fingerprint = planRagAutomaticRecoveryRust([{ path: file.path, mtime: file.stat.mtime, size: file.stat.size }], '', 0, 0)!.fingerprint;
+    await host.writeCompletedFingerprint(fingerprint);
+    await host.runHealthyMaintenance(fingerprint, false, () => false);
+    await plugin['ragCheckpointRuns']?.get(runtime.io!);
+    const manifest = plugin['getRagGenerationManifest']();
+    const before = await manifest.read();
+    const original = plugin['collectRagRuntimeProof'].bind(plugin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const collect = vi.spyOn(plugin as never as { collectRagRuntimeProof(...args: unknown[]): Promise<unknown> }, 'collectRagRuntimeProof');
+    collect.mockImplementation(async (...args) => { await gate; return original(...args as Parameters<typeof original>); });
+    const source = await import('./src/rag/source-snapshot');
+    const read = vi.spyOn(source, 'readSourceFileSnapshot');
+    const request = vi.spyOn(plugin, 'refreshRagRuntimeCheckpoint' as never);
+    const run = vi.spyOn(runtime.io!, 'run');
+    let pending: Promise<void> | undefined;
+    try {
+      if (inFlight) {
+        const row = (await runtime.documentCorpus!.getFileIndexRecords())[0];
+        const documents = await runtime.documentCorpus!.getDocumentsByFilePath(file.path);
+        await runtime.io!.run(() => runtime.documentCorpus!.replaceFileDocuments(file.path,
+          documents.map((document) => ({ ...document, text: document.text + ' changed projection' })), row.sourceMetadata, row.sourceMetadataHash));
+        pending = plugin['refreshRagRuntimeCheckpoint'](runtime);
+        await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      }
+      const receipt = await runtime.documentCorpus!.getDurabilityReceipt();
+      const lexical = await runtime.bm25Index!.getCheckpoint();
+      const vector = await runtime.vectorStore!.getDurabilityCheckpoint();
+      request.mockClear(); run.mockClear();
+      const maintenance = host.runHealthyMaintenance(fingerprint, false, () => false);
+      // Wait for real writer admission (not just the asynchronous before-state read).
+      await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      release();
+      await maintenance;
+      await pending;
+      // Only await the actual producer's continuation; never issue an external refresh.
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      await runtime.io!.waitForIdle();
+      expect(await runtime.documentCorpus!.getDurabilityReceipt()).toEqual(receipt);
+      expect(await runtime.bm25Index!.getCheckpoint()).toEqual(lexical);
+      expect(await runtime.vectorStore!.getDurabilityCheckpoint()).toEqual(vector);
+      const after = await manifest.read();
+      expect(after.active?.proof?.seal?.corpus).toEqual(receipt);
+      expect(after.active?.proof?.seal).toEqual(await plugin['readRagRuntimeSeal'](runtime));
+      expect(after.revision).toBe(before.revision + (inFlight ? 1 : 0));
+      expect(request).toHaveBeenCalledTimes(inFlight ? 1 : 0);
+      expect(collect).toHaveBeenCalledTimes(inFlight ? 2 : 0);
+      expect(read).toHaveBeenCalledTimes(inFlight ? 1 : 0);
+      if (!inFlight) {
+        await plugin['refreshRagRuntimeCheckpoint'](runtime);
+        expect.soft(collect).not.toHaveBeenCalled();
+        expect.soft(read).not.toHaveBeenCalled();
+        expect(await manifest.read()).toEqual(after);
+      }
+      if (inFlight) {
+        expect(after.active?.terminal).toBe('partial');
+        expect(after.active?.proof?.failures).toContainEqual({ path: file.path, reason: 'lexical-projection-not-current' });
+        // Duplicate requests remain cache no-ops after the one recovery validation.
+        await plugin['refreshRagRuntimeCheckpoint'](runtime);
+        expect(await manifest.read()).toEqual(after);
+        expect(collect).toHaveBeenCalledTimes(2);
+        expect(read).toHaveBeenCalledOnce();
+      }
+    } finally {
+      release(); await pending;
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      collect.mockRestore(); read.mockRestore(); request.mockRestore(); run.mockRestore();
+      await plugin['drainRagRuntimeSnapshot'](runtime);
+    }
+  });
+
+  it.each(['success', 'typed-again', 'failure'] as const)('원문 검증 방어: 공유 legacy repair 뒤 %s 재조회는 한 번만 수행한다', async (outcome) => {
+    const { FileIndexRepairRequiredError } = await import('./src/rag/store');
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const repair = vi.spyOn(runtime.vectorStore!, 'getFileIndexRecords').mockImplementation(async () => { await gate; return []; });
+    let reads = 0;
+    const reading = () => {
+      if (++reads <= 2 || outcome === 'typed-again') return Promise.reject(new FileIndexRepairRequiredError());
+      return outcome === 'failure' ? Promise.reject(new Error('synthetic read failure')) : Promise.resolve(7);
+    };
+    const first = plugin['readRagRuntimeWithRepair'](runtime, reading);
+    const second = plugin['readRagRuntimeWithRepair'](runtime, reading);
+    const results = Promise.allSettled([first, second]);
+    try {
+      await vi.waitFor(() => expect(repair).toHaveBeenCalledOnce());
+      release();
+      const settled = await results;
+      expect(repair).toHaveBeenCalledOnce();
+      expect(reads).toBe(4);
+      expect(settled.map((result) => result.status)).toEqual(outcome === 'success' ? ['fulfilled', 'fulfilled'] : ['rejected', 'rejected']);
+    } finally { release(); await results; repair.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: 진행 중 새 writer와 중복 source 사건은 취소 뒤 최신 입력을 다시 검증한다', async () => {
+    const { plugin, runtime, manifest, partial, file } = await livePartialCheckpointFixture();
+    plugin['unregisterRAGEvents']();
+    runtime.io!.invalidate();
+    const original = plugin['collectRagRuntimeProof'].bind(plugin);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never).mockImplementationOnce((async (...args: Parameters<typeof original>) => { await gate; return original(...args); }) as never);
+    const first = plugin['refreshRagRuntimeCheckpoint'](runtime);
+    try {
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      plugin.app.vault.trigger('modify', file);
+      const current = runtime.io!.captureReadSnapshot();
+      plugin.app.vault.trigger('modify', file);
+      expect(current()).toBe(false);
+      const writing = runtime.io!.run(() => plugin.documentCorpus!.getDocumentsByFilePath(file.path).then(() => undefined));
+      const second = plugin['refreshRagRuntimeCheckpoint'](runtime);
+      release();
+      await Promise.all([first, second, writing]);
+      expect(collect).toHaveBeenCalledTimes(2);
+      expect((await manifest.read()).revision).toBe(partial.revision + 1);
+    } finally { release(); await first; collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: barrier 밖 corpus receipt 변경도 캐시를 무효화한다', async () => {
+    const { plugin, runtime, file } = await livePartialCheckpointFixture();
+    const documents = await plugin.documentCorpus!.getDocumentsByFilePath(file.path);
+    const row = (await plugin.documentCorpus!.getFileIndexRecords())[0];
+    await plugin.documentCorpus!.replaceFileDocuments(file.path, documents, row.sourceMetadata, row.sourceMetadataHash);
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    try {
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(collect).toHaveBeenCalledOnce();
+    } finally { collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: cold partial은 실제 새 session 검증 뒤 동일 요청을 메모리에서 재사용한다', async () => {
+    const { plugin, runtime, manifest, partial } = await livePartialCheckpointFixture();
+    const { default: PluginClass } = await import('./main.ts');
+    const restored = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    Object.assign(restored, { app: plugin.app, manifest: { id: 'superpower-inside' }, settings: structuredClone(plugin.settings) });
+    await restored['restorePersistedRagGeneration']();
+    const current = restored['captureRagRuntimeSnapshot']();
+    const collect = vi.spyOn(restored, 'collectRagRuntimeProof' as never);
+    try {
+      await restored['refreshRagRuntimeCheckpoint'](current);
+      await restored['refreshRagRuntimeCheckpoint'](current);
+      expect(collect).not.toHaveBeenCalled();
+      expect(await manifest.read()).toEqual(partial);
+    } finally { collect.mockRestore(); await restored['drainRagRuntimeSnapshot'](current); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: 같은 owner의 새 BM25 applied session도 실제 검증을 요구한다', async () => {
+    const { plugin, runtime } = await livePartialCheckpointFixture();
+    const previous = await runtime.bm25Index!.getCheckpoint();
+    const checkpoint = vi.spyOn(runtime.bm25Index!, 'getCheckpoint').mockResolvedValue({ ...previous, applied: { ...previous.applied!, sessionId: crypto.randomUUID() } });
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    try {
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(collect).toHaveBeenCalledOnce();
+    } finally { checkpoint.mockRestore(); collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: 동일 stat source 사건 뒤 이전 추출 캐시가 현재 바이트 검증을 대신하지 않는다', async () => {
+    const { TFile } = await import('obsidian');
+    const text = 'synthetic current source body';
+    const file = Object.assign(new TFile(), { path: 'Synthetic/current-bytes.md', basename: 'current-bytes', extension: 'md', stat: { ctime: 1, mtime: 1, size: text.length } });
+    const plugin = await lexicalRuntime({ files: [file], contents: new Map([[file.path, text]]) });
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    const manifest = plugin['getRagGenerationManifest']();
+    plugin['unregisterRAGEvents']();
+    const bytes = new TextEncoder().encode('x'.repeat(file.stat.size));
+    const binary = vi.spyOn(plugin.app.vault, 'readBinary').mockResolvedValue(bytes.buffer);
+    try {
+      plugin.app.vault.trigger('modify', file);
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(binary).toHaveBeenCalled();
+      expect((await manifest.read()).active?.proof?.failures).toContainEqual({ path: file.path, reason: 'source-not-current-at-checkpoint' });
+    } finally { binary.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: 조회의 물리 작업 정착 전 store를 닫지 않고 퇴역 뒤 성공 반환을 막는다', async () => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    let release!: () => void;
+    let started = false;
+    const gate = new Promise<number>((resolve) => { release = () => resolve(7); });
+    const close = vi.spyOn(runtime.vectorStore!, 'close');
+    const reading = plugin['readRagRuntimeWithRepair'](runtime, () => { started = true; return gate; });
+    const result = expect(reading).rejects.toThrow();
+    await vi.waitFor(() => expect(started).toBe(true));
+    const drain = plugin['drainRagRuntimeSnapshot'](runtime);
+    try {
+      await Promise.resolve();
+      expect(close).not.toHaveBeenCalled();
+      release();
+      await Promise.all([result, drain]);
+      expect(close).toHaveBeenCalledOnce();
+    } finally { release(); await drain; close.mockRestore(); }
+  });
+
+  it('원문 검증 방어: legacy repair 자체 실패는 조회 재시도 없이 닫히고 다음 명시 요청을 막지 않는다', async () => {
+    const { FileIndexRepairRequiredError } = await import('./src/rag/store');
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    const repair = vi.spyOn(runtime.vectorStore!, 'getFileIndexRecords').mockRejectedValue(new Error('synthetic repair failure'));
+    const reading = vi.fn(() => Promise.reject(new FileIndexRepairRequiredError()));
+    try {
+      await expect(plugin['readRagRuntimeWithRepair'](runtime, reading)).rejects.toThrow('synthetic repair failure');
+      expect(reading).toHaveBeenCalledOnce();
+      await expect(plugin['readRagRuntimeWithRepair'](runtime, reading)).rejects.toThrow('synthetic repair failure');
+      expect(repair).toHaveBeenCalledTimes(2);
+    } finally { repair.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it('원문 검증 방어: 전체 수집 중 seal 불안정은 게시와 검증 캐시 등록을 모두 막는다', async () => {
+    const { plugin, runtime, manifest, partial } = await livePartialCheckpointFixture();
+    runtime.io!.invalidate();
+    const original = plugin['readRagRuntimeSeal'].bind(plugin);
+    const seal = await original(runtime);
+    const seals = vi.spyOn(plugin, 'readRagRuntimeSeal' as never).mockResolvedValueOnce(seal as never).mockResolvedValueOnce({ ...seal, corpus: { ...seal.corpus, mutation: crypto.randomUUID() } } as never);
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    try {
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(await manifest.read()).toEqual(partial);
+      seals.mockRestore();
+      await plugin['refreshRagRuntimeCheckpoint'](runtime);
+      expect(collect).toHaveBeenCalledTimes(2);
+      expect((await manifest.read()).revision).toBe(partial.revision + 1);
+    } finally { seals.mockRestore(); collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
   });
 
   it('metadata changed는 같은 본문 alias를 다시 반영하고 새 seal을 발행한다', async () => {
@@ -2104,7 +3020,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       indexPending,
       reindexAll: indexPending,
     });
-    const getFileIndexRecords = vi.fn(() => records);
+    const getFileIndexRecords = vi.fn((_readOptions?: { repair: boolean }) => records);
     const logger = {
       debug: vi.fn(),
       info: vi.fn(),
@@ -2119,7 +3035,11 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       settings: DEFAULT_SETTINGS,
       unloaded: false,
       vectorStore: { getFileIndexRecords },
-      vaultIndexer: {},
+      vaultIndexer: { getAutomaticRecoveryPendingState: vi.fn(async (_options, readOptions) => {
+        await getFileIndexRecords(readOptions);
+        return { actionableDocumentCount: 1 };
+      }) },
+      matchesRagStorageContract: () => true,
       ragIndexingScheduler: scheduler,
       ragPerformanceGuard: null,
       ragIndexAbortController: null,
@@ -2127,7 +3047,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       getLogger: () => logger,
     });
     const run = (runtime as unknown as { autoIndex(): Promise<void> }).autoIndex();
-    await vi.waitFor(() => expect(getFileIndexRecords).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(getFileIndexRecords).toHaveBeenCalledExactlyOnceWith({ repair: false }));
     runtime.cancelRagIndexing();
     expect(automaticRecovery.suspend).toHaveBeenCalledOnce();
     expect(runtime.isRagIndexing()).toBe(false);
@@ -2192,7 +3112,8 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
           ]),
         ),
       },
-      vaultIndexer: {},
+      vaultIndexer: { getAutomaticRecoveryPendingState: vi.fn(() => Promise.resolve({ actionableDocumentCount: 0 })) },
+      matchesRagStorageContract: () => true,
       ragIndexingScheduler: scheduler,
       ragPerformanceGuard: null,
       ragIndexAbortController: null,
@@ -2201,6 +3122,8 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
 
     await (runtime as unknown as { autoIndex(): Promise<void> }).autoIndex();
 
+    expect(runtime['vaultIndexer']!.getAutomaticRecoveryPendingState).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ signal: expect.any(AbortSignal) }), { repair: false });
     expect(indexPending).not.toHaveBeenCalled();
     expect(statuses.some((status) => status.running)).toBe(false);
     expect(runtime.isRagIndexing()).toBe(false);

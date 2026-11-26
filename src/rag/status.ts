@@ -7,7 +7,7 @@ import {
   type RustRagStatusFileInput,
   type RustRagStatusRecordInput,
 } from './rust-core';
-import type { FileIndexRecord, VectorStore } from './store';
+import type { FileIndexReadOptions, FileIndexRecord, VectorStore } from './store';
 
 export type RagDocumentStatus = 'healthy' | 'missing' | 'stale' | 'unknown';
 
@@ -49,11 +49,12 @@ export async function calculateRagStatus(
   chatConfig: ChatConfig,
   signal?: AbortSignal,
   inventory?: RagFileInventory,
+  options?: FileIndexReadOptions,
 ): Promise<RagStatusSummary> {
   const manifest = inventory ?? await getRagFileInventory(vault, ragConfig, chatConfig);
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  const fileIndexRecords = await vectorStore.getFileIndexRecords();
+  const fileIndexRecords = await vectorStore.getFileIndexRecords(options);
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   const input = {

@@ -3,6 +3,7 @@ import Dexie from 'dexie';
 import type { DataAdapter } from 'obsidian';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  FileIndexRepairRequiredError,
   IndexedDbVectorStore,
   importLegacyJsonVectorStore,
   MemoryVectorStore,
@@ -19,6 +20,201 @@ describe('IndexedDbVectorStore', () => {
   afterEach(async () => {
     await Promise.all([...dbNames].map((name) => Dexie.delete(name)));
     dbNames.clear();
+  });
+
+  it('파일 기록이 있으면 벡터를 읽지 않고, 없으면 primary key 하나로 존재만 확인한다', async () => {
+    const store = createStore();
+    const vectors = store['db'].vectors;
+    const count = vi.spyOn(vectors, 'count');
+    const orderBy = vectors.orderBy.bind(vectors);
+    const limit = vi.fn();
+    const probe = vi.spyOn(vectors, 'orderBy').mockImplementation((index) => {
+      const collection = orderBy(index);
+      const applyLimit = collection.limit.bind(collection);
+      vi.spyOn(collection, 'limit').mockImplementation((size) => {
+        limit(size);
+        return applyLimit(size);
+      });
+      return collection;
+    });
+    try {
+      expect(await store.getFileIndexRecords({ repair: false })).toEqual([]);
+      expect(probe).toHaveBeenCalledExactlyOnceWith(':id');
+      expect(limit).toHaveBeenCalledExactlyOnceWith(1);
+      probe.mockClear();
+      await store.add([createEntry('Synthetic/probe.md', 0, [1, 0], 'synthetic')]);
+      expect(await store.getFileIndexRecords({ repair: false })).toHaveLength(1);
+      expect(probe).not.toHaveBeenCalled();
+      await store['db'].fileIndex.clear();
+      await expect(store.getFileIndexRecords({ repair: false })).rejects.toBeInstanceOf(FileIndexRepairRequiredError);
+      expect(probe).toHaveBeenCalledExactlyOnceWith(':id');
+      expect(count).not.toHaveBeenCalled();
+      probe.mockImplementationOnce(() => { throw new Error('synthetic probe failure'); });
+      await expect(store.getFileIndexRecords()).rejects.toThrow('synthetic probe failure');
+    } finally { probe.mockRestore(); count.mockRestore(); store.close(); }
+  });
+
+  it('IVF 진입 count와 검색 count는 현재 receipt의 정확한 수를 공유하며 다른 handle의 쓰기를 확인한다', async () => {
+    const store = createStore();
+    const db = store['db'];
+    const external = new IndexedDbVectorStore(db.name);
+    const first = createEntry('Synthetic/count.md', 0, [1, 0], 'first');
+    const second = createEntry('Synthetic/count.md', 1, [0, 1], 'second');
+    await store.add([first]);
+    const countVectors = db.vectors.count.bind(db.vectors);
+    const count = vi.spyOn(db.vectors, 'count').mockImplementation(() => {
+      expect(Dexie.currentTransaction?.mode).toBe('readonly');
+      expect(Dexie.currentTransaction?.storeNames).toEqual(expect.arrayContaining(['vectors', 'meta']));
+      return countVectors();
+    });
+    try {
+      const receipt = await store.getDurabilityCheckpoint();
+      expect(await store.getEntryCount()).toBe(1);
+      await store.search({ queryVector: [1, 0], topK: 1, mode: 'ann' });
+      await store.search({ queryVector: [1, 0], topK: 1 });
+      expect(count).toHaveBeenCalledTimes(1);
+      expect(await store.getDurabilityCheckpoint()).toEqual(receipt);
+      await external.add([second]);
+      expect(await store.getEntryCount()).toBe(2);
+      expect(await store.getEntryCount()).toBe(2);
+      expect(count).toHaveBeenCalledTimes(2);
+      store.close();
+      await expect(store.getEntryCount()).rejects.toMatchObject({ name: 'DatabaseClosedError' });
+    } finally { count.mockRestore(); external.close(); store.close(); }
+  });
+
+  it('receipt 없는 count는 재사용하지 않고 실패하거나 rollback된 관측은 캐시하지 않는다', async () => {
+    const store = createStore();
+    const db = store['db'];
+    const count = vi.spyOn(db.vectors, 'count');
+    const read = vi.spyOn(db.meta, 'get');
+    try {
+      await store.add([createEntry('Synthetic/count-safety.md', 0, [1, 0], 'synthetic')]);
+      await db.meta.put({ key: DURABILITY_RECEIPT_KEY, value: { version: 1 }, updated: 1 });
+      expect(await store.getEntryCount()).toBe(1);
+      expect(await store.getEntryCount()).toBe(1);
+      expect(count).toHaveBeenCalledTimes(2);
+      await store.setMetaValue('synthetic', true);
+      count.mockRejectedValueOnce(new Error('synthetic count failure'));
+      await expect(store.getEntryCount()).rejects.toThrow('synthetic count failure');
+      expect(await store.getEntryCount()).toBe(1);
+      read.mockRejectedValueOnce(new Error('synthetic receipt failure'));
+      await expect(store.getEntryCount()).rejects.toThrow('synthetic receipt failure');
+      await expect(db.transaction('rw', db.vectors, async () => {
+        await db.vectors.clear();
+        expect(await store.getEntryCount()).toBe(0);
+        throw new Error('synthetic count rollback');
+      })).rejects.toThrow('synthetic count rollback');
+      expect(await store.getEntryCount()).toBe(1);
+      expect(count).toHaveBeenCalledTimes(5);
+    } finally { read.mockRestore(); count.mockRestore(); store.close(); }
+  });
+
+  it('요청 경로에 vector가 없으면 다른 파일의 전체 legacy 탐색 없이 null을 반환한다', async () => {
+    const store = createStore();
+    await store.add([createEntry('Synthetic/other.md', 0, [1, 0], 'other')]);
+    const rows = await store['db'].fileIndex.toArray();
+    const before = await store.getDurabilityCheckpoint();
+    const rebuild = vi.spyOn(
+      store as unknown as { rebuildFileIndexFromVectors(): Promise<void> },
+      'rebuildFileIndexFromVectors',
+    );
+    try {
+      expect(await store.getFileIndexRecord('Synthetic/missing.md')).toBeNull();
+      expect(rebuild).not.toHaveBeenCalled();
+      expect(await store['db'].fileIndex.toArray()).toEqual(rows);
+      expect(await store['db'].vectors.count()).toBe(1);
+      expect(await store.getDurabilityCheckpoint()).toEqual(before);
+    } finally { rebuild.mockRestore(); store.close(); }
+  });
+
+  it('요청 경로의 legacy vector가 있으면 누락 행만 복구하고 최신 행과 빈 파일을 보존한다', async () => {
+    const store = createStore();
+    const target = 'Synthetic/legacy-target.md';
+    const other = 'Synthetic/current.md';
+    const empty = 'Synthetic/empty.md';
+    await store.add([
+      createEntry(target, 0, [1, 0], 'legacy first'),
+      createEntry(target, 1, [0, 1], 'legacy second'),
+      createEntry(other, 0, [1, 1], 'current'),
+    ]);
+    const expected = await store['db'].fileIndex.get(target);
+    const current = await store['db'].fileIndex.get(other);
+    if (!expected || !current) throw new Error('Synthetic file records missing.');
+    await store['db'].fileIndex.put({ ...current, contentHash: 'newer-current' });
+    await store.markFileIndexedWithoutVectors({ ...current, filePath: empty });
+    await store['db'].fileIndex.delete(target);
+    const retained = await store['db'].fileIndex.toArray();
+    const vectors = await store['db'].vectors.toArray();
+    const before = await store.getDurabilityCheckpoint();
+    try {
+      expect(await store.getFileIndexRecord(target)).toEqual(expected);
+      expect(await store['db'].fileIndex.toArray()).toEqual(
+        [...retained, expected].sort((a, b) => a.filePath.localeCompare(b.filePath)),
+      );
+      expect(await store['db'].vectors.toArray()).toEqual(vectors);
+      const repaired = await store.getDurabilityCheckpoint();
+      expect(repaired.receipt?.mutation).not.toBe(before.receipt?.mutation);
+      expect(await store.getFileIndexRecord(other)).toEqual(retained.find((row) => row.filePath === other));
+      expect(await store.getFileIndexRecord(empty)).toEqual(retained.find((row) => row.filePath === empty));
+      expect(await store.getDurabilityCheckpoint()).toEqual(repaired);
+    } finally { store.close(); }
+  });
+
+  it('비변이 getter는 legacy 복구를 typed 오류로 거절하고 중복 복구는 receipt를 바꾸지 않는다', async () => {
+    const store = createStore();
+    await store.add([createEntry('Synthetic/repair.md', 0, [1, 0], 'synthetic')]);
+    await store['db'].fileIndex.clear();
+    const before = await store.getDurabilityCheckpoint();
+    await expect(store.getFileIndexRecords({ repair: false })).rejects.toBeInstanceOf(FileIndexRepairRequiredError);
+    expect(await store.getDurabilityCheckpoint()).toEqual(before);
+    await Promise.all([store.getFileIndexRecords(), store.getFileIndexRecords()]);
+    const settled = await store.getDurabilityCheckpoint();
+    await store['rebuildFileIndexFromVectors']();
+    expect(await store.getDurabilityCheckpoint()).toEqual(settled);
+    store.close();
+  });
+
+  it('legacy 복구는 최신 파일 행을 보존하고 put 실패 시 receipt도 rollback한다', async () => {
+    const store = createStore();
+    await store.add([createEntry('Synthetic/race.md', 0, [1, 0], 'synthetic')]);
+    const row = (await store.getFileIndexRecords())[0];
+    await store['db'].fileIndex.put({ ...row, contentHash: 'newer' });
+    const before = await store.getDurabilityCheckpoint();
+    await store['rebuildFileIndexFromVectors']();
+    expect((await store.getFileIndexRecords())[0].contentHash).toBe('newer');
+    expect(await store.getDurabilityCheckpoint()).toEqual(before);
+    await store['db'].fileIndex.clear();
+    const put = vi.spyOn(store['db'].fileIndex, 'put').mockRejectedValueOnce(new Error('synthetic rollback'));
+    await expect(store['rebuildFileIndexFromVectors']()).rejects.toThrow('synthetic rollback');
+    put.mockRestore();
+    expect(await store.getDurabilityCheckpoint()).toEqual(before);
+    expect(await store['db'].fileIndex.count()).toBe(0);
+    store.close();
+  });
+
+  it('legacy cursor 탐색과 쓰기 사이 새 파일 행이 도착해도 덮어쓰지 않는다', async () => {
+    const store = createStore();
+    await store.add([createEntry('Synthetic/concurrent.md', 0, [1, 0], 'synthetic')]);
+    const row = (await store.getFileIndexRecords())[0];
+    await store['db'].fileIndex.clear();
+    const before = await store.getDurabilityCheckpoint();
+    const orderBy = store['db'].vectors.orderBy.bind(store['db'].vectors);
+    const cursor = vi.spyOn(store['db'].vectors, 'orderBy').mockImplementationOnce((index) => {
+      const collection = orderBy(index);
+      const first = collection.first.bind(collection);
+      vi.spyOn(collection, 'first').mockImplementationOnce((async () => {
+        const stale = await first();
+        await store['db'].fileIndex.put({ ...row, contentHash: 'newer-during-cursor' });
+        return stale;
+      }) as typeof collection.first);
+      return collection;
+    });
+    try {
+      await store['rebuildFileIndexFromVectors']();
+      expect((await store.getFileIndexRecords())[0].contentHash).toBe('newer-during-cursor');
+      expect(await store.getDurabilityCheckpoint()).toEqual(before);
+    } finally { cursor.mockRestore(); store.close(); }
   });
 
   it('vector receipt 읽기는 인증하지 않고 빈 DB의 명시 초기화·재열기·재생성을 구분한다', async () => {

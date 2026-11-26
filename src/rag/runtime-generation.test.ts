@@ -94,6 +94,23 @@ describe('검색 세대 수명주기', () => {
     barrier.close(); expect(third()).toBe(false);
   });
 
+  it('source invalidation snapshot은 no-op writer와 독립이며 사건·close는 보존한다', async () => {
+    const barrier = new RagRuntimeWorkBarrier();
+    const source = barrier.captureInvalidationSnapshot();
+    const read = barrier.captureReadSnapshot();
+    await barrier.run(() => Promise.resolve());
+    expect(source()).toBe(true);
+    expect(read()).toBe(false);
+    barrier.invalidate();
+    expect(source()).toBe(false);
+    const next = barrier.captureInvalidationSnapshot();
+    barrier.invalidate();
+    expect(next()).toBe(false);
+    const last = barrier.captureInvalidationSnapshot();
+    barrier.close();
+    expect(last()).toBe(false);
+  });
+
   it('writer barrier는 기존 병렬 쓰기 뒤 checkpoint를 배타 실행하고 이후 쓰기는 기다린다', async () => {
     const barrier = new RagRuntimeWorkBarrier();
     let finishFirst!: () => void;
@@ -394,4 +411,54 @@ describe('검색 세대 수명주기', () => {
     });
     manifest.close();
   });
+});
+
+describe('조회 admission', () => {
+  it('조회는 epoch를 보존하고 checkpoint와 물리 drain에 참여한다', async () => {
+    const io = new RagRuntimeWorkBarrier();
+    const current = io.captureReadSnapshot();
+    let finish!: () => void;
+    const reading = io.runRead(() => new Promise<void>((resolve) => { finish = resolve; }));
+    await Promise.resolve();
+    let checkpoint = false;
+    const checking = io.checkpoint(() => { checkpoint = true; return Promise.resolve(); });
+    let drained = false;
+    const drain = io.waitForIdle().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(current()).toBe(true);
+    expect(checkpoint).toBe(false);
+    expect(drained).toBe(false);
+    finish();
+    await Promise.all([reading, checking, drain]);
+    expect(checkpoint).toBe(true);
+    io.close();
+    await expect(io.runRead(() => Promise.resolve())).rejects.toThrow('closed');
+  });
+});
+
+it('동일 proof의 CAS 확인은 성공해도 manifest revision을 늘리지 않는다', async () => {
+  const manifest = new RagGenerationManifest(`synthetic-noop-${crypto.randomUUID()}`);
+  try {
+    await manifest.begin(0, generation('same'));
+    await manifest.commit(1, 'same', proof);
+    expect(await manifest.refreshActive(2, 'same', proof.seal, proof)).toBe(2);
+    expect(await manifest.refreshActive(1, 'same', proof.seal, proof)).toBeNull();
+    expect((await manifest.read()).revision).toBe(2);
+  } finally { await manifest.delete(); }
+});
+
+it('checkpoint 뒤 조회는 gate를 기다리며 대기 중 close는 실행과 늦은 성공을 막는다', async () => {
+  const io = new RagRuntimeWorkBarrier();
+  let finish!: () => void;
+  const checkpoint = io.checkpoint(() => new Promise<void>((resolve) => { finish = resolve; }));
+  await Promise.resolve();
+  const read = vi.fn(() => Promise.resolve());
+  const pending = io.runRead(read);
+  const rejected = expect(pending).rejects.toThrow('closed');
+  await Promise.resolve();
+  expect(read).not.toHaveBeenCalled();
+  io.close();
+  finish();
+  await Promise.all([checkpoint, rejected, io.waitForIdle()]);
+  expect(read).not.toHaveBeenCalled();
 });

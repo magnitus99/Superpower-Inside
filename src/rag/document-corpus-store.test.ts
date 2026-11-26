@@ -1,8 +1,8 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TFile } from 'obsidian';
-import { IndexedDbDocumentCorpusStore } from './document-corpus-store';
+import { IndexedDbDocumentCorpusStore, toDocumentEntry } from './document-corpus-store';
 import { buildSourceDocuments } from './source-document';
 import { isStoreMutationReceipt } from './durability';
 
@@ -34,6 +34,41 @@ function createFile(path: string): TFile {
 }
 
 describe('지원 파일 공통 문서 저장소', () => {
+  it('BM25 hit는 한 번의 primary-key bulkGet으로 중복·누락을 제외하고 기존 키 순서로 읽는다', async () => {
+    const store = createStore();
+    const files = ['a.md', 'Z.md'].map(createFile);
+    const options = { chunkSize: 1000, overlap: 0 };
+    const [lower, upper] = files.map((file) => buildSourceDocuments(file, `Original ${file.path}`, options)[0]);
+    await store.replaceBatchFileDocuments([
+      { filePath: lower.sourcePath, documents: [lower] },
+      { filePath: upper.sourcePath, documents: [upper] },
+    ]);
+    const receipt = await store.getDurabilityReceipt();
+    const table = store['db'].documents;
+    const bulkGet = vi.spyOn(table, 'bulkGet');
+    const where = vi.spyOn(table, 'where');
+    try {
+      expect(await store.getEntriesByIds([])).toEqual([]);
+      expect(bulkGet).not.toHaveBeenCalled();
+      const ids = [lower.id, 'missing', upper.id, lower.id];
+      expect(await store.getEntriesByIds(ids)).toEqual([toDocumentEntry(upper), toDocumentEntry(lower)]);
+      expect(bulkGet).toHaveBeenCalledExactlyOnceWith([upper.id, lower.id, 'missing']);
+      expect(where).not.toHaveBeenCalled();
+      expect(await store.getDurabilityReceipt()).toEqual(receipt);
+
+      const refreshed = { ...lower, sourceMtime: lower.sourceMtime + 1 };
+      await store.replaceFileDocuments(lower.sourcePath, [refreshed]);
+      expect(await store.getEntriesByIds(ids)).toEqual([toDocumentEntry(upper), toDocumentEntry(refreshed)]);
+      const replacement = buildSourceDocuments(files[0], 'Replacement text', options)[0];
+      await store.replaceFileDocuments(lower.sourcePath, [replacement]);
+      expect(await store.getEntriesByIds(ids)).toEqual([toDocumentEntry(upper)]);
+      await store.removeByFilePath(upper.sourcePath);
+      expect(await store.getEntriesByIds([...ids, replacement.id])).toEqual([toDocumentEntry(replacement)]);
+    } finally {
+      bulkGet.mockRestore();
+      where.mockRestore();
+    }
+  });
   it('receipt 읽기는 기존 행을 인증하지 않으며 빈 DB의 명시 초기화만 새 incarnation을 만든다', async () => {
     const store = createStore();
     expect(await store.getDurabilityReceipt()).toBeNull();

@@ -423,8 +423,9 @@ describe('설정 화면 리디자인 구조', () => {
     expect(autoStart).toBeGreaterThanOrEqual(0);
     expect(auto).toContain('beginPreparation({ publishStatus: false })');
     expect(auto).toContain('endPreparation(signal)');
+    expect(auto).toContain('readAutomaticRecoveryPendingState(');
     expect(auto.indexOf('beginPreparation({ publishStatus: false })')).toBeLessThan(
-      auto.indexOf('calculateRagStatus('),
+      auto.indexOf('readAutomaticRecoveryPendingState('),
     );
     expect(auto.indexOf('endPreparation(signal)')).toBeGreaterThan(auto.indexOf('indexPending('));
   });

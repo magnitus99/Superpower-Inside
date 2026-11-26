@@ -168,6 +168,12 @@ export interface VectorSearchResult {
   mode: 'exact' | 'ann';
 }
 
+export interface FileIndexReadOptions { repair?: boolean }
+
+export class FileIndexRepairRequiredError extends Error {
+  constructor() { super('RAG file index repair required'); this.name = 'FileIndexRepairRequiredError'; }
+}
+
 export interface VectorStore {
   getDurabilityCheckpoint?(): Promise<VectorStoreDurabilityCheckpoint>;
   initializeEmptyDurabilityReceipt?(): Promise<StoreMutationReceipt | null>;
@@ -193,7 +199,7 @@ export interface VectorStore {
   getEntryCount?(): Promise<number>;
   getIndexedFilePaths(): Promise<string[]>;
   getFileIndexRecord(filePath: string): Promise<FileIndexRecord | null>;
-  getFileIndexRecords(): Promise<FileIndexRecord[]>;
+  getFileIndexRecords(options?: FileIndexReadOptions): Promise<FileIndexRecord[]>;
   getEntriesByFilePaths(filePaths: readonly string[]): Promise<VectorEntry[]>;
   getEntriesByIds(ids: readonly string[]): Promise<VectorEntry[]>;
   getEntries(): Promise<VectorEntry[]>;
@@ -618,6 +624,7 @@ class BoundedLruCache<K, V> {
 /** Dexie/IndexedDB 기반 로컬 벡터 저장소 */
 export class IndexedDbVectorStore implements VectorStore {
   private db: VectorStoreDB;
+  private entryCountCache: { receipt: StoreMutationReceipt; count: number } | null = null;
   private entriesCache: VectorEntry[] | null = null;
   private runtimeIndex: RustVectorRuntimeIndex | null = null;
   private searchEntriesCache: BoundedLruCache<string, VectorEntry[]>;
@@ -871,7 +878,7 @@ export class IndexedDbVectorStore implements VectorStore {
     this.lastSearchStale = false;
     this.lastSearchDegraded = false;
     this.lastSearchFallbackReason = null;
-    const totalEntries = await this.db.vectors.count();
+    const totalEntries = await this.getEntryCount();
     if (totalEntries > this.hydrateAllEntryLimit) {
       if (this.vectorSearchWorkerAvailable) {
         try {
@@ -941,6 +948,7 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   async deleteDatabase(): Promise<void> {
+    this.entryCountCache = null;
     this.entriesCache = null;
     this.reconciliationState = null;
     this.closeVectorSearchWorker();
@@ -950,6 +958,7 @@ export class IndexedDbVectorStore implements VectorStore {
   }
 
   close(): void {
+    this.entryCountCache = null;
     this.entriesCache = null;
     this.reconciliationState = null;
     this.closeVectorSearchWorker();
@@ -1151,7 +1160,20 @@ export class IndexedDbVectorStore implements VectorStore {
 
   /** 후보 검색의 exact/ann 판단에 쓰는 저렴한 벡터 수입니다. */
   async getEntryCount(): Promise<number> {
-    return this.db.vectors.count();
+    // 상위 transaction의 범위와 아직 commit되지 않은 쓰기의 가시성을 유지합니다.
+    if (Dexie.currentTransaction) return this.db.vectors.count();
+    const observation = await this.db.transaction('r', [this.db.meta, this.db.vectors], async () => {
+      const receipt = await readStoreMutationReceipt(this.db.meta);
+      const cached = this.entryCountCache;
+      if (receipt && cached && receipt.incarnation === cached.receipt.incarnation &&
+          receipt.mutation === cached.receipt.mutation) return cached;
+      return { receipt, count: await this.db.vectors.count() };
+    });
+    // receipt와 count를 같은 snapshot에서 읽고, 성공적으로 정착한 결과만 보관합니다.
+    this.entryCountCache = observation.receipt && this.db.isOpen()
+      ? { receipt: observation.receipt, count: observation.count }
+      : null;
+    return observation.count;
   }
 
   async getStats(): Promise<VectorStoreStats> {
@@ -1177,18 +1199,19 @@ export class IndexedDbVectorStore implements VectorStore {
   async getFileIndexRecord(filePath: string): Promise<FileIndexRecord | null> {
     const record = await this.db.fileIndex.get(filePath);
     if (record) return record;
-    const vectorCount = await this.db.vectors.count();
-    if (vectorCount === 0) return null;
+    // 요청 경로에 벡터가 없으면 전체 파일 기록을 복구해도 얻을 행이 없습니다.
+    const vector = await this.db.vectors.where('filePath').equals(filePath).first();
+    if (!vector) return null;
     await this.rebuildFileIndexFromVectors();
     return (await this.db.fileIndex.get(filePath)) ?? null;
   }
 
-  async getFileIndexRecords(): Promise<FileIndexRecord[]> {
+  async getFileIndexRecords(options?: FileIndexReadOptions): Promise<FileIndexRecord[]> {
     const records = await this.readAllFileIndexRecordsPaged();
-    const vectorCount = await this.db.vectors.count();
-    if (records.length > 0 || vectorCount === 0) {
-      return records;
-    }
+    if (records.length > 0) return records;
+    const keys = await this.db.vectors.orderBy(':id').limit(1).primaryKeys();
+    if (keys.length === 0) return records;
+    if (options?.repair === false) throw new FileIndexRepairRequiredError();
     await this.rebuildFileIndexFromVectors();
     return this.readAllFileIndexRecordsPaged();
   }
@@ -1556,17 +1579,17 @@ export class IndexedDbVectorStore implements VectorStore {
         ? await this.db.vectors.where('filePath').above(filePathCursor).first()
         : await this.db.vectors.orderBy('filePath').first();
       if (!firstRecord) break;
-      const vectorCount = await this.db.vectors
-        .where('filePath')
-        .equals(firstRecord.filePath)
-        .count();
-      const [fileRecord] = fileIndexRecordsFromRust(
-        [vectorEntryFromRecordWithUpdated(firstRecord)],
-        firstRecord.updated,
-      );
-      if (fileRecord) {
-        await this.commitMutation(() => this.db.fileIndex.put({ ...fileRecord, vectorCount }));
-      }
+      await this.db.transaction('rw', [this.db.vectors, this.db.fileIndex, this.db.meta], async () => {
+        // 탐색 뒤 도착한 최신 행을 덮어쓰지 않도록 같은 transaction에서 재확인합니다.
+        if (await this.db.fileIndex.get(firstRecord.filePath)) return;
+        const current = await this.db.vectors.where('filePath').equals(firstRecord.filePath).first();
+        if (!current) return;
+        const vectorCount = await this.db.vectors.where('filePath').equals(current.filePath).count();
+        const [fileRecord] = fileIndexRecordsFromRust([vectorEntryFromRecordWithUpdated(current)], current.updated);
+        if (!fileRecord) return;
+        await this.db.fileIndex.put({ ...fileRecord, vectorCount });
+        await stampStoreMutation(this.db.meta);
+      });
       filePathCursor = firstRecord.filePath;
       await yieldToEventLoop();
     }
@@ -1876,7 +1899,7 @@ export class MemoryVectorStore implements VectorStore {
     );
   }
 
-  getFileIndexRecords(): Promise<FileIndexRecord[]> {
+  getFileIndexRecords(_options?: FileIndexReadOptions): Promise<FileIndexRecord[]> {
     const records = fileIndexRecordsFromRust(this.entries, Date.now());
     const vectorPaths = new Set(records.map((record) => record.filePath));
     return Promise.resolve([

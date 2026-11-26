@@ -87,7 +87,13 @@ BM25 worker 장애와 index owner의 퇴역은 구분한다. 살아 있는 owner
 
 background BM25 load와 장애 복구의 실제 Promise도 같은 runtime의 기존 barrier·lease 수명에 귀속한다. 퇴역은 새 admission·진행·성공 게시를 막되 이미 시작한 물리 작업의 정착 전에 worker·store를 닫지 않는다. 완료 checkpoint는 자신이 기다리는 작업 안에서 다시 시작하지 않으며, 정상 준비의 no-op 복구로 read currentness를 무효화하지 않는다. 사용자 중단과 기존 복구 횟수 제한은 유지한다.
 
+상태·자동 count의 read admission은 같은 gate·물리 drain·수명 보호에 참여하되 writer epoch를 올리지 않는다. vector 파일기록의 `repair:false` 조회는 legacy 복구가 필요하면 typed 오류로 닫히며 빈 성공으로 숨기지 않는다. 호스트는 조회 밖의 공유 writer에서 한 번 복구한 뒤 새 currentness로 한 번만 재조회한다. typed 복구·완료 fingerprint 저장·유지보수는 비동기 관측 뒤 writer admission 직전과 gate 통과 뒤 첫 물리 작업 전에 사용자 중단·reset·unload·현재 engine/io owner·계약·퇴역을 재확인한다. 유지보수의 pending 원장 probe도 복구 요청 등록·원장 삭제를 수행하는 쓰기이므로 첫 검사보다 앞설 수 없다. 시작 전 취소는 불필요한 writer epoch를 만들지 않고, 대기 중 취소는 새 쓰기를 막되 이미 시작한 물리 작업은 정착까지 보존한다. 일반 readonly·검색은 사용자 중단만으로 막지 않는다. legacy 복구는 파일별 transaction에서 최신 행과 vector를 재확인하고 실제 삽입과 receipt만 함께 커밋한다.
+
+세션 내 실제 전체 원문 검증과 게시 가드를 통과한 proof만 io별 메모리 캐시에 둔다. partial 실패 원장도 그대로 재사용하되 같은 live owner·정책·실제 handle identity·source invalidation snapshot·현재 store seal/BM25 session·manifest proof를 다시 확인한다. writer admission만으로 이 세션 검증 이력을 폐기하지 않으며 실제 receipt/session 변경과 원문·metadata 사건은 재검증한다. 명시 업데이트는 동일 세대·무변경이어도 source invalidation을 표시하여 새 검증을 요구한다. cold restore의 저장 proof는 검증 이력으로 복사하지 않으며 새 session에서 실제 원문 검증이 끝나야 한다. 원문 전체 검증은 source snapshot의 기본 강제 새로 읽기를 유지한다. 진행 중 checkpoint와 query currentness의 writer·중복 source/metadata 사건 epoch 무효화는 그대로 유지한다. 요청 수만 늘어난 동일 입력 실패는 자동 재시도 근거가 아니며 실제 입력 변경과 명시 재시도는 보존한다. 관측은 proof를 요청하지 않고 scheduler는 running→idle 경계에서만 요청한다. 동일 fingerprint 저장은 생략하고 실제 유지보수 writer 경계는 보존하되 내구 상태 무변경은 후속 proof를 요청하지 않으며, 예외적으로 writer admission이 진행 중 checkpoint를 무효화한 경우 정착 후 후속 검증을 1회 요청한다. 실제 재검증 결과도 이전 complete proof와 완전히 같으면 소유권 CAS 성공만 확인하고 manifest revision을 늘리지 않는다.
+
 ## 증분 색인 불변식
+
+주기 자동 색인은 실행 중인 checkpoint를 기다리거나 방해하지 않고 해당 tick을 건너뛰며, readonly Native 관측에서 실행 가능한 대상이 있을 때만 자동 제한 배치를 요청한다. 관측 전과 writer admission 직전·gate 통과 뒤에는 indexer 생성 config의 유효 제외 정책이 현재 설정과 일치해야 한다. indexer에 전달하는 제외 배열은 현재 설정의 직접 수정과 분리하며, 생성 정책을 checkpoint의 현재 proof 정책으로 덮어쓰지 않는다. 자동 `indexPending` writer는 기존 작업 currentness와 이 정책 일치를 합성해 indexer에 전달한다. 따라서 gate 통과 후 계획 I/O 대기 중 정책이 달라지면 이미 시작한 계획 I/O의 정착을 기다린 뒤 원문 준비·저장·임베딩 진입 전에 중단한다. 정책 검사에는 별도의 abort signal을 추가하지 않는다. 공유 legacy 복구 writer가 성공하면 조회자의 완료 순서와 무관하게 같은 runtime의 진행 중 tick에 증명 책임을 한 번만 넘긴다. 진행 중 tick이 없으면 복구 writer의 정착 경로에서 checkpoint를 요청한다. tick의 배치가 scheduler writer 진입점에 도달하면 idle checkpoint가 복구를 함께 증명하고, 도달하지 못하면 tick 종료 경로에서 복구의 checkpoint를 요청한다.
 
 dirty·stale·missing 판정은 파일 내용 hash와 revision을 단일 출처로 삼는다. 시작·폴링·vault 이벤트·recovery가 같은 파일을 중복 스케줄하지 않고, 내용 변경이 없으면 재색인·상태 갱신을 하지 않는다. 같은 변경을 여러 경로가 다시 처리해 사용량을 태우지 않는다.
 
@@ -95,7 +101,7 @@ dirty·stale·missing 판정은 파일 내용 hash와 revision을 단일 출처�
 
 파일 크기·예산 초과는 해당 파일을 건너뛰고 나머지를 계속 색인한다. OCR 신뢰도가 낮은 페이지 하나로 전체 색인을 중단하지 않고 해당 근거만 제외한 채 진행한다. 다중 파일 색인은 계획 단계의 청크·해시를 재사용하고 여러 문서의 청크를 교차 파일 임베딩 배치로 묶어 처리량을 높인다. 처리 중인 개별 파일명은 사용자에게 노출하지 않고 진행 규모·범위만 보여 준다. 색인 진행 정보는 ETA와 처리 범위를 포함하고, 스킵된 파일은 처리 속도·오버헤드 표본에서 제외하며, 색인이 없는 상태와 문서 0건을 구분한다.
 
-사용자 중단은 자동 복구·자동 재개까지 멈추며, 런타임 재초기화·설정 저장·스냅샷 복구 뒤에도 그 상태를 유지한다. 재개 진입점은 설정의 `업데이트 시작` 하나이며, 중단 뒤 재개·백로그 처리를 함께 담당한다. 의미가 같은 별도 `지금 재개` 제어를 두지 않는다. 자동 복구는 한 기회에 최대 256개·16MiB를 처리하고, 대기 수가 줄면 재시도 backoff가 아니라 짧은 간격으로 다음 배치를 이어 붙여 세션 한도 안에서 백로그를 소진한다. 크기가 큰 지원 문서도 배치에 포함한다.
+사용자 중단은 자동 복구·자동 재개까지 멈추며, 런타임 재초기화·설정 저장·스냅샷 복구 뒤에도 그 상태를 유지한다. 중단 중 cold 복원은 기존 corpus·BM25의 제한 검색을 보존하되 강한 원문 증명을 새로 수집하거나 complete로 승격하지 않는다. 검증 중 중단하면 진행 중인 물리 읽기의 정착을 기다리고 다음 파일을 읽지 않으며 기존 serving 증거를 보존한다. 명시 재개 뒤에는 기존 전체 current 검증 계약을 적용한다. 재개 진입점은 설정의 `업데이트 시작` 하나이며, 중단 뒤 재개·백로그 처리를 함께 담당한다. 의미가 같은 별도 `지금 재개` 제어를 두지 않는다. 자동 복구는 한 기회에 최대 256개·16MiB를 처리하고, 대기 수가 줄면 재시도 backoff가 아니라 짧은 간격으로 다음 배치를 이어 붙여 세션 한도 안에서 백로그를 소진한다. 크기가 큰 지원 문서도 배치에 포함한다.
 
 ## 계약 버전과 원문 보존
 

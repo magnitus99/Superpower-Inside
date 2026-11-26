@@ -79,9 +79,15 @@ export class RagRuntimeWorkBarrier {
   private gate: Promise<void> = Promise.resolve();
   private readonly pending = new Set<Promise<unknown>>();
   private epoch = 0;
+  private invalidation = 0;
   private closed = false;
 
-  invalidate(): void { this.epoch++; }
+  invalidate(): void { this.epoch++; this.invalidation++; }
+
+  captureInvalidationSnapshot(): () => boolean {
+    const invalidation = this.invalidation;
+    return () => !this.closed && this.invalidation === invalidation;
+  }
 
   captureReadSnapshot(): () => boolean {
     const epoch = this.epoch;
@@ -89,8 +95,16 @@ export class RagRuntimeWorkBarrier {
   }
 
   run<T>(operation: () => Promise<T>): Promise<T> {
+    return this.admit(operation, true);
+  }
+
+  runRead<T>(operation: () => Promise<T>): Promise<T> {
+    return this.admit(operation, false);
+  }
+
+  private admit<T>(operation: () => Promise<T>, writer: boolean): Promise<T> {
     if (this.closed) return Promise.reject(new Error('RAG runtime writer is closed'));
-    this.epoch++;
+    if (writer) this.epoch++;
     const task = this.gate.then(() => {
       if (this.closed) throw new Error('RAG runtime writer is closed');
       return operation();
@@ -211,7 +225,9 @@ export class RagGenerationManifest extends GeneratedArtifactDatabase {
     return this.change(revision, (state) => {
       if (state.active?.id !== id || state.pausedByUser || !sameRagDurabilitySeal(state.active.proof?.seal ?? null, previous)) return null;
       if (!proof.seal || !sealMatchesContract(proof.seal, state.active.contract)) throw new Error('RAG generation has no durable completion proof');
-      return { ...state, active: { ...state.active, terminal: proof.failures.length ? 'partial' : 'complete', proof: copyGenerationProof(proof) } };
+      const terminal = proof.failures.length ? 'partial' : 'complete';
+      if (terminal === 'complete' && state.active.terminal === terminal && JSON.stringify(state.active.proof) === JSON.stringify(copyGenerationProof(proof))) return state;
+      return { ...state, active: { ...state.active, terminal, proof: copyGenerationProof(proof) } };
     });
   }
 
@@ -267,6 +283,7 @@ export class RagGenerationManifest extends GeneratedArtifactDatabase {
       if (current.revision !== revision) return null;
       const next = update(current);
       if (!next) return null;
+      if (next === current) return current.revision;
       next.revision = revision + 1;
       await this.state.put(next);
       return next.revision;
