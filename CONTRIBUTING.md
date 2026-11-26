@@ -10,7 +10,7 @@
 
 ## 릴리스
 
-```fish
+```text
 # dev에서
 npm run release:check
 npm run release:bump -- patch   # 또는 minor / major
@@ -18,10 +18,10 @@ npm run release:bump -- patch   # 또는 minor / major
 # dev -> main PR을 squash merge한 뒤 main에서
 git pull
 npm run release:tag
-git push origin (node -p "require('./manifest.json').version")
+git push origin <방금 생성한 버전 태그>
 ```
 
-태그는 SemVer(`x.y.z`)이며 `v`를 붙이지 않습니다. `release:tag`는 `dev`와 `main`의 내용 일치, 버전, 태그 위치를 확인하고, Release workflow는 같은 조건과 커밋된 자산을 다시 검증한 뒤 초안 Release를 만듭니다. Release 본문은 영어·한국어를 모두 작성한 뒤 게시합니다.
+명령은 한 줄씩 실행하고 실패하면 다음 단계로 넘어가지 않습니다. `<방금 생성한 버전 태그>`는 실제 버전 번호로 바꿉니다. 태그는 SemVer(`x.y.z`)이며 `v`를 붙이지 않습니다. `release:tag`는 `dev`와 `main`의 내용 일치, 버전, 태그 위치를 확인하고, Release workflow는 같은 조건과 커밋된 자산을 다시 검증한 뒤 초안 Release를 만듭니다. Release 본문은 영어·한국어를 모두 작성한 뒤 게시합니다.
 
 ## 저장소 보호 설정 (관리자 1회)
 
@@ -30,6 +30,8 @@ git push origin (node -p "require('./manifest.json').version")
 - 릴리스 태그는 `main`의 `dev` squash merge 커밋에만 만들고, `v` 접두사를 붙이지 않습니다.
 
 ## 검사
+
+저장소의 개발·검증 진입점은 Windows·macOS·Linux 공통으로 Node/npm을 사용합니다. 작업에 따라 네이티브 Git·Rust 도구 등이 필요하며, 앱 실행처럼 OS별 전제가 있는 명령은 해당 스크립트의 안내를 따릅니다.
 
 - `pre-commit`: 스테이징 diff 형식과 스테이징 파일의 테스트 볼트 유출.
 - `pre-push`: `quality:local --base <원격 기준>`으로 변경 범위 검사. `main` 직접 push는 차단됩니다.

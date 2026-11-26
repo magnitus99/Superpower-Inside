@@ -18165,7 +18165,7 @@ mod tests {
     }
 
     /// RAG core hot path의 deterministic median benchmark를 출력한다.
-    #[ignore = "manual benchmark: run fish scripts/bench-rag-core.fish"]
+    #[ignore = "manual benchmark: run node scripts/bench-rag-core.mjs"]
     #[test]
     fn bench_rag_core_runtime_medians() {
         let dimensions = 64_usize;

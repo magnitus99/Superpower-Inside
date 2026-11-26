@@ -36,11 +36,6 @@ jobs:
       - name: Node 검사 환경 준비
         if: env.FULL_CHECK == 'true' || steps.plan.outputs.tests == 'true' || steps.plan.outputs.security == 'true'
         run: npm ci --ignore-scripts
-      - name: 검사 환경 준비
-        if: env.FULL_CHECK == 'true' || steps.plan.outputs.tests == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fish
       - uses: dtolnay/rust-toolchain@1.96.0
         if: env.FULL_CHECK == 'true' || steps.plan.outputs.rust == 'true' || steps.plan.outputs.security == 'true'
         with:

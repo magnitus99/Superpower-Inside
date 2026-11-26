@@ -14,18 +14,18 @@ describe('자체 생성물 통합 경로', () => {
     expect(reset).not.toContain('git clean');
   });
   it('Rust·bindgen·base64 출력은 .local 아래에만 둔다', () => {
-    const build = source('scripts/build-rag-wasm.fish');
-    expect(build).toContain('$REPO_ROOT/.local/generated/rag-wasm');
-    expect(build).toContain('$REPO_ROOT/.local/cache/bindgen');
-    expect(build).toContain('$REPO_ROOT/.local/cache/rust');
-    expect(build).toContain('.local/generated/rag-wasm-bytes.ts');
+    const build = source('scripts/build-rag-wasm.mjs');
+    expect(build).toContain('ARTIFACT_PATHS.generated');
+    expect(build).toContain('ARTIFACT_PATHS.bindgen');
+    expect(build).toContain('ARTIFACT_PATHS.rust');
+    expect(build).toContain('rag-wasm-bytes.ts');
     expect(build).not.toContain('toolchain install');
     expect(build).toContain('--frozen');
     expect(build).toContain('node_modules/binaryen/bin/wasm-opt');
-    expect(build).toContain('node "$WASM_OPT_BIN"');
     expect(build).not.toContain('node_modules/.bin/wasm-opt');
-    expect(source('scripts/check-rust-local.fish')).toContain('/.local/cache/rust/');
-    expect(source('scripts/check-rust-security.fish')).toContain('/.local/cache/rust/');
+    expect(source('scripts/check-rust-local.mjs')).toContain('ARTIFACT_PATHS.rust');
+    expect(source('scripts/check-rust-security.mjs')).toContain('ARTIFACT_PATHS.rust');
+    expect(source('scripts/copy-ternlight-assets.mjs')).toContain('ARTIFACT_PATHS.plugin');
   });
 
   it('검증 캐시는 의존성 폴더나 루트 simulations에 생성하지 않는다', () => {

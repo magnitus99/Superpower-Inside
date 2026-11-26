@@ -19,11 +19,11 @@ SemVer MAJOR.MINOR.PATCH를 사용하며 기능 추가는 minor, 버그·호환�
 
 릴리스 준비는 다음 전체 검증을 한 번 실행하고 실패하면 게시로 넘어가지 않는다. build에 포함된 `engineering-contract`의 교차언어 품질 게이트가 실패해도 릴리스를 중단한다. Patina는 이 경로에 자동 연결하지 않는다.
 
-```fish
-npm run security:full
-and npm run build
-and npm run review -- --tag (node -p "require('./manifest.json').version") --built
+```text
+npm run release:check
 ```
+
+이 명령은 `security:full` → `build` → 현재 manifest 버전을 사용한 `review -- --tag <버전> --built` 순으로 실행하고, 처음 실패한 단계에서 중단한다.
 
 Release 노트는 직전 태그부터 현재 태그의 실제 이력을 근거로 사용자 체감 변화로 풀이한다. 커밋 문구를 복사하거나 버전 범프·재빌드 같은 내부 작업을 나열하지 않는다. 첫 릴리스는 전체 이력을 본다. 본문은 ## English → --- → ## 한국어 순서로 같은 내용을 완성하고 별도 노트 파일을 저장소에 커밋하지 않는다. 완료 전 gh release view <tag> --json body로 비어 있지 않은 한영 본문을 확인한다.
 

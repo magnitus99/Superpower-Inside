@@ -94,11 +94,11 @@ describe('로컬 플러그인 출력 계약', () => {
   });
 
   it('개발 연결은 새 출력만 가리키고 기존 연결 충돌을 명시적으로 거절한다', () => {
-    const fish = read('scripts/setup-dev.fish');
+    const setup = read('scripts/setup-dev.mjs');
     const ps = read('scripts/setup-dev.ps1');
-    expect(fish).toContain('ARTIFACT_PATHS.plugin');
-    expect(fish).toContain('readlink');
-    expect(fish).toContain('재설정');
+    expect(setup).toContain('ARTIFACT_PATHS.plugin');
+    expect(setup).toContain('realpathSync');
+    expect(setup).toContain('재설정');
     expect(ps).toContain('ARTIFACT_PATHS.plugin');
     expect(ps).toContain('$pluginItem.Target');
     expect(ps).toContain('재설정');
@@ -106,9 +106,9 @@ describe('로컬 플러그인 출력 계약', () => {
   });
 
   it('버전 커밋은 이동한 추적 배포자산과 생성물을 포함한다', () => {
-    const bump = read('scripts/bump-version.fish');
-    expect(bump).toContain('.local/plugin');
-    expect(bump).toContain('.local/generated');
+    const bump = read('scripts/bump-version.mjs');
+    expect(bump).toContain('ARTIFACT_PATHS.plugin');
+    expect(bump).toContain('ARTIFACT_PATHS.generated');
     expect(bump).not.toContain('src/rag/rag-wasm-bytes.ts');
   });
 });

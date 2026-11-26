@@ -26,7 +26,7 @@ export function qualityPlan(
 ) {
   const changed = files.filter((file) => !metadata.has(file));
   const rust = changed.some((file) =>
-    /^(crates\/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|scripts\/(build-rag-wasm|check-rust-security|check-rust-local)\.fish$)/.test(
+    /^(crates\/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|scripts\/(bench-rag-core|build-rag-wasm|check-rust-security|check-rust-local|install-rust-security-tools)\.mjs$)/.test(
       file,
     ),
   );
@@ -41,7 +41,7 @@ export function qualityPlan(
   const tests =
     typescript ||
     changed.some((file) =>
-      /^(src\/.*\.json$|scripts\/.*\.(mjs|fish|ps1)$|\.githooks\/|esbuild\.config\.mjs$|styles\.css$|package\.json$|tests\/fixtures\/)/.test(
+      /^(src\/.*\.json$|scripts\/.*\.(mjs|ps1)$|\.githooks\/|esbuild\.config\.mjs$|styles\.css$|package\.json$|tests\/fixtures\/)/.test(
         file,
       ),
     );

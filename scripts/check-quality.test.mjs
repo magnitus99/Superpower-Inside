@@ -133,7 +133,15 @@ process.exitCode=stage===process.env.QUALITY_FAIL ? 1 : 0;
       tests: true,
       rust: true,
     });
-    expect(qualityPlan(['scripts/build-rag-wasm.fish'])).toMatchObject({ tests: true, rust: true });
+    for (const script of [
+      'bench-rag-core',
+      'build-rag-wasm',
+      'check-rust-local',
+      'check-rust-security',
+      'install-rust-security-tools',
+    ]) {
+      expect(qualityPlan([`scripts/${script}.mjs`])).toMatchObject({ tests: true, rust: true });
+    }
   });
   it('통합 생성 코드도 TS와 회귀 검사를 선택한다', () => {
     expect(qualityPlan(['.local/generated/rag-wasm-bytes.ts'])).toMatchObject({

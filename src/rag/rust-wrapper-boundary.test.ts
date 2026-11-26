@@ -61,7 +61,7 @@ describe('Rust wrapper boundary', () => {
     const scripts = readPackageScripts();
 
     expect(scripts['wasm:build']).toBe(
-      'node scripts/run-fish.mjs scripts/build-rag-wasm.fish && node scripts/build-workers.mjs',
+      'node scripts/build-rag-wasm.mjs && node scripts/build-workers.mjs',
     );
     expect(scripts.build?.startsWith('npm run wasm:build && ')).toBe(true);
     expect(scripts.dev?.startsWith('npm run wasm:build && ')).toBe(true);
@@ -69,14 +69,14 @@ describe('Rust wrapper boundary', () => {
 
   it('Rust/WASM release payload를 번들에 넣기 전에 크기 최적화한다', () => {
     const buildScript = readFileSync(
-      resolve(repositoryRoot, 'scripts/build-rag-wasm.fish'),
+      resolve(repositoryRoot, 'scripts/build-rag-wasm.mjs'),
       'utf8',
     );
 
     expect(buildScript).toContain('node_modules/binaryen/bin/wasm-opt');
-    expect(buildScript).toContain('node "$WASM_OPT_BIN" -Oz');
-    expect(buildScript.indexOf('node "$WASM_OPT_BIN" -Oz')).toBeLessThan(
-      buildScript.indexOf('node scripts/embed-rag-wasm.mjs'),
+    expect(buildScript).toContain("run(process.execPath, [wasmOpt, '-Oz'");
+    expect(buildScript.indexOf("run(process.execPath, [wasmOpt, '-Oz'")).toBeLessThan(
+      buildScript.indexOf('scripts/embed-rag-wasm.mjs'),
     );
   });
 
