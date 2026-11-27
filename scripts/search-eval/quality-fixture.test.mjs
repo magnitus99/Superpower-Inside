@@ -8,7 +8,7 @@ describe('독립 합성 정보 원장 범위', () => {
   it('기존 필수 정보와 다국어·정규화·여러 청크·정답 없음·정책 제외를 별도 사례로 둔다', () => {
     expect(qualityFixture.cases.map((item) => item.id)).toEqual([
       'required-information', 'no-answer', 'hard-excluded-only',
-      'english-relations', 'korean-conditions', 'multi-chunk-conditions', 'normalized-body', 'literal-inside-word',
+      'english-relations', 'korean-conditions', 'multi-chunk-conditions', 'normalized-body', 'literal-inside-word', 'two-facet-comparison',
     ]);
     expect(qualityFixture.cases[0].information.map((info) => info.kind)).toEqual(['fact', 'relation', 'condition', 'exception', 'conflict', 'conflict']);
   });

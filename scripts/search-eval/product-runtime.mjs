@@ -26,12 +26,13 @@ export function createEngineOnlyVaultHost(app, plugin, lease) {
     acquireSnapshot: () => ({ ...lease, release: () => {} }),
   };
 }
-export async function readOracleDocuments(host, lease) {
+export async function readOracleDocuments(host, lease, assertGoldCurrent) {
   const allowed = new Set(await host.getCandidatePaths());
   const paths = (await lease.documentCorpus.getIndexedFilePaths()).filter((path) => allowed.has(path));
   const reader = createVaultSourceReader(host.app, true, lease.chunkConfig);
   const documents = [];
   for (const path of paths) {
+    assertGoldCurrent?.();
     const source = await reader(path);
     if (source.text === null) throw new Error('quality-source-unavailable');
     documents.push({ path, text: source.text, revision: source.revision, contentHash: source.contentHash });
@@ -74,32 +75,87 @@ export async function createSyntheticProduct(documents, ledger) {
   } };
   const ragEngine = new RAGQueryEngine(null, null, bm25, undefined, 0, { corpusStore: documentCorpus, literalInventorySource, getCandidatePaths: async () => new Set(allowed) });
   const host = { app, ragEngine, documentCorpus, getCandidatePaths: async () => allowed,
-    acquireSnapshot: () => ({ ragEngine, documentCorpus, chunkConfig, release: () => { ledger.releases++; } }),
+    acquireSnapshot: () => {
+      const capturedEpoch = epoch;
+      return { ragEngine, documentCorpus, chunkConfig, isCurrent: () => !closed && capturedEpoch === epoch,
+        release: () => { ledger.releases++; } };
+    },
   };
   return { host, texts, files, setAllowed: (paths) => { allowed = paths; epoch++; }, close: () => { closed = true; bm25.close(); documentCorpus.close(); } };
 }
 
+function assertQualityOutcome(testCase, source, result) {
+  if (result.engineUnavailable || (result.outcome !== 'no-evidence' && result.outcome !== 'evidence-only')) {
+    throw new Error('quality-outcome-incomplete');
+  }
+  if (testCase.expectNoAnswer === true && (
+    result.outcome !== 'no-evidence' || result.evidence.length !== 0 || result.dossier.evidence.length !== 0 ||
+    result.coverage.status !== 'supported' || result.coverage.unreviewedDocuments !== 0 ||
+    result.coverage.notIndexedDocuments !== 0 || result.rejectedFiles !== 0 ||
+    !source.searchPlan || source.searchPlan.failedFacetIds?.length || result.dossier.literalInventory?.status !== 'complete'
+  )) throw new Error('quality-outcome-incomplete');
+}
+
 export async function runProductCase(host, testCase, ledger, signal, consume) {
   appLogger.configure({ mirrorToConsole: false, minLevel: 'fatal' });
+  const gold = testCase.information ?? [];
+  if (new Set(gold.map((info) => info.id)).size !== gold.length) throw new Error('quality-duplicate-gold-id');
+  const excluded = new Set(testCase.hardExcludedPaths);
+  const hasExcluded = (paths) => paths?.some((path) => excluded.has(path));
   const source = await collectIndexedSearchSource(host, testCase.question, signal);
-  if (!source) throw new Error('quality-source-unavailable');
+  if (!source) {
+    signal?.throwIfAborted();
+    throw new Error('quality-source-unavailable');
+  }
+  let indexedPaths, value;
+  const assertAllowedPaths = (paths) => {
+    signal?.throwIfAborted();
+    if (!paths) throw new Error('quality-policy-changed');
+    const allowed = new Set(paths);
+    for (const path of indexedPaths) if (!allowed.has(path)) throw new Error('quality-policy-changed');
+    return allowed;
+  };
+  const assertNoAnswerScope = (allowed) => {
+    // 무답은 새로 허용된 경로까지 검색했다는 뜻이 아니므로 범위 확장도 허용하지 않습니다.
+    if (testCase.expectNoAnswer === true && allowed.size !== indexedPaths.size) throw new Error('quality-policy-changed');
+  };
+  const assertCurrent = () => {
+    signal?.throwIfAborted();
+    // 내부 catch가 sentinel을 흡수해도 최종 원장을 반드시 검사합니다.
+    if (ledger.provider || ledger.embedding || ledger.network) throw new Error('quality-attempt-blocked');
+    if (source.isCurrent?.() !== true) throw new Error('quality-outcome-incomplete');
+  };
   try {
+    signal?.throwIfAborted();
     const paths = await source.getIndexedPaths();
+    signal?.throwIfAborted();
+    indexedPaths = new Set(paths);
     const result = await reviewIndexedVault({
       ...source, question: testCase.question, indexedPaths: source.reviewPaths ?? paths,
       discoveryPaths: paths, scopes: [], documentScope: 'all', executionMode: 'engine-only', signal,
-      getFollowupPaths: host.getCandidatePaths ?? source.getIndexedPaths,
+      getFollowupPaths: host.getCandidatePaths,
       provider: { streamChat: async () => { ledger.provider++; throw new Error('quality-model-blocked'); } },
       onProgress: () => {},
     });
-    const currentAllowed = host.getCandidatePaths ? new Set(await host.getCandidatePaths()) : new Set(paths);
-    if (paths.some((path) => !currentAllowed.has(path))) throw new Error('quality-policy-changed');
-    // 내부 catch가 sentinel을 흡수해도 최종 원장을 반드시 검사합니다.
-    if (ledger.provider || ledger.embedding || ledger.network) throw new Error('quality-attempt-blocked');
-    const value = { source, result };
-    await consume?.(value);
     signal?.throwIfAborted();
-    if (ledger.provider || ledger.embedding || ledger.network) throw new Error('quality-attempt-blocked');
-    return value;
+    const currentAllowed = assertAllowedPaths(await host.getCandidatePaths?.());
+    assertCurrent();
+    const { requestedPaths, plannedPaths, unreviewedPaths } = result.coverage;
+    // 최종 근거가 없어도 discovery·review 후보나 집계에서의 누출은 실패입니다.
+    if (excluded.size && ([paths, source.reviewPaths, requestedPaths, plannedPaths, unreviewedPaths].some(hasExcluded) ||
+      [source.discoveryCandidates, source.candidates].some((items) => items?.some(({ path }) => excluded.has(path))) ||
+      source.matchInventory?.some((item) => item.documents.some(({ sourcePath }) => excluded.has(sourcePath)))
+    )) throw new Error('quality-hard-exclusion-leak');
+    assertQualityOutcome(testCase, source, result);
+    assertNoAnswerScope(currentAllowed);
+    value = { source, result };
+    await consume?.(value);
+    assertCurrent();
   } finally { await source.release?.(); }
+  // 소비와 정리 양쪽이 비동기입니다. 마지막 정책 조회 뒤에도 현재 세대·중단을 확인합니다.
+  signal?.throwIfAborted();
+  const currentAllowed = assertAllowedPaths(await host.getCandidatePaths?.());
+  assertNoAnswerScope(currentAllowed);
+  assertCurrent();
+  return value;
 }

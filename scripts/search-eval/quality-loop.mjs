@@ -2,10 +2,10 @@
 // 제품 collect → 현재 원문 검증 → engine-only dossier. raw 자료는 메모리 밖으로 내보내지 않습니다.
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
-import { webcrypto } from 'node:crypto';
+import { randomUUID, webcrypto } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { qualityFixture } from './quality-fixture.mjs';
 import { lexicalOracle, scoreInformation, mandatoryGate, auditLiteralInventory } from './quality-oracle.mjs';
@@ -15,8 +15,9 @@ export { publicReport };
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('../../', import.meta.url));
 export const reportPath = '.thinkrail/context/quality-loop-report.json';
+export const vaultReportPath = '.thinkrail/context/quality-loop-vault-report.json';
 export function attemptLedger() { return { provider: 0, embedding: 0, network: 0, releases: 0, suppressedOutput: 0 }; }
-export function assertNoAttempts(ledger) { if (ledger.provider + ledger.embedding + ledger.network > 0) throw new Error('quality-attempt-blocked'); }
+export function assertNoAttempts(ledger) { if (!['provider', 'embedding', 'network'].every(key => ledger[key] === 0)) throw new Error('quality-attempt-blocked'); }
 
 export async function bundleProductRuntime({ vault = false } = {}) {
   const result = await build({
@@ -74,11 +75,14 @@ export async function runSyntheticQuality() {
       const oracle = lexicalOracle(qualityFixture.documents, testCase.terms, testCase.hardExcludedPaths);
       let literalAudit;
       const { result } = await runtime.runProductCase(product.host, testCase, ledger, undefined, async ({ source, result }) => {
-        literalAudit = await auditLiteralInventory(testCase, result.dossier.literalInventory, result.readLiteralDiscoveryPage, qualityFixture.documents, (source.discoveryCandidates ?? source.candidates ?? []).map((item) => item.path));
+        literalAudit = await auditLiteralInventory(testCase, result.dossier.literalInventory, result.readLiteralDiscoveryPage, qualityFixture.documents, (source.discoveryCandidates ?? source.candidates ?? []).map((item) => item.path), lexicalOracle, oracle);
       });
       const evidence = result.dossier.evidence;
       const quality = scoreInformation(testCase, evidence, qualityFixture.documents);
-      const baseline = scoreInformation(testCase, oracle.rows.flatMap((row) => row.passages.map((line) => ({ path: row.path, startLine: line, endLine: line, quote: qualityFixture.documents.find((doc) => doc.path === row.path).text.split('\n')[line - 1] }))), qualityFixture.documents);
+      const baseline = scoreInformation(testCase, oracle.rows.flatMap(({ path, passages }) => {
+        const lines = qualityFixture.documents.find(doc => doc.path === path).text.split('\n');
+        return passages.map(line => ({ path, startLine: line, endLine: line, quote: lines[line - 1] }));
+      }), qualityFixture.documents);
       const discoveryMissing = literalAudit?.discoveryMissing ?? oracle.documents;
       const current = evidence.every((item) => {
         const file = product.files.get(item.path);
@@ -97,21 +101,31 @@ export async function runSyntheticQuality() {
   } finally { product?.close(); restore(); }
 }
 
-export async function main(args = process.argv.slice(2)) {
+async function publishReport(target, serialized) {
+  await mkdir(path.dirname(target), { recursive: true });
+  const pending = `${target}.${randomUUID()}.pending`;
   try {
-    const report = publicReport((args.includes('--mode=vault') || args.includes('--vault'))
+    await writeFile(pending, serialized, { flag: 'wx' });
+    await rename(pending, target);
+  } finally { await rm(pending, { force: true }); }
+}
+
+export async function main(args = process.argv.slice(2)) {
+  const vault = args.some(arg => ['--mode=vault', '--vault', '--obsidian-cli'].includes(arg));
+  const target = path.join(root, vault ? vaultReportPath : reportPath);
+  try {
+    if (!vault && args.length && !(args.length === 1 && args[0] === '--mode=synthetic')) throw new Error('quality-invalid-mode');
+    const report = publicReport(vault
       ? await (await import('./quality-vault.mjs')).runVaultQuality(args)
       : await runSyntheticQuality());
-    await mkdir(path.join(root, '.thinkrail/context'), { recursive: true });
-    await writeFile(path.join(root, reportPath), `${JSON.stringify(report, null, 2)}\n`);
+    await publishReport(target, `${JSON.stringify(report, null, 2)}\n`);
     process.stdout.write(`${JSON.stringify(report)}\n`);
     if (report.status !== 'passed') process.exitCode = 1;
   } catch {
     // 예외/child stdout/stderr/진행은 절대로 출력하지 않습니다. 이전 성공 보고서도 남기지 않습니다.
     const serialized = '{"status":"failed","reason":"quality-loop-blocked"}\n';
     try {
-      await mkdir(path.join(root, '.thinkrail/context'), { recursive: true });
-      await writeFile(path.join(root, reportPath), serialized);
+      await publishReport(target, serialized);
     } catch { /* 출력 경로 실패도 원문 없는 고정 상태로 끝냅니다. */ }
     process.stdout.write(serialized);
     process.exitCode = 1;

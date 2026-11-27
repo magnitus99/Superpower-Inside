@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runInNewContext } from 'node:vm';
 import { scoreInformation, firstLoss, lexicalOracle, mandatoryGate, auditLiteralInventory } from './quality-oracle.mjs';
 import { evaluateVaultRuntime } from './quality-vault.mjs';
@@ -47,11 +47,30 @@ describe('literal 총계와 실제 페이지의 독립 전수 대조', () => {
     data.references.splice(2, 0, ...alias);
     expect((await auditLiteralInventory({ terms: ['aa'] }, data.inventory, data.read, data.docs)).passed).toBe(kind === 'valid');
   });
+  it('독립 기준선의 카운트를 재사용하고 새 planner needle은 한 번만 묶어 스캔한다', async () => {
+    const data = fixture();
+    const terms = ['aa', 'aa', 'ＡＡ', 'f', 'Ｆ', 'fi'];
+    const literal = literalProtocolFixture(data.docs, terms);
+    const testCase = { terms: ['aa', 'aa'] };
+    const baseline = lexicalOracle(data.docs, testCase.terms);
+    const scan = vi.fn(lexicalOracle);
+    expect(await auditLiteralInventory(testCase, literal.inventory, literal.readPage, data.docs, [], scan, baseline)).toEqual({ passed: true, discoveryMissing: 0 });
+    expect(scan.mock.calls).toEqual([[data.docs, ['f', 'fi'], []]]);
+    scan.mockClear();
+    expect(await auditLiteralInventory(testCase, literal.inventory, literal.readPage, data.docs, [], scan)).toEqual({ passed: true, discoveryMissing: 0 });
+    expect(scan.mock.calls).toEqual([[data.docs, testCase.terms, []], [data.docs, ['f', 'fi'], []]]);
+  });
   it('matchline나 literal 총계를 token·관측된 페이지 수로 대체하지 않는다', async () => {
     const data = fixture(); data.inventory.summary.needles[0].matchingLines = 2;
     expect((await auditLiteralInventory({ terms: data.terms }, data.inventory, data.read, data.docs)).passed).toBe(false);
     data.inventory.status = 'failed';
     expect((await auditLiteralInventory({ terms: data.terms }, data.inventory, data.read, data.docs)).passed).toBe(false);
+  });
+  it('깨끗한 literal 페이지라도 hard 제외 후보의 별도 노출을 덮지 못한다', async () => {
+    const data = fixture();
+    const testCase = { terms: ['aa'], hardExcludedPaths: [data.docs[0].path] };
+    const literal = literalProtocolFixture(data.docs, testCase.terms, testCase.hardExcludedPaths);
+    expect(await auditLiteralInventory(testCase, literal.inventory, literal.readPage, data.docs, testCase.hardExcludedPaths)).toEqual({ passed: false, discoveryMissing: 0 });
   });
   it('중간·후속 페이지 유실이나 보고하지 않은 추가 페이지도 실패다', async () => {
     const data = fixture();
@@ -103,9 +122,11 @@ describe('인용과 주변 문맥의 독립 정보 평가', () => {
     expect(twice.deliveredBytes).toBe(once.deliveredBytes * 2);
   });
 
-  it('볼트 VM에 넣는 함수 원문도 외부 helper 없이 같은 경계를 유지한다', () => {
+  it('볼트 VM에 넣는 scorer도 중복 gold ID를 하나로 합쳐 합격시키지 않는다', () => {
+    const duplicate = { information: [testCase.information[0], { ...testCase.information[0], line: 2 }] };
     const score = runInNewContext(`(${scoreInformation.toString()})`, { TextEncoder });
     expect(score(testCase, [passage], documents)).toEqual(scoreInformation(testCase, [passage], documents));
+    for (const scorer of [score, scoreInformation]) expect(() => scorer(duplicate, [passage], documents)).toThrow('quality-duplicate-gold-id');
   });
 });
 

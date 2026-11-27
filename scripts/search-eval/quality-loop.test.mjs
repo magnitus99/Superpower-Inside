@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 import { build } from 'esbuild';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 
 // 공개 main 테스트도 사용자 보고서를 읽거나 덮어쓰지 않습니다.
-vi.mock('node:fs/promises', async (original) => ({ ...await original(), mkdir: vi.fn(), writeFile: vi.fn() }));
+vi.mock('node:fs/promises', async (original) => ({ ...await original(), mkdir: vi.fn(), writeFile: vi.fn(), rename: vi.fn(), rm: vi.fn() }));
 vi.mock('esbuild', async (original) => ({ ...await original(), build: vi.fn((...args) => original().then((actual) => actual.build(...args))) }));
 import { qualityFixture } from './quality-fixture.mjs';
 import { lexicalOracle, scoreInformation, mandatoryGate, firstLoss } from './quality-oracle.mjs';
@@ -33,7 +34,7 @@ describe('독립 품질 oracle', () => {
 });
 
 import { attemptLedger, assertNoAttempts, loadProductRuntime, publicReport, runSyntheticQuality } from './quality-loop.mjs';
-import { evaluateVaultRuntime, buildQualityVaultCode } from './quality-vault.mjs';
+import { evaluateVaultRuntime, buildQualityVaultCode, validateVaultResult } from './quality-vault.mjs';
 import { createContext, runInContext, runInNewContext } from 'node:vm';
 
 describe('제품 runtime 경계와 비노출', () => {
@@ -98,18 +99,33 @@ describe('vault 전용 API 합성 검사(실제 앱 미실행)', () => {
   it('전용 API 없음/null은 getSearchPort나 initRAG로 fallback하지 않는다', async () => {
     const forbidden = () => { throw new Error('synthetic-sensitive-fallback'); };
     expect(await evaluate({ getSearchPort: forbidden, initRAG: forbidden })).toEqual({ status: 'blocked', reason: 'engine-only-snapshot-required' });
-    expect(await evaluate({ acquireRagEngineOnlySnapshot: async () => null, getSearchPort: forbidden })).toEqual({ status: 'blocked', reason: 'engine-only-snapshot-unavailable' });
+    expect(await evaluate({ acquireRagEngineOnlySnapshot: async () => null, getSearchPort: forbidden }, {}, [testCase])).toEqual({ status: 'blocked', reason: 'engine-only-snapshot-unavailable' });
   });
-  it('독립 gold 없음/오류에도 원래 active lease를 반드시 해제한다', async () => {
-    let releases = 0;
-    const plugin = { acquireRagEngineOnlySnapshot: async () => ({ ragEngine: {}, documentCorpus: {}, release: () => releases++ }) };
-    expect((await evaluate(plugin)).reason).toBe('independent-gold-required');
-    expect(releases).toBe(1);
+  it('독립 gold 없이는 lease를 얻지 않고, 유효한 gold의 실행 실패는 lease를 해제한다', async () => {
+    const release = vi.fn();
+    const acquireRagEngineOnlySnapshot = vi.fn(async () => ({ ragEngine: {}, documentCorpus: {}, release }));
+    const plugin = { acquireRagEngineOnlySnapshot };
+    expect(await evaluate(plugin)).toEqual({ status: 'blocked', reason: 'independent-gold-required' });
+    expect(acquireRagEngineOnlySnapshot).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
     const runtime = { createEngineOnlyVaultHost: () => { throw new Error('synthetic-sensitive-provider-error'); } };
     const result = await evaluate(plugin, runtime, [testCase]);
     expect(result.status).toBe('failed');
-    expect(releases).toBe(2);
+    expect(acquireRagEngineOnlySnapshot).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
     expect(JSON.stringify(result)).not.toContain('synthetic-sensitive');
+  });
+  it('lease를 기다리는 동안 gold가 무효화되면 읽기 전에 차단하고 lease를 해제한다', async () => {
+    const cases = [testCase];
+    const release = vi.fn();
+    const createEngineOnlyVaultHost = vi.fn();
+    const plugin = { acquireRagEngineOnlySnapshot: async () => {
+      cases.length = 0;
+      return { ragEngine: {}, documentCorpus: {}, release };
+    } };
+    expect(await evaluate(plugin, { createEngineOnlyVaultHost }, cases)).toEqual({ status: 'blocked', reason: 'independent-gold-required' });
+    expect(createEngineOnlyVaultHost).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
   });
   it('CLI bootstrap은 API 미제공 앱에서 고정 집계만 기록한다', async () => {
     const outputs = [];
@@ -122,6 +138,7 @@ describe('vault 전용 API 합성 검사(실제 앱 미실행)', () => {
     const outputs = [];
     runInNewContext(buildQualityVaultCode({ root: 'synthetic-root', outputPath: 'report', statusPath: 'status' }), {
       app: { plugins: { plugins: { 'superpower-inside': { acquireRagEngineOnlySnapshot: () => null } } } },
+      superpowerQualityLoopCases: [testCase],
       require: (name) => name === 'node:fs' ? { writeFileSync: (_name, value) => outputs.push(JSON.parse(value)) } : { createRequire: () => { throw new Error('synthetic-sensitive-credential'); } },
     });
     expect(outputs).toEqual([{ status: 'failed', reason: 'quality-vault-blocked' }, { completed: true }]);
@@ -148,10 +165,13 @@ it('vault CLI VM 성공 경로도 원문·질의·경로·인용 대신 고정 �
       await consume?.(value); return value;
     },
   };
-  runInNewContext(buildQualityVaultCode({ root: 'synthetic-root', outputPath: 'report', statusPath: 'status' }), {
-    app: { plugins: { plugins: { 'superpower-inside': { acquireRagEngineOnlySnapshot: async () => ({ ragEngine: {}, documentCorpus: {}, release: () => releases++ }) } } } },
+  runInNewContext(buildQualityVaultCode({ root: 'synthetic-root', outputPath: 'report', statusPath: 'status', vault: 'synthetic' }), {
+    app: { vault: { getName: () => 'synthetic' }, plugins: { plugins: { 'superpower-inside': { acquireRagEngineOnlySnapshot: async () => ({ ragEngine: {}, documentCorpus: {}, release: () => releases++ }) } } } },
     superpowerQualityLoopCases: [testCase], __qualityRuntime: runtime, TextEncoder,
-    require: (name) => name === 'node:fs' ? { writeFileSync: (target, value) => { outputs.push(JSON.parse(value)); if (target === 'status') finish(); } }
+    require: (name) => name === 'node:fs' ? {
+      writeFileSync: (_target, value) => outputs.push(JSON.parse(value)),
+      renameSync: (from, to) => { if (from === 'status.pending' && to === 'status') finish(); },
+    }
       : { createRequire: () => () => ({ build: async () => ({ outputFiles: [{ text: 'module.exports=globalThis.__qualityRuntime' }] }) }) },
   });
   await completed;
@@ -162,7 +182,15 @@ it('vault CLI VM 성공 경로도 원문·질의·경로·인용 대신 고정 �
   const serialized = JSON.stringify(outputs);
   for (const info of testCase.information) { expect(serialized).not.toContain(info.text); expect(serialized).not.toContain(info.path); }
   expect(serialized).not.toContain(testCase.question);
-  expect(publicReport(outputs[0])).toEqual(outputs[0]);
+  expect(outputs[1]).toEqual({ completed: true, cases: 1 });
+  expect(validateVaultResult(outputs[0], outputs[1].cases)).toEqual(outputs[0]);
+  expect(() => validateVaultResult(outputs[0], 2)).toThrow();
+  for (const corrupt of [report => delete report.rows[0].baseline.density,
+    report => { report.ledger.provider = 1; }, report => { report.rows[0].found--; },
+    report => { report.scope = 'synthetic-product-runtime'; }, report => { report.rows = []; }]) {
+    const report = structuredClone(outputs[0]); corrupt(report);
+    expect(() => validateVaultResult(report, 1)).toThrow();
+  }
 });
 
 it('실제 제품 runtime의 취소·정책 축소에서도 원문/근거를 게시하지 않고 lease를 해제한다', async () => {
@@ -183,10 +211,10 @@ it('실제 제품 runtime의 취소·정책 축소에서도 원문/근거를 게
 });
 
 it('공개 main의 실패는 raw 인자/예외를 stdout·stderr·보고서에 복제하지 않는다', async () => {
-  const { main, reportPath } = await import('./quality-loop.mjs');
+  const { main, vaultReportPath } = await import('./quality-loop.mjs');
   let report = 'synthetic-previous-report';
   writeFile.mockImplementationOnce(async (target, value) => {
-    expect(String(target).replaceAll('\\', '/').endsWith(reportPath)).toBe(true);
+    expect(String(target)).toContain(path.normalize(vaultReportPath) + '.');
     report = value;
   });
   const writesBefore = writeFile.mock.calls.length;
@@ -201,6 +229,7 @@ it('공개 main의 실패는 raw 인자/예외를 stdout·stderr·보고서에 �
     expect(process.exitCode).toBe(1);
     expect(writeFile.mock.calls.length).toBe(writesBefore + 1);
     expect(mkdir).toHaveBeenCalled();
+    expect(String(rename.mock.lastCall[1]).endsWith(path.normalize(vaultReportPath))).toBe(true);
     expect(report).toBe('{"status":"failed","reason":"quality-loop-blocked"}\n');
     expect(output.join('')).toBe(report);
     expect(output.join('')).not.toContain(secret);
@@ -226,10 +255,13 @@ async function runVaultVm(text, cases = [testCase], runtime = emptyVaultRuntime,
   let finish, releases = 0, hostCalls = 0;
   const completed = new Promise((resolve) => { finish = resolve; });
   function sentinel() { hostCalls++; throw new Error('synthetic-host-network-called'); }
+  const acquireRagEngineOnlySnapshot = vi.fn(async () => ({ ragEngine: {}, documentCorpus: {}, release: () => releases++ }));
+  const createRequire = vi.fn(() => (dependency) => {
+    if (dependency === 'esbuild') return { build: async () => ({ outputFiles: [{ text }] }) };
+    throw new Error('synthetic-unexpected-dependency');
+  });
   const context = {
-    app: { plugins: { plugins: { 'superpower-inside': { acquireRagEngineOnlySnapshot: async () => ({
-      ragEngine: {}, documentCorpus: {}, release: () => releases++,
-    }) } } } },
+    app: { plugins: { plugins: { 'superpower-inside': { acquireRagEngineOnlySnapshot } } } },
     superpowerQualityLoopCases: cases, __qualityRuntime: runtime, TextEncoder,
     fetch: sentinel, XMLHttpRequest: sentinel, WebSocket: sentinel,
     EventSource: sentinel, Worker: sentinel, SharedWorker: sentinel, importScripts: sentinel,
@@ -237,10 +269,7 @@ async function runVaultVm(text, cases = [testCase], runtime = emptyVaultRuntime,
     require: (name) => {
       if (name === 'node:fs') return { writeFileSync: (target, value) => { outputs.push(JSON.parse(value)); if (target === 'status') finish(); } };
       if (name === 'obsidian') return { requestUrl: sentinel };
-      if (name === 'node:module') return { createRequire: () => (dependency) => {
-        if (dependency === 'esbuild') return { build: async () => ({ outputFiles: [{ text }] }) };
-        throw new Error('synthetic-unexpected-dependency');
-      } };
+      if (name === 'node:module') return { createRequire };
       throw new Error('synthetic-unexpected-require');
     },
   };
@@ -264,7 +293,7 @@ async function runVaultVm(text, cases = [testCase], runtime = emptyVaultRuntime,
   for (const key of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'Worker', 'SharedWorker', 'importScripts']) expect(context[key]).toBe(absentApis.includes(key) ? undefined : sentinel);
   expect(context.navigator.sendBeacon).toBe(sentinel);
   expect(context.window).toBe(context);
-  return { outputs, releases, hostCalls, timerCalls: context.__timerCalls };
+  return { outputs, releases, hostCalls, timerCalls: context.__timerCalls, createRequire, acquireRagEngineOnlySnapshot };
 }
 
 const networkExpressions = ['fetch()', 'new XMLHttpRequest()', 'new WebSocket()', 'new EventSource()', 'new Worker()', 'new SharedWorker()', 'importScripts()', 'navigator.sendBeacon()'];
@@ -330,18 +359,48 @@ describe('흡수된 네트워크 시도도 호출 전 차단·원장 실패', ()
 describe('vault 독립 no-answer와 gold shape', () => {
   it('명시 no-answer-only + 빈 gold는 독립 사례로 통과하고 lease를 해제한다', async () => {
     const { outputs, releases } = await runVaultVm('module.exports=globalThis.__qualityRuntime', [noAnswerCase]);
-    expect(outputs[0]).toMatchObject({ status: 'passed', rows: [{ required: 0, noAnswerPass: true, passed: true }], ledger: { releases: 1 } });
+    expect(outputs[0]).toMatchObject({ status: 'passed', rows: [{
+      required: 0, noAnswerPass: true, passed: true, oraclePassages: 0,
+      baseline: { noise: 0, passed: true, deliveredBytes: 0 },
+    }], ledger: { releases: 1 } });
+    expect(validateVaultResult(outputs[0], 1)).toEqual(outputs[0]);
     expect(releases).toBe(1);
   });
-  it.each([null, {}, { ...noAnswerCase, expectNoAnswer: false }, { ...noAnswerCase, expectNoAnswer: 'true' },
+  it('no-answer VM의 baseline은 occurrence 대신 구절별 noise 및 UTF-8 byte를 센다', async () => {
+    const cases = [{ ...noAnswerCase, terms: ['빛'] }];
+    const documents = [{ path: 'independent', text: '빛빛\n빛' }];
+    const literal = literalProtocolFixture(documents, cases[0].terms);
+    const runtime = { ...emptyVaultRuntime,
+      readOracleDocuments: async () => documents,
+      runProductCase: async (_host, _case, _ledger, _signal, consume) => {
+        const value = { source: {}, result: { readLiteralDiscoveryPage: literal.readPage, dossier: {
+          literalInventory: literal.inventory, evidence: [],
+        } } };
+        await consume(value); return value;
+      },
+    };
+    const { outputs, releases } = await runVaultVm('module.exports=globalThis.__qualityRuntime', cases, runtime);
+    expect(outputs[0]).toMatchObject({ status: 'passed', rows: [{
+      noAnswerPass: true, deliveredBytes: 0, oraclePassages: 2, oracleOccurrences: 3, densityImproved: null,
+      baseline: { noise: 2, passed: false, deliveredBytes: 9 },
+    }] });
+    expect(validateVaultResult(outputs[0], 1)).toEqual(outputs[0]);
+    expect(releases).toBe(1);
+  });
+  const invalidGold = [null, [], Array(1), ...[
+    null, {}, { ...noAnswerCase, expectNoAnswer: false }, { ...noAnswerCase, expectNoAnswer: 'true' },
     { ...noAnswerCase, information: null }, { ...noAnswerCase, information: undefined },
     { ...noAnswerCase, information: [null] }, { ...noAnswerCase, information: [{}] },
     { ...noAnswerCase, terms: null }, { ...noAnswerCase, question: null },
     { ...testCase, information: [{ ...testCase.information[0], line: 0 }] },
-  ])('잘못된 gold/사례 shape는 blocked: %#', async (invalid) => {
-    const { outputs, releases } = await runVaultVm('module.exports=globalThis.__qualityRuntime', [invalid]);
-    expect(outputs[0]).toEqual({ status: 'blocked', reason: 'independent-gold-required' });
-    expect(releases).toBe(1);
+    { ...testCase, information: [testCase.information[0], { ...testCase.information[1], id: testCase.information[0].id }] },
+  ].map((item) => [item])];
+  it.each(invalidGold.map((cases) => ({ cases })))('잘못된 gold/사례 shape는 bundle과 lease 전에 blocked: %#', async ({ cases }) => {
+    const { outputs, releases, createRequire, acquireRagEngineOnlySnapshot } = await runVaultVm('throw new Error("unexpected-bundle-eval")', cases);
+    expect(outputs).toEqual([{ status: 'blocked', reason: 'independent-gold-required' }, { completed: true }]);
+    expect(createRequire).not.toHaveBeenCalled();
+    expect(acquireRagEngineOnlySnapshot).not.toHaveBeenCalled();
+    expect(releases).toBe(0);
   });
   it('no-answer 예상에 실제 근거가 있으면 mandatory 실패하며 lease를 해제한다', async () => {
     const runtime = { ...emptyVaultRuntime,

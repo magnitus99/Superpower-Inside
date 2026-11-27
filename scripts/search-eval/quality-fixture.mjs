@@ -13,6 +13,8 @@ export const qualityFixture = {
     { path: 'synthetic/window.md', text: ['MERIDIAN begins with three sealed reservoirs.', ...padding, 'MERIDIAN starts only after the east inlet is locked.', ...padding, 'MERIDIAN exception keeps every reservoir sealed during frost.'].join('\n') },
     { path: 'synthetic/unicode.md', text: 'ＲＡＤＩＡＮＣＥ routes east.' },
     { path: 'synthetic/inside-word.md', text: 'Hypergammadelta retains the amber bypass during frost.' },
+    { path: 'synthetic/asterline.md', text: 'Asterline uses a ceramic catch basin.\nAsterline drains only after the upstream latch closes.' },
+    { path: 'synthetic/brindlewick.md', text: 'Brindlewick routes overflow to a gravel trench.\nBrindlewick bypasses the trench during a sediment alarm.' },
   ],
   cases: [{
     id: 'required-information', question: 'Quartz', terms: ['quartz'], hardExcludedPaths: ['excluded/hidden.md'],
@@ -56,6 +58,13 @@ export const qualityFixture = {
   }, {
     id: 'literal-inside-word', question: 'gammad', terms: ['gammad'], hardExcludedPaths: ['excluded/hidden.md'], information: [
       { id: 'inside-word-condition', kind: 'condition', path: 'synthetic/inside-word.md', line: 1, text: 'Hypergammadelta retains the amber bypass during frost.' },
+    ],
+  }, {
+    id: 'two-facet-comparison', question: 'Compare Asterline and Brindlewick', terms: ['asterline', 'brindlewick'], hardExcludedPaths: ['excluded/hidden.md'], information: [
+      { id: 'catch-basin', kind: 'fact', path: 'synthetic/asterline.md', line: 1, text: 'Asterline uses a ceramic catch basin.' },
+      { id: 'draining-condition', kind: 'condition', path: 'synthetic/asterline.md', line: 2, text: 'Asterline drains only after the upstream latch closes.' },
+      { id: 'overflow-relation', kind: 'relation', path: 'synthetic/brindlewick.md', line: 1, text: 'Brindlewick routes overflow to a gravel trench.' },
+      { id: 'sediment-exception', kind: 'exception', path: 'synthetic/brindlewick.md', line: 2, text: 'Brindlewick bypasses the trench during a sediment alarm.' },
     ],
   }],
 };
