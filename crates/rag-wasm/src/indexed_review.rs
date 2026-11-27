@@ -683,6 +683,42 @@ fn parse_facet_id_list(value: &Value) -> Option<Vec<String>> {
         .collect()
 }
 
+/// 문단 출처를 검증하고 허용된 원래 source ID로 정규화합니다.
+fn parse_paragraph_sources(
+    paragraph: &Value,
+    allowed_sources: &BTreeSet<String>,
+) -> Result<Vec<String>, &'static str> {
+    let references = paragraph
+        .get("sources")
+        .and_then(Value::as_array)
+        .ok_or("invalid-sources:expected-array")?;
+    if references.is_empty() {
+        return Err("invalid-sources:empty-array");
+    }
+    if references.len() > MAX_PARAGRAPH_SOURCES {
+        return Err("invalid-sources:too-many-items");
+    }
+    references
+        .iter()
+        .map(|reference| {
+            let reference = reference
+                .as_str()
+                .ok_or("invalid-sources:expected-string")?;
+            if reference.contains("[vault:") {
+                return Err("invalid-sources:citation-marker");
+            }
+            if allowed_sources.contains(reference) {
+                return Ok(reference.to_owned());
+            }
+            let normalized = reference
+                .strip_prefix("vault:")
+                .filter(|source| allowed_sources.contains(*source))
+                .ok_or("unknown-source")?;
+            Ok(normalized.to_owned())
+        })
+        .collect()
+}
+
 /// 답변 문단을 실제 source ID·facet coverage로 검증합니다.
 fn parse_answer_paragraphs(
     response: &str,
@@ -715,44 +751,24 @@ fn parse_answer_paragraphs(
                     && !text.contains("[vault:")
             })
             .ok_or("invalid-text")?;
-        let references = item
-            .get("sources")
-            .and_then(Value::as_array)
-            .ok_or("invalid-sources")?;
-        if references.is_empty() || references.len() > MAX_PARAGRAPH_SOURCES {
-            return Err("invalid-sources");
-        }
-        let sources = references
-            .iter()
-            .map(|reference| {
-                let reference = reference.as_str().ok_or("invalid-sources")?;
-                if reference.contains("[vault:") {
-                    return Err("invalid-sources");
-                }
-                if allowed_sources.contains(reference) {
-                    return Ok(reference.to_owned());
-                }
-                let normalized = reference
-                    .strip_prefix("vault:")
-                    .filter(|source| allowed_sources.contains(*source))
-                    .ok_or("unknown-source")?;
-                Ok(normalized.to_owned())
-            })
-            .collect::<Result<Vec<_>, &'static str>>()?;
+        let sources = parse_paragraph_sources(item, allowed_sources)?;
         let cover_values = match item.get("covers") {
             None | Some(Value::Null) if plan.mode == "single" => None,
-            Some(Value::Null) | None => return Err("invalid-covers"),
-            Some(value) => Some(value.as_array().ok_or("invalid-covers")?),
+            Some(Value::Null) | None => return Err("invalid-covers:required-array"),
+            Some(value) => Some(value.as_array().ok_or("invalid-covers:expected-array")?),
         };
         let mut covers = BTreeSet::new();
         if let Some(values) = cover_values {
-            if values.is_empty() || values.len() > MAX_ANSWER_FACETS {
-                return Err("invalid-covers");
+            if values.is_empty() {
+                return Err("invalid-covers:empty-array");
+            }
+            if values.len() > MAX_ANSWER_FACETS {
+                return Err("invalid-covers:too-many-items");
             }
             for value in values {
-                let id = value.as_str().ok_or("invalid-covers")?;
+                let id = value.as_str().ok_or("invalid-covers:expected-string")?;
                 if !covers.insert(id.to_owned()) {
-                    return Err("invalid-covers");
+                    return Err("invalid-covers:duplicate-id");
                 }
                 let facet = plan
                     .facets
@@ -882,6 +898,9 @@ fn indexed_review_answer_validation(value: &Value) -> Option<Value> {
 /// 검증 실패 wire를 만듭니다.
 fn invalid_answer(reason: &str, missing_facet_ids: &[String]) -> Value {
     // 원문·응답 조각 대신 고정된 코드만 전달하고 기존 상위 실패 계약은 보존합니다.
+    let (reason, detail) = reason
+        .split_once(':')
+        .map_or((reason, None), |(field, issue)| (field, Some(issue)));
     let format_issue = matches!(
         reason,
         "invalid-json"
@@ -892,12 +911,16 @@ fn invalid_answer(reason: &str, missing_facet_ids: &[String]) -> Value {
             | "invalid-covers"
     );
     if format_issue {
-        json!({
+        let mut failure = json!({
             "valid": false,
             "reason": "invalid-format",
             "missingFacetIds": missing_facet_ids,
             "formatIssue": reason,
-        })
+        });
+        if let (Some(detail), Some(fields)) = (detail, failure.as_object_mut()) {
+            fields.insert("fieldIssue".to_owned(), json!(detail));
+        }
+        failure
     } else {
         json!({
             "valid": false,
@@ -1195,12 +1218,12 @@ mod tests {
             r#"{"queries":["\n"],"enumerate":true}"#,
             "not-json",
         ] {
-            assert!(
+            assert_eq!(
                 super::plan_indexed_followup_json(
                     &serde_json::json!({"question":"synthetic request", "response":response})
                         .to_string()
-                )
-                .is_empty()
+                ),
+                ""
             );
         }
     }
@@ -1302,6 +1325,10 @@ mod tests {
             (json!({}).to_string(), "invalid-paragraphs"),
             (json!({"paragraphs": []}).to_string(), "invalid-paragraphs"),
             (
+                json!({"paragraphs": [{"text": "Synthetic claim.", "covers": []}]}).to_string(),
+                "invalid-sources:expected-array",
+            ),
+            (
                 json!({"paragraphs": vec![valid_paragraph.clone(); MAX_ANSWER_PARAGRAPHS + 1]})
                     .to_string(),
                 "invalid-paragraphs",
@@ -1319,17 +1346,17 @@ mod tests {
                 json!("x".repeat(MAX_PARAGRAPH_CHARS + 1)),
                 "invalid-text",
             ),
-            ("sources", json!([]), "invalid-sources"),
-            ("sources", json!([17]), "invalid-sources"),
+            ("sources", json!([]), "invalid-sources:empty-array"),
+            ("sources", json!([17]), "invalid-sources:expected-string"),
             (
                 "sources",
                 json!(vec!["synthetic/a.md#L1-L1"; MAX_PARAGRAPH_SOURCES + 1]),
-                "invalid-sources",
+                "invalid-sources:too-many-items",
             ),
             (
                 "sources",
                 json!(["[vault:synthetic/a.md#L1-L1]"]),
-                "invalid-sources",
+                "invalid-sources:citation-marker",
             ),
             (
                 "sources",
@@ -1341,27 +1368,39 @@ mod tests {
                 json!(["vault:vault:synthetic/a.md#L1-L1"]),
                 "unknown-source",
             ),
-            ("covers", json!([]), "invalid-covers"),
-            ("covers", json!(["question", "question"]), "invalid-covers"),
-            ("covers", json!(17), "invalid-covers"),
+            ("covers", json!([]), "invalid-covers:empty-array"),
+            ("covers", json!([17]), "invalid-covers:expected-string"),
+            (
+                "covers",
+                json!(["question", "question"]),
+                "invalid-covers:duplicate-id",
+            ),
+            ("covers", json!(17), "invalid-covers:expected-array"),
         ] {
             let mut paragraph = valid_paragraph.as_object().cloned().unwrap_or_default();
             paragraph.insert(field.to_owned(), value);
             cases.push((json!({"paragraphs": [paragraph]}).to_string(), issue));
         }
         for (response, issue) in cases {
-            let validation = validate_answer_of(&json!({
+            let mut validation = validate_answer_of(&json!({
                 "sourceIds": ["synthetic/a.md#L1-L1"],
                 "answerPlan": answer_plan,
                 "response": response,
             }));
+            let (field, detail) = issue
+                .split_once(':')
+                .map_or((issue, None), |(field, detail)| (field, Some(detail)));
+            let actual_detail = validation
+                .as_object_mut()
+                .and_then(|fields| fields.remove("fieldIssue"));
+            assert_eq!(actual_detail, detail.map(Value::from));
             assert_eq!(
                 validation,
                 json!({
                     "valid": false,
                     "reason": "invalid-format",
                     "missingFacetIds": [],
-                    "formatIssue": issue,
+                    "formatIssue": field,
                 })
             );
         }

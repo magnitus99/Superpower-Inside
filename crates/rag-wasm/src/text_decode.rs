@@ -1,6 +1,6 @@
 //! 평문 바이트의 단일 엄격 디코딩·probe 계약.
 
-use chardetng::EncodingDetector;
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::{Encoding, GB18030, GBK, ISO_2022_JP, UTF_8, UTF_16BE, UTF_16LE};
 use serde_json::json;
 use std::borrow::Cow;
@@ -111,17 +111,16 @@ fn decode(bytes: &[u8]) -> Result<DecodedText<'_>, &'static str> {
         {
             return Err("ambiguous-encoding");
         }
-        let mut detector = EncodingDetector::new();
+        let mut detector = EncodingDetector::new(Iso2022JpDetection::Allow);
         let start = bytes.iter().position(|byte| *byte >= 0x80).unwrap_or(0);
         let tail = bytes.get(start..).ok_or("corrupt")?;
         let sample = tail.get(..DETECTION_BYTES).unwrap_or(tail);
         detector.feed(sample, false);
-        let unfinished = detector.guess(None, true);
+        let unfinished = detector.guess(None, Utf8Detection::Allow);
         if sample.len() == tail.len() {
             detector.feed(&[], true);
         }
-        // guess_assess의 bool은 다른 후보 하나보다 점수가 높은지만 뜻하며 확률·신뢰도가 아니다.
-        let guessed = detector.guess(None, true);
+        let guessed = detector.guess(None, Utf8Detection::Allow);
         // 끝의 불완전한 단위 때문에 다른 코덱으로 바뀌면 대체 성공으로 숨기지 않는다.
         if guessed != unfinished {
             return Err("ambiguous-encoding");
@@ -173,18 +172,17 @@ fn strict_decode<'a>(
 /// UTF-32의 불완전한 단위·서로게이트·범위 밖 값을 거부한다.
 fn decode_utf32(bytes: &[u8], little: bool) -> Result<String, &'static str> {
     let mut text = String::new();
-    let mut units = bytes.chunks_exact(4);
-    for unit in &mut units {
-        let octets: [u8; 4] = unit.try_into().map_err(|_| "corrupt-utf32")?;
+    let (units, remainder) = bytes.as_chunks::<4>();
+    if !remainder.is_empty() {
+        return Err("corrupt-utf32");
+    }
+    for &octets in units {
         let value = if little {
             u32::from_le_bytes(octets)
         } else {
             u32::from_be_bytes(octets)
         };
         text.push(char::from_u32(value).ok_or("corrupt-utf32")?);
-    }
-    if !units.remainder().is_empty() {
-        return Err("corrupt-utf32");
     }
     Ok(text)
 }

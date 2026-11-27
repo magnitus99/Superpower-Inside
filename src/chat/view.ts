@@ -80,6 +80,8 @@ import {
   isScopedVaultResearchRequest,
 } from '../agent/research-agent';
 import { reviewIndexedVault, toModelIndexedEvidenceDossier } from '../agent/indexed-vault-review';
+import { captureReviewGuard, ReviewScopeChangedError } from '../agent/review-currentness';
+import { appLogger } from '../utils/logger';
 import { withRuntimeLease } from '../rag/runtime-generation';
 import { collectIndexedSearchSource, acquirePluginSearchSnapshot } from '../search/indexed-search-deps';
 import { openPromptLibraryModal } from './prompt-library-modal';
@@ -486,7 +488,7 @@ export class ChatView extends ItemView {
       this.readinessTicker = null;
     }
     this.clearAutoSaveTimer();
-    this.invalidateActiveChatRun(false);
+    this.invalidateActiveChatRun(false, 'view-close');
     this.cancelStreamingMarkdownRender();
     // RefreshBus 구독 해제
     for (const unsub of this.refreshBusUnsubscribers) {
@@ -740,10 +742,11 @@ export class ChatView extends ItemView {
     );
   }
 
-  private invalidateActiveChatRun(restoreDraft: boolean): void {
+  private invalidateActiveChatRun(restoreDraft: boolean, cause: 'view-close' | 'stop' | 'clear' | 'new-session' | 'load-session' | 'history'): void {
     const run = this.activeRun;
     if (run) {
       run.controller.abort();
+      appLogger.info('Active chat run invalidated.', { source: 'chat.run', data: { cause } });
       if (isChatRunOwner(this.activeRun, run)) {
         this.activeRun = null;
         if (this.abortController === run.controller) {
@@ -767,7 +770,7 @@ export class ChatView extends ItemView {
 
   private stopStreaming(): void {
     const current = [...this.messages].reverse().find((message) => message.status === 'streaming');
-    this.invalidateActiveChatRun(true);
+    this.invalidateActiveChatRun(true, 'stop');
     if (current) {
       this.updateMessage(
         current.id,
@@ -2558,7 +2561,7 @@ export class ChatView extends ItemView {
   }
 
   clearMessages(): void {
-    this.invalidateActiveChatRun(false);
+    this.invalidateActiveChatRun(false, 'clear');
     this.messages = [];
     this.activeVariantByRoot.clear();
     this.sessionSystemPrompt = null;
@@ -2600,7 +2603,7 @@ export class ChatView extends ItemView {
   }
 
   async startNewSession(): Promise<void> {
-    this.invalidateActiveChatRun(false);
+    this.invalidateActiveChatRun(false, 'new-session');
     this.clearAutoSaveTimer();
     await this.saveCurrentSession();
     this.messages = [];
@@ -2738,7 +2741,7 @@ export class ChatView extends ItemView {
   }
 
   async loadSession(filePath: string): Promise<void> {
-    this.invalidateActiveChatRun(false);
+    this.invalidateActiveChatRun(false, 'load-session');
     try {
       this.clearAutoSaveTimer();
       await this.saveCurrentSession();
@@ -2885,7 +2888,7 @@ export class ChatView extends ItemView {
       new Notice(t('chatSaveFolder') + t('providerPathRequiredSuffix'));
       return;
     }
-    this.invalidateActiveChatRun(false);
+    this.invalidateActiveChatRun(false, 'history');
     this.clearAutoSaveTimer();
     await this.saveCurrentSession();
     openSessionHistoryModal(
@@ -3298,6 +3301,11 @@ export class ChatView extends ItemView {
         const loadQueryVariants = () => Promise.resolve(planQueryVariants(text));
         // 검색 계획 상한을 넘는 질문은 원문을 버리지 않고 첫 조각으로 시작하고 나머지는 변형으로 넘깁니다.
         const searchQuestion = splitLongQuestion(localSearchQuestion)[0] ?? localSearchQuestion;
+        const scopeGuard = captureReviewGuard(
+          'send', () => isChatRunActive(this.activeRun, run),
+          () => this.plugin.getRetrievalReadiness() === 'ready',
+          () => JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]),
+        );
         const searchSource = await collectIndexedSearchSource(
           {
             app: this.app,
@@ -3320,12 +3328,9 @@ export class ChatView extends ItemView {
             filters: mentionedTags.length > 0 ? { tags: mentionedTags } : undefined,
           } : undefined,
         );
-        const searchPolicy = JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]);
-        const isReviewCurrent = () =>
-          isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready' &&
-          JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]) === searchPolicy &&
-          searchSource?.isCurrent?.() !== false;
+        const isReviewCurrent = () => scopeGuard.isCurrent(searchSource);
         const researchResult = await withRuntimeLease(searchSource?.release, async () => {
+        scopeGuard.assertCurrent(searchSource, 'collected');
         const indexedPaths = searchSource ? await searchSource.getIndexedPaths() : [];
         const reviewPaths = restrictedSearch
           ? indexedPaths
@@ -3416,7 +3421,7 @@ export class ChatView extends ItemView {
         });
         });
         if (!isChatRunActive(this.activeRun, run)) return;
-        if (!isReviewCurrent()) throw new Error(t('vaultResearchContractUnavailable'));
+        scopeGuard.assertCurrent(searchSource, 'released');
         contextMeta.indexedReviewDiagnostics = researchResult.diagnostics;
         contextMeta.indexedReviewNotice = researchResult.coverageNotice;
         contextMeta.indexedMatchInventory = researchResult.dossier.matchInventory;
@@ -4046,6 +4051,7 @@ export class ChatView extends ItemView {
         setHidden(this.typingIndicator, true);
       }
       if (err instanceof DOMException && err.name === 'AbortError') {
+        if (!run.controller.signal.aborted) appLogger.info('Upstream operation aborted with the chat signal still active.', { source: 'chat.run', data: { stage: 'send' } });
         if (ownsRun && assistantId) {
           const assistantMsg = this.messages.find((message) => message.id === assistantId);
           this.updateMessage(
@@ -4081,7 +4087,9 @@ export class ChatView extends ItemView {
               content: t('mcpMentionedServerUnavailable', { server: err.serverName }),
               retryAvailableAt: undefined,
             }
-          : createChatErrorPresentation(errorKind, retryAfterMs);
+          : err instanceof ReviewScopeChangedError
+            ? { content: t('vaultReviewScopeChanged'), retryAvailableAt: undefined }
+            : createChatErrorPresentation(errorKind, retryAfterMs);
       const errDetail = this.formatErrorDetail(
         key,
         modelName,
@@ -5190,6 +5198,11 @@ export class ChatView extends ItemView {
             .filter((mention) => mention.type === 'tag')
             .map((mention) => mention.name);
           const resumeRestricted = resumeFolderScopes.length > 0 || resumeTags.length > 0;
+          const scopeGuard = captureReviewGuard(
+            'resume', () => isChatRunActive(this.activeRun, run),
+            () => this.plugin.getRetrievalReadiness() === 'ready',
+            () => JSON.stringify([this.plugin.settings.rag, this.plugin.settings.chat]),
+          );
           const resumeSource = await collectIndexedSearchSource(
             {
               app: this.app,
@@ -5213,10 +5226,9 @@ export class ChatView extends ItemView {
               filters: resumeTags.length > 0 ? { tags: resumeTags } : undefined,
             } : undefined,
           );
-          const isResumeReviewCurrent = () =>
-            isChatRunActive(this.activeRun, run) && this.plugin.getRetrievalReadiness() === 'ready' &&
-            resumeSource?.isCurrent?.() !== false;
+          const isResumeReviewCurrent = () => scopeGuard.isCurrent(resumeSource);
           const researchResult = await withRuntimeLease(resumeSource?.release, async () => {
+          scopeGuard.assertCurrent(resumeSource, 'collected');
           const indexedPaths = resumeSource ? await resumeSource.getIndexedPaths() : [];
           const reviewPaths = resumeRestricted
             ? indexedPaths
@@ -5258,7 +5270,7 @@ export class ChatView extends ItemView {
           });
           });
           if (!isChatRunActive(this.activeRun, run)) return;
-          if (!isResumeReviewCurrent()) throw new Error(t('vaultResearchContractUnavailable'));
+          scopeGuard.assertCurrent(resumeSource, 'released');
           message.indexedReviewNotice = researchResult.coverageNotice;
           message.indexedMatchInventory = researchResult.dossier.matchInventory;
           message.indexedReviewDiagnostics = researchResult.diagnostics;
@@ -5370,6 +5382,7 @@ export class ChatView extends ItemView {
       setHidden(this.typingIndicator, true);
       const latestMessage = this.messages.find((item) => item.id === messageId);
       if (err instanceof DOMException && err.name === 'AbortError') {
+        if (!run.controller.signal.aborted) appLogger.info('Upstream operation aborted with the chat signal still active.', { source: 'chat.run', data: { stage: 'resume' } });
         this.updateMessage(
           messageId,
           latestMessage?.content || t('chatGenerationStopped'),
@@ -5389,7 +5402,9 @@ export class ChatView extends ItemView {
               content: t('mcpMentionedServerUnavailable', { server: err.serverName }),
               retryAvailableAt: undefined,
             }
-          : createChatErrorPresentation(errorKind, getChatRetryAfterMs(err));
+          : err instanceof ReviewScopeChangedError
+            ? { content: t('vaultReviewScopeChanged'), retryAvailableAt: undefined }
+            : createChatErrorPresentation(errorKind, getChatRetryAfterMs(err));
       const errorDetail = this.formatErrorDetail(
         message.providerKey ?? 'unknown',
         message.model ?? 'unknown',
@@ -5592,7 +5607,7 @@ export class ChatView extends ItemView {
     //   Success: "**툴 실행 성공 — toolName**\n\n{formatted}" / "**Tool executed successfully — toolName**\n\n{formatted}"
     //   Error:    "**툴 실행 실패 — toolName**\n\n{friendlyMsg}" / "**Tool execution failed — toolName**\n\n{friendlyMsg}"
 
-    let toolName = '';
+    let toolName: string;
     let resultText = '';
 
     const runningMatch = content.match(/(?:툴 실행 중|Running tool)\s*\.{0,3}\s*(.+)/);

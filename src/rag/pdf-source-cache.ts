@@ -5,7 +5,7 @@ import {
 } from '../storage/generated-artifacts';
 import { isPdfSourceText, type PdfSourceText } from './pdf-worker-runtime';
 
-export const PDF_EXTRACTOR_VERSION = 'pdfjs-5.4.54-tesseract-7-kor-eng-v4';
+export const PDF_EXTRACTOR_VERSION = 'pdfjs-6.5.438-tesseract-7-kor-eng-v4';
 
 interface CachedPdf {
   path: string;

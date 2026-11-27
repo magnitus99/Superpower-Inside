@@ -403,6 +403,19 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       expect(caller.source.openLiteralInventory).not.toHaveBeenCalled();
     });
 
+    it('수집 중 설정이 바뀌면 검토·후속 전송 없이 lease를 정리한다', async () => {
+      const caller = createLiteralCaller(entry);
+      vi.mocked(reviewIndexedVault).mockClear();
+      vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockImplementation(() => {
+        caller.settings.chat.defaultModel = 'ollama:changed';
+        return Promise.resolve(caller.source);
+      });
+      await caller.invoke();
+      expect(reviewIndexedVault).not.toHaveBeenCalled();
+      expect(caller.providerMessages()).toBeUndefined();
+      expect(caller.source.release).toHaveBeenCalledOnce();
+    });
+
     it('source epoch와 원래 실행·readiness guard를 AND로 보존한다', async () => {
       const caller = createLiteralCaller(entry);
       vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(caller.source);
@@ -413,10 +426,8 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
         caller.setSourceCurrent(false); states.push(current());
         caller.setSourceCurrent(true); caller.setReadiness('preparing'); states.push(current());
         caller.setReadiness('ready'); states.push(current());
-        if (entry === 'send') {
-          caller.settings.chat.defaultModel = 'ollama:changed'; states.push(current());
-          caller.settings.chat.defaultModel = 'ollama:synthetic';
-        }
+        caller.settings.chat.defaultModel = 'ollama:changed'; states.push(current());
+        caller.settings.chat.defaultModel = 'ollama:synthetic';
         const run = Reflect.get(caller.view, 'activeRun') as { controller: AbortController };
         Reflect.set(caller.view, 'activeRun', null); states.push(current());
         Reflect.set(caller.view, 'activeRun', run);
@@ -424,7 +435,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
         return Promise.resolve(caller.result);
       });
       await caller.invoke();
-      expect(states).toEqual(entry === 'send' ? [true, false, false, true, false, false, false] : [true, false, false, true, false, false]);
+      expect(states).toEqual([true, false, false, true, false, false, false]);
     });
 
     it.each([false, true])('제한=%s 수집 시점에 폴더·태그 범위를 고정한다', async (restricted) => {
@@ -490,10 +501,11 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       expect(caller.providerMessages()).toBeDefined();
     });
 
-    it.each(entry === 'send' ? ['source', 'readiness', 'settings'] : ['source', 'readiness'])('release 대기 중 %s가 무효화되면 이전 근거를 후속 모델이나 메타에 게시하지 않는다', async (invalidation) => {
+    it.each(['source', 'readiness', 'settings'])('release 대기 중 %s가 무효화되면 이전 근거를 후속 모델이나 메타에 게시하지 않는다', async (invalidation) => {
       const caller = createLiteralCaller(entry);
       let settle!: () => void;
       const closing = new Promise<void>((resolve) => { settle = resolve; });
+      Object.assign(caller.view, { formatErrorDetail: (_key: string, _model: string, detail: string) => detail });
       caller.source.release.mockReturnValue(closing);
       vi.spyOn(indexedSearch, 'collectIndexedSearchSource').mockResolvedValue(caller.source);
       vi.mocked(reviewIndexedVault).mockResolvedValue(caller.result);
@@ -505,6 +517,8 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       settle(); await pending;
       expect(caller.providerMessages()).toBeUndefined();
       expect(caller.storedMessages.at(-1)?.indexedMatchInventory).not.toEqual(caller.result.dossier.matchInventory);
+      expect(caller.storedMessages.at(-1)?.errorMessage).toContain(`[${entry}:${invalidation}] [released]`);
+      expect(caller.storedMessages.at(-1)?.errorKind).toBe('source-validation');
       expect(caller.source.release).toHaveBeenCalledOnce();
     });
 
@@ -623,7 +637,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       const plugin = (view as unknown as { plugin: { settings: { chat: { defaultModel: string } } } }).plugin;
       const controls = view as unknown as {
         stopStreaming(): void;
-        invalidateActiveChatRun(restoreDraft: boolean): void;
+        invalidateActiveChatRun(restoreDraft: boolean, cause: string): void;
         updateMessage: ReturnType<typeof vi.fn>;
         summarizeCurrentSessionTitle: ReturnType<typeof vi.fn>;
       };
@@ -649,7 +663,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
         expect(storedMessages.some((message) => message.content === '무시할 중복 질문')).toBe(false);
         if (outcome === 'stop') controls.stopStreaming();
         if (outcome === 'session') {
-          controls.invalidateActiveChatRun(false);
+          controls.invalidateActiveChatRun(false, 'new-session');
           Object.assign(view, { session: {} });
         }
         if (outcome === 'settings') plugin.settings.chat.defaultModel = 'ollama:changed';
@@ -696,6 +710,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     Object.assign(view, {
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        getRetrievalReadiness: () => 'ready',
         prepareRagForChat: vi.fn(),
         ragEngine: null,
         documentCorpus: {
@@ -921,6 +936,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     Object.assign(view, {
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        getRetrievalReadiness: () => 'ready',
         prepareRagForChat: vi.fn(),
         ragEngine: null,
       },
@@ -1091,6 +1107,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     Object.assign(view, {
       plugin: {
         settings: { pluginAwareEnabled: false, chat: { defaultModel: 'ollama:synthetic' } },
+        getRetrievalReadiness: () => 'ready',
         prepareRagForChat: vi.fn(),
         documentCorpus: corpus,
         ragEngine: { query },

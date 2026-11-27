@@ -915,8 +915,8 @@ mod tests {
             20,
         );
 
-        assert!(invalid_query.is_empty());
-        assert!(invalid_rank.is_empty());
+        assert_eq!(invalid_query, "");
+        assert_eq!(invalid_rank, "");
     }
 
     #[test]

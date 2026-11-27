@@ -1,5 +1,7 @@
 import {
   searchIndexedVault,
+  resolveCurrentIndexedPassage,
+  distinctCurrentSourceIds,
   type IndexedEvidenceCandidate,
   type IndexedEvidenceInventory,
   type IndexedEvidenceItem,
@@ -15,17 +17,10 @@ import type {
   SearchResponse,
 } from './engine-port';
 import { summarizeIndexedConfidence } from './confidence';
-import {
-  verifyIndexedEvidenceRust,
-  type IndexedSearchPlan,
-  type RustIndexedEvidenceVerificationDocument,
-} from '../rag/rust-core';
+import type { IndexedSearchPlan } from '../rag/rust-core';
 import { appLogger } from '../utils/logger';
 import type { SourceMetadata } from '../rag/source-access';
 import type { LiteralInventoryHandle } from '../rag/literal-inventory';
-
-const VERIFICATION_WINDOW_BYTES = 1024 * 1024;
-const verificationEncoder = new TextEncoder();
 
 export interface IndexedSearchSource {
   literalQuery?: string;
@@ -152,28 +147,6 @@ export function createIndexedSearchPort(
   };
 }
 
-/** 현재 원문의 인용 주변 구간을 작은 verifier 문서로 만듭니다. */
-function currentVerificationWindow(
-  item: IndexedEvidenceItem,
-  snapshot: IndexedEvidenceSourceSnapshot,
-): RustIndexedEvidenceVerificationDocument | null {
-  if (snapshot.revision === null || snapshot.text === null) return null;
-  const lines = snapshot.text.split('\n');
-  if (lines.length === 0) return null;
-  const start = Math.max(1, Math.min(item.startLine, lines.length) - 3);
-  const end = Math.min(lines.length, Math.max(item.endLine, item.startLine) + 3);
-  const text = lines.slice(start - 1, end).join('\n') + (end < lines.length ? '\n' : '');
-  if (verificationEncoder.encode(text).byteLength > VERIFICATION_WINDOW_BYTES) return null;
-  return {
-    path: item.path,
-    text,
-    startLine: start,
-    revision: snapshot.revision,
-    indexed: true,
-    reviewState: 'reviewed',
-  };
-}
-
 /** 현재 원문·절대 행·revision 경계를 확인합니다. */
 async function keepCurrentSourceEvidence(
   evidence: readonly IndexedEvidenceItem[],
@@ -194,59 +167,19 @@ async function keepCurrentSourceEvidence(
       }
     }),
   );
-  const byPath = new Map(snapshots);
-  const documents = new Map<string, RustIndexedEvidenceVerificationDocument>();
+  const byPath = new Map<string, IndexedEvidenceSourceSnapshot>(snapshots);
   const rejectedPaths = new Set<string>();
-  for (const item of evidence) {
+  const current = evidence.flatMap((item) => {
     const snapshot = byPath.get(item.path);
-    if (strict && (!snapshot || !('contentHash' in snapshot) || !snapshot.contentHash)) {
+    const current = snapshot && (!strict || snapshot.contentHash) && resolveCurrentIndexedPassage(item, snapshot);
+    if (!current || !snapshot) {
       rejectedPaths.add(item.path);
-      continue;
+      return [];
     }
-    if (snapshot && 'chunks' in snapshot && snapshot.chunks !== undefined) {
-      if (snapshot.revision === null || snapshot.chunks.length === 0) {
-        rejectedPaths.add(item.path);
-        continue;
-      }
-      for (const chunk of snapshot.chunks) {
-        documents.set(`${item.path}\u0000${chunk.startLine}`, { path: item.path, text: chunk.text, startLine: chunk.startLine, revision: snapshot.revision, indexed: true, reviewState: 'reviewed' });
-      }
-      continue;
-    }
-    const document = snapshot ? currentVerificationWindow(item, snapshot) : null;
-    if (!document) {
-      rejectedPaths.add(item.path);
-      continue;
-    }
-    documents.set(`${item.path}\u0000${document.startLine}`, document);
-  }
-  const candidates = evidence.filter((item) => !rejectedPaths.has(item.path));
-  const verification = verifyIndexedEvidenceRust({
-    evidence: candidates.map((item) => ({
-      sourceId: item.sourceId,
-      path: item.path,
-      quote: item.quote,
-      ...(item.revision !== null ? { revision: item.revision } : {}),
-      startLine: item.startLine,
-      endLine: item.endLine,
-    })),
-    documents: [...documents.values()],
+    return [snapshot.contentHash ? { ...current, contentHash: snapshot.contentHash, revision: snapshot.revision } : current];
   });
-  if (!verification) {
-    for (const item of candidates) rejectedPaths.add(item.path);
-    return { evidence: [], staleDocuments: rejectedPaths.size };
-  }
-  const statuses = new Map(verification.statuses.map((status) => [status.sourceId, status]));
-  for (const item of candidates) {
-    if (statuses.get(item.sourceId)?.status !== 'verified') rejectedPaths.add(item.path);
-  }
   return {
-    evidence: candidates.filter((item) => !rejectedPaths.has(item.path)).map((item) => {
-      const snapshot = byPath.get(item.path);
-      return snapshot && 'contentHash' in snapshot && snapshot.contentHash
-        ? { ...item, contentHash: snapshot.contentHash, revision: snapshot.revision }
-        : item;
-    }),
+    evidence: distinctCurrentSourceIds(current),
     staleDocuments: rejectedPaths.size,
     incomplete: snapshots.some(([, snapshot]) => 'sourceMetadata' in snapshot && snapshot.sourceMetadata?.completeness?.status === 'partial'),
   };

@@ -1,3 +1,4 @@
+import { ReviewScopeChangedError } from './review-currentness';
 import { t } from '../i18n';
 import type { SourceCitation } from '../chat/types';
 import { renderIndexedReviewAnswerRust, scopeIndexedDiscoveryRust } from '../rag/rust-core';
@@ -25,7 +26,7 @@ export async function enumerateIndexedDocuments(
     options.signal?.throwIfAborted();
     const allowedPaths = await options.getFollowupPaths?.() ?? options.indexedPaths;
     options.signal?.throwIfAborted();
-    if (options.isCurrent?.() === false) throw new DOMException(t('cancelledLabel'), 'AbortError');
+    if (options.isCurrent?.() === false) throw new ReviewScopeChangedError('enumerate', 'currentness');
     return scopeIndexedDiscoveryRust({ originalPaths: options.discoveryPaths ?? options.indexedPaths,
       originalScopes: options.scopes, allowedPaths, scopes: options.scopes });
   };

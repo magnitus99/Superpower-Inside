@@ -17,11 +17,11 @@ references: [superpower-goals, chat-contract, retrieval-index, deterministic-cor
 
 ## 근거 자격과 실패 경계
 
-채팅에 채택할 문서는 현재 본문을 다시 읽고 revision·파일 content hash를 확인하며 같은 청킹 규칙의 구절·절대 행을 Rust로 검증하는 것이 요구 계약이다. mtime:size나 hash 하나만으로 색인 사본을 verified로 승격하지 않으며 재검증 실패는 해당 근거·answerPlan을 제외한 incomplete로 처리한다. 아래 현재 차이를 함께 적용한다. 색인 후보, 인벤토리, 저장된 주소와 현재 원문 검증 출처를 구분한다. 읽기 전후 stat 검사는 파일 변경을 감지하는 보호 장치이며 그 자체가 quote 검증은 아니다.
+채팅에 채택할 문서는 현재 본문을 다시 읽고 revision·파일 content hash를 확인하며 같은 청킹 규칙의 구절·절대 행을 Rust로 검증하는 것이 요구 계약이다. mtime:size나 hash 하나만으로 색인 사본을 verified로 승격하지 않으며 재검증 실패는 해당 근거·answerPlan을 제외한 incomplete로 처리한다. 아래 현재 차이를 함께 적용한다. 색인 후보, 인벤토리, 저장된 주소와 현재 원문 검증 출처를 구분한다. 읽기 전후 stat·파일 identity 검사는 변경 감지 보호 장치이며 그 자체가 quote 검증은 아니다. 현재 청크는 인용 가능 범위만 제한하고, 선택 구절과 절대 행은 현재 전체 추출 본문에서 자른 행 창으로 Rust가 확인한다. 기존 청크 주소가 틀리면 크기 상한 내 전체 원문에서 유일한 주소 제안을 받아 해당 행을 다시 검증한다. 교정 좌표로 인라인 ID와 저장 인용을 함께 만든다. 창에만 있는 일치나 청크끼리의 일치는 증명이 아니다. 구절 단위로 검증하므로 큰 파일의 무관한 청크나 같은 파일의 실패한 형제 구절이 검증된 인용을 지우지 않는다. 실패한 구절은 미완료로 남긴다.
 
 필터 제외·검증 실패·예산 밖·미검토·미색인·읽기 실패를 자료 부재나 모델의 관련성 판단으로 바꾸지 않는다. 하드 제외 자료는 후보·점수·집계의 세계 밖에 두고 검색 결과에서 그 존재를 노출하지 않는 것이 정책이다. 검색 내 미검토 자료와 하드 제외를 혼동하지 않는다. 검색 수집은 serving 색인 경로와 요청에서 얻은 현재 정책·명시 스코프의 교집합을 BM25 batch, 개별 fallback, 로컬 변형과 term 집계에 똑같이 넘긴다. 제외 경로는 원문 심사에서 뒤늦게 거르는 대상이 아니라 raw discovery에도 들어오지 않는다. 원문 심사와 후속 페이지의 현재 접근 정책 재확인은 별도로 유지한다.
 
-indexing·engine-unavailable·no-evidence·evidence-only를 구분하고 반환된 한계와 검증 출처를 유지한다. answerPlan 형식 실패는 같은 제공자의 같은 모델로 한 번만 교정하며 다시 실패하거나 answerPlan을 계산할 수 없으면 그 답변 시도를 검증된 evidence-only로 끝낸다. 외부 결과나 관련성 판단만으로 실패한 인용을 verified로 승격하지 않는다. 후속 조사에도 현재 정책·원문 검증·실행 취소 경계를 적용한다.
+indexing·engine-unavailable·no-evidence·evidence-only를 구분하고 반환된 한계와 검증 출처를 유지한다. answerPlan 형식 실패는 같은 제공자의 같은 모델로 한 번만 교정하며 다시 실패하거나 answerPlan을 계산할 수 없으면 그 답변 시도를 검증된 evidence-only로 끝낸다. 외부 결과나 관련성 판단만으로 실패한 인용을 verified로 승격하지 않는다. 후속 조사에도 현재 정책·원문 검증·실행 취소 경계를 적용한다. 계획 모델은 접근이 확인된 첫 단서 페이지의 주소와 전체 집계만 받고 미검증 색인 본문은 받지 않는다. 나머지 단서는 로컬에서 후속 검색 범위를 유지하며, 선택적 후속 계획·검색은 12초 제한에 도달해도 기본 검토를 버리지 않는다. 최종 생성·교정 직전에 소유권과 적용된 literal 원장의 유효성을 다시 확인한다. 현재 검증한 인용과 주소만 전달하고 미검증 인접 색인 문맥과 큰 원장은 복제하지 않는다. 교정 예산에서 필수 dossier가 빠지면 이전 응답을 제외하고 다시 예산화하며 dossier 없이 발송하지 않는다.
 
 ## 전달·비교·후속 조사 요구
 
@@ -31,7 +31,9 @@ indexing·engine-unavailable·no-evidence·evidence-only를 구분하고 반환�
 
 조사는 전체 literal 원장의 처음 최대 8페이지에서 위치 힌트를 읽고 그 힌트 자체를 Rust 대표 계획에 넣어 기존 검토 경로와 합친다. 기존 discovery 기록이 새 힌트의 대표 슬롯을 소비하지 않으며 기존 후보의 순위 prior를 같은 위치 일치로 중복 강화하지 않는다. 새로 발견한 경로는 bounded discovery 후속 심사를 먼저 받을 수 있고, 색인에서 읽었지만 근거로 선택하지 않은 새 literal 경로를 현재 원문 심사 완료로 간주하지 않는다. 이 한도는 전체 원장 총계나 후속 비동기 페이지를 자르지 않으며, 읽은 페이지·선택한 경로·현재 원문 심사는 별개다. reference는 인용이 아니므로 새 단서도 같은 원문 검증을 통과해야 한다. source 요청은 lazy opener로 얻은 handle을 소유하고 모델/후속 소비와 비동기 페이지 정리가 끝날 때까지 실제 serving lease를 유지한다. 결과의 페이지 callback은 그 요청 수명 안에서만 유효하며 종료는 await한다. literal 유효성을 마지막으로 재확인한 뒤에도 원래 요청 signal과 조사 실행 소유권을 다시 확인하며, 그 전에 최종 답변·완료 callback을 게시하지 않는다.
 
-인벤토리는 점수·후보 컷에 쓰지 않고 수치를 그대로 전달한다. 비교는 Rust facet 계획과 후보 queryIndex 귀속을 사용하며 supported facet의 주장과 양쪽 supported 근거가 있는 종합만 허용한다. missing facet을 supported로 바꾸거나 근거 없는 직접 비교를 만들지 않는다. 주변 맥락·조건·예외·상충 근거를 보존하고 확인 사실과 문서 전제에 근거한 추론을 구분한다.
+인벤토리는 점수·후보 컷에 쓰지 않고 수치를 그대로 전달한다. 비교는 Rust facet 계획과 후보 queryIndex 귀속을 사용하며 supported facet의 주장과 양쪽 supported 근거가 있는 종합만 허용한다. missing facet을 supported로 바꾸거나 근거 없는 직접 비교를 만들지 않는다. 주변 맥락·조건·예외·상충 근거를 보존하고 확인 사실과 문서 전제에 근거한 추론을 구분한다. 생성과 1회 교정 모두 하위 질문별로 확인한 답을 유지하고, 같은 출처가 지지하는 주장끼리 문단을 구성하며, 확인하지 못한 항목만 한계로 표시한다. 모델용 근거의 `facetIds`는 기존 answerPlan의 supported facet `sourceIds`를 역으로 투영한 것으로, 검색 번호를 재해석하거나 facet 지지 여부·출처 키·검증 판정을 바꾸지 않는다. 귀속되지 않은 검증 구절은 실제로 지지하는 보충 설명에만 쓰며 facet 필수 근거를 대신하지 않는다.
+
+생성·교정 dossier의 `paragraphContract`는 검증 근거 ID와 supported facet ID만 각 배열의 선택지로 제시한다. 예시는 한 문단의 형태이지 사용해야 할 근거나 전체 답변의 길이가 아니다. 템플릿의 표시 형식이 문단 JSON 계약을 대체하지 않는다. 교정에는 validator의 고정 field 사유를 전달하며 모델 출력을 진단 로그로 복제하지 않는다.
 
 quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검증 사유로 제외하며 모델의 관련성 판단으로 표현하지 않는다. engine-unavailable·indexing은 반환 content·검증 citations로 종료하고 엔진 실패를 우회하는 모델 도구 루프로 대체하지 않는다. no-evidence·evidence-only도 한계를 보존하며 evidence-only 표시 본문을 JSON으로 재해석하지 않는다.
 
@@ -57,7 +59,7 @@ quote-missing·position-mismatch·revision-mismatch·out-of-scope는 엔진 검�
 
 - `src/search/indexed-search-deps.ts`는 exhaustive lexical 후보와 discovery 단서를 보유하면서 원문 심사 경로를 최대 96개로 선택한다. 따라서 전체 lexical 발견을 전체 현재 원문 검토 완료로 해석할 수 없다. `indexed-vault-review.ts`의 coverage는 이제 원문을 실제로 읽은 경로만 `reviewedDocuments`로 세고, 발견 범위는 discovery 단서·일치 인벤토리·후속 조회로 분리한다. 검토 예산 밖 경로를 미검토 실패로 부풀리지 않지만, 발견 범위와 원문 검증 범위가 다르다는 사실은 그대로다.
 - 검토 예산 밖 discovery 페이지는 후속 질의 뒤 `unreviewed` 상태의 고유 경로를 최대 8개(discovery 페이지 최대 8장) 골라 같은 질문·로컬 질의 변형·원래 후보의 facet 귀속으로 한 번 더 검색하고, Rust 현재 원문 검증을 통과한 근거만 dossier에 합칩니다. 필터가 있으면 현재 정책 재조회(`getFollowupPaths`)가 있을 때만 실행하며, 재조회·추가 검색 실패나 취소는 기존 검증 근거를 유지합니다. 이 자동 조사는 발견 전체를 다시 검토하는 장치가 아니며, 8경로·8페이지 밖의 단서와 실제 답변 품질·전체 recall은 이 경계의 검증 대상이 아닙니다. 현재 원문이 바뀐 discovery 근거의 복구도 원래 후보를 유지하고 확장 예산으로 재병합해 기존 검증 근거를 고정 상한으로 자르지 않으며, 병합에서 제외된 구간은 진단과 미완료 고지에 반영합니다.
-- 기본 생성에는 인벤토리 총계가 전달되고, 목록·개수 의도는 후속 모델 응답과 무관하게 Rust 결정적 감지로 `enumerate` 경로를 실행한다. 다만 일치 인벤토리가 상한으로 자른 문서는 `missing`으로 남으므로 전체 무누락은 인벤토리 범위에 한정된다. 관련 근거는 `indexed-vault-followup.ts`, `indexed-vault-enumeration.ts`와 `indexed-vault-review.test.ts`다.
+- 기본 생성에는 인벤토리 총계가 전달되고, 목록·개수 의도는 후속 모델 응답과 무관하게 Rust 결정적 감지로 `enumerate` 경로를 실행한다. 최종 모델 답변이 없더라도 현재 검증을 마친 목록과 인용을 표시한다. 다만 일치 인벤토리가 상한으로 자른 문서는 `missing`으로 남으므로 전체 무누락은 인벤토리 범위에 한정된다. 관련 근거는 `indexed-vault-followup.ts`, `indexed-vault-enumeration.ts`와 `indexed-vault-review.test.ts`다.
 - 채팅 검증은 현재 본문을 읽고 구절·절대 행 주소를 Rust로 재검증하며, 현재 파일 content hash를 색인 hash와 비교해 다르면 현재 revision·hash로 갱신한다. 해시 일치만으로 색인 사본을 verified로 승격하지 않는다. 제품 검색 포트도 `forceRefresh: true`·`verifyCurrentSource: true`로 현재 본문·좌표를 검증한다. reader나 명시된 청킹 결과가 없으면 실패 폐쇄하며, 명시적인 legacy `false`는 제품 포트가 사용하지 않는다. serving snapshot의 null은 building corpus나 이전 원장으로 대체하지 않는다.
 - 기본 발견·집계·주소를 엔진 한 번·색인 한 순회에서 얻는 것이 목표다. BM25 facet 검색과 term 집계는 term 128개·입력 상한 안에서 `Bm25RuntimeIndex.batch_search_and_aggregate_json` 한 번의 worker 호출로 합치고 선택 chunk의 원문 주소도 한 번에 읽는다. 상한을 넘거나 batch가 실패하면 같은 허용 집합으로 facet별 대표 경로 검색·term 집계를 수행한다. 개별 검색도 Rust에서 대표 경로를 한 번에 선별하므로 상위 청크 범위를 반복해 넓히지 않는다. 후속 질의 변형은 로컬 질문 분해만 사용한다. 다만 vector 후보 임베딩·검색은 facet별 호출이 남아 있어 전체 발견 경로의 단일 순회는 아직 아니다.
 

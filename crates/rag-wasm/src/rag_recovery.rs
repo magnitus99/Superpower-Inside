@@ -452,7 +452,10 @@ mod tests {
         assert!(next.get("fingerprint").is_some());
         assert_ne!(first.get("fingerprint"), next.get("fingerprint"));
         let fractional_size = json!([{"path": "fractional.pdf", "mtime": 1.5, "size": 1.5}]);
-        assert!(plan_rag_automatic_recovery_batch_json(&fractional_size.to_string()).is_empty());
+        assert_eq!(
+            plan_rag_automatic_recovery_batch_json(&fractional_size.to_string()),
+            ""
+        );
     }
 
     #[test]

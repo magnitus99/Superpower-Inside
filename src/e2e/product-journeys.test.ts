@@ -60,6 +60,10 @@ describe('실제 WASM 검색 엔진의 합성 제품 여정', () => {
     expect(search.evidence.length).toBeGreaterThan(0);
     expect(search.coverage.documentScope).toBe('all');
     expect(search.coverage.requestedPaths).toEqual([RELEVANT, OTHER]);
+    const sourceReader = vi.fn((_path: string) => Promise.resolve({
+      revision: '1:100', contentHash: 'fresh-synthetic-hash', text: TEXT,
+      chunks: [{ text: TEXT, startLine: 1, endLine: 1 }],
+    }));
     const stream = vi.fn<LLMProvider['streamChat']>(
       (messages, onChunk, _temperature, tools, options) => {
         expect(tools).toBeUndefined();
@@ -68,7 +72,9 @@ describe('실제 WASM 검색 엔진의 합성 제품 여정', () => {
           messages.find((message) => message.role === 'user')?.content ?? '',
         ) as IndexedEvidenceDossier;
         expect(dossier.documentScope).toBe('all');
-        expect(dossier.evidence).toEqual(search.evidence);
+        expect(dossier.evidence).toEqual(search.evidence.map(({ sourceId, path, startLine, endLine, quote, queryIndexes }) => ({
+          sourceId, path, startLine, endLine, quote, queryIndexes,
+        })));
         onChunk({
           content: JSON.stringify({
             paragraphs: [
@@ -83,7 +89,7 @@ describe('실제 WASM 검색 엔진의 합성 제품 여정', () => {
         return Promise.resolve();
       },
     );
-    const result = await reviewIndexedVault({ ...input, provider: { streamChat: stream } });
+    const result = await reviewIndexedVault({ ...input, sourceReader, provider: { streamChat: stream } });
     expect(result.outcome).toBe('answered');
     expect(stream).toHaveBeenCalledOnce();
     expect(result.citations).toEqual([
@@ -94,7 +100,8 @@ describe('실제 WASM 검색 엔진의 합성 제품 여정', () => {
     expect([
       ...new Set(input.read.mock.calls.flatMap(([paths]) => [...paths])),
     ]).toEqual([RELEVANT, OTHER]);
-    expect(input.revisionReader.mock.calls).toEqual([[RELEVANT]]);
+    expect(sourceReader).toHaveBeenCalledExactlyOnceWith(RELEVANT, expect.any(AbortSignal));
+    expect(input.revisionReader).not.toHaveBeenCalled();
   });
 
   it('후보 신호가 비어도 전체 색인 본문을 읽어 답한다', async () => {

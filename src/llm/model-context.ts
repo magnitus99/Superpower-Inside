@@ -15,7 +15,7 @@ export async function fetchModelContext(
   config: ProviderConfig | CustomOpenAIProviderConfig,
   model: string,
 ): Promise<ModelContextBudget> {
-  let metadata: unknown = {};
+  let metadata: unknown;
   let timeout: number | undefined;
   try {
     const lookup = async (): Promise<unknown> => {

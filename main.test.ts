@@ -834,9 +834,12 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     const source = await import('./src/rag/source-snapshot');
     const read = vi.spyOn(source, 'readSourceFileSnapshot');
     try {
-      const current = plugin['captureRagReadCurrentness'](runtime);
+      const invalid = vi.fn();
+      const current = plugin['captureRagReadCurrentness'](runtime, invalid);
       await runtime.io!.run(async () => undefined);
       expect(current()).toBe(false);
+      expect(current()).toBe(false);
+      expect(invalid).toHaveBeenCalledExactlyOnceWith('writer-admission');
       for (let request = 0; request < 3; request++) await plugin['refreshRagRuntimeCheckpoint'](runtime);
       expect.soft(collect).not.toHaveBeenCalled();
       expect.soft(read).not.toHaveBeenCalled();
@@ -4782,3 +4785,48 @@ function createChatPlacementLeaf(options: { root: unknown; parent: unknown; view
     detach: vi.fn(),
   };
 }
+
+it('제외 채팅 폴더 자동저장 이벤트는 serving epoch를 보존하지만 허용 원문의 이동은 무효화한다', async () => {
+  const { default: PluginClass } = await import('./main');
+  const { DEFAULT_SETTINGS } = await import('./src/settings');
+  const { TFile, TFolder } = await import('obsidian');
+  const { RagRuntimeWorkBarrier } = await import('./src/rag/runtime-generation');
+  const app = createApp();
+  const plugin = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+  Object.assign(plugin, { app, settings: { ...DEFAULT_SETTINGS, rag: { ...DEFAULT_SETTINGS.rag, excludeChatFolder: true }, chat: { ...DEFAULT_SETTINGS.chat, saveFolder: 'SyntheticChats' } } });
+  const runtime = { ...plugin['captureRagRuntimeSnapshot'](), io: new RagRuntimeWorkBarrier() };
+  plugin['observeRagRuntimeSources'](runtime);
+  try {
+    const current = runtime.io.captureReadSnapshot();
+    const folder = Object.assign(new TFolder(), { path: 'SyntheticChats' });
+    const file = Object.assign(new TFile(), { path: 'SyntheticChats/session.md', name: 'session.md' });
+    app.vault.trigger('create', folder);
+    app.vault.trigger('create', file);
+    app.vault.trigger('modify', file);
+    app.vault.trigger('rename', file, 'SyntheticChats/old.md');
+    expect(current()).toBe(true);
+    expect(runtime.pendingRecoverySourceEvents?.size ?? 0).toBe(0);
+    app.vault.trigger('rename', file, 'Allowed/old.md');
+    expect(current()).toBe(false);
+    expect(runtime.pendingRecoverySourceEvents?.has('Allowed/old.md')).toBe(true);
+  } finally { runtime.disposeSourceObserver?.(); }
+});
+
+it('literal 원장의 metadata 실패는 요청 범위 안에서만 currentness를 막는다', async () => {
+  const { default: PluginClass } = await import('./main');
+  const { DEFAULT_SETTINGS } = await import('./src/settings');
+  const { TFile } = await import('obsidian');
+  const { RagRuntimeWorkBarrier } = await import('./src/rag/runtime-generation');
+  const file = (path: string, size: number) => Object.assign(new TFile(), { path, name: path.split('/').at(-1)!, stat: { ctime: 1, mtime: 1, size } });
+  const good = file('Allowed/synthetic.md', 64), tooLarge = file('Other/oversize.md', 256 * 1024 * 1024);
+  const app = createApp({ files: [good, tooLarge] });
+  const plugin = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+  Object.assign(plugin, { app, settings: DEFAULT_SETTINGS });
+  const runtime = { ...plugin['captureRagRuntimeSnapshot'](), documentCorpus: {} as NonNullable<ReturnType<typeof plugin['captureRagRuntimeSnapshot']>['documentCorpus']>, io: new RagRuntimeWorkBarrier() };
+  const capture = plugin['createRagLiteralInventorySource'](runtime)!.captureScope;
+  await expect(Promise.resolve().then(() => capture())).rejects.toMatchObject({ reason: 'source-scope-incomplete' });
+  const scoped = await capture(new Set([good.path]));
+  expect([...scoped.sources.keys()]).toEqual([good.path]);
+  expect(scoped.sources.get(good.path)?.verified).toBe(false);
+  expect(app.vault.readBinary).not.toHaveBeenCalled();
+});

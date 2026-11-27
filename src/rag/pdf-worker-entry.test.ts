@@ -13,8 +13,7 @@ vi.mock('tesseract.js', () => ({
 }));
 vi.mock('./pdf-render', () => ({
   PdfCanvasFactory: class {},
-  PdfCMapFactory: class {},
-  PdfFontFactory: class {},
+  PdfBinaryDataFactory: class {},
 }));
 
 const canvases: Array<{ width: number; height: number; pixels: number }> = [];
@@ -89,7 +88,7 @@ async function runExtraction(
     document.getMetadata.mockRejectedValue(new Error('Synthetic metadata failure'));
   if (failures.fields)
     document.getFieldObjects.mockRejectedValue(new Error('Synthetic fields failure'));
-  fixture.getDocument.mockReturnValue({ promise: Promise.resolve(document), destroy: vi.fn() });
+  fixture.getDocument.mockReturnValue({ promise: Promise.resolve(document), destroy: document.destroy });
   const ocr = {
     recognize: vi.fn().mockResolvedValue({ data: { text: ocrText, confidence } }),
     setParameters: vi.fn(),
@@ -317,7 +316,7 @@ it('최종 postMessage 실패가 다음 PDF의 직렬 큐를 깨뜨리지 않는
     getFieldObjects: vi.fn().mockResolvedValue(null),
     destroy: vi.fn(),
   };
-  fixture.getDocument.mockReturnValue({ promise: Promise.resolve(document) });
+  fixture.getDocument.mockReturnValue({ promise: Promise.resolve(document), destroy: document.destroy });
   const responses: Record<string, unknown>[] = [];
   const scope = {
     onmessage: (_event: MessageEvent) => {},

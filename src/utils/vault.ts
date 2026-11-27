@@ -446,6 +446,7 @@ interface RagProbeEntry {
   users: number;
 }
 interface RagEligibilityCache {
+  sourceEpochs: Map<string, object>;
   entries: Map<string, RagProbeEntry>;
   refs: EventRef[];
   reusable: boolean;
@@ -463,6 +464,7 @@ export function disposeRagFileEligibilityCache(vault: Vault): void {
   if (!cache) return;
   cache.disposed = true;
   cache.entries.clear();
+  cache.sourceEpochs.clear();
   for (const ref of cache.refs) vault.offref(ref);
   cache.refs.length = 0;
   // 진행 중 read가 끝나기 전에 재초기화되어도 같은 vault의 큐 1 상한을 유지한다.
@@ -472,6 +474,7 @@ function getRagEligibilityCache(vault: Vault): RagEligibilityCache {
   const existing = ragEligibilityCaches.get(vault);
   if (existing && !existing.disposed) return existing;
   const cache: RagEligibilityCache = {
+    sourceEpochs: new Map(),
     entries: new Map(),
     refs: [],
     reusable: false,
@@ -485,9 +488,13 @@ function getRagEligibilityCache(vault: Vault): RagEligibilityCache {
     const invalidate = (path: string, descendants: boolean) => {
       cache.revision++;
       cache.entries.delete(path);
+      cache.sourceEpochs.delete(path);
       if (descendants) {
         for (const key of cache.entries.keys()) {
           if (key.startsWith(`${path}/`)) cache.entries.delete(key);
+        }
+        for (const key of cache.sourceEpochs.keys()) {
+          if (key.startsWith(`${path}/`)) cache.sourceEpochs.delete(key);
         }
       }
     };
@@ -553,9 +560,10 @@ export function getRagPreparedSourceRevision(vault: Vault, file: TFile): RagPrep
 export function beginRagPreparedSourceProbe(vault: Vault, file: TFile): (result: { text?: string; reason?: string; contentHash?: string; sourceMetadataHash?: string }) => void {
   const cache = getRagEligibilityCache(vault);
   const snapshot = probeSnapshot(file);
-  const revision = cache.revision;
+  const epoch = cache.sourceEpochs.get(snapshot.path) ?? {};
+  cache.sourceEpochs.set(snapshot.path, epoch);
   return (result) => {
-    if (!cache.reusable || cache.disposed || cache.revision !== revision || !sameProbeSnapshot(snapshot, probeSnapshot(file))) return;
+    if (!cache.reusable || cache.disposed || cache.sourceEpochs.get(snapshot.path) !== epoch || !sameProbeSnapshot(snapshot, probeSnapshot(file))) return;
     const metadata = result.text !== undefined ? parseRagFrontmatterContent(file, result.text) : {};
     const reason = metadata.frontmatterUnreadable ? 'frontmatter-unreadable' : result.reason;
     // transient I/O·codec·YAML은 다음 호출에서 다시 시도합니다. 확정 binary만 실패 재사용 허용.

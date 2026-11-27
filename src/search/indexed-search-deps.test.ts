@@ -1493,3 +1493,30 @@ it('serving snapshot이 없으면 첫 building corpus를 host fallback으로 섞
   const { acquirePluginSearchSnapshot } = await import('./indexed-search-deps');
   expect(acquirePluginSearchSnapshot({ ragEngine: null, documentCorpus: building, acquireRagSearchSnapshot: () => null }).documentCorpus).toBeNull();
 });
+
+it('현재 원문 재검증은 요청 범위의 파일만 읽고 매 인용마다 전체 볼트 정책을 다시 열거하지 않는다', async () => {
+  const vaultUtils = await import('../utils/vault');
+  const path = 'Synthetic/Alpha.md';
+  const file = sourceFile(path, 10, 20);
+  let policyAllowed = true;
+  const full = vi.spyOn(vaultUtils, 'getRagCandidateFiles').mockResolvedValue([file]);
+  const current = vi.spyOn(vaultUtils, 'getRagPreparedContentVerdict').mockImplementation(() => ({ kind: policyAllowed ? 'candidate' : 'policy-excluded' }));
+  const metadata = vi.spyOn(vaultUtils, 'isRagFileMetadataExcluded').mockReturnValue(false);
+  const app = sourceApp(file, 'synthetic selected body');
+  const read = vi.spyOn(app.vault, 'readBinary');
+  try {
+    const source = await collectIndexedSearchSource({ app, documentCorpus: corpus(), ragEngine: null,
+      settings: { rag: { chunkSize: 1200, overlap: 0 }, chat: {} } as Parameters<typeof collectIndexedSearchSource>[0]['settings'],
+    }, 'synthetic');
+    await expect(source?.sourceReader?.('Private/outside.md')).resolves.toMatchObject({ revision: null, text: null });
+    expect(read).not.toHaveBeenCalled();
+    const allowed = await source?.sourceReader?.(path);
+    expect(allowed?.revision).toBe('10:20');
+    expect(typeof allowed?.contentHash).toBe('string');
+    policyAllowed = false;
+    await expect(source?.sourceReader?.(path)).resolves.toMatchObject({ revision: null, text: null });
+    expect(full).toHaveBeenCalledOnce();
+    expect(current).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally { full.mockRestore(); current.mockRestore(); metadata.mockRestore(); }
+});

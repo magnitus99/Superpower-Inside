@@ -1010,3 +1010,37 @@ it('decodeTextBlock 실패 시 [decoding failed]를 반환한다', async () => {
   const loaded = await loadChat(vault, 'Chats/bad.md');
   expect(loaded.messages[0].content).toBe('[decoding failed]');
 });
+
+it('legacy compact Markdown 청크로 시작한 인용은 재열기 후에도 현재 원문의 행을 가리킨다', async () => {
+  const { reviewIndexedVault } = await import('../agent/indexed-vault-review');
+  const { planSourceChunksRust } = await import('../rag/rust-core');
+  const vault = createVault();
+  const path = 'Synthetic/Cooling.md';
+  const tail = 'Quartz furnace cools twice.';
+  const next = '# Inspection\nInspect quartz after cooling.';
+  const text = `# Process\n${tail}\n\n${next}`;
+  vault.writeFile(path, text);
+  const chunks = planSourceChunksRust(path, 'md', text, 80, 48);
+  if (!chunks) throw new Error('source planning unavailable');
+  const streamChat = vi.fn(() => { throw new Error('engine only'); });
+  const run = await reviewIndexedVault({ question: 'quartz cooling', indexedPaths: [path], scopes: [],
+    executionMode: 'engine-only', provider: { streamChat },
+    corpus: {
+      getFileIndexRecords: () => Promise.resolve([{ filePath: path, contentHash: 'indexed', sourceMtime: 1, sourceSize: text.length, vectorCount: 1, updated: 1 }]),
+      getEntriesByFilePaths: () => Promise.resolve([{ id: 'legacy', vector: [], metadata: { filePath: path, contentHash: 'indexed', startLine: 3, endLine: 5, text: `${tail}\n${next}` } }]),
+    },
+    sourceReader: () => Promise.resolve({ revision: `1:${text.length}`, contentHash: 'current', text,
+      chunks: chunks.map(({ text, metadata }) => ({ text, ...metadata })),
+    }),
+  });
+  expect(streamChat).not.toHaveBeenCalled();
+  expect(run.citations.length).toBeGreaterThan(0);
+  const file = await saveChat(vault, [createMessage({ role: 'assistant', content: run.content, citations: run.citations })], 'Chats');
+  const [message] = (await loadChat(vault, file.path)).messages;
+  expect(message.citations).toEqual(run.citations);
+  const lines = (await vault.cachedRead(vault.getAbstractFileByPath(path) as TFile)).split('\n');
+  for (const { id, line, endLine, preview } of message.citations ?? []) {
+    expect(id).toBe(`${path}#L${line}-L${endLine}`);
+    expect(lines.slice(line! - 1, endLine).join('\n')).toBe(preview);
+  }
+});

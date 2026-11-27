@@ -21,6 +21,8 @@ references: [superpower-goals, vault-evidence, interface-design, external-tools,
 
 일반 채팅·검색 비활성·볼트 요청·명시적 외부 MCP 요청을 구분하는 것이 의도된 경계다. mixed 요청에서는 검증 dossier와 출처를 외부 도구 조율에 전달하되 네이티브 볼트 도구 실행 권한까지 주지 않는다. 명시적 외부 MCP를 포함하는 mixed 요청에서만 deferAnswer를 사용한다. 외부 도구 승인·재개는 고정된 호출 binding과 현재 정책으로 근거를 다시 확인하고, 저장된 별도 후보 범위가 없으면 기본 all 검토를 사용한다. 일반 전송·승인 재개 모두 scope를 수집 시작부터 고정하고 같은 source의 lazy literal opener·직접 질의·currentness를 조사에 전달한다. 비동기 source 정리까지 기다린 뒤에도 원래 실행·readiness·설정 및 source currentness를 다시 확인해 무효 결과의 메타·후속 모델 게시를 막는다. 현재 단서와 답변 자격의 구분 및 최소 모델 dossier 투영은 `vault-evidence`가 소유하며 원문 요청 원장을 채팅 메시지·설정에 저장하지 않는다.
 
+수집 중이나 정리 후 준비 상태·설정·source snapshot이 무효화되면 scope 계산 실패나 일반 모델 답변으로 바꾸지 않는다. 초회·승인 재개에서 같은 경계를 적용하고, 실패 상세에는 질의·경로·설정 값 대신 단계와 무효화 사유 코드만 남긴다. 열거 도중 scope 무효화는 사용자 중단이 아니다.
+
 저장된 메시지·출처 주소는 현재 원문 검증을 대신하지 않는다. legacy 세션 load와 최신 형식 round-trip을 보존하고, 중간 승인·질문 대기 상태의 재개가 다른 실행을 중복 소유하지 않도록 한다.
 
 ## 프롬프트·준비·응답 표현

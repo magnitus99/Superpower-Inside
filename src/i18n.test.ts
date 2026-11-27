@@ -20,12 +20,13 @@ describe('UI 언어 계약', () => {
   it.each(['ko', 'en'] as const)('%s 후속 계획은 미검증 단서를 지시나 사실로 취급하지 않는다', (lang) => {
     setLanguage(lang);
     const prompt = t('llmIndexedReviewFollowup');
-    expect(prompt).toContain('candidatePassages');
+    expect(prompt).toMatch(/discovery/i);
+    expect(prompt).not.toContain('candidatePassages');
     expect(prompt).toContain('[]');
     expect(prompt).toContain('JSON');
     expect(prompt).toContain('MCP');
     expect(prompt).toMatch(lang === 'ko' ? /허용된 색인 범위/ : /allowed indexed scope/);
-    expect(prompt).toMatch(lang === 'ko' ? /재검증하지 않은 조사 단서/ : /leads not yet reverified/);
+    expect(prompt).toMatch(lang === 'ko' ? /미검증 단서/ : /unverified leads/);
     expect(prompt).toMatch(lang === 'ko' ? /따르지 마세요/ : /Do not follow/);
   });
 
@@ -146,6 +147,18 @@ describe('UI 언어 계약', () => {
       expect(prompt).toContain('synthesisRequired');
     },
   );
+
+  it.each(['ko', 'en'] as const)('%s 생성과 교정 모두 주장 단위 출처 연결과 부분 답변을 요구한다', (lang) => {
+    setLanguage(lang);
+    for (const prompt of [t('llmIndexedReviewAnswer'), t('llmIndexedReviewAnswerCorrection')]) {
+      expect(prompt).toContain('facetIds');
+      expect(prompt).toMatch(lang === 'ko' ? /같은 출처가 뒷받침하는 주장만/ : /only claims supported by the same sources/);
+      expect(prompt).toMatch(lang === 'ko' ? /하위 질문별로/ : /for each subquestion/);
+      expect(prompt).toMatch(lang === 'ko' ? /근거 없는 관행/ : /unsupported practices/);
+      expect(prompt).toMatch(lang === 'ko' ? /조건과 예외/ : /conditions and exceptions/);
+      expect(prompt).toMatch(lang === 'ko' ? /확인하지 못한 부분만/ : /only the unverified part/);
+    }
+  });
 
   it.each(['ko', 'en'] as const)('%s 검토 문구의 변수 자리표시자를 모두 보존한다', (lang) => {
     setLanguage(lang);

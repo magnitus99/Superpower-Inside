@@ -1046,7 +1046,10 @@ mod tests {
 
     #[test]
     fn oversized_input_is_rejected() {
-        assert!(plan_evidence_collection_json(&" ".repeat(8 * 1024 * 1024 + 1)).is_empty());
+        assert_eq!(
+            plan_evidence_collection_json(&" ".repeat(8 * 1024 * 1024 + 1)),
+            ""
+        );
     }
 
     #[test]
@@ -1101,7 +1104,10 @@ mod tests {
             comparison_subject_queries("Compare \"alpha and beta\" and gamma"),
             vec!["alpha beta".to_owned(), "gamma".to_owned()]
         );
-        assert!(comparison_subject_queries("Compare \"alpha and beta\" values").is_empty());
+        assert_eq!(
+            comparison_subject_queries("Compare \"alpha and beta\" values"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

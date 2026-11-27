@@ -329,11 +329,11 @@ mod tests {
         ))
         .unwrap_or(Value::Null);
         assert_eq!(separate.get("outputTokens"), Some(&json!(8192)));
-        assert!(
+        assert_eq!(
             plan_model_context_json(
                 &json!({"contextLength":8192,"usedInputBytes":8192}).to_string()
-            )
-            .is_empty()
+            ),
+            ""
         );
     }
     #[test]

@@ -88,6 +88,7 @@ describe('indexed search and answer WASM integration', () => {
       reason: 'invalid-format',
       missingFacetIds: [],
       formatIssue,
+      ...(['invalid-sources', 'invalid-covers'].includes(formatIssue) ? { fieldIssue: 'empty-array' } : {}),
     });
   });
 

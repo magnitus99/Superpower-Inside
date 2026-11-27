@@ -49,7 +49,7 @@ describe('발견 단서의 한 차례 후속 검색', () => {
     f.options.getFollowupPaths = () => Promise.resolve([f.paths[0], f.paths[1], 'notes/new.md']);
     const result = await searchIndexedFollowup(f.options, f.base, f.runSearch);
     expect(f.streamChat).toHaveBeenCalledTimes(1);
-    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], ['notes/start.md', 'notes/later.md']);
+    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], ['notes/start.md', 'notes/later.md'], expect.any(AbortSignal));
     expect(result.status).toBe('searched');
     expect(JSON.stringify(f.streamChat.mock.calls)).not.toContain('private/hidden.md');
   });
@@ -62,7 +62,7 @@ describe('발견 단서의 한 차례 후속 검색', () => {
     ]);
     await searchIndexedFollowup(f.options, f.base, f.runSearch);
     expect(f.runSearch).toHaveBeenCalledWith(
-      ['cooling exception'], ['notes/start.md', 'notes/later.md'],
+      ['cooling exception'], ['notes/start.md', 'notes/later.md'], expect.any(AbortSignal),
     );
     const request = f.streamChat.mock.calls[0][0].find((message) => message.role === 'user');
     expect(JSON.parse(request?.content ?? '{}')).toMatchObject({ discoveredDocuments: 1 });
@@ -77,7 +77,7 @@ describe('발견 단서의 한 차례 후속 검색', () => {
     await searchIndexedFollowup(f.options, f.base, f.runSearch);
     const call = f.runSearch.mock.calls[0];
     expect(call).toBeDefined();
-    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], paths);
+    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], paths, expect.any(AbortSignal));
   });
 
   it('발견이 수천 건이어도 첫 단서 페이지와 집계만 모델에 보내고 검색 범위는 모두 보존한다', async () => {
@@ -92,7 +92,7 @@ describe('발견 단서의 한 차례 후속 검색', () => {
       discoveredDocuments: 4000, discoveryNextOffset: 96,
     });
     expect(JSON.parse(request?.content ?? '{}')).toHaveProperty('discovery.length', 96);
-    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], paths);
+    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], paths, expect.any(AbortSignal));
   });
 
   it('같은 문서의 여러 발견 기록을 문서 수나 후속 검색 경로에 중복 집계하지 않는다', async () => {
@@ -102,7 +102,7 @@ describe('발견 단서의 한 차례 후속 검색', () => {
       { path: f.paths[0], rank: 1, score: 1, source: 'vector' },
     ];
     await searchIndexedFollowup(f.options, f.base, f.runSearch);
-    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], f.paths.slice(0, 2));
+    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], f.paths.slice(0, 2), expect.any(AbortSignal));
     const request = f.streamChat.mock.calls[0][0].find((message) => message.role === 'user');
     expect(JSON.parse(request?.content ?? '{}')).toMatchObject({ discoveredDocuments: 2 });
   });
@@ -112,7 +112,7 @@ describe('발견 단서의 한 차례 후속 검색', () => {
     if (mode === 'deferAnswer') f.options.deferAnswer = true;
     else f.options.filters = { tags: ['limited'] };
     expect((await searchIndexedFollowup(f.options, f.base, f.runSearch)).status).toBe('searched');
-    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], f.paths.slice(0, 2));
+    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], f.paths.slice(0, 2), expect.any(AbortSignal));
   });
 
   it.each(['missingScope', 'obsolete'] as const)('%s 경로는 후속 모델·검색을 실행하지 않는다', async (mode) => {
@@ -145,7 +145,7 @@ describe('발견 단서의 한 차례 후속 검색', () => {
       return Promise.resolve();
     });
     await searchIndexedFollowup(f.options, f.base, f.runSearch);
-    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], [f.paths[0]]);
+    expect(f.runSearch).toHaveBeenCalledWith(['cooling exception'], [f.paths[0]], expect.any(AbortSignal));
   });
 
   it('취소 후 늦은 계획은 후속 검색을 만들지 않는다', async () => {
@@ -178,4 +178,26 @@ it('deferAnswer는 기존 후속 모델 호출을 유지하지만 engine-only는
   await searchIndexedFollowup({ ...second.options, executionMode: 'engine-only' }, second.base, second.runSearch);
   expect(second.streamChat).not.toHaveBeenCalled();
   expect(second.runSearch).not.toHaveBeenCalled();
+});
+
+it('발견 계획 모델에는 아직 재검증되지 않은 색인 본문을 보내지 않는다', async () => {
+  const f = fixture();
+  const marker = 'synthetic stale source text';
+  f.base.evidence = [{ path: f.paths[0], quote: marker } as IndexedVaultSearchResult['evidence'][number]];
+  await searchIndexedFollowup(f.options, f.base, f.runSearch);
+  expect(f.streamChat).toHaveBeenCalledOnce();
+  expect(JSON.stringify(f.streamChat.mock.calls)).not.toContain(marker);
+});
+
+it('후속 계획 모델의 지연은 기본 검토를 무기한 막지 않는다', async () => {
+  vi.useFakeTimers();
+  try {
+    const f = fixture();
+    f.streamChat.mockImplementation(() => new Promise(() => undefined));
+    const task = searchIndexedFollowup(f.options, f.base, f.runSearch);
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(f.streamChat).toHaveBeenCalledOnce();
+    expect(await Promise.race([task, Promise.resolve('pending')])).toEqual({ status: 'failed' });
+    expect(f.runSearch).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
 });

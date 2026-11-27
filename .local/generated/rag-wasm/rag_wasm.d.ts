@@ -136,11 +136,11 @@ export class IvfRuntimeIndex {
     /**
      * flattened row-major vector matrix로 IVF runtime index를 만든다.
      */
-    constructor(vectors: Float32Array, dimensions: number, requested_cluster_count: number, iterations: number);
+    constructor(vectors: Float32Array | number[], dimensions: number, requested_cluster_count: number, iterations: number);
     /**
      * centroid probe와 candidate scoring을 Rust 내부에서 수행해 top-k row index/score pair를 반환한다.
      */
-    query(query: Float32Array, top_k: number, probe_count: number): Float64Array;
+    query(query: Float32Array | number[], top_k: number, probe_count: number): Float64Array;
     /**
      * original row count를 반환한다.
      */
@@ -208,15 +208,15 @@ export class VectorRuntimeIndex {
     /**
      * flattened row-major vector matrix로 runtime index를 만든다.
      */
-    constructor(vectors: Float32Array, dimensions: number);
+    constructor(vectors: Float32Array | number[], dimensions: number);
     /**
      * 모든 valid row에서 top-k row index/score pair를 반환한다.
      */
-    rank_top_k(query: Float32Array, top_k: number): Float64Array;
+    rank_top_k(query: Float32Array | number[], top_k: number): Float64Array;
     /**
      * 지정된 row index 후보 안에서 top-k row index/score pair를 반환한다.
      */
-    rank_top_k_filtered(query: Float32Array, row_indices: Uint32Array, top_k: number): Float64Array;
+    rank_top_k_filtered(query: Float32Array | number[], row_indices: Uint32Array | number[], top_k: number): Float64Array;
     /**
      * original row count를 반환한다.
      */
@@ -236,7 +236,7 @@ export class XlsxSourceText {
     /**
      * ZIP XML을 순차적으로 읽어 전체 본문을 만들거나 명시적인 실패를 반환합니다.
      */
-    constructor(bytes: Uint8Array);
+    constructor(bytes: Uint8Array | number[]);
     /**
      * 빈 문자열은 전체 추출 성공이며 나머지는 안정적인 실패 코드입니다.
      */
@@ -254,22 +254,22 @@ export class XlsxSourceText {
 /**
  * retrieval source score/rank를 source-aware RAG relevance 계산 입력으로 요약한다.
  */
-export function analyze_retrieval_sources(source_codes: Uint8Array, source_scores: Float64Array, source_ranks: Float64Array): Float64Array;
+export function analyze_retrieval_sources(source_codes: Uint8Array | number[], source_scores: Float64Array | number[], source_ranks: Float64Array | number[]): Float64Array;
 
 /**
  * flattened vector matrix의 각 row를 가장 가까운 centroid index로 배정한다.
  */
-export function assign_vector_clusters(vectors: Float64Array, centroids: Float64Array, dimensions: number): Float64Array;
+export function assign_vector_clusters(vectors: Float64Array | number[], centroids: Float64Array | number[], dimensions: number): Float64Array;
 
 /**
  * flattened posting list에서 `BM25` doc index와 score 쌍을 계산한다.
  */
-export function bm25_score_pairs(term_offsets: Uint32Array, doc_indices: Uint32Array, term_frequencies: Float64Array, doc_lengths: Float64Array, total_docs: number, avg_doc_length: number): Float64Array;
+export function bm25_score_pairs(term_offsets: Uint32Array | number[], doc_indices: Uint32Array | number[], term_frequencies: Float64Array | number[], doc_lengths: Float64Array | number[], total_docs: number, avg_doc_length: number): Float64Array;
 
 /**
  * flattened vector matrix에서 `IVF ANN` 초기 centroid matrix를 계산한다.
  */
-export function build_initial_centroids(vectors: Float64Array, dimensions: number, requested_cluster_count: number): Float64Array;
+export function build_initial_centroids(vectors: Float64Array | number[], dimensions: number, requested_cluster_count: number): Float64Array;
 
 /**
  * Markdown을 heading/code block/paragraph 경계 기준으로 chunk JSON으로 만든다.
@@ -299,7 +299,7 @@ export function core_version(): string;
 /**
  * `WASM` 호출용 cosine similarity. invalid vector는 `NaN`으로 반환한다.
  */
-export function cosine_similarity_or_nan(left: Float64Array, right: Float64Array): number;
+export function cosine_similarity_or_nan(left: Float64Array | number[], right: Float64Array | number[]): number;
 
 /**
  * 파일 확장자 목록 기준 카운트를 계산한다.
@@ -335,7 +335,7 @@ export function create_indexed_db_record_key(namespace: string, value: string): 
  * 바이트를 검증하며 probe에서는 본문을 wire에 복제하지 않는다.
  * 빈 바이트와 실제 크기를 넘기면 호스트 I/O 전에 메모리 예산을 확인할 수 있다.
  */
-export function decode_source_bytes_json(bytes: Uint8Array, include_text: boolean, source_size: number): string;
+export function decode_source_bytes_json(bytes: Uint8Array | number[], include_text: boolean, source_size: number): string;
 
 /**
  * Derives a conservative coverage receipt from successful native-vault tool result payloads.
@@ -361,7 +361,7 @@ export function embedding_gemma_inputs_json(texts_json: string, kind: string): s
 /**
  * 확장자에 맞는 추출기를 실행하고 결과를 JSON으로 반환합니다.
  */
-export function extract_source_text_json(extension: string, bytes: Uint8Array): string;
+export function extract_source_text_json(extension: string, bytes: Uint8Array | number[]): string;
 
 /**
  * `delta` 객체의 구조화 reasoning 필드를 추출한다.
@@ -449,7 +449,7 @@ export function is_recommendable_exclude_extension_json(extension: string): bool
 /**
  * RAG 후보가 최종 context 후보로 유지될 만큼 관련 있는지 판단한다.
  */
-export function is_relevant_result(config: Float64Array, source_codes: Uint8Array): boolean;
+export function is_relevant_result(config: Float64Array | number[], source_codes: Uint8Array | number[]): boolean;
 
 /**
  * 명시 폴더의 개념 비교와 종합은 인용문 한 곳을 찾는 요청과 구분한다.
@@ -777,12 +777,12 @@ export function plan_mcp_server_candidates_json(preferred_server_names_json: str
 /**
  * retrieval provider 후보를 entry별로 병합할 numeric plan을 계산한다.
  */
-export function plan_merged_retrieval_candidates(entry_indices: Uint32Array, source_codes: Uint8Array, source_scores: Float64Array, source_ranks: Float64Array): Float64Array;
+export function plan_merged_retrieval_candidates(entry_indices: Uint32Array | number[], source_codes: Uint8Array | number[], source_scores: Float64Array | number[], source_ranks: Float64Array | number[]): Float64Array;
 
 /**
  * retrieval provider 후보를 `entry id`별로 병합할 numeric plan을 계산한다.
  */
-export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json: string, source_codes: Uint8Array, source_scores: Float64Array, source_ranks: Float64Array): Float64Array;
+export function plan_merged_retrieval_candidates_by_entry_id(entry_ids_json: string, source_codes: Uint8Array | number[], source_scores: Float64Array | number[], source_ranks: Float64Array | number[]): Float64Array;
 
 /**
  * 토크나이저가 공개되지 않은 모델은 UTF-8 바이트를 보수적인 입력 토큰 상한으로 사용한다.
@@ -1167,7 +1167,7 @@ export function plan_vector_store_stats_json(file_paths_json: string, now: numbe
  * 실제 바이너리는 평문 64MiB 한도를 적용하기 전에 구조 추출기로 보냅니다.
  * PDF의 입력은 worker가 소유한 같은 buffer를 PDF worker에 이동해야 합니다.
  */
-export function prepare_source_bytes_json(extension: string, bytes: Uint8Array, preparation_json: string): string;
+export function prepare_source_bytes_json(extension: string, bytes: Uint8Array | number[], preparation_json: string): string;
 
 /**
  * PDF 추출·완전성 및 캐시 결과도 동일한 Rust 준비 계약으로 계산합니다.
@@ -1182,17 +1182,17 @@ export function rag_automatic_recovery_delay_ms(attempt: number): number;
 /**
  * flattened vector matrix에서 top-k row index와 score 쌍을 반환한다.
  */
-export function rank_top_k_pairs(query: Float64Array, vectors: Float64Array, dimensions: number, top_k: number): Float64Array;
+export function rank_top_k_pairs(query: Float64Array | number[], vectors: Float64Array | number[], dimensions: number, top_k: number): Float64Array;
 
 /**
  * exact top-k와 approximate top-k index 목록으로 recall@k를 계산한다.
  */
-export function recall_at_k(exact_indices: Uint32Array, approximate_indices: Uint32Array, top_k: number): number;
+export function recall_at_k(exact_indices: Uint32Array | number[], approximate_indices: Uint32Array | number[], top_k: number): number;
 
 /**
  * flattened vector matrix와 cluster assignment로 centroid matrix를 다시 계산한다.
  */
-export function recompute_centroids(vectors: Float64Array, assignments: Uint32Array, previous_centroids: Float64Array, dimensions: number): Float64Array;
+export function recompute_centroids(vectors: Float64Array | number[], assignments: Uint32Array | number[], previous_centroids: Float64Array | number[], dimensions: number): Float64Array;
 
 /**
  * 모든 답변 문단을 검토에서 채택한 실제 출처에 연결한 뒤 Markdown을 만듭니다.
@@ -1202,7 +1202,7 @@ export function render_indexed_review_answer_json(source_ids: string, response: 
 /**
  * retrieval source rank map에서 RRF score를 계산한다.
  */
-export function rrf_score_or_nan(source_codes: Uint8Array, ranks: Float64Array, bm25_weight: number): number;
+export function rrf_score_or_nan(source_codes: Uint8Array | number[], ranks: Float64Array | number[], bm25_weight: number): number;
 
 /**
  * 검색 가능한 경로를 반환하되 발견·검토·원문 검증 완료로 승격하지 않습니다.
@@ -1217,7 +1217,7 @@ export function score_indexed_review_segments_json(input: string): string;
 /**
  * Query result 후보에서 기존 `TypeScript` MMR diversity selection과 같은 index를 고른다.
  */
-export function select_diverse_indices(scores: Float64Array, vectors: Float64Array, dimensions: number, source_keys: Uint32Array, heading_keys: Uint32Array, top_k: number): Float64Array;
+export function select_diverse_indices(scores: Float64Array | number[], vectors: Float64Array | number[], dimensions: number, source_keys: Uint32Array | number[], heading_keys: Uint32Array | number[], top_k: number): Float64Array;
 
 /**
  * Context7 검색에서 이름이 일치하는 단일 문서 ID만 선택한다.
@@ -1228,7 +1228,7 @@ export function select_plugin_context7_library_id(plugin_json: string, result_js
 /**
  * RAG 후보 score 목록에서 최종 relevance gate를 통과한 원본 result index를 score 내림차순으로 반환한다.
  */
-export function select_relevant_result_indices(config: Float64Array, source_offsets: Uint32Array, source_codes: Uint8Array, result_values: Float64Array): Float64Array;
+export function select_relevant_result_indices(config: Float64Array | number[], source_offsets: Uint32Array | number[], source_codes: Uint8Array | number[], result_values: Float64Array | number[]): Float64Array;
 
 /**
  * MCP 경로 힌트가 필요한지 판정한다.
@@ -1243,7 +1243,7 @@ export function should_offer_context7_for_prompt(prompt: string): boolean;
 /**
  * 비동기 처리 결과가 현재 원문 revision에 속하는지 판정합니다.
  */
-export function source_revision_matches(expected_path: string, current_path: string, expected_hash: string, current_hash: string, revision_numbers: Float64Array): boolean;
+export function source_revision_matches(expected_path: string, current_path: string, expected_hash: string, current_hash: string, revision_numbers: Float64Array | number[]): boolean;
 
 /**
  * `<think>`류 태그를 reasoning/content로 분할한다.
@@ -1554,6 +1554,7 @@ export interface InitOutput {
     readonly strip_compatibility_tool_calls: (a: number, b: number) => [number, number];
     readonly token_frequencies_json: (a: number, b: number) => [number, number];
     readonly tokenize_json: (a: number, b: number) => [number, number];
+    readonly tokenizer_version: () => number;
     readonly update_generated_artifact_registry_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly validate_exclude_extension_input_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_exclude_path_input_json: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1572,7 +1573,6 @@ export interface InitOutput {
     readonly xlsxsourcetext_reason: (a: number) => [number, number];
     readonly xlsxsourcetext_segments_json: (a: number) => [number, number];
     readonly xlsxsourcetext_take_text_bytes: (a: number) => [number, number];
-    readonly tokenizer_version: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

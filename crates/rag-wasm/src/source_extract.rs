@@ -314,24 +314,16 @@ fn decode_xml_bytes(raw: Vec<u8>) -> Result<String, ExtractFailure> {
     let skip = usize::from(raw.starts_with(&[0xff, 0xfe]) || raw.starts_with(&[0xfe, 0xff]))
         .saturating_mul(2);
     let bytes = raw.get(skip..).ok_or(ExtractFailure::Corrupt)?;
-    let mut units = bytes.chunks_exact(2);
-    let values: Vec<_> = units
-        .by_ref()
-        .map(|chunk| {
-            let pair = [
-                chunk.first().copied().unwrap_or_default(),
-                chunk.get(1).copied().unwrap_or_default(),
-            ];
-            if little {
-                u16::from_le_bytes(pair)
-            } else {
-                u16::from_be_bytes(pair)
-            }
-        })
-        .collect();
-    if !units.remainder().is_empty() {
+    let (units, remainder) = bytes.as_chunks::<2>();
+    if !remainder.is_empty() {
         return Err(ExtractFailure::Corrupt);
     }
+    let decode = if little {
+        u16::from_le_bytes
+    } else {
+        u16::from_be_bytes
+    };
+    let values: Vec<_> = units.iter().copied().map(decode).collect();
     String::from_utf16(&values).map_err(|_| ExtractFailure::Corrupt)
 }
 
@@ -1521,13 +1513,12 @@ mod tests {
         let labels = value
             .get("segments")
             .and_then(JsonValue::as_array)
-            .map(|segments| {
+            .map_or_default(|segments| {
                 segments
                     .iter()
                     .filter_map(|segment| segment.get("label").and_then(JsonValue::as_str))
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            });
         assert_eq!(labels, vec!["Alpha", "Beta"], "epub chapter labels");
     }
 
@@ -2702,8 +2693,7 @@ mod tests {
         assert!(!text_of(&value).contains("ppt/embeddings"));
         let segments = at(&value, "/segments")
             .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .map_or_default(Vec::as_slice);
         let sheet = segments
             .iter()
             .find(|s| at(s, "/sourcePart") == "ppt/embeddings/data.bin!/xl/worksheets/sheet1.xml")
@@ -2777,8 +2767,7 @@ mod tests {
         assert_eq!(at(&value, "/ok"), true);
         let segments = at(&value, "/segments")
             .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .map_or_default(Vec::as_slice);
         assert!(segments.iter().any(|s| {
             at(s, "/sourcePart")
                 == "word/embeddings/middle.docx!/word/embeddings/inner.docx!/word/footnotes.xml"
@@ -3269,8 +3258,7 @@ mod tests {
         assert_eq!(text_of(&value), "A\n\nB\n\nC", "{value}");
         let segments = at(&value, "/segments")
             .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .map_or_default(Vec::as_slice);
         assert_eq!(segments.len(), 3);
         for (index, segment) in segments.iter().enumerate() {
             assert_eq!(
@@ -3404,8 +3392,7 @@ mod tests {
         );
         let segments = at(&value, "/segments")
             .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .map_or_default(Vec::as_slice);
         assert_eq!(segments.len(), 5, "{value}");
         let lines: Vec<_> = text_of(&value).split('\n').collect();
         for segment in segments {
@@ -3438,8 +3425,7 @@ mod tests {
             .first()
             .and_then(|v| v.pointer("/locator/cells"))
             .and_then(JsonValue::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .map_or_default(Vec::as_slice);
         let outer: Vec<_> = cells
             .iter()
             .filter(|c| at(c, "/table") == 1)
@@ -3707,8 +3693,7 @@ mod tests {
         assert_eq!(text_of(&value).matches("second-marker").count(), 1);
         let segments = at(&value, "/segments")
             .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .map_or_default(Vec::as_slice);
         for segment in segments {
             if let Some(marker) = segment
                 .pointer("/locator/cells/0/cachedValue")

@@ -1,3 +1,4 @@
+import { ReviewScopeChangedError } from '../agent/review-currentness';
 import { t } from '../i18n';
 import type { ChatErrorKind } from './types';
 
@@ -56,6 +57,7 @@ export function classifyChatError(detail: string): ChatErrorKind {
 }
 
 export function classifyChatFailure(error: unknown): ChatErrorKind {
+  if (error instanceof ReviewScopeChangedError) return 'source-validation';
   const status = getChatHttpStatus(error);
   if (status === 401 || status === 403) return 'auth';
   if (status === 429) return 'rate-limit';

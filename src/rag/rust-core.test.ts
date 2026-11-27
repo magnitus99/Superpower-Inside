@@ -3191,3 +3191,17 @@ describe('runtime work ETA Rust wire', () => {
     expect(planRagRuntimeWorkEtaRust(input)).toMatchObject({ elapsedMs: 1000.5, remainingMs: 10000, confidence: 'low' });
   });
 });
+
+it('Markdown overlap keeps absolute source lines across blank paragraph boundaries', () => {
+  const lines = ['---', 'kind: synthetic', '---', '', '# First'];
+  for (let i = 0; i < 20; i++) {
+    lines.push(`Unique line ${String(i).padStart(3, '0')} synthetic`);
+    if (i % 5 === 4) lines.push('', `# Heading ${i}`);
+    else if (i % 3 === 0) lines.push('');
+  }
+  const chunks = chunkMarkdownRust(lines.join('\n'), 80, 48);
+  expect(chunks?.length).toBeGreaterThan(1);
+  for (const { text, metadata } of chunks ?? []) {
+    text.split('\n').forEach((line, offset) => expect(lines[metadata.startLine + offset]).toContain(line));
+  }
+});

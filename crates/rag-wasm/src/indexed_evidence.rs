@@ -53,18 +53,6 @@ const CANDIDATE_RRF_SHARE: f64 = 0.5;
 const CANDIDATE_SCORE_SHARE: f64 = 0.5;
 /// 상위 후보 순위 상한입니다. 이 범위의 후보는 positive 매칭이 있으면 보존합니다.
 const PROTECTED_CANDIDATE_RANK: usize = 16;
-/// 접두 없는 일반 토큰의 title 필드 가중치입니다.
-const TITLE_FIELD_WEIGHT: f64 = 0.55;
-/// 접두 없는 일반 토큰의 path 필드 가중치입니다.
-const PATH_FIELD_WEIGHT: f64 = 0.45;
-/// 접두 없는 일반 토큰의 heading 필드 가중치입니다.
-const HEADING_FIELD_WEIGHT: f64 = 0.5;
-/// 접두 없는 일반 토큰의 tag 필드 가중치입니다.
-const TAG_FIELD_WEIGHT: f64 = 0.35;
-/// 접두 없는 일반 토큰의 alias 필드 가중치입니다.
-const ALIASES_FIELD_WEIGHT: f64 = 0.5;
-/// 접두 없는 일반 토큰의 code block 필드 가중치입니다.
-const CODE_FIELD_WEIGHT: f64 = 0.4;
 /// 명시 필드 접두(`title:`)가 맞을 때의 추가 가중치입니다.
 const EXPLICIT_FIELD_BONUS: f64 = 1.5;
 /// 같은 토큰이 여러 보조 필드에 겹칠 때 대표 필드 외 가중치에 곱하는 감쇠 계수입니다.
@@ -75,13 +63,8 @@ const MIN_CANDIDATE_DEPTH: usize = 8;
 const CANDIDATE_DEPTH_RATIO: f64 = 0.5;
 /// 병합 시 배치 내부 순위를 전역 순위로 완만하게 반영하는 `RRF` 상수입니다.
 const MERGE_RRF_K: f64 = 60.0;
-/// 검색 계획 facet query index의 wire 상한입니다.
+/// 원 질의의 `queryIndex`는 0이며 후속 facet에는 1부터 이 상한까지 부여한다.
 const MAX_CANDIDATE_QUERY_INDEX: usize = 3;
-/// 본문이 아니라 경로만 같은 문서를 근거로 인정하지 않는 규칙의 설명입니다.
-/// 링크 목록 비중이 이 값보다 낮으면 색인 문서로 보지 않습니다.
-const NAVIGATION_LINK_RATIO_FLOOR: f64 = 0.35;
-/// 링크 목록 비중이 최대일 때 남길 점수 비율입니다.
-const NAVIGATION_PENALTY: f64 = 0.5;
 /// 질의의 텍스트 토큰을 하나도 담지 않고 숫자·식별자만 맞은 문서에 곱하는 감쇠입니다.
 /// `51장`만 맞는 다른 책의 장들은 질의의 의미를 담지 않았습니다.
 const NUMBER_ONLY_DEMOTION: f64 = 0.45;
@@ -1114,12 +1097,11 @@ fn contains_atomic_identifier(haystack: &str, needle: &str) -> bool {
 /// 보조 필드 이름에 해당하는 가중치입니다.
 fn field_weight(field: &str) -> f64 {
     match field {
-        "title" => TITLE_FIELD_WEIGHT,
-        "path" => PATH_FIELD_WEIGHT,
-        "heading" | "headings" => HEADING_FIELD_WEIGHT,
-        "tag" | "tags" => TAG_FIELD_WEIGHT,
-        "alias" | "aliases" => ALIASES_FIELD_WEIGHT,
-        "code" => CODE_FIELD_WEIGHT,
+        "title" => 0.55,
+        "path" => 0.45,
+        "heading" | "headings" | "alias" | "aliases" => 0.5,
+        "tag" | "tags" => 0.35,
+        "code" => 0.4,
         _ => 0.0,
     }
 }
@@ -1347,6 +1329,11 @@ struct MatchCoverage {
 /// 이런 문서는 다른 문서를 안내할 뿐 근거가 아니므로, 링크만 있는 줄의 비율이
 /// 높을수록 점수를 낮춥니다.
 fn navigation_factor(text: &str) -> f64 {
+    /// 비어 있지 않은 행 중 링크 행의 비율이 이 값 이하면 배율은 1이다.
+    const LINK_RATIO_FLOOR: f64 = 0.35;
+    /// 임계값 초과 구간에서 정규화한 초과분에 곱하는 계수다.
+    const EXCESS_WEIGHT: f64 = 0.5;
+
     let mut total = 0_usize;
     let mut linked = 0_usize;
     for line in text.lines() {
@@ -1370,11 +1357,11 @@ fn navigation_factor(text: &str) -> f64 {
     }
     let ratio =
         crate::usize_to_f64(linked).unwrap_or(0.0) / crate::usize_to_f64(total).unwrap_or(1.0);
-    if ratio <= NAVIGATION_LINK_RATIO_FLOOR {
+    if ratio <= LINK_RATIO_FLOOR {
         return 1.0;
     }
-    let excess = (ratio - NAVIGATION_LINK_RATIO_FLOOR) / (1.0 - NAVIGATION_LINK_RATIO_FLOOR);
-    NAVIGATION_PENALTY.mul_add(excess, 1.0 - NAVIGATION_PENALTY)
+    let excess = (ratio - LINK_RATIO_FLOOR) / (1.0 - LINK_RATIO_FLOOR);
+    EXCESS_WEIGHT.mul_add(excess, 1.0 - EXCESS_WEIGHT)
 }
 
 /// 문서에서 긍정 구문이 처음 나타난 `byte` 위치 목록입니다.
@@ -4038,7 +4025,7 @@ mod tests {
             if let Some(variants) = input.get_mut("queryVariants") {
                 *variants = invalid;
             }
-            assert!(plan_indexed_evidence_json(&input.to_string()).is_empty());
+            assert_eq!(plan_indexed_evidence_json(&input.to_string()), "");
         }
     }
 
@@ -5015,7 +5002,7 @@ mod tests {
     fn signatures(merged: &Value) -> Vec<String> {
         merged_get(merged, "evidence")
             .as_array()
-            .map(|rows| {
+            .map_or_default(|rows| {
                 rows.iter()
                     .map(|row| {
                         format!(
@@ -5028,7 +5015,6 @@ mod tests {
                     })
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     /// 간단한 계획 JSON을 만듭니다.
@@ -5175,7 +5161,10 @@ mod tests {
             let mut invalid_row = row.as_object().cloned().unwrap_or_default();
             invalid_row.insert("mergeRanking".to_owned(), invalid);
             let input = json!({"plans": [plan(&json!([invalid_row]), None)]});
-            assert!(super::merge_indexed_evidence_plans_json(&input.to_string()).is_empty());
+            assert_eq!(
+                super::merge_indexed_evidence_plans_json(&input.to_string()),
+                ""
+            );
         }
     }
 
@@ -5752,7 +5741,7 @@ mod tests {
                 }));
                 assert!(rows(&limited, "evidence").len() <= max_passages);
                 if max_chars == 1 {
-                    assert!(rows(&limited, "evidence").is_empty());
+                    assert_eq!(rows(&limited, "evidence"), Vec::<Value>::new());
                 }
             }
             let verification = verify_of(&json!({
@@ -5821,7 +5810,10 @@ mod tests {
                 "budget".to_owned(),
                 json!({"maxDocuments": 8, "maxPassages": 2, "maxChars": 1}),
             );
-            assert!(rows(&plan_of(&Value::Object(limited)), "evidence").is_empty());
+            assert_eq!(
+                rows(&plan_of(&Value::Object(limited)), "evidence"),
+                Vec::<Value>::new()
+            );
         }
     }
 

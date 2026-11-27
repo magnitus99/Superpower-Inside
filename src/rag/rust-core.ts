@@ -4736,6 +4736,7 @@ export type RustIndexedReviewAnswerValidation =
       reason: RustIndexedReviewAnswerFailureReason;
       missingFacetIds: readonly string[];
       formatIssue?: RustIndexedReviewAnswerFormatIssue;
+      fieldIssue?: string;
     };
 
 export interface RustIndexedEvidenceDocument {
@@ -5188,6 +5189,9 @@ function readIndexedReviewAnswerValidation(
     reason: value.reason as RustIndexedReviewAnswerFailureReason,
     missingFacetIds,
     ...(formatIssue === undefined ? {} : { formatIssue }),
+    ...(formatIssue && typeof value.fieldIssue === 'string' &&
+      ['empty-array', 'too-many-items', 'expected-array', 'required-array', 'expected-string', 'citation-marker', 'duplicate-id'].includes(value.fieldIssue)
+      ? { fieldIssue: value.fieldIssue } : {}),
   };
 }
 

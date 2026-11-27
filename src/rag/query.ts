@@ -157,7 +157,7 @@ export class RAGQueryEngine {
     if (allowedPaths === undefined) return openLiteralInventory(source, needles, signal);
     const allowed = new Set(allowedPaths);
     return openLiteralInventory({ corpus: source.corpus, captureScope: async () => {
-      const scope = await source.captureScope();
+      const scope = await source.captureScope(allowed);
       return { generationId: scope.generationId, isCurrent: () => scope.isCurrent(), sources: new Map([...scope.sources].filter(([path]) => allowed.has(path))) };
     } }, needles, signal);
   }

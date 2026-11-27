@@ -3,6 +3,7 @@ export function createPdfMaskCanvas(
   source: OffscreenCanvas,
   luminosity: boolean,
   transferMap?: Uint8Array | null,
+  canvas = new OffscreenCanvas(source.width, source.height),
 ): OffscreenCanvas {
   const context = source.getContext('2d');
   if (!context) throw new Error('PDF mask canvas is unavailable.');
@@ -16,7 +17,6 @@ export function createPdfMaskCanvas(
       ? transferMap[Math.min(255, Math.floor((alpha * 256) / 255))]
       : alpha;
   }
-  const canvas = new OffscreenCanvas(source.width, source.height);
   const output = canvas.getContext('2d');
   if (!output) throw new Error('PDF mask canvas is unavailable.');
   output.putImageData(image, 0, 0);

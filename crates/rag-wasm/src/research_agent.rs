@@ -577,8 +577,8 @@ mod tests {
 
     #[test]
     fn repeated_tool_call_plan_rejects_invalid_input() {
-        assert!(plan_repeated_tool_call_indices_json("{}", "[]", 2, 4).is_empty());
-        assert!(plan_repeated_tool_call_indices_json("[]", "[]", 0, 4).is_empty());
+        assert_eq!(plan_repeated_tool_call_indices_json("{}", "[]", 2, 4), "");
+        assert_eq!(plan_repeated_tool_call_indices_json("[]", "[]", 0, 4), "");
     }
 
     #[test]

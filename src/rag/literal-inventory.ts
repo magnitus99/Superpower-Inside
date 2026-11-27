@@ -10,7 +10,7 @@ export interface LiteralInventoryScope {
   isCurrent(): boolean;
 }
 export type LiteralInventoryCorpus = Pick<IndexedDbDocumentCorpusStore, 'getDurabilityReceipt' | 'getSourceBodyHeaders' | 'getSourceBodyHeader' | 'getSourceBodyBlocks' | 'putLiteralPage' | 'getLiteralPage' | 'deleteLiteralPages'>;
-export interface LiteralInventorySource { corpus: LiteralInventoryCorpus; captureScope(): Promise<LiteralInventoryScope> }
+export interface LiteralInventorySource { corpus: LiteralInventoryCorpus; captureScope(allowedPaths?: ReadonlySet<string>): Promise<LiteralInventoryScope> }
 export interface LiteralInventorySummary {
   matchMode: 'nfkc-unicode-lower-line-substring-v1';
   generationId: string;

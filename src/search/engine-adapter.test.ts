@@ -391,3 +391,31 @@ it('엄격 current 검증은 reader 누락을 revision으로 승격하지 않는
   const response = await port({ query: 'quartz' });
   expect(response?.evidence ?? []).toHaveLength(0);
 });
+
+it.each([false, true])('legacy compact 주소는 원문 전체에서 유일할 때만 보정한다 (duplicate=%s)', async duplicate => {
+  const result = fixtureResult();
+  const { path, quote } = result.evidence[0];
+  const text = `# Synthetic\n${quote}\n\n# Next` + (duplicate ? `\n${'other\n'.repeat(10)}${quote}` : '');
+  const port = createIndexedSearchPort({ corpus, verifyCurrentSource: true, getIndexedPaths: () => Promise.resolve([path]),
+    revisionReader: () => Promise.resolve('rev-1'), sourceReader: () => Promise.resolve({ revision: 'rev-1', contentHash: 'current', text,
+      chunks: [{ text: quote, startLine: 2, endLine: 2 }],
+    }),
+  }, () => Promise.resolve(result));
+  const response = await port({ query: 'quartz' });
+  if (duplicate) expect(response?.evidence).toEqual([]);
+  else expect(response?.evidence).toMatchObject([{ sourceId: `${path}#L2-L2`, startLine: 2, endLine: 2, quote }]);
+});
+
+it('서로 다른 구절이 같은 행으로 이동해도 인용 ID는 충돌하지 않는다', async () => {
+  const base = fixtureResult();
+  const item = base.evidence[0];
+  const text = 'alpha beta';
+  const evidence = ['alpha', 'beta'].map((quote, i) => ({ ...item, sourceId: `legacy-${i}`, quote }));
+  const port = createIndexedSearchPort({ corpus, getIndexedPaths: () => Promise.resolve([item.path]),
+    revisionReader: () => Promise.resolve('rev-1'), sourceReader: () => Promise.resolve({ revision: 'rev-1', text }),
+  }, () => Promise.resolve({ ...base, evidence }));
+  const response = await port({ query: text });
+  expect(response?.evidence.map(hit => [hit.sourceId, hit.startLine, hit.endLine, hit.quote])).toEqual([
+    [`${item.path}#L1-L1`, 1, 1, 'alpha'], [`${item.path}#L1-L1#2`, 1, 1, 'beta'],
+  ]);
+});

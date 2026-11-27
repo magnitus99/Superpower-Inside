@@ -65,3 +65,11 @@ describe('literal 조사 원장과 기존 evidence 경계', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 });
+
+it('준비된 세대가 없으면 literal 성공으로 indexing을 덮어쓰지 않는다', async () => {
+  const { options, open } = fixture();
+  options.candidatesState = 'indexing';
+  const result = await prepareLiteralReview(options);
+  expect(open).not.toHaveBeenCalled();
+  expect(result.options.candidatesState).toBe('indexing');
+});

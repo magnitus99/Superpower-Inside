@@ -12,14 +12,16 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-encoding_rs = "=0.8.35"
-chardetng = "=0.1.17"
-serde_json = { version = "1.0.150", features = ["preserve_order"] }
-regex = "1.11.1"
-wasm-bindgen = "=0.2.123"
-zip = { version = "9.0.1", default-features = false, features = ["deflate-flate2"] }
+encoding_rs = "=0.8.44"
+chardetng = "1.0.0"
+# 1.0.154의 preserve_order가 기존 허용 목록 밖인 Zlib 라이선스의 foldhash를 추가합니다.
+serde_json = { version = "=1.0.153", features = ["preserve_order"] }
+regex = "1.13.2"
+wasm-bindgen = "=0.2.130"
+# 9.4.2부터 필수 zeroize_derive가 wasm-bindgen의 syn 3과 중복되는 syn 2를 추가합니다.
+zip = { version = "=9.4.1", default-features = false, features = ["deflate-flate2"] }
 # zip은 flate2 백엔드를 직접 고르지 않으므로 순수 Rust miniz_oxide 백엔드를 명시합니다.
-flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 quick-xml = "0.42.0"
 unicode-normalization = { version = "0.1.26", default-features = false }
 

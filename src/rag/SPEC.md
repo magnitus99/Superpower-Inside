@@ -27,7 +27,7 @@ references: [vault-evidence, deterministic-core]
 
 원문 부분문자열의 계산·주소·집계 정의는 `deterministic-core`가 소유한다. corpus v3는 준비된 전체 추출 본문을 파일별 비중첩 `sourceBlocks` 한 벌로 보존하며 기존 청크·BM25·vector 형식을 바꾸지 않는다. 파일 기록에는 숫자 body manifest와 기존 출처 원장만 둔다. 원문·문서·파일·mutation receipt는 같은 transaction에서 교체·삭제되고 body 없는 갱신이 이전 raw를 새 hash 아래에 남기지 않는다. 청크 overlap·longline·구조 구간으로 원문을 역복원하거나 normalized fulltext/주소맵을 별도 영속 cache로 만들지 않는다.
 
-literal 요청은 metadata-only 범위와 현재 준비의 본문/metadata hash를 고정한다. eligibility만 확인한 cache나 같은 mtime:size는 그 증명을 대신하지 않는다. 기존 준비 결과의 두 hash를 복사해 읽을 뿐 질의 중 전 볼트 byte probe/원문 재추출을 시작하지 않는다. 현재 해시가 없거나 body capability·출처·완전성·revision이 맞지 않으면 실패 폐쇄한다. 명시적 빈 본문·빈 요청 범위와 legacy 누락을 구분한다.
+literal 요청은 metadata-only 범위와 현재 준비의 본문/metadata hash를 고정한다. 요청 허용 경로 밖의 실패나 준비 hash는 이 원장에 참여하지 않는다. eligibility만 확인한 cache나 같은 mtime:size는 그 증명을 대신하지 않는다. 기존 준비 결과의 두 hash를 복사해 읽을 뿐 literal을 위해 질의 중 전 볼트 byte probe/원문 재추출을 시작하지 않는다. 선택 근거의 개별 fresh worker 검증은 같은 파일·이벤트 owner가 유지되면 그 파일의 두 hash만 캐시에 게시할 수 있다. 다른 파일의 수정은 이 게시를 무효화하지 않는다. 현재 해시가 없거나 body capability·출처·완전성·revision이 맞지 않으면 실패 폐쇄한다. 명시적 빈 본문·빈 요청 범위와 legacy 누락을 구분한다.
 
 비동기 원장은 세대·corpus receipt·정책/source epoch와 실제 runtime lease에 묶인다. metadata keyset·원문 한 block·결과 한 페이지씩 I/O하고 source/page 저장·작업자 정착 뒤에만 complete를 게시한다. 요청 파생 페이지는 owner UUID별로 저장하며 corpus receipt를 만들지 않는다. 페이지/요약 재조회마다 currentness를 검사하고, close는 진행 read와 자기 페이지 정리 뒤에만 owner를 반납한다. 기본 검색 수집은 lazy opener만 연결하므로 일반 검색을 위해 자동 raw scan을 시작하지 않는다.
 
@@ -61,7 +61,7 @@ ETA 관측은 파일별 논리 batch 시간과 구별한 비중복 pipeline wind
 
 동일 revision의 terminal partial 자동 시도 억제는 이미 내구 저장한 corpus files의 metadata를 우선 사용하고 corpus 행이 없을 때만 vector 파일 기록을 사용한다. 실패·미검증·내구 recovery까지 합친 pending 범위에 같은 Native 계획을 적용한다. 정상 본문·metadata hash와 stat·정확한 partial 상태가 필요하며, 알려진 current hash 불일치·source 사건·legacy 누락은 억제 근거가 아니다. cold cache 부재는 변경 증거나 현재 내용 proof가 아니므로 같은 stat의 정상 내구 행을 자동 시도 억제 힌트로만 사용할 수 있다. 무이벤트·같은 stat의 실제 내용 변경을 이것만으로 판별한다고 주장하지 않는다.
 
-자동 coordinator는 coverage pending과 actionable/deferred를 구분한다. deferred-only면 추가 자동 기회·완료 fingerprint·healthy maintenance를 게시하지 않으며 debt·owner·기존 serving·중단 상태를 보존한다. maintenance의 파일별 auto admission도 같은 계획을 따르며 가짜 vector·빈 완료 행으로 우회하지 않는다. manual/full/update·실제 source 사건·새 revision은 다시 준비할 수 있다. metadata I/O 전후 source epoch·파일 identity/stat·파일/실행 owner·취소를 재확인하고 아직 처리하지 않은 source 사건을 runtime 교체로 지우지 않는다. 관측한 사건의 경로는 같은 stat의 추출 cache·미리 준비한 snapshot을 재사용하지 않고 fresh 준비로 읽으며, 그 lexical commit과 동일 epoch의 currentness 확인 뒤에만 사건 표시를 해제한다. 억제는 현재 원문·완료 세대 인증이나 여러 DB 전체 원자 커밋을 뜻하지 않는다. 잠긴 current source reader도 준비된 sourceMetadata를 전달한다. 원문 보충은 위 명시적 CAS 경로로 한정하고 metadata hash 없는 구세대 행은 제한 상태로 남긴다.
+자동 coordinator는 coverage pending과 actionable/deferred를 구분한다. deferred-only면 추가 자동 기회·완료 fingerprint·healthy maintenance를 게시하지 않으며 debt·owner·기존 serving·중단 상태를 보존한다. maintenance의 파일별 auto admission도 같은 계획을 따르며 가짜 vector·빈 완료 행으로 우회하지 않는다. manual/full/update·실제 source 사건·새 revision은 다시 준비할 수 있다. metadata I/O 전후 source epoch·파일 identity/stat·파일/실행 owner·취소를 재확인하고 아직 처리하지 않은 source 사건을 runtime 교체로 지우지 않는다. 관측한 사건의 경로는 같은 stat의 추출 cache·미리 준비한 snapshot을 재사용하지 않고 fresh 준비로 읽으며, 그 lexical commit과 동일 epoch의 currentness 확인 뒤에만 사건 표시를 해제한다. 억제는 현재 원문·완료 세대 인증이나 여러 DB 전체 원자 커밋을 뜻하지 않는다. 잠긴 current source reader도 준비된 sourceMetadata를 전달한다. 채팅 저장 폴더가 접근 정책에서 제외되면 그 안의 저장·이름 변경과 제외 폴더 생성은 serving epoch나 자동 복구 원장을 무효화하지 않는다. 이름 변경의 양 끝 중 하나라도 접근 가능하면 여전히 무효화한다. 제품 검색의 원문 검증은 처음 고정한 허용 경로에서 선택 파일의 metadata 정책과 fresh YAML을 재검사하며, 인용마다 전체 볼트 후보를 다시 열거하지 않는다. 원문 보충은 위 명시적 CAS 경로로 한정하고 metadata hash 없는 구세대 행은 제한 상태로 남긴다.
 
 자동 pending 관측과 실행은 같은 후보·실패·미지원 원장을 사용한다. 현재 manifest의 준비 불가 행(예: 크기 제한)은 coverage에 남지만 실행 슬롯을 받지 않는다. 실제 준비의 확정 binary·바이트/포맷 오류·고정 예산 초과·암호화 PDF도 현재 파일 identity·stat의 terminal debt이며, 새 DB 행이나 성공을 만들지 않는다. 준비 결과의 억제는 live indexer의 힌트(바이너리는 이벤트 소유 eligibility 캐시도 재사용)이며 cold restart에서는 재확정할 수 있다. 일시적 I/O·runtime·저장·모델 오류와 전용 worker의 포괄 오류는 terminal로 추정하지 않는다. 새 source 사건의 fresh 준비가 같은 terminal에 도달하면 owner·revision·사건 epoch를 재확인한 뒤 그 사건만 정착시키고 기존 serving과 내구 복구 원장은 보존한다. 변경·명시적 준비는 이전 terminal 힌트로 막지 않는다. 같은 stat이라도 이후 정상 바이트 준비가 확인되면 이전 바이트/포맷 오류를 그대로 사용하지 않지만, 더 가벼운 준비 성공을 색인 예산 충족으로 해석하지 않는다. 실제 YAML 정책 제외는 실패가 아니며 아직 미검증인 Markdown의 fresh 판정은 이벤트 소유 manifest cache에 반영한다.
 
@@ -75,7 +75,7 @@ source worker는 바이트 decode·컨테이너 추출·hash·chunk 준비에 �
 
 기존 임베딩 계약에 연결 binding이 없으면 자동 재구축을 시작하지 않는 보호를 유지한다. 호스트는 이 조건을 명시적 업데이트 필요 상태로 전달하며, 그 사실만으로 원문 누락이나 실행 중인 구축을 추정하지 않는다. 오류 출처·상태의 화면 표현은 `interface-design`이 소유한다.
 
-청킹 세대와 legacy 직렬화 호환성을 보존한다. Markdown의 헤딩·코드블록·위키링크·임베드 경계를 단순 줄바꿈 분할로 대체하지 않는다. 캐시와 색인은 재생성 가능한 생성물이지만 사용자 노트·세션은 아니다.
+청킹 세대와 legacy 직렬화 호환성을 보존한다. compact 청크에서 앞 빈 행을 trim하면 시작 행도 옮기며, 이전 청크 텍스트의 실제 마지막 행과 다음 시작 행이 연속일 때만 줄 overlap을 붙인다. 이 좌표 수정은 새 저장 형식이나 기존 볼트 재색인을 요구하지 않는다. Markdown의 헤딩·코드블록·위키링크·임베드 경계를 단순 줄바꿈 분할로 대체하지 않는다. 캐시와 색인은 재생성 가능한 생성물이지만 사용자 노트·세션은 아니다.
 
 ## 영속 변경과 세대 증명
 

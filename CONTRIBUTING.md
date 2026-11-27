@@ -33,6 +33,8 @@ git push origin <방금 생성한 버전 태그>
 
 저장소의 개발·검증 진입점은 Windows·macOS·Linux 공통으로 Node/npm을 사용합니다. 작업에 따라 네이티브 Git·Rust 도구 등이 필요하며, 앱 실행처럼 OS별 전제가 있는 명령은 해당 스크립트의 안내를 따릅니다.
 
+- Windows에서 확인한 개발 환경은 Node.js 26.13.1 · npm 12.2.3입니다. CI와 같은 의존성 설치 명령은 `npm ci --ignore-scripts`입니다. 모델 다운로드나 로컬 Git 훅 설치는 여기에 포함되지 않습니다.
+- TypeScript는 typescript-eslint의 peer 범위 안에서, onnxruntime-web은 Transformers가 요구하는 정확한 버전으로 맞춥니다. ORT 번들·로더·WASM을 별개로 교체하지 않습니다. Ternlight npm 버전만으로 모델 변경을 판단하지 않고 실제 배포 WASM 바이트·크기·SHA-256을 확인합니다.
 - `pre-commit`: 스테이징 diff 형식과 스테이징 파일의 테스트 볼트 유출.
 - `pre-push`: `quality:local --base <원격 기준>`으로 변경 범위 검사. `main` 직접 push는 차단됩니다.
 - `npm run quality:local`: 변경 범위에 따라 lint·typecheck·Vitest·계약 검사·Rust 검사를 선택합니다.

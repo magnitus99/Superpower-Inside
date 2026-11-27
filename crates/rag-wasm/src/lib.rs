@@ -896,7 +896,9 @@ pub fn bm25_score_pairs(
             if denominator <= 0.0 {
                 continue;
             }
-            *score_slot += idf * ((tf * (BM25_K1 + 1.0)) / denominator);
+            // 누적 순위·동점 기준을 유지하도록 기존 곱셈과 덧셈을 각각 반올림합니다.
+            let contribution = idf * ((tf * (BM25_K1 + 1.0)) / denominator);
+            *score_slot += contribution;
             if let Some(seen_slot) = seen.get_mut(doc_index) {
                 *seen_slot = true;
             }
@@ -2683,18 +2685,13 @@ pub fn is_mcp_tool_result_empty_json(
         return false;
     };
 
-    if result
+    result
         .get("content")
         .and_then(JsonValue::as_array)
         .is_some_and(|content| !mcp_tool_has_meaningful_content(content))
         && !result
             .get("structuredContent")
             .is_some_and(mcp_structured_content_is_meaningful)
-    {
-        return true;
-    }
-
-    false
 }
 
 /// MCP의 구조화 결과가 모델에 전달할 실제 값을 포함하는지 판정한다.
@@ -2901,8 +2898,7 @@ pub fn plan_vault_link_candidates_json(source_path: &str, raw_target: &str) -> S
     let fallback_basename = target
         .rsplit('/')
         .next()
-        .map(strip_markdown_extension)
-        .unwrap_or_default();
+        .map_or_default(strip_markdown_extension);
     serialize_vault_link_candidate_plan_json(&candidates, fallback_basename)
 }
 
@@ -5949,8 +5945,7 @@ fn create_structural_heading_ranges(
     for seed in seeds {
         let heading_ranges = headings_by_path
             .get(seed.file_path.as_str())
-            .map(|rows| structural_heading_ranges_for_seed(seed, rows))
-            .unwrap_or_default();
+            .map_or_default(|rows| structural_heading_ranges_for_seed(seed, rows));
         if heading_ranges.is_empty() {
             if let Some(heading) = seed.heading.as_ref() {
                 ranges.push(StructuralHeadingRange {
@@ -8016,7 +8011,9 @@ fn observed_rag_indexing_eta_calibration(
     let prior_ratio = finite_positive(input.historical_chunk_estimate_ratio).unwrap_or(1.0);
     let sample_count_f64 = usize_to_f64(ratios.len()).unwrap_or(0.0);
     let shrinkage = sample_count_f64 / (sample_count_f64 + 4.0);
-    let ratio = observed_ratio * shrinkage + prior_ratio * (1.0 - shrinkage);
+    let observed_component = observed_ratio * shrinkage;
+    let prior_component = prior_ratio * (1.0 - shrinkage);
+    let ratio = observed_component + prior_component;
     let residual = mean_absolute_ratio_residual(&ratios, observed_ratio);
     Some(RagIndexingEtaCalibration {
         ratio: ratio.max(0.05),
@@ -10130,8 +10127,7 @@ fn context_source_block_json(
         .get("heading")
         .and_then(JsonValue::as_str)
         .filter(|value| !value.is_empty())
-        .map(|value| format!(" # {value}"))
-        .unwrap_or_default();
+        .map_or_default(|value| format!(" # {value}"));
     let mut block = JsonMap::<String, JsonValue>::new();
     block.insert("sourceId".to_owned(), JsonValue::String(id.to_owned()));
     block.insert(
@@ -11411,16 +11407,13 @@ fn decode_base64_bytes(value: &str) -> Option<Vec<u8>> {
         .filter(|byte| !byte.is_ascii_whitespace())
         .map(decode_base64_sextet)
         .collect::<Option<Vec<_>>>()?;
-    let mut chunks = sextets.chunks_exact(4);
-    if !chunks.remainder().is_empty() {
+    let (chunks, remainder) = sextets.as_chunks::<4>();
+    if !remainder.is_empty() {
         return None;
     }
-    let mut bytes = Vec::<u8>::with_capacity(sextets.len().saturating_div(4).saturating_mul(3));
+    let mut bytes = Vec::<u8>::with_capacity(chunks.len().saturating_mul(3));
     let mut seen_padding = false;
-    for chunk in chunks.by_ref() {
-        let [first, second, third, fourth] = chunk else {
-            return None;
-        };
+    for [first, second, third, fourth] in chunks {
         let (Base64Token::Value(first), Base64Token::Value(second)) = (first, second) else {
             return None;
         };
@@ -12805,6 +12798,12 @@ fn flush_chunk(
     start_line: usize,
     end_line: usize,
 ) {
+    let start_line = start_line.saturating_add(
+        current_lines
+            .iter()
+            .take_while(|line| line.trim().is_empty())
+            .count(),
+    );
     let text = current_lines.join("\n").trim().to_owned();
     if !text.is_empty() {
         chunks.push(Chunk {
@@ -12929,6 +12928,12 @@ fn flush_segment(
     current_start_line: usize,
     end_line: usize,
 ) {
+    let current_start_line = current_start_line.saturating_add(
+        current_lines
+            .iter()
+            .take_while(|line| line.trim().is_empty())
+            .count(),
+    );
     let segment_text = current_lines.join("\n").trim().to_owned();
     if !segment_text.is_empty() {
         segments.push(TextSegment {
@@ -12973,6 +12978,17 @@ fn apply_line_overlap(
             overlapped.push(chunk.clone());
             continue;
         };
+        // A compact chunk has only one base line. Never join across a trimmed
+        // blank line (or two hard-split pieces of the same source line).
+        if previous
+            .metadata
+            .start_line
+            .saturating_add(previous.text.split('\n').count())
+            != chunk.metadata.start_line
+        {
+            overlapped.push(chunk.clone());
+            continue;
+        }
         let available = max_chunk_size
             .saturating_sub(text_len(&chunk.text))
             .saturating_sub(1);
@@ -14899,8 +14915,7 @@ fn serialize_chunk_json(chunk: &Chunk) -> String {
         .metadata
         .heading
         .as_ref()
-        .map(|heading| format!(",\"heading\":\"{}\"", escape_json_string(heading)))
-        .unwrap_or_default();
+        .map_or_default(|heading| format!(",\"heading\":\"{}\"", escape_json_string(heading)));
     format!(
         "{{\"text\":\"{}\",\"metadata\":{{\"filePath\":\"{}\"{heading},\"startLine\":{},\"endLine\":{}}}}}",
         escape_json_string(&chunk.text),
@@ -17088,7 +17103,7 @@ mod tests {
     fn vector_runtime_index_reuses_scores_across_top_k_requests() {
         let vectors = [1.0_f32, 0.0, 0.6, 0.8, 0.0, 1.0, 0.0, 0.0, 1.0, -0.0];
         let index = VectorRuntimeIndex::new(&vectors, 2);
-        assert!(index.score_cache.borrow().scores.is_empty());
+        assert_eq!(index.score_cache.borrow().scores, Vec::<Option<f64>>::new());
         let first = index.rank_top_k(&[1.0, 0.0], 1);
         let cached = index.score_cache.borrow().scores.clone();
         assert_eq!(cached.iter().filter(|score| score.is_some()).count(), 4);
@@ -17705,10 +17720,7 @@ mod tests {
             Some(3)
         );
         assert_eq!(full.search_representatives_json("quartz", 2, "[]"), "[]");
-        assert!(
-            full.search_representatives_json("quartz", 2, "{}")
-                .is_empty()
-        );
+        assert_eq!(full.search_representatives_json("quartz", 2, "{}"), "");
     }
 
     /// batch와 개별 호출은 같은 명시 경로 상한을 적용합니다.
@@ -17807,13 +17819,12 @@ mod tests {
                 .and_then(JsonValue::as_u64),
             Some(3)
         );
-        assert!(index.batch_search_and_aggregate_json("{}").is_empty());
-        assert!(
-            index
-                .batch_search_and_aggregate_json(
-                    r#"{"queries":[{"query":"alpha"}],"aggregates":[]}"#
-                )
-                .is_empty()
+        assert_eq!(index.batch_search_and_aggregate_json("{}"), "");
+        assert_eq!(
+            index.batch_search_and_aggregate_json(
+                r#"{"queries":[{"query":"alpha"}],"aggregates":[]}"#
+            ),
+            ""
         );
         assert!(
             index
@@ -19442,7 +19453,7 @@ mod tests {
             "/pipeline/processedFiles",
             serde_json::json!(1.5),
         );
-        assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+        assert_eq!(super::plan_rag_indexing_eta_json(&input.to_string()), "");
     }
 
     #[test]
@@ -19711,7 +19722,7 @@ mod tests {
             0.0
         ));
         rag_eta_set(&mut input, "/pipeline/totalKnown", serde_json::json!(false));
-        assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+        assert_eq!(super::plan_rag_indexing_eta_json(&input.to_string()), "");
         if let Some(object) = input.as_object_mut() {
             object.remove("pipeline");
         }
@@ -19832,7 +19843,7 @@ mod tests {
         ] {
             let mut input = original.clone();
             rag_eta_set(&mut input, "/pipeline", invalid);
-            assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+            assert_eq!(super::plan_rag_indexing_eta_json(&input.to_string()), "");
         }
     }
 
@@ -19876,14 +19887,14 @@ mod tests {
                     .unwrap_or(JsonValue::Null)
             ]),
         );
-        assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+        assert_eq!(super::plan_rag_indexing_eta_json(&input.to_string()), "");
         input = original;
         rag_eta_set(
             &mut input,
             "/pipeline/lifecycle",
             serde_json::json!("complete"),
         );
-        assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+        assert_eq!(super::plan_rag_indexing_eta_json(&input.to_string()), "");
     }
 
     #[test]
@@ -19951,7 +19962,7 @@ mod tests {
             {
                 samples.push(sample);
             }
-            assert!(super::plan_rag_indexing_eta_json(&invalid.to_string()).is_empty());
+            assert_eq!(super::plan_rag_indexing_eta_json(&invalid.to_string()), "");
         }
     }
 
@@ -20011,7 +20022,7 @@ mod tests {
                 &format!("/pipeline/{counter}"),
                 serde_json::json!(1),
             );
-            assert!(super::plan_rag_indexing_eta_json(&invalid.to_string()).is_empty());
+            assert_eq!(super::plan_rag_indexing_eta_json(&invalid.to_string()), "");
         }
         input = rag_eta_pipeline_input();
         rag_eta_set(
@@ -20039,7 +20050,7 @@ mod tests {
                     &format!("/pipeline/{collection}"),
                     serde_json::json!([invalid]),
                 );
-                assert!(super::plan_rag_indexing_eta_json(&input.to_string()).is_empty());
+                assert_eq!(super::plan_rag_indexing_eta_json(&input.to_string()), "");
             }
             let keys = if collection == "windowSamples" {
                 vec![
@@ -20113,7 +20124,7 @@ mod tests {
         let raw = original
             .to_string()
             .replace("\"durationMs\":600", "\"durationMs\":1e999");
-        assert!(super::plan_rag_indexing_eta_json(&raw).is_empty());
+        assert_eq!(super::plan_rag_indexing_eta_json(&raw), "");
     }
 
     #[test]
@@ -20198,7 +20209,7 @@ mod tests {
         assert!(!message.contains("private-key"));
         assert!(!message.contains("-long"));
         assert_eq!(format_mcp_connection_error("failure", "", "[]"), "failure");
-        assert!(format_mcp_connection_error("failure", "stderr", "{}").is_empty());
+        assert_eq!(format_mcp_connection_error("failure", "stderr", "{}"), "");
         let long = format!("{}private-key", "한".repeat(5000));
         let bounded = format_mcp_connection_error("failure", &long, r#"["private-key"]"#);
         assert_eq!(bounded.chars().count(), 4096);
@@ -20444,13 +20455,13 @@ mod runtime_work_eta_tests {
         }
         let mut v = input();
         set(&mut v, "/samples/1/atMs", json!(1001));
-        assert!(plan_rag_runtime_work_eta_json(&v.to_string()).is_empty());
+        assert_eq!(plan_rag_runtime_work_eta_json(&v.to_string()), "");
         set(
             &mut v,
             "/samples",
             json!([{"atMs":0.25,"units":0},{"atMs":0.25,"units":128}]),
         );
-        assert!(plan_rag_runtime_work_eta_json(&v.to_string()).is_empty());
+        assert_eq!(plan_rag_runtime_work_eta_json(&v.to_string()), "");
     }
     #[test]
     fn runtime_work_eta_terminal_and_confidence_follow_actual_samples() {
@@ -20489,6 +20500,6 @@ mod runtime_work_eta_tests {
             "/samples",
             json!(vec![json!({"atMs":0.25,"units":0}); 65]),
         );
-        assert!(plan_rag_runtime_work_eta_json(&v.to_string()).is_empty());
+        assert_eq!(plan_rag_runtime_work_eta_json(&v.to_string()), "");
     }
 }

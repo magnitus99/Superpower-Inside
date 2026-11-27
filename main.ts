@@ -17,6 +17,7 @@ import {
   getRagPreparedContentVerdict,
   getRagPreparedSourceRevision,
   isRagFileMetadataExcluded,
+  isExcludedPath,
   disposeRagFileEligibilityCache,
 } from './src/utils/vault';
 import {
@@ -2091,7 +2092,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       documentCorpus: runtime.documentCorpus,
       chunkConfig: runtime.config?.rag ?? { ...this.settings.rag },
       queryMinScore: runtime.config?.rag.minScore ?? this.settings.rag.minScore,
-      isCurrent: this.captureRagReadCurrentness(runtime),
+      isCurrent: this.captureRagReadCurrentness(runtime, (reason) => this.getLogger().warn(
+        'Search snapshot invalidated.', { source: 'rag.search-snapshot', data: { reason } },
+      )),
       release,
     };
   }
@@ -2174,22 +2177,30 @@ export default class SuperpowerInsidePlugin extends Plugin {
         !runtime.io?.captureReadSnapshot()() || !this.matchesRagStorageContract(runtime)) throw new IndexingCancelledError();
   }
 
-  private captureRagReadCurrentness(runtime: RagRuntimeSnapshot): () => boolean {
+  private captureRagReadCurrentness(runtime: RagRuntimeSnapshot, onInvalid?: (reason: string) => void): () => boolean {
     const stable = runtime.io?.captureReadSnapshot();
+    const sourceStable = onInvalid && runtime.io?.captureInvalidationSnapshot();
     const policy = this.getRagSourcePolicyIdentity();
-    return () => stable?.() === true && !this.unloaded && !this.ragResetInProgress && policy === this.getRagSourcePolicyIdentity();
+    let reported = false;
+    return () => {
+      const reason = this.unloaded ? 'unloaded' : this.ragResetInProgress ? 'reset' : !stable ? 'no-barrier'
+        : !stable() ? (sourceStable?.() ? 'writer-admission' : 'invalidation-or-close')
+        : policy !== this.getRagSourcePolicyIdentity() ? 'policy' : null;
+      if (reason && !reported && onInvalid) { reported = true; onInvalid(reason); }
+      return reason === null;
+    };
   }
 
   private createRagLiteralInventorySource(runtime: RagRuntimeSnapshot): LiteralInventorySource | undefined {
     const corpus = runtime.documentCorpus;
     if (!corpus) return undefined;
     const generationId = runtime.generation?.id ?? crypto.randomUUID();
-    return { corpus, captureScope: () => {
+    return { corpus, captureScope: (allowedPaths) => {
       if (!runtime.io || this.unloaded || this.ragResetInProgress) throw new LiteralInventoryError('source-scope-unavailable');
       const isCurrent = this.captureRagReadCurrentness(runtime);
       const manifest = getRagIndexingManifest(this.app.vault, this.settings.rag, this.settings.chat);
-      if (manifest.failures.length > 0) throw new LiteralInventoryError('source-scope-incomplete');
-      const sources = new Map(manifest.candidates.map((file) => {
+      if (manifest.failures.some(({ file }) => !allowedPaths || allowedPaths.has(file.path))) throw new LiteralInventoryError('source-scope-incomplete');
+      const sources = new Map(manifest.candidates.filter((file) => !allowedPaths || allowedPaths.has(file.path)).map((file) => {
         const prepared = getRagPreparedSourceRevision(this.app.vault, file);
         return [file.path, { sourceMtime: file.stat.mtime, sourceSize: file.stat.size,
           contentHash: prepared?.contentHash ?? '', sourceMetadataHash: prepared?.sourceMetadataHash ?? '', verified: prepared !== null }] as const;
@@ -2219,15 +2230,32 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (runtime.vaultIndexer) runtime.vaultIndexer.invalidateAutomaticRecoverySource(path);
       else (runtime.pendingRecoverySourceEvents ??= new Set()).add(path);
     };
+    const excluded = (file: TAbstractFile, path = file.path): boolean => {
+      const { rag, chat } = this.settings;
+      try {
+        if (file instanceof TFile) {
+          const name = path.split('/').at(-1) ?? path;
+          const extension = name.lastIndexOf('.') > 0 ? name.split('.').at(-1) ?? '' : '';
+          const source = path === file.path ? file : { ...file, path, name, extension, stat: file.stat };
+          return isRagFileMetadataExcluded(this.app.vault, source, rag, chat);
+        }
+        // 자동저장이 최초 채팅 폴더 자체를 생성해도 제외 트리 밖의 검토를 취소하지 않습니다.
+        return rag.excludeChatFolder && Boolean(chat.saveFolder) && !chat.saveFolder.includes('*') && isExcludedPath(path, [chat.saveFolder]);
+      } catch { return false; }
+    };
     const changed = (file: TAbstractFile): void => {
+      if (excluded(file)) return;
       invalidateRecoveryPath(file.path);
-      if (file instanceof TFile) {
-        try { if (isRagFileMetadataExcluded(this.app.vault, file, this.settings.rag, this.settings.chat)) return; }
-        catch { /* 정책 판정 실패도 미검증 변경으로 보존합니다. */ }
-      }
       invalidate();
     };
-    const refs = [this.app.vault.on('create', changed), this.app.vault.on('modify', changed), this.app.vault.on('delete', changed), this.app.vault.on('rename', (file, oldPath) => { invalidateRecoveryPath(oldPath); changed(file); })];
+    const renamed = (file: TAbstractFile, oldPath: string): void => {
+      const oldAllowed = !excluded(file, oldPath);
+      const newAllowed = !excluded(file);
+      if (oldAllowed) invalidateRecoveryPath(oldPath);
+      if (newAllowed) invalidateRecoveryPath(file.path);
+      if (oldAllowed || newAllowed) invalidate();
+    };
+    const refs = [this.app.vault.on('create', changed), this.app.vault.on('modify', changed), this.app.vault.on('delete', changed), this.app.vault.on('rename', renamed)];
     const metadata = typeof this.app.metadataCache?.on === 'function' ? this.app.metadataCache.on('changed', changed) : null;
     let disposed = false;
     runtime.disposeSourceObserver = () => {

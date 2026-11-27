@@ -7,7 +7,7 @@
  */
 import { getDocument, OPS } from 'pdfjs-dist';
 import { createWorker, OEM, PSM, type Worker as OcrWorker } from 'tesseract.js';
-import { PdfCanvasFactory, PdfCMapFactory, PdfFontFactory } from './pdf-render';
+import { PdfCanvasFactory, PdfBinaryDataFactory } from './pdf-render';
 import { recognizePdfPage } from './pdf-page-ocr';
 import * as pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs';
 import type { PdfCompleteness } from './pdf-worker-runtime';
@@ -90,13 +90,11 @@ async function extract(bytes: Uint8Array, id: number): Promise<Omit<PdfWorkerRes
   const loading = getDocument({
     data: bytes,
     CanvasFactory: PdfCanvasFactory,
-    CMapReaderFactory: PdfCMapFactory,
-    StandardFontDataFactory: PdfFontFactory,
+    BinaryDataFactory: PdfBinaryDataFactory,
+    disableWorkerRendering: true,
     useWorkerFetch: false,
     disableFontFace: true,
     useWasm: false,
-    // 본문 추출에는 글꼴 평가가 필요 없고, 렌더러 CSP에서 안전해야 합니다.
-    isEvalSupported: false,
     useSystemFonts: false,
     // pdf.js 내부 경고는 사용자 콘솔을 채우므로 오류만 남깁니다.
     verbosity: 0,
@@ -235,13 +233,13 @@ async function extract(bytes: Uint8Array, id: number): Promise<Omit<PdfWorkerRes
         page?.cleanup();
       }
     }
-    let fields: Record<string, object[]> | null = null;
+    let fields: Map<string, object[]> | null = null;
     try {
       fields = await document.getFieldObjects();
     } catch {
       completeness.failures.push({ part: 'fields', reason: 'extract-error' });
     }
-    for (const [name, objects] of Object.entries(fields ?? {})) {
+    for (const [name, objects] of fields ?? []) {
       for (const field of objects) {
         if (!isRecord(field) || (typeof field.id === 'string' && fieldIds.has(field.id))) continue;
         const fieldText = savedStrings([name, field.value]);
@@ -266,8 +264,8 @@ async function extract(bytes: Uint8Array, id: number): Promise<Omit<PdfWorkerRes
       for (const [key, value] of Object.entries(metadata.info)) {
         // pdf.js가 만든 boolean/version/fingerprint 값은 저장된 검색 텍스트가 아닙니다.
         if (key === 'PDFFormatVersion') continue;
-        if (key === 'Custom' && isRecord(value)) {
-          for (const [customKey, customValue] of Object.entries(value))
+        if (key === 'Custom' && value instanceof Map) {
+          for (const [customKey, customValue] of value as Map<string, unknown>)
             append(savedStrings([customValue]), `Metadata · ${customKey}`);
         } else append(savedStrings([value]), `Metadata · ${key}`);
       }
@@ -299,7 +297,7 @@ async function extract(bytes: Uint8Array, id: number): Promise<Omit<PdfWorkerRes
     try {
       await ocr?.terminate();
     } finally {
-      await document.destroy();
+      await loading.destroy();
     }
   }
 }

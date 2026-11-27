@@ -67,7 +67,7 @@ export class McpServerDraftModal extends Modal {
     new SecretComponent(this.app, authSetting.controlEl)
       .setValue(authTokenSecret)
       .onChange((value) => {
-        authTokenSecret = value;
+        authTokenSecret = value ?? '';
       });
     remoteRows.push(authSetting);
     localRows.push(

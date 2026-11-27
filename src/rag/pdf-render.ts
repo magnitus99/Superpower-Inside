@@ -36,14 +36,10 @@ function asset(name: string): Uint8Array {
   return Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
 }
 
-export class PdfCMapFactory {
-  fetch({ name }: { name: string }): Promise<{ cMapData: Uint8Array; compressionType: number }> {
-    return Promise.resolve({ cMapData: asset(`cmaps/${name}.bcmap`), compressionType: 1 });
-  }
-}
-
-export class PdfFontFactory {
-  fetch({ filename }: { filename: string }): Promise<Uint8Array> {
-    return Promise.resolve(asset(`standard_fonts/${filename}`));
+export class PdfBinaryDataFactory {
+  fetch({ kind, filename }: { kind: string; filename: string }): Promise<Uint8Array> {
+    if (kind === 'cMapUrl') return Promise.resolve(asset(`cmaps/${filename}`));
+    if (kind === 'standardFontDataUrl') return Promise.resolve(asset(`standard_fonts/${filename}`));
+    throw new Error(`Unsupported PDF render asset kind: ${kind}`);
   }
 }

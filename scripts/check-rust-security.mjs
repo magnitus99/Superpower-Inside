@@ -1,16 +1,16 @@
 import { accessSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { ARTIFACT_PATHS } from './artifact-paths.mjs';
-import { capture, hasCommand, npm, root, run } from './script-process.mjs';
+import { cargoPrefix, prependCargoBin, rustTarget, rustToolchain, rustVersion } from './rust-tool-versions.mjs';
+import { hasCommand, npm, root, run } from './script-process.mjs';
 
-const toolchain = '1.96.0';
+prependCargoBin();
 const toolchainFile = join(root, 'rust-toolchain.toml');
 const fileToolchain = existsSync(toolchainFile)
   ? readFileSync(toolchainFile, 'utf8').match(/^\s*channel\s*=\s*"(.*)"/mu)?.[1]?.trim()
   : undefined;
-if (fileToolchain && fileToolchain !== toolchain) {
-  console.error(`ERROR: rust-toolchain.toml is '${fileToolchain}'. This project requires '${toolchain}'.`);
+if (fileToolchain !== rustVersion) {
+  console.error(`ERROR: rust-toolchain.toml is '${fileToolchain}'. This project requires '${rustVersion}'.`);
   process.exit(1);
 }
 
@@ -24,13 +24,9 @@ function executable(file) {
 }
 
 const win = process.platform === 'win32';
-const exe = win ? '.exe' : '';
 const brewRustup = '/opt/homebrew/opt/rustup/bin/rustup';
-const brewCargo = '/opt/homebrew/opt/rustup/bin/cargo';
 const canPrepareToolchain = !win && executable(brewRustup);
 const rustup = canPrepareToolchain ? brewRustup : 'rustup';
-const cargo = !win && executable(brewCargo) ? brewCargo : 'cargo';
-const hasRustup = canPrepareToolchain || hasCommand(rustup);
 const npmCli = process.env.npm_execpath;
 const hasWindowsNpm = win && (
   existsSync(join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')) ||
@@ -48,24 +44,11 @@ if (!(npmCli && existsSync(npmCli)) && !hasCommand('npm') && !hasWindowsNpm) {
 
 // 기존 명시적 Homebrew 준비 경로만 유지합니다. PATH의 rustup으로 설치를 확대하지 않습니다.
 if (canPrepareToolchain) {
-  run(rustup, ['toolchain', 'install', toolchain, '--profile', 'minimal']);
-  run(rustup, ['component', 'add', 'clippy', 'rustfmt', '--toolchain', toolchain]);
-  run(rustup, ['target', 'add', 'wasm32-unknown-unknown', '--toolchain', toolchain]);
+  run(rustup, ['toolchain', 'install', rustToolchain, '--profile', 'minimal']);
+  run(rustup, ['component', 'add', 'clippy', 'rustfmt', '--toolchain', rustToolchain]);
+  run(rustup, ['target', 'add', rustTarget, '--toolchain', rustToolchain]);
 }
-
-const rustVersion = hasRustup
-  ? capture(rustup, ['run', toolchain, 'rustc', '-vV'])
-  : capture('rustc', ['-vV']);
-const host = rustVersion.match(/^host: (.+)$/mu)?.[1]?.trim() ?? '';
-const toolchainBin = join(homedir(), '.rustup', 'toolchains', `${toolchain}-${host}`, 'bin');
-const rustc = join(toolchainBin, `rustc${exe}`);
-const rustdoc = join(toolchainBin, `rustdoc${exe}`);
-if (executable(rustc)) {
-  process.env.PATH = `${toolchainBin}${delimiter}${process.env.PATH ?? ''}`;
-  process.env.RUSTC = rustc;
-}
-if (executable(rustdoc)) process.env.RUSTDOC = rustdoc;
-process.env.CARGO_TARGET_DIR = join(root, ARTIFACT_PATHS.rust, `rustup-${toolchain}`);
+process.env.CARGO_TARGET_DIR = join(root, ARTIFACT_PATHS.rust, `rustup-${rustVersion}`);
 
 for (const tool of ['wasm-bindgen', 'cargo-deny', 'cargo-audit', 'cargo-geiger', 'cargo-vet']) {
   if (!hasCommand(tool)) {
@@ -74,15 +57,14 @@ for (const tool of ['wasm-bindgen', 'cargo-deny', 'cargo-audit', 'cargo-geiger',
   }
 }
 
-const prefix = hasRustup ? ['run', toolchain, 'cargo'] : [];
 for (const [label, args] of [
   ['rustfmt', ['fmt', '--all', '--check']],
   ['clippy', ['clippy', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings']],
   ['unit tests', ['test', '--workspace']],
-  ['wasm target build', ['build', '--workspace', '--target', 'wasm32-unknown-unknown']],
+  ['wasm target build', ['build', '--workspace', '--target', rustTarget]],
 ]) {
   console.log(`==> ${label}`);
-  run(hasRustup ? rustup : cargo, [...prefix, ...args]);
+  run(rustup, [...cargoPrefix, ...args]);
 }
 
 for (const args of [
@@ -92,7 +74,7 @@ for (const args of [
   ['geiger', '--manifest-path', join(root, 'crates/rag-wasm/Cargo.toml'), '--all-features', '--all-targets', '--locked', '--forbid-only', '--output-format', 'Ratio'],
 ]) {
   console.log(`==> cargo-${args[0]}`);
-  run('cargo', args);
+  run(rustup, [...cargoPrefix, ...args]);
 }
 console.log('==> npm audit (critical)');
 npm(['audit', '--audit-level=critical']);

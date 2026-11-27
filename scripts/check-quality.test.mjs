@@ -139,6 +139,7 @@ process.exitCode=stage===process.env.QUALITY_FAIL ? 1 : 0;
       'check-rust-local',
       'check-rust-security',
       'install-rust-security-tools',
+      'rust-tool-versions',
     ]) {
       expect(qualityPlan([`scripts/${script}.mjs`])).toMatchObject({ tests: true, rust: true });
     }

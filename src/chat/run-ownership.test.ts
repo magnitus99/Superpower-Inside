@@ -172,17 +172,17 @@ describe('chat run ownership', () => {
 
   it('세션 전환 진입점은 기존 run을 먼저 취소·무효화한다', () => {
     const viewSource = readFileSync(resolve(__dirname, 'view.ts'), 'utf8');
-    for (const signature of [
-      'async onClose(): Promise<void>',
-      'clearMessages(): void',
-      'async startNewSession(): Promise<void>',
-      'async loadSession(filePath: string): Promise<void>',
-      'private async openSessionHistoryModal(): Promise<void>',
+    for (const [signature, cause] of [
+      ['async onClose(): Promise<void>', 'view-close'],
+      ['clearMessages(): void', 'clear'],
+      ['async startNewSession(): Promise<void>', 'new-session'],
+      ['async loadSession(filePath: string): Promise<void>', 'load-session'],
+      ['private async openSessionHistoryModal(): Promise<void>', 'history'],
     ]) {
       const start = viewSource.indexOf(signature);
       const bodyEnd = viewSource.indexOf('\n  }', start);
       const source = viewSource.slice(start, bodyEnd);
-      expect(source).toContain('this.invalidateActiveChatRun(false);');
+      expect(source).toContain(`this.invalidateActiveChatRun(false, '${cause}');`);
     }
   });
 });

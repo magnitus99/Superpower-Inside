@@ -81,6 +81,8 @@ source preparation의 선택적 `maxChargeBytes`·`maxPreparedChunks`는 반환�
 
 `plan_rag_status_json`의 record에는 선택적인 `sourceIncomplete`를 받는다. 최신 revision·모델인 부분 원문도 healthy가 아니라 unknown/source-partial이며 decode 실패의 failedDocuments와 구별한다. 기존 wire 입력에 필드가 없으면 legacy 동작을 유지한다. source worker는 기존 decoder·추출 export를 실행할 뿐 새 TS decoder나 추출 알고리즘을 만들지 않는다. 이 wire와 BM25 source replacement 동작을 배포하려면 부모가 WASM과 기존 XLSX/BM25 worker 자산을 함께 재생성해야 한다.
 
+답변 검증의 `invalid-format`은 기존 `formatIssue`를 유지한다. `invalid-sources`·`invalid-covers`의 배열 형태·개수·원소·마커·중복 실패에는 선택적인 고정 `fieldIssue` 코드를 더한다. 응답 문자열이나 ID를 돌려주지 않으며 유효성 판정 자체는 변하지 않는다.
+
 ## 구현·검증 근거
 
 `src/lib.rs`, `src/indexed_evidence.rs`의 계획·검증 JSON 진입점과 TS wrapper가 주요 근거다. 회귀 근거는 Rust 모듈 내 테스트 및 `src/rag/rust-core.test.ts`다. 로컬 회귀 검사는 실제 앱 성능·답변 검증을 대신하지 않는다. 한도 코어의 단위 테스트와 `src/llm/provider-quota-core.test.ts`는 합성 응답·손상 wire·초기화 실패를 검증한다. 해당 소스·glue·base64와 이를 포함한 worker 생성물은 `npm run wasm:build`로 함께 갱신한다. 실제 제공자·계정·과금 상태와 성능은 이 회귀의 검증 범위가 아니다.

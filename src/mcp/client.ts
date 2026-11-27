@@ -10,6 +10,11 @@ import { t } from '../i18n';
 import { formatMcpConnectionErrorRust } from '../rag/rust-core';
 import { redactLogValue } from '../utils/logger';
 
+// 원격 응답과 stderr에는 자격 증명이 있을 수 있어 원래 오류를 cause로 노출하지 않습니다.
+function sanitizedConnectionError(message: string): Error {
+  return new Error(String(redactLogValue(message)));
+}
+
 export interface MCPServerConfig {
   name: string;
   command: string;
@@ -128,9 +133,7 @@ export class MCPClientManager {
       if (this.client === client) await this.disconnect().catch(() => {});
       // 원격 서버가 응답에 인증 정보를 반사해도 사용자 화면에 노출하지 않는다.
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        String(redactLogValue(token ? message.split(token).join('[REDACTED]') : message)),
-      );
+      throw sanitizedConnectionError(token ? message.split(token).join('[REDACTED]') : message);
     }
   }
 
@@ -192,7 +195,7 @@ export class MCPClientManager {
       } catch {
         // 연결 실패 후 정리 실패가 원래 연결 오류를 덮지 않게 한다.
       }
-      throw new Error(String(redactLogValue(diagnostic ?? t('mcpConnectionFailed'))));
+      throw sanitizedConnectionError(diagnostic ?? t('mcpConnectionFailed'));
     } finally {
       transport.stderr?.removeListener('data', collectStderr);
     }

@@ -1050,7 +1050,7 @@ function createNodeRuntime(
         });
       },
       setOnError: (handler) => {
-        worker.on('error', (error) => handler({ message: error.message } as ErrorEvent));
+        worker.on('error', (error) => handler({ message: error instanceof Error ? error.message : String(error) } as ErrorEvent));
       },
     },
     dispose: () => {},

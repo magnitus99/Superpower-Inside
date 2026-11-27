@@ -11,10 +11,9 @@ import type { RetrievalProviderDiagnostic } from '../rag/retrieval-pipeline';
 import { planIndexedSearchQueriesRust, planNativeVaultFilteredIndicesRust, scopeIndexedDiscoveryRust, type IndexedSearchPlan, type RustIndexedEvidenceFilters } from '../rag/rust-core';
 import { readSourceText } from '../rag/source-access';
 import { createContentHash } from '../rag/hash';
-import { chunkSourceDocument } from '../rag/source-document';
 import type { SuperpowerInsideSettings } from '../settings';
 import { appLogger } from '../utils/logger';
-import { getRagCandidateFiles } from '../utils/vault';
+import { beginRagPreparedSourceProbe, getRagCandidateFiles, getRagPreparedContentVerdict, isRagFileMetadataExcluded } from '../utils/vault';
 import {
   createIndexedSearchPort,
   type IndexedEvidenceSourceSnapshot,
@@ -116,34 +115,26 @@ export function createVaultSourceReader(
       if (!(file instanceof TFile)) return { revision: null, text: null };
       const before = await app.vault.adapter.stat(path);
       if (!before) return { revision: null, text: null };
-      const source = await readSourceText(app.vault, file, { signal, forceRefresh });
+      const publish = chunkConfig && forceRefresh ? beginRagPreparedSourceProbe(app.vault, file) : undefined;
+      const source = await readSourceText(app.vault, file, {
+        signal, forceRefresh, priority: 'foreground',
+        ...(chunkConfig ? { preparation: { path, ...chunkConfig } } : {}),
+      });
       signal?.throwIfAborted();
       const after = await app.vault.adapter.stat(path);
-      if (!after || before.mtime !== after.mtime || before.size !== after.size) {
+      signal?.throwIfAborted();
+      if (!after || before.mtime !== after.mtime || before.size !== after.size ||
+          app.vault.getAbstractFileByPath(path) !== file || file.path !== path ||
+          file.stat.mtime !== after.mtime || file.stat.size !== after.size) {
         return { revision: null, text: null };
       }
-      let chunks: IndexedEvidenceSourceSnapshot['chunks'] = [];
-      if (chunkConfig) {
-        try {
-          chunks = chunkSourceDocument(file, source.text, chunkConfig, source.segments).map(
-            (chunk) => ({
-              text: chunk.text,
-              startLine: chunk.metadata.startLine,
-              endLine: chunk.metadata.endLine,
-            }),
-          );
-        } catch (error) {
-          void error;
-          appLogger.debug('Current source chunking failed; rejecting verification chunks.', {
-            source: 'search.source-read',
-          });
-        }
-      }
+      const { prepared } = source;
+      if (prepared) publish?.({ text: source.text, contentHash: prepared.contentHash, sourceMetadataHash: prepared.sourceMetadataHash });
       return {
         revision: `${after.mtime}:${after.size}`,
         text: source.text,
-        contentHash: createContentHash(source.text),
-        ...(chunkConfig ? { chunks } : {}),
+        contentHash: prepared?.contentHash ?? createContentHash(source.text),
+        ...(chunkConfig ? { chunks: prepared?.chunks?.map(({ text, metadata }) => ({ text, startLine: metadata.startLine, endLine: metadata.endLine })) ?? [] } : {}),
         sourceMetadata: {
           segments: source.segments,
           ...(source.metadataParts ? { metadataParts: source.metadataParts } : {}),
@@ -249,17 +240,27 @@ async function collectCapturedIndexedSearchSource(
   const startedAt = performance.now();
   // shortcut: 청킹만 세대에 고정합니다. 이전 extractor 선택은 source-access의 버전 API가 필요합니다.
   const readSource = createVaultSourceReader(host.app, forceRefreshSources, chunkConfig ?? host.settings?.rag);
-  const sourceReader: ReturnType<typeof createVaultSourceReader> = async (path, sourceSignal) => {
-    const allowed = await listCandidatePaths(host);
-    if (allowed && !allowed.includes(path)) return { revision: null, text: null };
-    const source = await readSource(path, sourceSignal);
-    const currentAllowed = await listCandidatePaths(host);
-    return currentAllowed && !currentAllowed.includes(path) ? { revision: null, text: null } : source;
-  };
   const allIndexedPaths = await corpus.getIndexedFilePaths();
   const candidatePaths = await listCandidatePaths(host);
   const indexedPaths = scopeIndexedSearchPaths(host, allIndexedPaths, candidatePaths ?? allIndexedPaths, restriction);
   const indexedPathSet = new Set(indexedPaths);
+  const liveSettings = () => host.getCurrentSettings?.() ?? host.settings;
+  const sourceReader: ReturnType<typeof createVaultSourceReader> = async (path, sourceSignal) => {
+    const unavailable = { revision: null, text: null };
+    if (!indexedPathSet.has(path)) return unavailable;
+    if (host.getCandidatePaths && !(await host.getCandidatePaths()).includes(path)) return unavailable;
+    const file = host.app.vault.getAbstractFileByPath?.(path);
+    if (!(file instanceof TFile)) return unavailable;
+    const before = liveSettings();
+    if (before && isRagFileMetadataExcluded(host.app.vault, file, before.rag, before.chat)) return unavailable;
+    const source = await readSource(path, sourceSignal);
+    if (source.text === null) return unavailable;
+    if (host.getCandidatePaths && !(await host.getCandidatePaths()).includes(path)) return unavailable;
+    if (host.app.vault.getAbstractFileByPath?.(path) !== file || file.path !== path) return unavailable;
+    const after = liveSettings();
+    if (after && getRagPreparedContentVerdict(host.app.vault, file, source.text, after.rag, after.chat).kind !== 'candidate') return unavailable;
+    return source;
+  };
   const indexedPathsMs = performance.now() - startedAt;
   if (signal?.aborted) return null;
   const inventoryStartedAt = performance.now();
@@ -642,11 +643,12 @@ export function createPluginSearchPort(host: IndexedSearchDepsHost): SearchPort 
     );
     if (!source) return null;
     try {
+      if (source.isCurrent?.() === false) return null;
       const response = await createIndexedSearchPort({ ...source, verifyCurrentSource: true })(request);
       const paths = await source.getIndexedPaths();
       const currentPaths = await resolveIndexedSearchPaths(host, paths);
       // 검색 중 축소된 접근 정책의 구절·집계를 정상 결과로 내보내지 않습니다.
-      return currentPaths.length === paths.length ? response : null;
+      return source.isCurrent?.() !== false && currentPaths.length === paths.length ? response : null;
     } finally {
       await source.release?.();
     }

@@ -221,7 +221,9 @@ describe('model-free 원문 보충 CAS', () => {
     stores.push(store);
     const before = await store.getDurabilityReceipt();
     expect(await store.backfillSourceBody(entry.filePath, { ...entry.sourceRevision, sourceMetadataHash: entry.sourceMetadataHash }, entry.sourceBody)).toBe(true);
-    expect(await store.getDocuments()).toEqual(entry.documents);
+    // IndexedDB의 toArray()는 청크 생성 순서가 아니라 기본 키 순서로 읽습니다.
+    const expectedDocuments = [...entry.documents].sort((a, b) => indexedDB.cmp(a.id, b.id));
+    expect(await store.getDocuments()).toEqual(expectedDocuments);
     const [{ sourceBody, ...after }] = await store['db'].files.toArray();
     expect(after).toEqual(record);
     expect(sourceBody).toMatchObject({ version: 1, blockCount: 2 });

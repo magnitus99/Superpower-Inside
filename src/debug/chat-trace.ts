@@ -187,6 +187,7 @@ interface ChatTraceReviewSearch {
 
 interface ChatTraceReview {
   outcome?: string;
+  literalPreparationMs?: number;
   counts: IndexedReviewDiagnostics['counts'];
   phases: IndexedReviewDiagnostics['phases'];
   search?: ChatTraceReviewSearch;
@@ -292,6 +293,7 @@ function buildReview(message: ChatMessageWithMeta): ChatTraceReview | undefined 
   const search = diagnostics.search;
   return {
     outcome: diagnostics.outcome,
+    literalPreparationMs: diagnostics.literalPreparationMs,
     counts: diagnostics.counts,
     phases: diagnostics.phases,
     search: search

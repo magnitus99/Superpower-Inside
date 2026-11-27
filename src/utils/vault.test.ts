@@ -562,6 +562,14 @@ describe('RAG 후보 판정 캐시', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  it('다른 파일의 저장은 현재 원문 두 hash의 늦은 게시를 무효화하지 않는다', () => {
+    const { vault, files, emit } = fixture(['public.md', 'Archive/chat.md']);
+    const publish = beginRagPreparedSourceProbe(vault, files[0]);
+    emit('modify', files[1]);
+    publish({ text: 'synthetic current body', contentHash: '11111111', sourceMetadataHash: 'aaaaaaaa' });
+    expect(getRagPreparedSourceRevision(vault, files[0])?.sourceMetadataHash).toBe('aaaaaaaa');
+  });
+
   it('eligibility만 판정한 cache는 준비된 source hash 증명으로 승격하지 않는다', async () => {
     const { vault, files } = fixture(['public.md']);
     await candidates(vault);

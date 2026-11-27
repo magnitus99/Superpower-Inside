@@ -73,8 +73,7 @@ pub fn plan_source_chunks_json(
                 "id": id, "chunkHash": hash, "text": chunk.text,
                 "metadata": {
                     "filePath": path, "heading": chunk.metadata.heading,
-                    // 청커 내부 metadata는 0부터 시작하지만, 인용·Obsidian 행 번호·검증 문서는
-                    // 모두 1부터 시작합니다. 소비자 경계인 여기서 한 번만 변환합니다.
+                    // 외부 인용 주소는 첫 행을 1로 센다.
                     "startLine": chunk.metadata.start_line.saturating_add(1),
                     "endLine": chunk.metadata.end_line.saturating_add(1)
                 }

@@ -716,6 +716,7 @@ export interface IndexedReviewPhaseDiagnostics extends TurnUsageSnapshot {
 export interface IndexedReviewDiagnostics {
   /** 정상 집계는 작업 상세에 두고 경고만 답변 본문에 보존합니다. */
   noticeLevel?: 'detail' | 'warning';
+  literalPreparationMs?: number;
   phases: Record<IndexedReviewPhase, IndexedReviewPhaseDiagnostics>;
   counts: {
     candidateSegments: number;
@@ -811,10 +812,31 @@ export interface IndexedEvidenceDossier {
 
 /** 파일·요청 원장은 보존하고 기존 모델 전달용 요약만 투영합니다. */
 export function toModelIndexedEvidenceDossier(dossier: IndexedEvidenceDossier) {
+  const sourceFacets = new Map<string, string[]>();
+  for (const facet of dossier.answerPlan?.facets ?? []) {
+    if (facet.status !== 'supported') continue;
+    for (const sourceId of facet.sourceIds) {
+      const ids = sourceFacets.get(sourceId) ?? [];
+      ids.push(facet.id);
+      sourceFacets.set(sourceId, ids);
+    }
+  }
+  const exampleFacet = dossier.answerPlan?.facets.find(facet => facet.status === 'supported' && facet.sourceIds.length);
   return {
     ...dossier,
+    ...(dossier.answerPlan ? { paragraphContract: {
+      sources: { minItems: 1, maxItems: 8, enum: dossier.evidence.map(item => item.sourceId) },
+      covers: { minItems: 1, maxItems: 3, uniqueItems: true,
+        enum: dossier.answerPlan.facets.filter(facet => facet.status === 'supported').map(facet => facet.id) },
+      example: exampleFacet ? { paragraphs: [{ text: '…', sources: [exampleFacet.sourceIds[0]], covers: [exampleFacet.id] }] } : undefined,
+    } } : {}),
     // 파일 원장은 호출자에게 보존하되 거대한 셀 원장을 모델 프롬프트에 복제하지 않습니다.
     sourceDocuments: undefined,
+    // 색인에서 선택한 인접 문맥/하이라이트는 현재 구절 검증의 대상이 아닙니다.
+    evidence: dossier.evidence.map(({ sourceId, path, startLine, endLine, quote, queryIndexes }) => ({
+      sourceId, path, startLine, endLine, quote, queryIndexes,
+      ...(dossier.answerPlan ? { facetIds: sourceFacets.get(sourceId) ?? [] } : {}),
+    })),
     matchInventory: dossier.matchInventory?.map((inventory) => ({
       query: inventory.query,
       totalDocuments: inventory.totalDocuments,
@@ -959,6 +981,51 @@ function verificationWindow(
   };
 }
 
+/** 서로 다른 기존 ID가 같은 원문 주소로 이동해도 인라인 마커와 인용은 일대일로 유지합니다. */
+export function distinctCurrentSourceIds(items: readonly IndexedEvidenceItem[]): IndexedEvidenceItem[] {
+  const reserved = new Set(items.map(item => item.sourceId));
+  const used = new Set<string>();
+  return items.map(item => {
+    if (!used.has(item.sourceId)) {
+      used.add(item.sourceId);
+      return item;
+    }
+    let ordinal = 2;
+    while (reserved.has(`${item.sourceId}#${ordinal}`)) ordinal++;
+    const sourceId = `${item.sourceId}#${ordinal}`;
+    reserved.add(sourceId);
+    return { ...item, sourceId };
+  });
+}
+
+/** 청크는 인용 가능 범위만 제한하고 절대 행은 현재 원문으로 확인합니다. */
+export function resolveCurrentIndexedPassage(
+  item: IndexedEvidenceItem,
+  snapshot: IndexedEvidenceSourceSnapshot,
+  scopes: readonly string[] = [],
+  relocate = true,
+): IndexedEvidenceItem | null {
+  const { revision, text, chunks } = snapshot;
+  if (revision === null || text === null || chunks?.length === 0) return null;
+  const eligible = (candidate: IndexedEvidenceItem) => !chunks || chunks.some(chunk =>
+    chunk.startLine <= candidate.startLine && chunk.endLine >= candidate.endLine && chunk.text.includes(candidate.quote));
+  const verify = (candidate: IndexedEvidenceItem, document: RustIndexedEvidenceVerificationDocument) => {
+    const evidence = [{ sourceId: candidate.sourceId, path: candidate.path, quote: candidate.quote,
+      revision: candidate.revision ?? undefined, startLine: candidate.startLine, endLine: candidate.endLine }];
+    return verifyIndexedEvidenceRust({ evidence, documents: [document], scopes })?.statuses.find(status => status.sourceId === candidate.sourceId);
+  };
+  const window = revision === item.revision && verificationWindow(item, { revision, text });
+  if (window && eligible(item) && verify(item, window)?.status === 'verified') return item;
+  // 창 바깥에 같은 구절이 있을 수 있으므로 일부 원문만 보고 주소를 옮기지 않습니다.
+  if (!relocate || text.length > RUST_DOCUMENT_MAX_BYTES || encoder.encode(text).byteLength > RUST_DOCUMENT_MAX_BYTES) return null;
+  const address = verify(item, { path: item.path, text, startLine: 1, revision, indexed: true, reviewState: 'reviewed' })?.relocation;
+  if (!address) return null;
+  const sourceId = `${item.path}#L${address.startLine}-L${address.endLine}`;
+  const moved = { ...item, ...address, sourceId, contextBefore: '', contextAfter: '' };
+  const corrected = verificationWindow(moved, { revision, text });
+  return corrected && eligible(moved) && verify(moved, corrected)?.status === 'verified' ? moved : null;
+}
+
 export async function reviewIndexedVault(
   options: IndexedVaultReviewOptions,
 ): Promise<IndexedVaultReviewResult> {
@@ -969,20 +1036,32 @@ export async function reviewIndexedVault(
   let literal: LiteralReviewPreparation | undefined;
   let returned = false;
   try {
+    const literalStartedAt = performance.now();
     literal = await prepareLiteralReview(options);
+    const literalMs = performance.now() - literalStartedAt;
+    const handle = literal.handle;
+    let literalCurrent = true;
+    const validateLiteral = async () => {
+      if (handle && literalCurrent) {
+        try { await handle.getSummary(); }
+        catch { literalCurrent = false; }
+      }
+      options.signal?.throwIfAborted();
+      return literalCurrent;
+    };
     let answer: string | undefined;
     let completed: VaultResearchProgress | undefined;
     let result = await runIndexedVaultReview(
       { ...literal.options, signal: controller.signal,
-        ...(literal.handle ? { onAnswer: (content: string) => { answer = content; }, onProgress: (progress: VaultResearchProgress) => {
+        onAnswer: (content) => { answer = content; },
+        onProgress: (progress) => {
           if (progress.phase === 'complete') completed = progress; else options.onProgress?.(progress);
-        } } : {}) },
+        },
+      },
       options.signal,
+      handle ? validateLiteral : undefined,
     );
-    const handle = literal.handle;
-    if (handle) await handle.getSummary();
-    options.signal?.throwIfAborted();
-    if (options.isCurrent?.() === false) {
+    if (!await validateLiteral() || options.isCurrent?.() === false) {
       await handle?.close();
       if (handle) literal = { ...literal, handle: undefined, inventory: { status: 'failed', reason: 'source-literal-unavailable' } };
       result = await runIndexedVaultReview({ ...literal.options, candidatesState: 'indexing', signal: controller.signal, onAnswer: undefined, onProgress: undefined, onDiagnostics: undefined }, options.signal);
@@ -993,6 +1072,7 @@ export async function reviewIndexedVault(
     }
     if (literal.inventory) result.dossier.literalInventory = literal.inventory;
     // 엔진 진단과 결과 종류를 남겨야 후속 디버그 추적이 0건 원인을 설명할 수 있습니다.
+    result.diagnostics.literalPreparationMs = literalMs;
     result.diagnostics.outcome = result.outcome;
     result.diagnostics.search = result.dossier.diagnostics ?? null;
     if (answer !== undefined) options.onAnswer?.(answer);
@@ -1009,6 +1089,7 @@ export async function reviewIndexedVault(
 async function runIndexedVaultReview(
   options: IndexedVaultReviewOptions,
   discoverySignal?: AbortSignal,
+  validateLiteral?: () => Promise<boolean>,
 ): Promise<IndexedVaultReviewResult> {
   const phase = (): IndexedReviewPhaseDiagnostics => ({
     durationMs: 0,
@@ -1038,11 +1119,16 @@ async function runIndexedVaultReview(
     },
   };
   let finished = false;
-  const phaseStartedAt = performance.now();
+  let phaseStartedAt = performance.now();
   let activePhase: IndexedReviewPhase = 'inventory';
   const emitDiagnostics = () => {
     diagnostics.phases[activePhase].durationMs = performance.now() - phaseStartedAt;
     if (!finished) options.onDiagnostics?.(structuredClone(diagnostics));
+  };
+  const startPhase = (phase: IndexedReviewPhase) => {
+    diagnostics.phases[activePhase].durationMs = performance.now() - phaseStartedAt;
+    activePhase = phase;
+    phaseStartedAt = performance.now();
   };
   const check = () => options.signal?.throwIfAborted();
   const interruptible = <T>(operation: Promise<T>): Promise<T> => {
@@ -1076,7 +1162,7 @@ async function runIndexedVaultReview(
         data: { state: options.candidatesState },
       });
     }
-    if (options.candidatesState === 'indexing') {
+    if (options.candidatesState === 'indexing' || options.isCurrent?.() === false) {
       const content = t('indexedReviewIndexing');
       const requestedPaths = [
         ...new Set(
@@ -1122,6 +1208,7 @@ async function runIndexedVaultReview(
         engineUnavailable: true,
       };
     }
+    startPhase('search');
     options.onProgress?.({ phase: 'search', completedFiles: 0, totalFiles: total });
     let search = options.corpus
       ? await interruptible(
@@ -1141,10 +1228,8 @@ async function runIndexedVaultReview(
         )
       : null;
     check();
-    activePhase = 'search';
     if (!search) {
       emitDiagnostics();
-      activePhase = 'answer';
       const content = t('indexedReviewNoEvidence');
       const requestedPaths = [
         ...new Set(
@@ -1199,7 +1284,7 @@ async function runIndexedVaultReview(
     const followup = await interruptible(searchIndexedFollowup(
       options,
       baseSearch,
-      (queries, paths) => searchIndexedVault({
+      (queries, paths, signal) => searchIndexedVault({
         question: queries[0] ?? options.question,
         queryVariants: queries.slice(1),
         queryFacets: queries,
@@ -1210,7 +1295,7 @@ async function runIndexedVaultReview(
         documentScope: 'all',
         filters: options.filters,
         budget: { maxDocuments: 8, maxPassages: 8, maxChars: 32_768 },
-        signal: options.signal,
+        signal,
       }),
       (update) => {
         followupUsage.push(update);
@@ -1334,7 +1419,7 @@ async function runIndexedVaultReview(
     diagnostics.counts.candidateSegments = search.plan.evidence.length;
     diagnostics.counts.screenAcceptedSegments = search.evidence.length;
     diagnostics.counts.extractedSegments = search.evidence.length;
-    activePhase = 'map';
+    startPhase('map');
     // 채택 문서만 현재 vault 원문과 revision으로 다시 검증합니다.
     const adoptedPaths = [...new Set(search.evidence.map((item) => item.path))];
     options.onProgress?.({ phase: 'verify', completedFiles: 0, totalFiles: adoptedPaths.length });
@@ -1392,124 +1477,22 @@ async function runIndexedVaultReview(
         }
       }
       options.onProgress?.({ phase: 'verify', completedFiles: ++completedSources, totalFiles: adoptedPaths.length, currentPath: path });
-      if (
-        expected === null ||
-        current === null ||
-        current !== expected ||
-        (options.sourceReader !== undefined && !currentSources.has(path))
-      ) {
+      if (!options.sourceReader && (expected === null || current !== expected)) {
         stale.add(path);
       }
     }
     let evidence: readonly IndexedEvidenceItem[] = search.evidence.filter((item) => !stale.has(item.path));
     let recoveryExcludedSegments = 0;
-    if (options.sourceReader && evidence.length > 0) {
-      const verificationDocuments = new Map<string, RustIndexedEvidenceVerificationDocument>();
-      const rejectedPaths = new Set<string>();
-      const verifiableEvidence = evidence.filter((item) => {
+    if (options.sourceReader) {
+      evidence = search.evidence.flatMap((item) => {
         const source = currentSources.get(item.path);
-        if (!source) {
-          rejectedPaths.add(item.path);
-          return false;
+        const resolved = source && resolveCurrentIndexedPassage(item, source, options.scopes);
+        if (!source || !resolved) {
+          stale.add(item.path);
+          return [];
         }
-        if (source.chunks !== undefined) {
-          if (source.chunks.length === 0) {
-            rejectedPaths.add(item.path);
-            return false;
-          }
-          for (const chunk of source.chunks) {
-            verificationDocuments.set(
-              `${item.path}\u0000${chunk.startLine}\u0000${chunk.text.length}`,
-              {
-                path: item.path,
-                text: chunk.text,
-                startLine: chunk.startLine,
-                revision: source.revision,
-                indexed: true,
-                reviewState: 'reviewed',
-              },
-            );
-          }
-          return true;
-        }
-        const document = verificationWindow(item, source);
-        if (!document) {
-          rejectedPaths.add(item.path);
-          return false;
-        }
-        verificationDocuments.set(`${item.path}\u0000${document.startLine}`, document);
-        return true;
+        return [{ ...resolved, revision: source.revision, ...(source.contentHash ? { contentHash: source.contentHash } : {}) }];
       });
-      if (verifiableEvidence.length > 0) {
-        const currentVerification = verifyIndexedEvidenceRust({
-          evidence: verifiableEvidence.map((item) => ({
-            sourceId: item.sourceId,
-            path: item.path,
-            quote: item.quote,
-            ...(item.revision !== null ? { revision: item.revision } : {}),
-            startLine: item.startLine,
-            endLine: item.endLine,
-          })),
-          documents: [...verificationDocuments.values()],
-          scopes: options.scopes,
-        });
-        if (!currentVerification) {
-          for (const item of verifiableEvidence) rejectedPaths.add(item.path);
-          appLogger.warn(
-            'Current source verification unavailable; discarding unverified evidence.',
-            {
-              source: 'chat.indexed-review',
-            },
-          );
-        } else {
-          const statuses = new Map(
-            currentVerification.statuses.map((status) => [status.sourceId, status]),
-          );
-          const rejectedByStatus = new Map<string, number>();
-          const rejectedByExtension = new Map<string, number>();
-          for (const item of verifiableEvidence) {
-            if (statuses.get(item.sourceId)?.status === 'verified') continue;
-            const status = statuses.get(item.sourceId)?.status ?? 'missing-status';
-            const extension = item.path.split('.').pop() ?? '';
-            rejectedByStatus.set(status, (rejectedByStatus.get(status) ?? 0) + 1);
-            rejectedByExtension.set(extension, (rejectedByExtension.get(extension) ?? 0) + 1);
-            rejectedPaths.add(item.path);
-          }
-          if (rejectedPaths.size > 0) {
-            appLogger.debug('Current source verification rejected evidence.', {
-              source: 'chat.indexed-review',
-              data: {
-                statuses: Object.fromEntries(rejectedByStatus),
-                extensions: Object.fromEntries(rejectedByExtension),
-              },
-            });
-          }
-        }
-      }
-      for (const path of rejectedPaths) stale.add(path);
-      evidence = evidence.filter((item) => !rejectedPaths.has(item.path));
-      // 현재 원문 검증을 통과한 근거는 색인 사본이 아니라 지금 읽은 본문의 revision·hash를
-      // 사용합니다. 해시가 달라도 현재 구절·절대 행 검증을 통과했으면 그 사실을 기록하고,
-      // 검증 없이 색인 사본을 verified로 승격하지 않습니다.
-      let hashMismatches = 0;
-      evidence = evidence.map((item) => {
-        const source = currentSources.get(item.path);
-        if (!source) return item;
-        if (item.contentHash && source.contentHash && item.contentHash !== source.contentHash) {
-          hashMismatches += 1;
-        }
-        return {
-          ...item,
-          revision: source.revision,
-          ...(source.contentHash ? { contentHash: source.contentHash } : {}),
-        };
-      });
-      if (hashMismatches > 0) {
-        appLogger.debug('Verified evidence was re-read from sources changed since indexing.', {
-          source: 'chat.indexed-review',
-          data: { hashMismatches },
-        });
-      }
     }
     if (options.sourceReader && stale.size > 0) {
       // 색인 뒤에 원문이 바뀐 문서도 인용이 현재 본문에 남아 있으면 근거로 복구합니다.
@@ -1517,7 +1500,7 @@ async function runIndexedVaultReview(
       const freshDocuments: RustIndexedEvidenceDocument[] = [];
       for (const path of stale) {
         const source = currentSources.get(path);
-        if (!source || source.text === null) continue;
+        if (!source || evidence.some((item) => item.path === path)) continue;
         // 복구도 현재 청킹의 절대 줄 주소를 유지해 원래 검색 신호로 구절을 고릅니다.
         const chunks = source.chunks ?? [{ text: source.text, startLine: 1 }];
         for (const chunk of chunks) {
@@ -1531,111 +1514,23 @@ async function runIndexedVaultReview(
         }
       }
       if (freshDocuments.length > 0) {
-        // 재선택 전에 원래 구절을 보존합니다. 주소 계산은 Rust가 맡고 제안도 엄격히 재검증합니다.
-        const original = search.evidence.filter((item) => stale.has(item.path));
-        const relocation = verifyIndexedEvidenceRust({
-          evidence: original.map(({ revision, ...item }) => ({
-            ...item,
-            ...(revision !== null ? { revision } : {}),
-          })),
+        const recoveryPlan = planIndexedEvidenceRust({
+          question: options.scoringQuestion ?? options.question,
+          queryVariants: options.queryVariants,
           documents: freshDocuments,
           scopes: options.scopes,
+          candidates: recoveryCandidatePool(options.candidates, inspectedDiscoveryCandidates, freshDocuments),
+          ...(options.filters ? { filters: options.filters } : {}),
+          budget: DEFAULT_EVIDENCE_BUDGET,
+          inventory: { indexedCount: freshDocuments.length, unreviewedCount: 0, notIndexedCount: 0 },
         });
-        const suggested = new Map(
-          relocation?.statuses.map((status) => [status.sourceId, status.relocation]),
-        );
-        const relocated = original.flatMap((item) => {
-          const address = suggested.get(item.sourceId);
-          return address
-            ? [
-                {
-                  ...item,
-                  ...address,
-                  contentHash: currentSources.get(item.path)?.contentHash,
-                  contextBefore: '',
-                  contextAfter: '',
-                },
-              ]
-            : [];
-        });
-        if (relocated.length > 0) {
-          const verification = verifyIndexedEvidenceRust({
-            evidence: relocated,
-            documents: freshDocuments,
-            scopes: options.scopes,
-          });
-          const verified = new Set(
-            verification?.statuses
-              .filter((status) => status.status === 'verified')
-              .map((status) => status.sourceId),
-          );
-          const preserved = relocated.filter((item) => verified.has(item.sourceId));
-          evidence = [...evidence, ...preserved];
-          for (const item of preserved) stale.delete(item.path);
-          appLogger.debug('Preserved selected quotes at verified current source addresses.', {
-            source: 'chat.indexed-review',
-            data: { preserved: preserved.length },
-          });
-        }
-        const unresolved = freshDocuments.filter((document) => stale.has(document.path));
-        const recoveryBudget = DEFAULT_EVIDENCE_BUDGET;
-        const recoveryPlan =
-          unresolved.length > 0
-            ? planIndexedEvidenceRust({
-                question: options.scoringQuestion ?? options.question,
-                queryVariants: options.queryVariants,
-                documents: unresolved,
-                scopes: options.scopes,
-                candidates: recoveryCandidatePool(
-                  options.candidates,
-                  inspectedDiscoveryCandidates,
-                  unresolved,
-                ),
-                ...(options.filters ? { filters: options.filters } : {}),
-                budget: recoveryBudget,
-                inventory: {
-                  indexedCount: unresolved.length,
-                  unreviewedCount: 0,
-                  notIndexedCount: 0,
-                },
-              })
-            : null;
         if (recoveryPlan && recoveryPlan.evidence.length > 0) {
-          const recoveryVerification = verifyIndexedEvidenceRust({
-            evidence: recoveryPlan.evidence.map((item) => ({
-              sourceId: item.sourceId,
-              path: item.path,
-              ...(item.revision !== null ? { revision: item.revision } : {}),
-              startLine: item.startLine,
-              endLine: item.endLine,
-              quote: item.quote,
-            })),
-            documents: freshDocuments,
-            scopes: options.scopes,
+          const recovered = recoveryPlan.evidence.flatMap(item => {
+            const source = currentSources.get(item.path);
+            if (!source || evidence.some(existing => existing.path === item.path)) return [];
+            const resolved = resolveCurrentIndexedPassage(item, source, options.scopes, false);
+            return resolved ? [{ ...resolved, ...(source.contentHash ? { contentHash: source.contentHash } : {}) }] : [];
           });
-          const verified = recoveryVerification
-            ? new Set(
-                recoveryVerification.statuses
-                  .filter((status) => status.status === 'verified')
-                  .map((status) => status.sourceId),
-              )
-            : new Set<string>();
-          const recovered = recoveryPlan.evidence
-            .filter(
-              (item) =>
-                verified.has(item.sourceId) &&
-                !evidence.some((existing) => existing.path === item.path),
-            )
-            .map((item) => {
-              const source = currentSources.get(item.path);
-              return source
-                ? {
-                    ...item,
-                    revision: source.revision,
-                    ...(source.contentHash ? { contentHash: source.contentHash } : {}),
-                  }
-                : item;
-            });
           if (recovered.length > 0) {
             for (const item of recovered) stale.delete(item.path);
             // 기존 검증 근거가 없으면 복구 근거를 그대로 쓰고, 있으면 확장 예산으로 다시 병합해
@@ -1681,6 +1576,7 @@ async function runIndexedVaultReview(
         }
       }
     }
+    if (options.sourceReader) evidence = distinctCurrentSourceIds(evidence);
     const answerPlan = options.searchPlan
       ? (planIndexedReviewAnswerPlanRust({
           searchPlan: options.searchPlan,
@@ -1828,24 +1724,22 @@ async function runIndexedVaultReview(
       options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
       return returnIndexing();
     }
-    activePhase = 'answer';
+    startPhase('answer');
     emitDiagnostics();
     const comparisonLimitations = comparisonLimitNotice(options.searchPlan, answerPlan);
     const finishAsEvidenceOnly = (limitations: string): IndexedVaultReviewResult => {
-      const body =
-        evidence.length === 0
-          ? t('indexedReviewNoEvidence')
-          : evidenceOnlyContent(evidence);
-      const content = [body, limitations, notice].filter(Boolean).join('\n\n');
+      const hasVerified = evidence.length > 0 || Boolean(enumeration?.citations.length);
+      const body = evidence.length ? evidenceOnlyContent(evidence) : hasVerified ? '' : t('indexedReviewNoEvidence');
+      const content = [body, limitations, enumeration?.content, notice].filter(Boolean).join('\n\n');
       options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
       return {
-        outcome: 'evidence-only',
+        outcome: hasVerified ? 'evidence-only' : 'no-evidence',
         dossier,
         readDiscoveryPage,
         evidence,
         coverage: effectiveCoverage,
         content,
-        citations: [...citations.values()],
+        citations: [...new Map([...citations.values(), ...(enumeration?.citations ?? [])].map((citation) => [citation.id, citation])).values()],
         processedFiles: reviewed,
         totalFiles: total,
         rejectedFiles: verificationRejected,
@@ -1855,13 +1749,13 @@ async function runIndexedVaultReview(
         engineUnavailable: false,
       };
     };
-    if (options.searchPlan && !answerPlan) {
+    if (evidence.length > 0 && options.searchPlan && !answerPlan) {
       appLogger.warn('Indexed answer plan unavailable; returning verified evidence only.', {
         source: 'chat.indexed-review',
       });
       return finishAsEvidenceOnly(comparisonLimitations);
     }
-    if (answerPlan?.mode === 'comparison' && answerPlan.requiredFacetIds.length === 0) {
+    if (evidence.length > 0 && answerPlan?.mode === 'comparison' && answerPlan.requiredFacetIds.length === 0) {
       appLogger.warn(
         'Indexed comparison has no supported subject facet; returning verified evidence only.',
         {
@@ -1871,28 +1765,7 @@ async function runIndexedVaultReview(
       return finishAsEvidenceOnly(comparisonLimitations);
     }
     if (options.executionMode === 'engine-only' || options.deferAnswer || evidence.length === 0) {
-      const body =
-        evidence.length === 0
-          ? t('indexedReviewNoEvidence')
-          : evidenceOnlyContent(evidence);
-      const content = [body, comparisonLimitations, notice].filter(Boolean).join('\n\n');
-      options.onProgress?.({ phase: 'complete', completedFiles: total, totalFiles: total });
-      return {
-        outcome: evidence.length === 0 ? 'no-evidence' : 'evidence-only',
-        dossier,
-        readDiscoveryPage,
-        evidence,
-        coverage: effectiveCoverage,
-        content,
-        citations: [...citations.values()],
-        processedFiles: reviewed,
-        totalFiles: total,
-        rejectedFiles: verificationRejected,
-        providerTransfer: { sentFiles: 0, sentPaths: [] },
-        coverageNotice: notice,
-        diagnostics,
-        engineUnavailable: false,
-      };
+      return finishAsEvidenceOnly(comparisonLimitations);
     }
     const budget = options.provider.contextBudget ?? planModelContextRust({});
     let sentToProvider = false;
@@ -1905,7 +1778,9 @@ async function runIndexedVaultReview(
       },
     ): Promise<{ raw: string; rendered: string | null }> => {
       check();
+      if (options.isCurrent?.() === false) throw new Error(t('vaultResearchContractUnavailable'));
       if (!budget) throw new Error(t('vaultResearchContractUnavailable'));
+      const payload = JSON.stringify(toModelIndexedEvidenceDossier(dossier));
       const messages: ChatMessage[] = [
         {
           role: 'system',
@@ -1916,7 +1791,7 @@ async function runIndexedVaultReview(
         {
           role: 'user',
           // 전체 경로 원장은 결과에 보존하고, 모델에는 집계와 검증 원문을 전달합니다.
-          content: JSON.stringify(toModelIndexedEvidenceDossier(dossier)),
+          content: payload,
         },
       ];
       if (previousAnswer !== undefined) {
@@ -1928,14 +1803,30 @@ async function runIndexedVaultReview(
           content: t('llmIndexedReviewAnswerCorrection', correction),
         });
       }
-      const prepared = prepareProviderRequest(messages, undefined, budget.inputBytes);
+      const prepare = (input: ChatMessage[]) => {
+        const prepared = prepareProviderRequest(input, undefined, budget.inputBytes);
+        if (!prepared.messages.some((message) => message.role === 'user' && message.content === payload)) {
+          throw new Error(t('chatInputBudgetExceeded'));
+        }
+        return prepared;
+      };
+      let prepared: ReturnType<typeof prepareProviderRequest>;
+      try { prepared = prepare(messages); }
+      catch (error) {
+        if (!previousAnswer?.trim()) throw error;
+        // 돌아온 잘못된 답보다 현재 검증한 dossier가 필수입니다.
+        prepared = prepare(messages.filter((message) => message.role !== 'assistant'));
+      }
       const updates: TokenUsage[] = [];
-      usage.push(updates);
-      if (previousAnswer !== undefined) diagnostics.counts.answerCorrectionRequests = 1;
       options.onProgress?.({ phase: previousAnswer === undefined ? 'answer' : 'repair', completedFiles: evidence.length, totalFiles: evidence.length });
+      check();
+      if ((validateLiteral && !await validateLiteral()) || options.isCurrent?.() === false) throw new Error(t('vaultResearchContractUnavailable'));
+      check();
       let content = '';
       try {
         sentToProvider = true;
+        usage.push(updates);
+        if (previousAnswer !== undefined) diagnostics.counts.answerCorrectionRequests = 1;
         await interruptible(
           options.provider.streamChat(
             prepared.messages,
@@ -1994,10 +1885,10 @@ async function runIndexedVaultReview(
             firstValidation && !firstValidation.valid ? firstValidation.formatIssue : undefined;
           appLogger.warn('Indexed answer failed facet validation; attempting one correction.', {
             source: 'chat.indexed-review',
-            data: { reason, missingFacetIds, formatIssue },
+            data: { reason, missingFacetIds, formatIssue, fieldIssue: firstValidation?.fieldIssue },
           });
           const corrected = await requestAnswer(first.raw, {
-            reason: formatIssue ? `${reason}:${formatIssue}` : reason,
+            reason: formatIssue ? [reason, formatIssue, firstValidation?.fieldIssue].filter(Boolean).join(':') : reason,
             facets: missingFacetIds.join(', ') || '-',
           });
           const correctedValidation = validateIndexedReviewAnswerRust({
@@ -2022,6 +1913,7 @@ async function runIndexedVaultReview(
                 reason: correctedReason,
                 missingFacetIds: correctedMissingFacetIds,
                 formatIssue: correctedValidation?.formatIssue,
+                fieldIssue: correctedValidation?.fieldIssue,
               },
             });
           }
@@ -2033,10 +1925,7 @@ async function runIndexedVaultReview(
     } catch (error) {
       check();
       if (error instanceof Error && error.name === 'AbortError') throw error;
-      appLogger.warn('Final indexed review answer attempt failed.', {
-        source: 'chat.indexed-review',
-        error,
-      });
+      appLogger.warn('Final indexed review answer attempt failed.', { source: 'chat.indexed-review' });
       answer = null;
     }
     // provider 응답 도중 재색인이 시작돼도 이전 색인 답변을 게시하지 않습니다.

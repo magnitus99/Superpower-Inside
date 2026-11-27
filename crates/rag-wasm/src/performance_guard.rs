@@ -496,7 +496,7 @@ mod tests {
             Some(100.0),
             1_000.0,
         ));
-        assert!(output.is_empty());
+        assert_eq!(output, "");
     }
 }
 
@@ -1030,13 +1030,13 @@ mod local_admission_tests {
             if let Some(state) = state {
                 state.insert("maxBatchSize".to_owned(), saved_max);
             }
-            assert!(plan_local_rag_admission_json(&input.to_string()).is_empty());
+            assert_eq!(plan_local_rag_admission_json(&input.to_string()), "");
         }
         let mut input = trial();
         if let Some(state) = input.get_mut("state").and_then(JsonValue::as_object_mut) {
             state.remove("maxBatchSize");
         }
-        assert!(plan_local_rag_admission_json(&input.to_string()).is_empty());
+        assert_eq!(plan_local_rag_admission_json(&input.to_string()), "");
     }
 
     #[test]
@@ -1100,7 +1100,7 @@ mod local_admission_tests {
                 .and_then(JsonValue::as_object_mut)
                 .and_then(|sample| sample.remove(key));
             assert!(removed.is_some(), "합성 필드 제거");
-            assert!(plan_local_rag_admission_json(&input.to_string()).is_empty());
+            assert_eq!(plan_local_rag_admission_json(&input.to_string()), "");
         }
         for (key, value) in [("durationMs", 0), ("workUnits", 0), ("endedAtMs", 100)] {
             let mut input = trial();
@@ -1129,16 +1129,16 @@ mod local_admission_tests {
         ] {
             let mut input = input();
             put(key, value, &mut input);
-            assert!(plan_local_rag_admission_json(&input.to_string()).is_empty());
+            assert_eq!(plan_local_rag_admission_json(&input.to_string()), "");
         }
         let mut input = input();
         put("sample.endedAtMs", json!(1001), &mut input);
-        assert!(plan_local_rag_admission_json(&input.to_string()).is_empty());
+        assert_eq!(plan_local_rag_admission_json(&input.to_string()), "");
         put("sample.endedAtMs", json!(1000), &mut input);
         put("sample.durationMs", json!(1e-310), &mut input);
-        assert!(plan_local_rag_admission_json(&input.to_string()).is_empty());
+        assert_eq!(plan_local_rag_admission_json(&input.to_string()), "");
         let wire = input.to_string().replace("1e-310", "1e999");
-        assert!(plan_local_rag_admission_json(&wire).is_empty());
+        assert_eq!(plan_local_rag_admission_json(&wire), "");
     }
 
     #[test]
@@ -1218,7 +1218,10 @@ mod local_admission_tests {
             JsonValue::Null,
             &mut invalid_state,
         );
-        assert!(plan_local_rag_admission_json(&invalid_state.to_string()).is_empty());
+        assert_eq!(
+            plan_local_rag_admission_json(&invalid_state.to_string()),
+            ""
+        );
         for key in [
             "state",
             "sample",
@@ -1226,7 +1229,7 @@ mod local_admission_tests {
             "reservedSourceBytes",
         ] {
             let input = input_with_missing_field(key);
-            assert!(plan_local_rag_admission_json(&input.to_string()).is_empty());
+            assert_eq!(plan_local_rag_admission_json(&input.to_string()), "");
         }
         for (key, value) in [
             ("maxBatchSize", json!(0)),
@@ -1236,13 +1239,13 @@ mod local_admission_tests {
         ] {
             let mut input = input();
             put(key, value, &mut input);
-            assert!(plan_local_rag_admission_json(&input.to_string()).is_empty());
+            assert_eq!(plan_local_rag_admission_json(&input.to_string()), "");
         }
         let mut input = input();
         put("maxBatchSize", json!(u32::MAX), &mut input);
         assert_eq!(field(&plan(&input), "nextBatchSize"), 1);
         put("sample.durationMs", json!(-1), &mut input);
-        assert!(plan_local_rag_admission_json(&input.to_string()).is_empty());
+        assert_eq!(plan_local_rag_admission_json(&input.to_string()), "");
     }
 
     /// 차단 경계용으로 필드를 제거한 독립 입력을 만든다.

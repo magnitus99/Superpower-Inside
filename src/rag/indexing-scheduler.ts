@@ -299,7 +299,7 @@ export class RAGIndexingScheduler {
 
   resumeNow(): boolean {
     if (!this.parkedJob) return false;
-    let state: PerformanceGuardState | null = null;
+    let state: PerformanceGuardState | null;
     try {
       state = this.operations.resumePerformanceGuard?.(true) ?? null;
     } catch {
@@ -482,7 +482,7 @@ export class RAGIndexingScheduler {
         this.parkedJob = job;
         this.phase = 'paused';
         this.progress = null;
-        let state: PerformanceGuardState | null = null;
+        let state: PerformanceGuardState | null;
         try {
           state = this.operations.getPerformanceGuardState?.() ?? null;
         } catch {
@@ -512,7 +512,7 @@ export class RAGIndexingScheduler {
     this.pauseTimer = window.setTimeout(() => {
       if (generation !== this.pauseTimerGeneration || !this.parkedJob) return;
       this.pauseTimer = null;
-      let resumed: PerformanceGuardState | null = null;
+      let resumed: PerformanceGuardState | null;
       try {
         resumed = this.operations.resumePerformanceGuard?.(false) ?? null;
       } catch {

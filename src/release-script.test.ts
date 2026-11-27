@@ -25,18 +25,6 @@ describe('릴리스 스크립트 브랜치 안내', () => {
   });
 });
 
-describe('Rust security tool installer portability', () => {
-  it('passes cargo install feature flags through for cargo-geiger', () => {
-    const script = readFileSync(resolve(root, 'scripts/install-rust-security-tools.mjs'), 'utf8');
-
-    expect(script).toContain('...flags');
-    expect(script).toContain("['install', pkg, '--version', version, '--locked', '--force', ...flags]");
-    expect(script).toContain(
-      "['cargo-geiger', '0.13.0', 'cargo-geiger', '--features', 'vendored-openssl']",
-    );
-  });
-});
-
 describe('로컬 배포 경로 검증', () => {
   it('review는 원본 대신 staging 자산과 이동한 생성물의 무결성을 검사한다', () => {
     const review = readFileSync(resolve(root, 'scripts/validate-obsidian-review.mjs'), 'utf8');

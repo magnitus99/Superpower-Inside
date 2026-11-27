@@ -213,8 +213,7 @@ fn element(event: &BytesStart<'_>, stack: &[Node]) -> Result<Node, ExtractFailur
             .iter()
             .chain(stack.iter().rev().flat_map(|n| n.attrs.iter()))
             .find(|(name, _)| name == &key)
-            .map(|(_, value)| value.clone())
-            .unwrap_or_default()
+            .map_or_default(|(_, value)| value.clone())
     };
     node.namespace = binding(node.name.split_once(':').map_or("", |(prefix, _)| prefix));
     node.space_count = node
@@ -471,7 +470,7 @@ pub(super) fn part_locator(
     links: &PackageLinks,
     used_bytes: usize,
 ) -> Result<JsonValue, ExtractFailure> {
-    let sources = links.get(part).map(Vec::as_slice).unwrap_or_default();
+    let sources = links.get(part).map_or_default(Vec::as_slice);
     let string_bytes = sources.iter().try_fold(0usize, |bytes, source| {
         bytes
             .checked_add(source.len())

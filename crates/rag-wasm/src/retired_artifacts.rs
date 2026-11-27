@@ -763,8 +763,8 @@ mod tests {
 
     #[test]
     fn malformed_wire_input_never_returns_a_deletion_plan() {
-        assert!(plan_retired_artifacts_json("{}").is_empty());
-        assert!(plan_retired_artifacts_json("not json").is_empty());
+        assert_eq!(plan_retired_artifacts_json("{}"), "");
+        assert_eq!(plan_retired_artifacts_json("not json"), "");
     }
 
     fn record(kind: &str, id: &str, bytes: u64) -> Record {
