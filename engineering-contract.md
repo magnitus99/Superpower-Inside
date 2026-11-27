@@ -56,8 +56,13 @@ BM25 작업자 수명 보완은 초기화·스냅샷 복원·큐·복구의 세�
 
 이전 checkpoint의 공통 UI preview 29개 case는 공식 reference/app.css 부재로 최종 검수가 미실행이었다. 이후 공통 작업 실패 사유 UI 변경은 설치된 기준 자산으로 `npm run preview:build`·`npm run preview:verify` 44개 case exit 0을 확인하고, 실패·미기록·정상·접힘/펼침·설정/검색·좁은 폭·밝은/어두운 테마의 해당 캡처를 직접 검수했다. 최종 `npm run quality:local`은 lint·typecheck·unit 7,201 passed/2 skipped(기존 작업 사본 포함)·계약 186·review·볼트 유출·diff exit 0이며, 독립 재검토는 미기록 단계 표시 P2 해소 후 Approve다. 기존 번들 백업 후 `node esbuild.config.mjs production`으로 3,725,221 bytes 빌드를 확인했다. 실제 앱 재로드·새 실패 재현은 수행하지 않았으며 이 UI 검증을 실제 검색·모델 품질 승인으로 대체하지 않는다. 사용자 결정에 따라 실앱·화면·ETA 오차·자원 성능·실제 볼트·대상 모델별 표시 답변 검증은 마지막 통합 단계에서 함께 수행한다. 앱 임의 실행이나 사용자 모델·설정·중단 상태 변경은 이 결정에 포함되지 않는다.
 
+**2026-11-27 운영 재검증:** Windows production 빌드·합성 품질 루프는 통과했다. 기존 검색 세대가 복원된 실제 테스트 볼트에서 일반 채팅 1건의 저장·재열기와 이전 세션 보존을 확인했다. 제품 원문 검증을 통과한 저장 인용 중 2/3이 독립 원문 행 대조에서 한 행 어긋났다. 채팅 scope 무효화와는 별개이며, 복원 직후 저장 body의 stat 일치도 현재 본문 해시 준비를 대신하지 못한다. 그 실행에서는 참고답안 충족을 입증하지 못해 후속 4건은 실행하지 않았다. 이후 최종 프롬프트·facet 전달 수정본으로 일반 채팅 5건 모두를 재실행했다. 저장·재열기 5/5와 현재 원문 행 대조 12/12는 통과했으나 최종 생성 답변은 4/5였다. 비교·조건·예외의 의미 충족과 모델별 3회 합격은 여전히 입증되지 않았다.
+
 | 날짜·커밋 | 확인 범위 | 명령·종료 상태·반복 횟수 | 차단·한계 |
 | --- | --- | --- | --- |
+| 2026-11-27 · 작업 트리 | 문단 ID 선택지·고정 필드 사유, 설치 SHA-256 10/10, 일반 생성 답변·저장·기록 재열기 5/5, 기존 11개 보존, 저장 인용 절대 행 11/11 | `npm run build` exit 0(3,837,965 bytes), 대상 Vitest 301개·Rust 회귀 통과, 리로드 1회·전송 5회·교정 2회 | Q3 facet 출처 불일치와 Q4 text 오류는 1회 교정으로 각각 회복. 의미 검색 비활성. 참조 대비 의미 충실도·전체 회수·다른 모델은 미입증 |
+| 2026-11-27 · 작업 트리 | 최종 생성·교정 지침과 facet 출처 투영, 지정 테스트 볼트 설치 SHA-256 10/10, 일반 채팅 저장·재열기 5/5·기존 6개 보존, 저장 인용 절대 행 대조 12/12 | `npm run build`(검색 게이트 15/15), 최종 `node esbuild.config.mjs production` exit 0(3,834,340 bytes), 대상 Vitest 378개 통과, 리로드 1회·전송 5회 | 의미 검색 비활성, 생성 답변 4/5. 1건은 `invalid-sources` → `invalid-covers` 후 검증 근거만 표시. 의미 충실도·전체 회수·모델별 반복 미입증 |
+| 2026-11-27 · `ea2f0f7` 기반 작업 트리 | Windows production 번들, 지정 테스트 볼트에 한해 설치 자산 10개 SHA-256·실행 본문 대조, 단일 일반 채팅 전송·자동 저장·기록 재열기, 기존 기록 5개 보존 | `npm run build` exit 0(검색 게이트 15/15, 3,829,610 bytes), `npm run quality:loop` exit 0(합성 9/9), 플러그인 리로드 1회·실제 전송 1회 | BM25 복원 약 36분, 실제 응답·자동 저장 133초. 의미 검색 비활성. 제품 검증 인용 3개 중 독립 원문 행 일치 1개, 후속 4건 및 모델별 반복 미실행 |
 | 2026-10-28 | 검토 coverage를 원문 검증 범위로 분리, 채택 근거 revision·contentHash 갱신, 결정적 열거, WASM 벡터 랭킹 실패의 TS 대체 폐쇄, 검색 없이·server-only 우선순위, 준비 중 부분 색인 context 차단, 대기 실패 뒤 전사 중복 방지, 진행 문구 작업 영역 분리, 생성물 DB·승인 경계 | `npm run quality:local` exit 0(전체 Vitest·lint·typecheck·Rust·review·leak), `rust:check` 538 passed·2 ignored(당시) | 실제 답변·전수 recall·모델별 3회·화면 검수 미완료 |
 | 2026-10-28 | 검색 화면 `preparing` 부분 색인 차단·`degraded` 한정 허용·ready에서 1회 재개, 채팅 readiness 백엔드 독립, 로컬 질의 분해, 검색 선택·벡터 저장소 mutation·통계·lookup·RAG 상태·pending 파일 계획의 TS 계산 fallback 제거 | `npm run lint`·`npm run typecheck` exit 0, `test` 통과(Vitest 2,433 passed·1 skipped, i18n·UX gate·quality eval 187 passed(당시)·vault leak), 선행 `quality:local` Rust 538 passed·2 ignored(당시), preview Enter→submit 대기 등록·ready 재개 | facet 검색·집계의 단일 순회 미완료 |
 | 2026-10-28 | 검토 예산 밖 `unreviewed` discovery 경로 최대 8개·8페이지 재검색, 현재 원문 검증 통과 근거만 Rust 병합, 필터는 정책 재조회가 있을 때만, 재조회·검색 실패·취소는 기존 근거 유지, 넓힌 검토 범위를 총계·진행·안내에 반영 | `npm run typecheck`·`npx eslint` exit 0(당시), `npx vitest run src/agent/indexed-vault-review.test.ts src/agent/indexed-vault-followup.test.ts src/agent/indexed-vault-search.test.ts` 125 passed(2026-10-28 재측정), `git diff --check` exit 0 | 9번째 페이지 밖 단서·실제 답변 품질·전체 recall |
@@ -120,6 +125,17 @@ BM25 작업자 수명 보완은 초기화·스냅샷 복원·큐·복구의 세�
 
 **실제 앱 보조 명령.** `npm run test:e2e:vault -- --vault <vault>`는 실행 중인 Obsidian, 플러그인 설치·색인 완료 볼트, 구성된 검색 경로가 필요하다. 기본 CLI는 macOS 앱 내부의 `obsidian-cli`이며 다른 위치는 `--obsidian-cli`로 지정한다. 대상 볼트는 명시해 자동 선택을 피한다. 이 하네스는 자기 문서 회수 집계이며 gold label이 없으므로 전수검색·표시 답변 합격 증거가 아니다. 산출물 취급은 위 데이터 보호 정본을 따른다.
 
+### 지정 5문항 기록·의미·턴 추적 종료 게이트
+
+이 절은 **별도 승인을 받은 다음 실행**의 수동 UI 절차다. `test:e2e`의 제품 여정, `test:e2e:vault`의 자기 문서 회수, `quality:loop:vault`의 engine-only 대조 중 어느 것도 대신할 수 없다. 기존 로컬 history 하네스의 전송/진행 관측 → 저장 목록 가시성 → 재열기 → 진단/보고 경계를 따르되 개인 loader·볼트 설정·기존 결과를 복사하거나 재생하지 않는다. 자동 수집이 없다면 관측자가 같은 절차를 직접 수행한다.
+
+1. 앱을 열기 전 `git check-ignore .thinkrail/context/_history-review/probe`로 제외를 확인한다. 저장소 루트에서 `node scripts/search-eval/history-review.mjs init`으로 **새 회차**를 만들고 출력 UUID를 보관한다. `.thinkrail/context/_history-review/<UUID>/observations.json`은 실행 관측자, 같은 위치 `review.json`은 독립 사람 평가자가 작성한다(UTF-8). case 번호·receipt는 이 회차의 지정 문항과 새 기록을 1:1로 연결하는 별칭이다. 식별 원문·제목·경로·질답·trace JSON·스크린샷은 옮기지 않는다. 판정 근거도 비식별 요약만 남긴다.
+2. 지정 Obsidian/볼트·설치 빌드·선택 모델/설정·자동 저장·색인 serving ready를 확인한다. 기존 기록·탭·설정·평가 자료의 보존 기준을 잡는다. 독립 참조와 사용자 답안을 먼저 고정하고 평가 자료는 검색·첨부·인용에서 제외한다. 승인된 설치에서 **같은 턴의 실제 Superpower Inside trace**를 관찰할 수 있는지 확인한다. 개발용 저장 `Debug Trace`는 배포 빌드에서 비활성이다. 승인 없이 빌드·설정·모델을 바꾸거나 replay/집계 로그로 대체하지 않는다. 전제가 없으면 미완료다.
+3. Q1부터 Q5까지 각각 **새 세션**, 지정 질문만 일반 작성창에 넣고 전송 버튼으로 한 번 전송한다. 내부 검색 API·모의 응답·답안 주입 금지. 각 응답의 최종 상태·표시 본문·인용을 확인하고 자동 저장을 기다린다. 기존 기록이 아닌 서로 다른 새 기록 5개인지 확인한 뒤 각 세션을 떠나 **실제 기록 목록의 해당 행을 클릭**해 질문/사용자 메시지·최종 본문·상태·인용이 전송 직후와 같은지 확인한다. 실행 중 표시나 파일 존재만으로 체크하지 않는다. 오류·취소·근거만 표시된 경우 `terminalAnswer` 성공이 아니다. 품질 실패 한 건으로 나머지 문항의 진단을 생략하지 않는다. 종료 시 활성 턴 0과 기존 자료/설정/탭 보존까지 관측한다. `checks`와 `ui`는 직접 확인한 성공/실패만 true/false, 미관측은 null이다.
+4. 매번 실제 세션과 assistant message ID·질문·회차를 원위치에서 대조하고 일치할 때만 `sameTurnTrace`를 확인한다. 각 `trace` 행은 계획/질의 → 검색 후보·예산/누락 → 선택·후속 탐색 → 현재 원문 검증 → 모델로 전달한 dossier → 최종 생성·교정/오류 → 재열린 표시·인용 순서다. 각 경계에서 필요한 사실·관계·조건이 **입력에서 결과로 보존됐는지** 분석한다. `analysis`에 관측한 단계 신호(예: 후보/채택/검증 수, 생략·제한 사유, 요청/재시도 수, 단계별 지연이 있으면 그 값)와 전달/손실 근거를 비식별로 설명하고 `finding`에 `preserved`/`loss`를 기록한다. 선택 단계가 불필요했다면 생략이 정당하고 정보가 보존된 실제 증거가 필요하다. 잘린 trace·없는 이벤트·전체 소요 시간·최종 인용 수만으로 미관측 경계를 추정하지 않는다(null). 최초 손실 전 단계가 비면 최초 손실은 unknown이다.
+5. **독립 사람 평가자**가 각 receipt에 대응하는 실제 재열린 답변과 출처를 읽고 고정 참조(`reference`) 및 사용자 답안(`userAnswer`)과 **각각** 비교한다. 하위 질문, 사실·수치, 비교·관계, 조건·예외, 인용의 주장 지지와 범위/근거 없는 추가를 항목별 `meets`/`misses`로 적고 `rationale` 두 칸에 차이와 이유를 요약한다. 해당 요구가 없는 축은 부당한 추가도 없는지 확인해 이유를 남긴다. 단어 겹침·인용 개수·모델 자기 채점은 대체물이 아니다. 사람이 직접 대조했을 때만 `independentHuman: true`. 기준선 또는 입력이 없으면 null을 유지한다.
+6. `node scripts/search-eval/history-review.mjs check <UUID>` (꺾쇠 대신 회차 값). 이 명령은 두 로컬 원장만 읽으며 앱이나 모델을 호출하지 않는다. exit 0 = **해당 1회차** 전 항목 관측·합격, 1 = 전 항목 관측했으나 실패, 2 = 입력 오류·미관측·독립 평가 부재 등 미완료. 미완료는 확인된 실패를 상쇄하지 않는다. 원장은 사람이 서명하는 체크리스트이지 관측 진위나 독립성을 인증하는 시스템이 아니다. 대상 모델별 연속 3회 기준은 별도이며 회차를 재사용하지 않는다.
+
 **기록.** 결과는 `## 검증 상태와 이력` 표의 새 행에, 현행 판정은 그 절의 현재 checkpoint 문단에 함께 갱신한다.
 
 ## 세션 인수인계
@@ -159,6 +175,8 @@ provider·embedding·금지 통신 시도는 예외가 내부에서 흡수되어
 ## 검증 범위와 게이트
 
 저장소의 개발·검증 명령은 Windows·macOS·Linux 공통 Node 진입점을 우선하며, 작업에 필요한 외부 도구는 호스트에서 직접 실행한다. OS 고유 런타임이나 앱 연동이 불가피한 경우만 플랫폼별로 분기하고 지원 범위와 실패 조건을 명시한다. Windows에서 npm 같은 Node 도구는 `.cmd`용 셸 문자열을 조합하지 않고 Node로 CLI 진입점을 실행해 인자·종료 상태를 보존한다. 테스트의 OS 경로·URL 변환은 실제 실행 환경을 따른다.
+
+Windows Rust 빌드·검사는 호스트의 MSVC C++ Build Tools·Windows SDK와 프로젝트가 고정한 rustup MSVC toolchain을 직접 사용한다. WSL로 대체하거나 셸의 전역 rustup 기본값에 의존하지 않는다. WASM 생성에는 프로젝트의 wasm-bindgen crate와 동일한 버전의 CLI가 필요하며 불일치 시 컴파일·생성물 갱신 전에 중단한다. Rust 보안 도구 설치는 실행 파일을 찾을 수 없거나 `--version`이 실패하면 다음 도구로 넘어가지 않고, 버전 검사 실패의 종료 코드를 호출자에게 그대로 전달한다.
 
 기능·버그 수정·리팩터링은 회귀 테스트를 먼저 추가하거나 확장한다. lint 비활성·타입 검사 무시·as any·clippy allow·prettier-ignore로 실패를 우회하지 않는다. 설치된 의존성·생성물로 오프라인 검증하고 Rust는 --frozen을 사용한다. 의존성이 없으면 준비 필요로 실패하며 네트워크·모델 호출로 조용히 대체하지 않는다.
 
