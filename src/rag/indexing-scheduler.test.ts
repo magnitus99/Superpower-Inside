@@ -76,6 +76,58 @@ describe('RAGIndexingScheduler', () => {
     vi.useRealTimers();
   });
 
+  it.each(['run', 'cancel'] as const)('proof idle 대기는 debounce된 파일의 %s 정착을 앞지르지 않는다', async (action) => {
+    vi.useFakeTimers();
+    const indexFile = vi.fn(() => Promise.resolve(createResult()));
+    const scheduler = new RAGIndexingScheduler({ debounceMs: 50, indexFile,
+      removeFile: () => Promise.resolve(0), indexPending: () => Promise.resolve(createResult()), reindexAll: () => Promise.resolve(createResult()) });
+    try {
+      scheduler.scheduleFile(createFile('debounced.md'), 'modify');
+      let settled = false;
+      const idle = scheduler.waitForIdle().then(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      if (action === 'cancel') scheduler.cancel();
+      await vi.advanceTimersByTimeAsync(50);
+      await idle;
+      expect(indexFile).toHaveBeenCalledTimes(action === 'cancel' ? 0 : 1);
+    } finally { scheduler.cancel(); vi.useRealTimers(); }
+  });
+
+  it('debounce 중 경로가 바뀌면 새 경로로 색인하고 기존 idle 대기를 해제한다', async () => {
+    vi.useFakeTimers();
+    const indexedPaths: string[] = [];
+    const indexFile = vi.fn((file: TFile) => {
+      indexedPaths.push(file.path);
+      return Promise.resolve(createResult());
+    });
+    const scheduler = new RAGIndexingScheduler({
+      debounceMs: 50,
+      indexFile,
+      removeFile: () => Promise.resolve(0),
+      indexPending: () => Promise.resolve(createResult()),
+      reindexAll: () => Promise.resolve(createResult()),
+    });
+    try {
+      const file = createFile('before.md');
+      scheduler.scheduleFile(file, 'modify');
+      let settled = false;
+      void scheduler.waitForIdle().then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+
+      file.path = 'after.md';
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(indexedPaths).toEqual(['after.md']);
+      expect(indexFile.mock.calls[0]?.[0]).toBe(file);
+      expect(settled).toBe(true);
+    } finally {
+      scheduler.cancel();
+      vi.useRealTimers();
+    }
+  });
+
   it('전체 재인덱싱 중 들어온 파일 이벤트는 재인덱싱 완료 후 처리한다', async () => {
     let releaseReindex = (): void => {
       throw new Error('releaseReindex가 초기화되지 않았습니다.');

@@ -169,7 +169,8 @@ export class RAGIndexingScheduler {
 
   scheduleFile(file: TFile, _reason: RagIndexingRequestReason): void {
     this.cancelled = false;
-    const existingTimer = this.debounceTimers.get(file.path);
+    const scheduledPath = file.path;
+    const existingTimer = this.debounceTimers.get(scheduledPath);
     if (existingTimer) {
       window.clearTimeout(existingTimer);
     }
@@ -180,10 +181,10 @@ export class RAGIndexingScheduler {
     }
 
     const timer = window.setTimeout(() => {
-      this.debounceTimers.delete(file.path);
+      this.debounceTimers.delete(scheduledPath);
       this.enqueueFile(file);
     }, this.operations.debounceMs);
-    this.debounceTimers.set(file.path, timer);
+    this.debounceTimers.set(scheduledPath, timer);
   }
 
   deleteFile(filePath: string): Promise<number> {
@@ -311,15 +312,7 @@ export class RAGIndexingScheduler {
   }
 
   async waitForIdle(): Promise<void> {
-    if (
-      !this.draining &&
-      !this.parkedJob &&
-      this.queue.length === 0 &&
-      this.dirtySet.size === 0 &&
-      !this.dirtySet.hasOverflowed
-    ) {
-      return;
-    }
+    if (this.isIdle()) return;
     await new Promise<void>((resolve) => {
       this.idleResolvers.push(resolve);
     });
@@ -588,16 +581,13 @@ export class RAGIndexingScheduler {
     this.queue = remaining;
   }
 
+  private isIdle(): boolean {
+    return !this.draining && !this.parkedJob && this.debounceTimers.size === 0 &&
+      this.queue.length === 0 && this.dirtySet.size === 0 && !this.dirtySet.hasOverflowed;
+  }
+
   private resolveIdleIfReady(): void {
-    if (
-      this.draining ||
-      this.parkedJob ||
-      this.queue.length > 0 ||
-      this.dirtySet.size > 0 ||
-      this.dirtySet.hasOverflowed
-    ) {
-      return;
-    }
+    if (!this.isIdle()) return;
     const resolvers = this.idleResolvers.splice(0);
     for (const resolve of resolvers) resolve();
   }
