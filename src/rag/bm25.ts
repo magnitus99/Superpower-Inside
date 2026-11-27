@@ -86,6 +86,32 @@ export function tokenize(text: string): string[] {
   return rustTokens ?? [];
 }
 
+function parseBm25RepresentativeHits(hits: unknown): BM25BatchSearchHit[] | null {
+  if (!Array.isArray(hits)) return null;
+  const parsedHits: BM25BatchSearchHit[] = [];
+  for (const hit of hits) {
+    if (typeof hit !== 'object' || hit === null || Array.isArray(hit)) return null;
+    const row = hit as Record<string, unknown>;
+    if (
+      typeof row.docId !== 'string' ||
+      typeof row.sourcePath !== 'string' ||
+      typeof row.score !== 'number' ||
+      !Number.isFinite(row.score) ||
+      !Number.isSafeInteger(row.rank) ||
+      (row.rank as number) <= 0
+    ) {
+      return null;
+    }
+    parsedHits.push({
+      docId: row.docId,
+      sourcePath: row.sourcePath,
+      score: row.score,
+      rank: row.rank as number,
+    });
+  }
+  return parsedHits;
+}
+
 /** worker batch 응답의 wire 형식을 검증하고 실패하면 null을 돌려줍니다. */
 function parseBm25BatchJson(raw: string): BM25BatchResult | null {
   if (!raw) return null;
@@ -97,30 +123,9 @@ function parseBm25BatchJson(raw: string): BM25BatchResult | null {
     const queries: { hits: BM25BatchSearchHit[] }[] = [];
     for (const item of record.queries) {
       if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
-      const hits = (item as Record<string, unknown>).hits;
-      if (!Array.isArray(hits)) return null;
-      const parsedHits: BM25BatchSearchHit[] = [];
-      for (const hit of hits) {
-        if (typeof hit !== 'object' || hit === null || Array.isArray(hit)) return null;
-        const row = hit as Record<string, unknown>;
-        if (
-          typeof row.docId !== 'string' ||
-          typeof row.sourcePath !== 'string' ||
-          typeof row.score !== 'number' ||
-          !Number.isFinite(row.score) ||
-          !Number.isSafeInteger(row.rank) ||
-          (row.rank as number) <= 0
-        ) {
-          return null;
-        }
-        parsedHits.push({
-          docId: row.docId,
-          sourcePath: row.sourcePath,
-          score: row.score,
-          rank: row.rank as number,
-        });
-      }
-      queries.push({ hits: parsedHits });
+      const hits = parseBm25RepresentativeHits((item as Record<string, unknown>).hits);
+      if (!hits) return null;
+      queries.push({ hits });
     }
     const aggregates: RustBm25MatchAggregate[] = [];
     for (const item of record.aggregates) {
@@ -966,6 +971,31 @@ export class IndexedDbBM25Index {
       sourcePath: this.getDocumentSource(docId) ?? docId,
       score,
     }));
+  }
+
+  async searchRepresentatives(
+    query: string,
+    limit: number,
+    signal?: AbortSignal,
+    allowedPaths?: readonly string[],
+  ): Promise<BM25BatchSearchHit[] | null> {
+    signal?.throwIfAborted();
+    const worker = this.workerRuntime;
+    const generation = this.workerGeneration;
+    if (worker) {
+      await awaitBm25SearchQueue(this.workerQueue, signal);
+      signal?.throwIfAborted();
+      if (!this.isReady || generation !== this.workerGeneration) return null;
+    } else if (!this.isReady) return null;
+    const raw = worker
+      ? await worker.searchRepresentatives(query, limit, signal, allowedPaths)
+      : this.ensureRuntime().searchRepresentativesJson(query, limit, allowedPaths);
+    if (!this.isReady || generation !== this.workerGeneration) return null;
+    try {
+      return parseBm25RepresentativeHits(JSON.parse(raw) as unknown);
+    } catch {
+      return null;
+    }
   }
 
   /**

@@ -4653,18 +4653,36 @@ impl Bm25RuntimeIndex {
         let Ok(paths) = serde_json::from_str::<BTreeSet<String>>(paths_json) else {
             return String::new();
         };
-        let matches = bm25_query::aggregate_matches(&self.index, query)
-            .into_iter()
-            .filter(|entry| {
-                let path = self
-                    .index
-                    .doc_sources
-                    .get(&entry.doc_id)
-                    .unwrap_or(&entry.doc_id);
-                paths.contains(path)
+        let matches = if paths.is_empty() {
+            Vec::new()
+        } else {
+            bm25_query::aggregate_matches_where(&self.index, query, |doc_id| {
+                paths.contains(
+                    self.index
+                        .doc_sources
+                        .get(doc_id)
+                        .map_or(doc_id, String::as_str),
+                )
             })
-            .collect::<Vec<_>>();
+        };
         serialize_bm25_match_aggregate_json(&self.index, &matches, limit)
+    }
+
+    /// 개별 fallback도 batch와 같은 scoped 대표 경로를 반환합니다.
+    /// batch의 입력 크기 제한은 적용하지 않으며 빈 배열 범위는 어느 경로도 허용하지 않습니다.
+    #[must_use]
+    pub fn search_representatives_json(
+        &self,
+        query: &str,
+        limit: usize,
+        paths_json: &str,
+    ) -> String {
+        let Ok(paths) = serde_json::from_str::<Option<BTreeSet<String>>>(paths_json) else {
+            return String::new();
+        };
+        let scope = bm25_query::SearchScope::new(&self.index, paths.as_ref());
+        serde_json::Value::Array(bm25_representative_hits(&self.index, query, limit, &scope))
+            .to_string()
     }
 
     /// 여러 facet 질의의 검색·집계를 한 번의 bridge 호출로 반환합니다.
@@ -4675,7 +4693,7 @@ impl Bm25RuntimeIndex {
     /// `allowedPaths`는 batch 전체에 한 번만 적용합니다. aggregate 항목 안의
     /// `allowedPaths`는 조용히 무시하지 않고 입력 오류로 처리합니다.
     /// 검색은 점수 내림차순으로 정렬한 뒤 source path별 첫 hit만 남기고
-    /// rank는 전체 score 목록의 1 기반 순위입니다.
+    /// rank는 허용 청크 score 목록의 1 기반 순위입니다.
     #[must_use]
     pub fn batch_search_and_aggregate_json(&self, input_json: &str) -> String {
         if input_json.len() > 2 * 1024 * 1024 {
@@ -4710,6 +4728,7 @@ impl Bm25RuntimeIndex {
             }
             Some(_) => return String::new(),
         };
+        let scope = bm25_query::SearchScope::new(&self.index, allowed_paths.as_ref());
         let mut query_results = Vec::with_capacity(queries.len());
         for item in queries {
             let Some(query) = item.get("query").and_then(serde_json::Value::as_str) else {
@@ -4719,14 +4738,14 @@ impl Bm25RuntimeIndex {
                 return String::new();
             };
             query_results.push(serde_json::json!({
-                "hits": bm25_batch_query_hits(&self.index, query, limit),
+                "hits": bm25_representative_hits(
+                    &self.index, query, usize::try_from(limit).unwrap_or(usize::MAX), &scope,
+                ),
             }));
         }
         let mut aggregate_results = Vec::with_capacity(aggregates.len());
         for item in aggregates {
-            let Some(parsed) =
-                bm25_batch_aggregate_result(&self.index, item, allowed_paths.as_ref())
-            else {
+            let Some(parsed) = bm25_batch_aggregate_result(&self.index, item, &scope) else {
                 return String::new();
             };
             aggregate_results.push(parsed);
@@ -13256,12 +13275,19 @@ fn serialize_string_string_map_json(values: &BTreeMap<String, String>) -> String
     format!("{{{body}}}")
 }
 
-/// batch 검색 한 질의의 source path별 첫 hit을 만듭니다.
-fn bm25_batch_query_hits(index: &Bm25IndexData, query: &str, limit: u64) -> Vec<serde_json::Value> {
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX).min(10_000);
+/// 허용 청크의 순위에서 source path별 첫 hit만 남긴 후 경로 상한을 적용합니다.
+fn bm25_representative_hits(
+    index: &Bm25IndexData,
+    query: &str,
+    limit: usize,
+    scope: &bm25_query::SearchScope<'_>,
+) -> Vec<serde_json::Value> {
+    if limit == 0 {
+        return Vec::new();
+    }
     let mut seen_paths = BTreeSet::new();
     let mut hits = Vec::new();
-    let mut scores = bm25_query::search_index(index, query);
+    let mut scores = bm25_query::search_index_scoped(index, query, scope);
     scores.sort_by(|left, right| right.score.total_cmp(&left.score));
     for (index_in_scores, score) in scores.into_iter().enumerate() {
         if hits.len() >= limit {
@@ -13270,8 +13296,7 @@ fn bm25_batch_query_hits(index: &Bm25IndexData, query: &str, limit: u64) -> Vec<
         let source_path = index
             .doc_sources
             .get(&score.doc_id)
-            .cloned()
-            .unwrap_or_else(|| score.doc_id.clone());
+            .unwrap_or(&score.doc_id);
         if !seen_paths.insert(source_path.clone()) {
             continue;
         }
@@ -13289,7 +13314,7 @@ fn bm25_batch_query_hits(index: &Bm25IndexData, query: &str, limit: u64) -> Vec<
 fn bm25_batch_aggregate_result(
     index: &Bm25IndexData,
     item: &serde_json::Value,
-    allowed_paths: Option<&BTreeSet<String>>,
+    scope: &bm25_query::SearchScope<'_>,
 ) -> Option<serde_json::Value> {
     if item
         .get("allowedPaths")
@@ -13298,21 +13323,9 @@ fn bm25_batch_aggregate_result(
         return None;
     }
     let query = item.get("query")?.as_str()?;
-    let limit = usize::try_from(item.get("limit")?.as_u64()?)
-        .unwrap_or(usize::MAX)
-        .min(10_000);
-    let matches = bm25_query::aggregate_matches(index, query)
-        .into_iter()
-        .filter(|entry| {
-            allowed_paths.is_none_or(|paths| {
-                let path = index
-                    .doc_sources
-                    .get(&entry.doc_id)
-                    .unwrap_or(&entry.doc_id);
-                paths.contains(path)
-            })
-        })
-        .collect::<Vec<_>>();
+    let limit = usize::try_from(item.get("limit")?.as_u64()?).unwrap_or(usize::MAX);
+    let matches =
+        bm25_query::aggregate_matches_where(index, query, |doc_id| scope.contains(doc_id));
     serde_json::from_str(&serialize_bm25_match_aggregate_json(index, &matches, limit)).ok()
 }
 
@@ -17628,6 +17641,100 @@ mod tests {
                 .and_then(|scores| scores.first())
                 .and_then(|score| score.get("docId")),
             Some(&JsonValue::String("b.md::0".to_owned()))
+        );
+    }
+
+    /// 제외된 문서가 통계·확장·대표 순위에 영향을 주지 않습니다.
+    #[test]
+    fn bm25_scoped_batch_and_individual_search_match_a_reduced_index() {
+        let mut full = Bm25RuntimeIndex::new(2);
+        let mut reduced = Bm25RuntimeIndex::new(2);
+        for (id, path, text) in [
+            ("allowed-a::0", "allowed-a.md", "quartz quartz solstice"),
+            ("allowed-a::1", "allowed-a.md", "quartz quartz solstice"),
+            ("allowed-b::0", "allowed-b.md", "quartz solstice zuluamber"),
+        ] {
+            full.add_new_document(id, text, path, 2);
+            reduced.add_new_document(id, text, path, 2);
+        }
+        full.add_new_document("hidden::0", "quartz quartz quartz", "hidden.md", 2);
+        // 숨은 정확 일치나 prefix 상한이 허용 문서의 확장 결과를 막지 않아야 합니다.
+        full.add_new_document("hidden::1", "quartx", "hidden.md", 2);
+        for suffix in 'a'..='t' {
+            full.add_new_document(
+                &format!("hidden::{suffix}"),
+                &format!("zulu{suffix}a"),
+                "hidden.md",
+                2,
+            );
+        }
+        let paths = serde_json::json!(["allowed-a.md", "allowed-b.md"]);
+        let queries = ["quartz", "\"quartz solstice\"", "quartx", "zulu*"];
+        let batch: JsonValue = serde_json::from_str(
+            &full.batch_search_and_aggregate_json(
+                &serde_json::json!({
+                    "queries": queries.map(|query| serde_json::json!({"query": query, "limit": 2})),
+                    "aggregates": [{"query": "quartz", "limit": 2}], "allowedPaths": paths,
+                })
+                .to_string(),
+            ),
+        )
+        .unwrap_or(JsonValue::Null);
+        for (index, query) in queries.into_iter().enumerate() {
+            let expected: JsonValue =
+                serde_json::from_str(&reduced.search_representatives_json(query, 2, "null"))
+                    .unwrap_or(JsonValue::Null);
+            let actual = batch.pointer(&format!("/queries/{index}/hits"));
+            assert!(expected.as_array().is_some_and(|hits| !hits.is_empty()));
+            assert_eq!(actual, Some(&expected), "{query}");
+            assert_eq!(
+                full.search_representatives_json(query, 2, &paths.to_string()),
+                expected.to_string()
+            );
+        }
+        assert_eq!(
+            batch
+                .pointer("/queries/0/hits/1/rank")
+                .and_then(JsonValue::as_u64),
+            Some(3)
+        );
+        assert_eq!(
+            batch
+                .pointer("/aggregates/0/totalChunks")
+                .and_then(JsonValue::as_u64),
+            Some(3)
+        );
+        assert_eq!(full.search_representatives_json("quartz", 2, "[]"), "[]");
+        assert!(
+            full.search_representatives_json("quartz", 2, "{}")
+                .is_empty()
+        );
+    }
+
+    /// batch와 개별 호출은 같은 명시 경로 상한을 적용합니다.
+    #[test]
+    fn bm25_batch_does_not_silently_cap_requested_paths_at_ten_thousand() {
+        let mut index = Bm25RuntimeIndex::new(2);
+        for n in 0..10_001 {
+            let path = format!("allowed-{n:05}.md");
+            index.add_new_document(&path, "quartz", &path, 2);
+        }
+        let batch: JsonValue = serde_json::from_str(&index.batch_search_and_aggregate_json(
+            r#"{"queries":[{"query":"quartz","limit":10001}],"aggregates":[{"query":"quartz","limit":10001}]}"#,
+        )).unwrap_or(JsonValue::Null);
+        assert_eq!(
+            batch
+                .pointer("/queries/0/hits")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len),
+            Some(10_001)
+        );
+        assert_eq!(
+            batch
+                .pointer("/aggregates/0/documents")
+                .and_then(JsonValue::as_array)
+                .map(Vec::len),
+            Some(10_001)
         );
     }
 

@@ -9,7 +9,7 @@
 
 use std::cmp::Ordering;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::iter::Peekable;
 use std::slice::Iter;
 
@@ -142,34 +142,91 @@ impl Bm25ScoreAccumulator {
     }
 }
 
+/// 요청에서 한 번 계산해 facet들이 공유하는 검색 통계와 청크 범위입니다.
+pub struct SearchScope<'a> {
+    /// 일부만 허용할 때 색인의 ID를 빌려 membership을 검사합니다.
+    allowed_docs: Option<HashSet<&'a str>>,
+    /// 허용 청크 수입니다.
+    total_docs: f64,
+    /// 허용 청크의 평균 token 길이입니다.
+    average_length: f64,
+}
+
+impl<'a> SearchScope<'a> {
+    /// 현재 색인을 복제하지 않고 허용 경로에서 통계와 membership을 계산합니다.
+    pub fn new(index: &'a Bm25IndexData, paths: Option<&BTreeSet<String>>) -> Self {
+        if let Some(paths) = paths {
+            let mut allowed_docs = HashSet::new();
+            let mut total_length = 0.0;
+            if !paths.is_empty() {
+                for (id, length) in &index.doc_lengths {
+                    if paths.contains(index.doc_sources.get(id).unwrap_or(id)) {
+                        allowed_docs.insert(id.as_str());
+                        if length.is_finite() {
+                            total_length += length;
+                        }
+                    }
+                }
+            }
+            let total_docs = usize_to_f64(allowed_docs.len()).unwrap_or(0.0);
+            return Self {
+                allowed_docs: (allowed_docs.len() != index.doc_lengths.len())
+                    .then_some(allowed_docs),
+                total_docs,
+                average_length: if total_docs > 0.0 {
+                    total_length / total_docs
+                } else {
+                    0.0
+                },
+            };
+        }
+        Self {
+            allowed_docs: None,
+            total_docs: usize_to_f64(index.doc_lengths.len()).unwrap_or(0.0),
+            average_length: bm25_average_doc_length(index),
+        }
+    }
+
+    /// 허용 청크인지 확인합니다.
+    pub fn contains(&self, doc_id: &str) -> bool {
+        self.allowed_docs
+            .as_ref()
+            .is_none_or(|docs| docs.contains(doc_id))
+    }
+
+    /// 사전에 허용 posting이 있는지 확인합니다.
+    fn has_term(&self, index: &Bm25IndexData, term: &str) -> bool {
+        index.inverted.get(term).is_some_and(|posting| {
+            self.allowed_docs.is_none() || posting.keys().any(|id| self.contains(id))
+        })
+    }
+}
+
 /// 위치·필드 색인을 사용해 query 점수를 계산한다.
 #[must_use]
 pub fn search_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore> {
-    let clauses = parse_query(query, false);
-    if clauses.is_empty() {
-        return Vec::new();
-    }
-    let total_docs = index.doc_lengths.len();
-    if total_docs == 0 {
-        return Vec::new();
-    }
-    let Some(total_docs_f64) = usize_to_f64(total_docs) else {
-        return Vec::new();
-    };
-    let avg_doc_length = bm25_average_doc_length(index);
-    if !avg_doc_length.is_finite() || avg_doc_length <= 0.0 {
-        return Vec::new();
-    }
+    search_index_scoped(index, query, &SearchScope::new(index, None))
+}
 
-    accumulate(index, &clauses, total_docs_f64, avg_doc_length, false).into_scores()
+/// 주어진 범위의 posting과 통계로 계산합니다.
+#[must_use]
+pub fn search_index_scoped(
+    index: &Bm25IndexData,
+    query: &str,
+    scope: &SearchScope<'_>,
+) -> Vec<Bm25SearchScore> {
+    if scope.total_docs == 0.0 || !scope.average_length.is_finite() || scope.average_length <= 0.0 {
+        return Vec::new();
+    }
+    let clauses = parse_query(query, false);
+    accumulate(index, &clauses, scope, false).into_scores()
 }
 
 /// 절을 순서대로 점수화한다. `track_coverage`가 참이면 문서별 일치 절 bitmask도 남긴다.
 fn accumulate(
     index: &Bm25IndexData,
     clauses: &[Bm25QueryClause],
-    total_docs_f64: f64,
-    avg_doc_length: f64,
+    scope: &SearchScope<'_>,
     track_coverage: bool,
 ) -> Bm25ScoreAccumulator {
     let mut accumulator = Bm25ScoreAccumulator::default();
@@ -179,25 +236,12 @@ fn accumulate(
         }
         match clause {
             Bm25QueryClause::Term(term) => {
-                for expanded in expand_terms(index, term) {
-                    score_term(
-                        index,
-                        &expanded,
-                        term.field,
-                        total_docs_f64,
-                        avg_doc_length,
-                        &mut accumulator,
-                    );
+                for expanded in expand_terms(index, term, scope) {
+                    score_term(index, &expanded, term.field, scope, &mut accumulator);
                 }
             }
             Bm25QueryClause::Phrase(phrase) => {
-                score_phrase(
-                    index,
-                    phrase,
-                    total_docs_f64,
-                    avg_doc_length,
-                    &mut accumulator,
-                );
+                score_phrase(index, phrase, scope, &mut accumulator);
             }
         }
     }
@@ -220,16 +264,11 @@ pub fn search_index_relaxed(
         return None;
     }
     let clause_count = clauses.len();
-    let total_docs = index.doc_lengths.len();
-    if total_docs == 0 {
+    let scope = SearchScope::new(index, None);
+    if scope.total_docs == 0.0 || !scope.average_length.is_finite() || scope.average_length <= 0.0 {
         return None;
     }
-    let total_docs_f64 = usize_to_f64(total_docs)?;
-    let avg_doc_length = bm25_average_doc_length(index);
-    if !avg_doc_length.is_finite() || avg_doc_length <= 0.0 {
-        return None;
-    }
-    let mut accumulator = accumulate(index, &clauses, total_docs_f64, avg_doc_length, true);
+    let mut accumulator = accumulate(index, &clauses, &scope, true);
     let coverage = std::mem::take(&mut accumulator.coverage);
     let mut scores = accumulator.into_scores();
     scores.sort_by(|left, right| {
@@ -498,23 +537,27 @@ fn push_term_clause(
 
 /// term 절을 정확·명시 prefix·오타 보정 순서로 확장한다.
 #[must_use]
-fn expand_terms(index: &Bm25IndexData, clause: &Bm25TermClause) -> Vec<String> {
+fn expand_terms(
+    index: &Bm25IndexData,
+    clause: &Bm25TermClause,
+    scope: &SearchScope<'_>,
+) -> Vec<String> {
     if clause.prefix {
-        let expanded = expand_prefix(index, &clause.term);
+        let expanded = expand_prefix(index, &clause.term, scope);
         if !expanded.is_empty() {
             return expanded;
         }
-        return expand_fuzzy(index, &clause.term);
+        return expand_fuzzy(index, &clause.term, scope);
     }
-    if index.inverted.contains_key(&clause.term) {
+    if scope.has_term(index, &clause.term) {
         return vec![clause.term.clone()];
     }
-    expand_fuzzy(index, &clause.term)
+    expand_fuzzy(index, &clause.term, scope)
 }
 
 /// 사전에서 prefix가 일치하는 term을 bounded 개수만 만든다.
 #[must_use]
-fn expand_prefix(index: &Bm25IndexData, prefix: &str) -> Vec<String> {
+fn expand_prefix(index: &Bm25IndexData, prefix: &str, scope: &SearchScope<'_>) -> Vec<String> {
     if prefix.chars().count() < PREFIX_MIN_TERM_CHARS {
         return Vec::new();
     }
@@ -522,6 +565,7 @@ fn expand_prefix(index: &Bm25IndexData, prefix: &str) -> Vec<String> {
         .inverted
         .keys()
         .filter(|term| term.starts_with(prefix))
+        .filter(|term| scope.allowed_docs.is_none() || scope.has_term(index, term))
         .take(PREFIX_EXPANSION_LIMIT)
         .cloned()
         .collect()
@@ -529,7 +573,7 @@ fn expand_prefix(index: &Bm25IndexData, prefix: &str) -> Vec<String> {
 
 /// 사전에서 편집 거리 1 이내 term을 bounded 개수만 만든다.
 #[must_use]
-fn expand_fuzzy(index: &Bm25IndexData, term: &str) -> Vec<String> {
+fn expand_fuzzy(index: &Bm25IndexData, term: &str, scope: &SearchScope<'_>) -> Vec<String> {
     if term.chars().count() < FUZZY_MIN_TERM_CHARS {
         return Vec::new();
     }
@@ -537,6 +581,7 @@ fn expand_fuzzy(index: &Bm25IndexData, term: &str) -> Vec<String> {
         .inverted
         .keys()
         .filter(|candidate| is_within_one_edit(term, candidate))
+        .filter(|term| scope.allowed_docs.is_none() || scope.has_term(index, term))
         .take(FUZZY_EXPANSION_LIMIT)
         .cloned()
         .collect()
@@ -590,8 +635,7 @@ fn score_term(
     index: &Bm25IndexData,
     term: &str,
     field: Option<u8>,
-    total_docs_f64: f64,
-    avg_doc_length: f64,
+    scope: &SearchScope<'_>,
     accumulator: &mut Bm25ScoreAccumulator,
 ) {
     let Some(posting) = index.inverted.get(term) else {
@@ -599,6 +643,9 @@ fn score_term(
     };
     let mut matched = Vec::<(String, f64)>::new();
     for (doc_id, frequency) in posting {
+        if !scope.contains(doc_id) {
+            continue;
+        }
         let Some(term_frequency) = field_term_frequency(index, term, doc_id, *frequency, field)
         else {
             continue;
@@ -611,15 +658,18 @@ fn score_term(
     if document_frequency <= 0.0 {
         return;
     }
-    let idf = inverse_document_frequency(total_docs_f64, document_frequency);
+    let idf = inverse_document_frequency(scope.total_docs, document_frequency);
     for (doc_id, term_frequency) in matched {
-        let score = bm25_score_value(
+        let relevance = bm25_score_value(
             idf,
             term_frequency,
             doc_length(index, &doc_id),
-            avg_doc_length,
+            scope.average_length,
         );
-        accumulator.add(&doc_id, score * field_weight(index, term, &doc_id, field));
+        accumulator.add(
+            &doc_id,
+            relevance * field_weight(index, term, &doc_id, field),
+        );
     }
 }
 
@@ -691,8 +741,7 @@ fn field_term_frequency(
 fn score_phrase(
     index: &Bm25IndexData,
     phrase: &Bm25PhraseClause,
-    total_docs_f64: f64,
-    avg_doc_length: f64,
+    scope: &SearchScope<'_>,
     accumulator: &mut Bm25ScoreAccumulator,
 ) {
     let Some(first_term) = phrase.terms.first() else {
@@ -703,6 +752,9 @@ fn score_phrase(
     };
     let mut matched = Vec::<(String, f64)>::new();
     for (doc_id, positions) in first_positions {
+        if !scope.contains(doc_id) {
+            continue;
+        }
         let Some(occurrences) = count_phrase_occurrences(index, phrase, doc_id, positions) else {
             continue;
         };
@@ -720,15 +772,15 @@ fn score_phrase(
     if document_frequency <= 0.0 {
         return;
     }
-    let idf = inverse_document_frequency(total_docs_f64, document_frequency);
+    let idf = inverse_document_frequency(scope.total_docs, document_frequency);
     for (doc_id, term_frequency) in matched {
-        let score = bm25_score_value(
+        let relevance = bm25_score_value(
             idf,
             term_frequency,
             doc_length(index, &doc_id),
-            avg_doc_length,
+            scope.average_length,
         );
-        accumulator.add(&doc_id, score);
+        accumulator.add(&doc_id, relevance);
     }
 }
 
@@ -863,6 +915,16 @@ pub struct Bm25MatchAggregate {
 /// 위치 정보가 없는 색인은 정확히 셀 수 없으므로 빈 결과를 돌려준다(0으로 위장하지 않는다).
 #[must_use]
 pub fn aggregate_matches(index: &Bm25IndexData, query: &str) -> Vec<Bm25MatchAggregate> {
+    aggregate_matches_where(index, query, |_| true)
+}
+
+/// 허용 청크만 정확 일치를 계산합니다.
+#[must_use]
+pub fn aggregate_matches_where(
+    index: &Bm25IndexData,
+    query: &str,
+    is_allowed: impl Fn(&str) -> bool,
+) -> Vec<Bm25MatchAggregate> {
     if index.positions.is_empty() {
         return Vec::new();
     }
@@ -878,6 +940,9 @@ pub fn aggregate_matches(index: &Bm25IndexData, query: &str) -> Vec<Bm25MatchAgg
                     continue;
                 };
                 for (doc_id, positions) in postings {
+                    if !is_allowed(doc_id) {
+                        continue;
+                    }
                     let occurrences = term_occurrences_in_field(index, term, doc_id, positions);
                     if occurrences == 0 {
                         continue;
@@ -894,6 +959,9 @@ pub fn aggregate_matches(index: &Bm25IndexData, query: &str) -> Vec<Bm25MatchAgg
                     continue;
                 };
                 for (doc_id, positions) in postings {
+                    if !is_allowed(doc_id) {
+                        continue;
+                    }
                     let occurrences =
                         count_text_phrase_occurrences(index, phrase, doc_id, positions)
                             .unwrap_or_default();

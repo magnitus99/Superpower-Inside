@@ -267,7 +267,7 @@ describe('검색 의존성 factory', () => {
       );
 
       expect(loadQueryVariants).toHaveBeenCalledOnce();
-      expect(queryBm25Exhaustive).toHaveBeenCalledWith('lunar archive', undefined, undefined);
+      expect(queryBm25Exhaustive).toHaveBeenCalledWith('lunar archive', undefined, undefined, ['Synthetic/Alpha.md', 'Synthetic/Beta.md']);
       expect(source?.queryVariants).toEqual(['lunar archive']);
       expect(source?.candidates).toContainEqual({
         path: 'Synthetic/Beta.md',
@@ -527,6 +527,36 @@ describe('검색 의존성 factory', () => {
     expect(queryMatchInventory).toHaveBeenCalledOnce();
     expect(source?.candidates?.some((item) => item.path === 'Synthetic/Alpha.md')).toBe(true);
     expect(source?.matchInventory?.[0]?.query).toBe('alpha');
+  });
+
+  it('정책과 폴더 경계의 교집합을 batch·개별 facet·변형·집계에 전달한다', async () => {
+    planIndexedSearchQueries.mockImplementation(({ question }: { question: string }) => ({
+      ...singlePlan(question), facets: [{ ...singlePlan(question).facets[0], terms: ['quartz'] }],
+    }));
+    const allowed = 'Synthetic/Alpha.md';
+    const forbidden = 'Synthetic/Hidden.md';
+    const other = 'SyntheticElse/Beta.md';
+    const candidatePaths = vi.fn(() => Promise.resolve([allowed, other, 'Synthetic/NotIndexed.md']));
+    const queryBm25Batch = vi.fn(() => Promise.resolve(null));
+    const queryBm25Exhaustive = vi.fn(() => Promise.resolve([{ path: allowed, rank: 1, score: 1 }]));
+    const queryMatchInventory = vi.fn(() => Promise.resolve(null));
+    const query = vi.fn<QueryCall>(() => Promise.resolve([queryResult({ sourcePath: forbidden, combinedScore: 99 })]));
+    const source = await collectIndexedSearchSource({
+      app: app({}), getCandidatePaths: candidatePaths,
+      documentCorpus: { ...corpus(), getIndexedFilePaths: () => Promise.resolve([allowed, forbidden, other]) },
+      ragEngine: { queryBm25Batch, queryBm25Exhaustive, queryMatchInventory, query } as unknown as RAGQueryEngine,
+    }, 'quartz', undefined, undefined, true, undefined, () => Promise.resolve(['variant']), { scopes: ['Synthetic'] });
+
+    expect(candidatePaths).toHaveBeenCalledOnce();
+    expect(queryBm25Batch).toHaveBeenCalledWith([{ query: 'quartz' }], [{ query: 'quartz', limit: 1 }], [allowed], undefined);
+    expect(queryBm25Exhaustive.mock.calls).toEqual([
+      ['quartz', undefined, undefined, [allowed]],
+      ['variant', undefined, undefined, [allowed]],
+    ]);
+    expect(queryMatchInventory).toHaveBeenCalledWith('quartz', 1, undefined, [allowed]);
+    expect(query.mock.calls.every((call) => call[4]?.allowedSourcePaths?.size === 1 && call[4].allowedSourcePaths.has(allowed))).toBe(true);
+    expect(source?.discoveryCandidates?.map(({ path }) => path)).toEqual([allowed]);
+    expect(source?.inventory).toMatchObject({ indexedCount: 1, notIndexedCount: 1 });
   });
 
   it('facet 검색과 term 집계를 한 batch 호출로 공유한다', async () => {
@@ -795,7 +825,7 @@ describe('검색 의존성 factory', () => {
     expect(source?.discoveryCandidates?.some(
       (candidate) => candidate.path === indexedPaths[100] && candidate.source === 'bm25',
     )).toBe(true);
-    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', undefined, undefined);
+    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', undefined, undefined, indexedPaths);
     expect(source?.reviewPaths).toHaveLength(96);
     expect(source?.reviewPaths).toContain(indexedPaths[0]);
     expect(new Set(source?.candidates?.map((candidate) => candidate.path)).size).toBe(96);
@@ -837,7 +867,7 @@ describe('검색 의존성 factory', () => {
     );
 
     expect(bm25.length + semantic.length).toBe(200);
-    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', undefined, undefined);
+    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', undefined, undefined, indexedPaths);
     expect(source?.reviewPaths).toHaveLength(96);
     expect(new Set(source?.reviewPaths).size).toBe(96);
     for (const candidateSource of ['bm25', 'vector', 'ann', 'structural']) {
@@ -1072,7 +1102,7 @@ describe('검색 의존성 factory', () => {
       '합성 질의',
     );
 
-    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', undefined, undefined);
+    expect(queryBm25Exhaustive).toHaveBeenCalledWith('합성 질의', undefined, undefined, ['Synthetic/Alpha.md', 'Synthetic/Beta.md']);
     expect(source?.exhaustiveReview).toBe(false);
     expect(source?.reviewPaths).toBeUndefined();
     await expect(source?.getIndexedPaths()).resolves.toEqual([

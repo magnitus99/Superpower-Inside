@@ -45,7 +45,7 @@ export class Bm25RuntimeIndex {
      * `allowedPaths`는 batch 전체에 한 번만 적용합니다. aggregate 항목 안의
      * `allowedPaths`는 조용히 무시하지 않고 입력 오류로 처리합니다.
      * 검색은 점수 내림차순으로 정렬한 뒤 source path별 첫 hit만 남기고
-     * rank는 전체 score 목록의 1 기반 순위입니다.
+     * rank는 허용 청크 score 목록의 1 기반 순위입니다.
      */
     batch_search_and_aggregate_json(input_json: string): string;
     /**
@@ -86,6 +86,11 @@ export class Bm25RuntimeIndex {
      * 평문 term 질의는 기존 BM25 점수·순서 계약을 그대로 유지한다.
      */
     search_json(query: string): string;
+    /**
+     * 개별 fallback도 batch와 같은 scoped 대표 경로를 반환합니다.
+     * batch의 입력 크기 제한은 적용하지 않으며 빈 배열 범위는 어느 경로도 허용하지 않습니다.
+     */
+    search_representatives_json(query: string, limit: number, paths_json: string): string;
     /**
      * 질의문(구문·근접·필드·prefix 포함) 상위 score 목록만 JSON 문자열로 반환한다.
      */
@@ -1338,6 +1343,7 @@ export interface InitOutput {
     readonly bm25runtimeindex_remove_document: (a: number, b: number, c: number, d: number) => void;
     readonly bm25runtimeindex_remove_source: (a: number, b: number, c: number, d: number) => void;
     readonly bm25runtimeindex_search_json: (a: number, b: number, c: number) => [number, number];
+    readonly bm25runtimeindex_search_representatives_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly bm25runtimeindex_search_top_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly bm25runtimeindex_search_top_relaxed_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly bm25runtimeindex_source_path_for_doc: (a: number, b: number, c: number) => [number, number];

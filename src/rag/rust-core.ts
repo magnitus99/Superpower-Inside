@@ -585,6 +585,14 @@ export class RustBm25RuntimeIndex {
     }
   }
 
+  searchRepresentativesJson(query: string, limit: number, allowedPaths?: readonly string[]): string {
+    try {
+      return this.inner.search_representatives_json(query, limit, JSON.stringify(allowedPaths ?? null));
+    } catch {
+      return '';
+    }
+  }
+
   /** 여러 질의의 검색·집계를 한 번의 WASM bridge 호출로 반환합니다. */
   batchSearchAndAggregateJson(payload: string): string {
     try {

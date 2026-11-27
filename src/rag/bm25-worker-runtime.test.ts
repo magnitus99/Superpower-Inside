@@ -584,6 +584,34 @@ describe('BM25 worker runtime', () => {
     }
   });
 
+  it('생성된 worker의 대표 경로 batch와 개별 fallback은 같은 범위·점수·순위를 사용한다', async () => {
+    const worker = createNodeWorker();
+    try {
+      const initialized = waitForNodeWorkerResponse(worker, 1);
+      postNodeRequest(worker, { id: 1, operation: 'initialize', wasmBase64: RAG_WASM_BASE64 });
+      await initialized;
+      for (const [id, sourcePath, text] of [
+        [2, 'hidden.md', 'quartz quartz quartz quartz'],
+        [3, 'allowed.md', 'quartz'],
+      ] as const) {
+        const added = waitForNodeWorkerResponse(worker, id);
+        postNodeRequest(worker, { id, operation: 'add', document: { id: String(id), sourcePath, text } });
+        await expect(added).resolves.toMatchObject({ ready: true, totalDocs: id - 1 });
+      }
+      const result = waitForNodeWorkerResponse(worker, 4);
+      postNodeRequest(worker, { id: 4, operation: 'batch', queries: [{ query: 'quartz', limit: 1 }], allowedPaths: ['allowed.md'] });
+      const batch = JSON.parse((await result).batchJson ?? 'null') as { queries: { hits: unknown }[] } | null;
+      const hits = batch?.queries[0]?.hits;
+      expect(hits).toEqual([{ docId: '3', sourcePath: 'allowed.md', rank: 1, score: expect.any(Number) as unknown }]);
+
+      const fallback = waitForNodeWorkerResponse(worker, 5);
+      postNodeRequest(worker, { id: 5, operation: 'search-representatives', query: 'quartz', limit: 1, allowedPaths: ['allowed.md'] });
+      expect(JSON.parse((await fallback).representativeHitsJson ?? 'null') as unknown).toEqual(hits);
+    } finally {
+      await worker.terminate();
+    }
+  });
+
   it('생성된 worker 번들이 위치 정보 없는 스냅샷을 거절하고 저장 원문에서 전량 복구한다', async () => {
     const dbName = 'legacy-snapshot-fixture';
     const legacySnapshot = createLegacySnapshotWithoutPosition();
@@ -899,6 +927,7 @@ interface NodeWorkerResponse {
   snapshotRejected?: boolean;
   hits?: Array<{ docId: string; sourcePath: string; score: number }>;
   batchJson?: string;
+  representativeHitsJson?: string;
   progress?: { processedDocuments: number };
   error?: string;
 }

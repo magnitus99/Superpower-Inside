@@ -219,160 +219,51 @@ describe('RAGQueryEngine', () => {
     const bm25 = await createBm25([]);
     vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(true);
     vi.spyOn(bm25, 'totalDocs', 'get').mockReturnValue(0);
-    const search = vi.spyOn(bm25, 'searchTopWithSources');
+    const search = vi.spyOn(bm25, 'searchRepresentatives');
     const engine = new RAGQueryEngine(null, null, bm25);
 
     await expect(engine.queryBm25Exhaustive('synthetic')).resolves.toEqual([]);
     expect(search).not.toHaveBeenCalled();
   });
 
-  it('exhaustive BM25는 path별 최고 hit만 원래 순위로 반환한다', async () => {
+  it('scoped batch와 개별 fallback은 많은 청크·제외 경로 뒤의 대표 경로와 순위를 보존한다', async () => {
     const bm25 = await createBm25([]);
-    vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(true);
-    vi.spyOn(bm25, 'totalDocs', 'get').mockReturnValue(4);
-    const search = vi.spyOn(bm25, 'searchTopWithSources').mockResolvedValue([
-      { docId: 'a-1', sourcePath: 'Synthetic/A.md', score: 9 },
-      { docId: 'b-1', sourcePath: 'Synthetic/B.md', score: 8 },
-      { docId: 'a-2', sourcePath: 'Synthetic/A.md', score: 7 },
-      { docId: 'c-1', sourcePath: 'Synthetic/C.md', score: 6 },
-    ]);
-    const documents = vi.spyOn(bm25, 'getCorpusDocumentsByIds').mockResolvedValue([
-      {
-        id: 'a-1',
-        sourcePath: 'Synthetic/A.md',
-        text: 'synthetic a',
-        startLine: 4,
-        endLine: 5,
-      },
-      {
-        id: 'b-1',
-        sourcePath: 'Synthetic/B.md',
-        text: 'synthetic b',
-        startLine: 8,
-        endLine: 9,
-      },
-      {
-        id: 'c-1',
-        sourcePath: 'Synthetic/C.md',
-        text: 'synthetic c',
-        startLine: 12,
-        endLine: 13,
-      },
-    ]);
+    const first = 'Synthetic/A.md';
+    const second = 'Synthetic/B.md';
+    const excluded = 'Excluded/Hidden.md';
+    for (let i = 0; i < 300; i++) {
+      bm25.addCorpusDocument({
+        id: `a-${String(i).padStart(3, '0')}`, sourcePath: first,
+        text: 'quartz quartz quartz', startLine: i + 1, endLine: i + 1,
+      });
+      bm25.addDocument(`hidden-${i}`, 'quartz quartz quartz quartz quartz', excluded);
+    }
+    bm25.addCorpusDocument({ id: 'b', sourcePath: second, text: 'quartz other words', startLine: 4, endLine: 6 });
     const engine = new RAGQueryEngine(null, null, bm25);
-
-    await expect(engine.queryBm25Exhaustive('synthetic')).resolves.toEqual([
-      { path: 'Synthetic/A.md', startLine: 4, endLine: 5, score: 9, rank: 1 },
-      { path: 'Synthetic/B.md', startLine: 8, endLine: 9, score: 8, rank: 2 },
-      { path: 'Synthetic/C.md', startLine: 12, endLine: 13, score: 6, rank: 4 },
+    const allowed = [first, second];
+    const fallback = await engine.queryBm25Exhaustive('quartz', 2, undefined, allowed);
+    expect(fallback).toMatchObject([
+      { path: first, rank: 1, startLine: 1, endLine: 1 },
+      { path: second, rank: 301, startLine: 4, endLine: 6 },
     ]);
-    expect(search).toHaveBeenCalledWith('synthetic', 4, undefined);
-    expect(documents).toHaveBeenCalledWith(['a-1', 'b-1', 'c-1']);
-  });
+    await expect(engine.queryBm25Batch([{ query: 'quartz', limit: 2 }], [{ query: 'quartz', limit: 2 }], allowed)).resolves.toMatchObject({
+      matches: [fallback],
+      inventories: [{ totalDocuments: 2, totalChunks: 301, totalOccurrences: 901 }],
+    });
+    await expect(engine.queryBm25Exhaustive('quartz', 1, undefined, allowed)).resolves.toEqual(fallback?.slice(0, 1));
+    await expect(engine.queryBm25Exhaustive('quartz', undefined, undefined, [])).resolves.toEqual([]);
 
-  it('exhaustive BM25는 요청한 고유 경로 수까지만 조회한다', async () => {
-    const bm25 = await createBm25([]);
-    vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(true);
-    vi.spyOn(bm25, 'totalDocs', 'get').mockReturnValue(100);
-    const search = vi.spyOn(bm25, 'searchTopWithSources').mockResolvedValue([
-      { docId: 'a-1', sourcePath: 'Synthetic/A.md', score: 9 },
-      { docId: 'a-2', sourcePath: 'Synthetic/A.md', score: 8 },
-      { docId: 'b-1', sourcePath: 'Synthetic/B.md', score: 7 },
-      { docId: 'c-1', sourcePath: 'Synthetic/C.md', score: 6 },
-    ]);
-    vi.spyOn(bm25, 'getCorpusDocumentsByIds').mockResolvedValue([]);
-    const engine = new RAGQueryEngine(null, null, bm25);
-
-    await expect(engine.queryBm25Exhaustive('synthetic', 2)).resolves.toEqual([
-      { path: 'Synthetic/A.md', score: 9, rank: 1 },
-      { path: 'Synthetic/B.md', score: 7, rank: 3 },
-    ]);
-    expect(search).toHaveBeenCalledWith('synthetic', 100, undefined);
-  });
-
-  it('한 문서의 많은 청크가 다른 문서의 경로 후보를 제거하지 않는다', async () => {
-    const bm25 = await createBm25([]);
-    vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(true);
-    vi.spyOn(bm25, 'totalDocs', 'get').mockReturnValue(302);
-    const hits = [
-      ...Array.from({ length: 300 }, (_, index) => ({
-        docId: `a-${index}`,
-        sourcePath: 'Synthetic/A.md',
-        score: 100 - index,
-      })),
-      { docId: 'b-1', sourcePath: 'Synthetic/B.md', score: 1 },
-      { docId: 'c-1', sourcePath: 'Synthetic/C.md', score: 0.5 },
-    ];
-    const search = vi.spyOn(bm25, 'searchTopWithSources').mockResolvedValue(hits);
-    vi.spyOn(bm25, 'getCorpusDocumentsByIds').mockResolvedValue([]);
-    const engine = new RAGQueryEngine(null, null, bm25);
-
-    await expect(engine.queryBm25Exhaustive('synthetic', 2)).resolves.toEqual([
-      { path: 'Synthetic/A.md', score: 100, rank: 1 },
-      { path: 'Synthetic/B.md', score: 1, rank: 301 },
-    ]);
-    expect(search).toHaveBeenCalledWith('synthetic', 256, undefined);
-  });
-
-  it('한 문서의 청크가 조회 범위를 채우면 더 넓은 범위로 다시 조회한다', async () => {
-    const bm25 = await createBm25([]);
-    vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(true);
-    vi.spyOn(bm25, 'totalDocs', 'get').mockReturnValue(1_000);
-    const hits = [
-      ...Array.from({ length: 256 }, (_, index) => ({
-        docId: `a-${index}`,
-        sourcePath: 'Synthetic/A.md',
-        score: 100 - index * 0.01,
-      })),
-      { docId: 'b-1', sourcePath: 'Synthetic/B.md', score: 1 },
-    ];
-    const search = vi
-      .spyOn(bm25, 'searchTopWithSources')
-      .mockImplementation((_query, limit) => Promise.resolve(hits.slice(0, limit)));
-    vi.spyOn(bm25, 'getCorpusDocumentsByIds').mockResolvedValue([]);
-    const engine = new RAGQueryEngine(null, null, bm25);
-
-    await expect(engine.queryBm25Exhaustive('synthetic', 2)).resolves.toEqual([
-      { path: 'Synthetic/A.md', score: 100, rank: 1 },
-      { path: 'Synthetic/B.md', score: 1, rank: 257 },
-    ]);
-    expect(search.mock.calls.map((call) => call[1])).toEqual([256, 1_000]);
-  });
-
-  it.each([
-    { chunks: 800, lookups: [256, 1_024] },
-    { chunks: 3_000, lookups: [256, 1_024, 4_096] },
-  ])('한 문서가 $chunks개 청크를 차지해도 요청한 고유 경로를 모은다', async ({ chunks, lookups }) => {
-    const bm25 = await createBm25([]);
-    vi.spyOn(bm25, 'isReady', 'get').mockReturnValue(true);
-    vi.spyOn(bm25, 'totalDocs', 'get').mockReturnValue(4_096);
-    const hits = [
-      ...Array.from({ length: chunks }, (_, index) => ({
-        docId: `a-${index}`,
-        sourcePath: 'Synthetic/A.md',
-        score: chunks - index,
-      })),
-      { docId: 'b-1', sourcePath: 'Synthetic/B.md', score: 0.5 },
-    ];
-    const search = vi
-      .spyOn(bm25, 'searchTopWithSources')
-      .mockImplementation((_query, limit) => Promise.resolve(hits.slice(0, limit)));
-    const documents = vi.spyOn(bm25, 'getCorpusDocumentsByIds').mockResolvedValue([]);
-    const engine = new RAGQueryEngine(null, null, bm25);
-
-    await expect(engine.queryBm25Exhaustive('synthetic', 2)).resolves.toEqual([
-      { path: 'Synthetic/A.md', score: chunks, rank: 1 },
-      { path: 'Synthetic/B.md', score: 0.5, rank: chunks + 1 },
-    ]);
-    expect(search.mock.calls.map((call) => call[1])).toEqual(lookups);
-    expect(documents).toHaveBeenCalledWith(['a-0', 'b-1']);
+    // batch 입력 상한을 넘더라도 개별 호출은 정확히 같은 범위를 사용합니다.
+    const oversizedScope = [...allowed, 'z'.repeat(2 * 1024 * 1024)];
+    await expect(engine.queryBm25Batch([{ query: 'quartz' }], [], oversizedScope)).resolves.toBeNull();
+    await expect(engine.queryBm25Exhaustive('quartz', undefined, undefined, oversizedScope)).resolves.toEqual(fallback);
   });
 
   it('검색 중 BM25 runtime이 닫히면 정상적인 0건이 아니라 null을 반환한다', async () => {
     const bm25 = await createBm25([]);
     vi.spyOn(bm25, 'isReady', 'get').mockReturnValueOnce(true).mockReturnValueOnce(false);
     vi.spyOn(bm25, 'totalDocs', 'get').mockReturnValue(10);
-    vi.spyOn(bm25, 'searchTopWithSources').mockResolvedValue([]);
+    vi.spyOn(bm25, 'searchRepresentatives').mockResolvedValue([]);
     const engine = new RAGQueryEngine(null, null, bm25);
 
     await expect(engine.queryBm25Exhaustive('synthetic', 2)).resolves.toBeNull();

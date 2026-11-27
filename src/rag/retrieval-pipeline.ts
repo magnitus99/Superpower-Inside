@@ -31,6 +31,7 @@ export interface RagRetrievalRequest {
   vectorFilter?: VectorSearchFilter;
   isEntryCompatible?: (entry: VectorEntry) => boolean;
   isEntryInScope?: (entry: VectorEntry) => boolean;
+  allowedSourcePaths?: ReadonlySet<string>;
   filterCurrentCandidates?: (candidates: RetrievalCandidate[]) => Promise<RetrievalCandidate[]>;
   excludedProviderIds?: readonly string[];
 }
@@ -301,8 +302,10 @@ export class BM25CandidateProvider implements CandidateProvider {
     if (!this.bm25Index.isReady) return [];
 
     const lookupLimit = request.candidateLimit * 4;
-    const hits = await this.bm25Index.searchTopWithSources(request.question, lookupLimit, signal);
-    if (hits.length === 0) return [];
+    const hits = request.allowedSourcePaths
+      ? await this.bm25Index.searchRepresentatives(request.question, lookupLimit, signal, [...request.allowedSourcePaths])
+      : await this.bm25Index.searchTopWithSources(request.question, lookupLimit, signal);
+    if (!hits?.length) return [];
 
     const hitPlan = planBm25HitLookupRust(hits, request.candidateLimit, 4);
     if (hitPlan === null || hitPlan.hits.length === 0) return [];

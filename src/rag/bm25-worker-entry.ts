@@ -63,7 +63,7 @@ function validateRequest(request: BM25WorkerRequest): void {
   if (isMutation(request.operation)) {
     if (request.revision !== appliedRevision + 1 || request.part !== nextPart)
       throw new Error('Invalid BM25 worker mutation sequence.');
-  } else if (!['serialize', 'search-top', 'aggregate', 'batch'].includes(request.operation)) {
+  } else if (!['serialize', 'search-top', 'search-representatives', 'aggregate', 'batch'].includes(request.operation)) {
     throw new Error('Invalid BM25 worker operation.');
   }
 }
@@ -205,6 +205,15 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
         sourcePath: active.source_path_for_doc(docId) || docId,
         score,
       })),
+    };
+  } else if (request.operation === 'search-representatives') {
+    return {
+      ...runtimeState(),
+      representativeHitsJson: active.search_representatives_json(
+        request.query ?? '',
+        Math.max(0, Math.floor(request.limit ?? 0)),
+        JSON.stringify(request.allowedPaths ?? null),
+      ),
     };
   } else if (request.operation === 'aggregate') {
     return {

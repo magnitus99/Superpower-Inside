@@ -144,7 +144,7 @@ export class Bm25RuntimeIndex {
      * `allowedPaths`는 batch 전체에 한 번만 적용합니다. aggregate 항목 안의
      * `allowedPaths`는 조용히 무시하지 않고 입력 오류로 처리합니다.
      * 검색은 점수 내림차순으로 정렬한 뒤 source path별 첫 hit만 남기고
-     * rank는 전체 score 목록의 1 기반 순위입니다.
+     * rank는 허용 청크 score 목록의 1 기반 순위입니다.
      * @param {string} input_json
      * @returns {string}
      */
@@ -260,6 +260,30 @@ export class Bm25RuntimeIndex {
             return getStringFromWasm0(ret[0], ret[1]);
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * 개별 fallback도 batch와 같은 scoped 대표 경로를 반환합니다.
+     * batch의 입력 크기 제한은 적용하지 않으며 빈 배열 범위는 어느 경로도 허용하지 않습니다.
+     * @param {string} query
+     * @param {number} limit
+     * @param {string} paths_json
+     * @returns {string}
+     */
+    search_representatives_json(query, limit, paths_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.bm25runtimeindex_search_representatives_json(this.__wbg_ptr, ptr0, len0, limit, ptr1, len1);
+            deferred3_0 = ret[0];
+            deferred3_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
     /**

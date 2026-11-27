@@ -1,7 +1,6 @@
 import type { EmbeddingProvider } from '../llm/embedding';
 import type { VectorStore, VectorEntry } from './store';
-import type { IndexedDbBM25Index } from './bm25';
-import type { BM25WorkerHit } from './bm25-worker-runtime';
+import type { BM25BatchSearchHit, IndexedDbBM25Index } from './bm25';
 import { DEFAULT_SEARCH_QUALITY } from './search-defaults';
 import { BM25DocumentCorpusStore, FallbackRetrievalCorpusStore } from './corpus-store';
 import {
@@ -105,6 +104,8 @@ export type RAGCandidateReadiness = 'ready' | 'initializing' | 'unavailable';
 export interface RAGQueryOptions {
   signal?: AbortSignal;
   excludedProviderIds?: readonly string[];
+  /** 현재 요청의 정책·색인·필터 교집합입니다. */
+  allowedSourcePaths?: ReadonlySet<string>;
   /** 일반 채팅의 candidate-first 경로는 BM25 후보를 우선하고 느린 보조 provider를 생략합니다. */
   fastCandidates?: boolean;
   onRetrieved?: (
@@ -241,55 +242,19 @@ export class RAGQueryEngine {
     question: string,
     limit?: number,
     signal?: AbortSignal,
+    allowedPaths?: readonly string[],
   ): Promise<readonly RAGExhaustiveBm25Match[] | null> {
+    signal?.throwIfAborted();
     if (!this.bm25Index?.isReady) return null;
-    const totalDocs = this.bm25Index.totalDocs;
-    const normalizedLimit =
-      limit === undefined
-        ? totalDocs
-        : Math.max(0, Math.min(totalDocs, Math.floor(Number.isFinite(limit) ? limit : 0)));
+    const maxPaths = allowedPaths?.length ?? this.bm25Index.totalDocs;
+    const normalizedLimit = limit === undefined
+      ? maxPaths
+      : Math.max(0, Math.min(maxPaths, Math.floor(Number.isFinite(limit) ? limit : 0)));
     if (normalizedLimit === 0) return [];
-    // 한 파일이 많은 청크를 차지해도 다른 파일의 후보를 잘라내지 않도록
-    // 필요한 대표 경로를 모두 모을 때까지 조회 범위를 넓힙니다.
-    // 청크 조회 상한을 요청 경로 수의 배수로 자르면 긴 문서 뒤의 다른 경로가 누락됩니다.
-    // 충분한 경로를 모으거나 전체 히트를 소진할 때까지만 점진적으로 넓힙니다.
-    let lookupLimit = Math.min(totalDocs, Math.max(normalizedLimit * 4, 256));
-    let representatives = await this.collectBm25Representatives(question, lookupLimit, normalizedLimit, signal);
-    while (representatives.hits.length > 0) {
-      if (representatives.complete || lookupLimit >= totalDocs) break;
-      lookupLimit = Math.min(totalDocs, lookupLimit * 4);
-      representatives = await this.collectBm25Representatives(
-        question,
-        lookupLimit,
-        normalizedLimit,
-        signal,
-      );
-    }
-    if (!this.bm25Index.isReady) return null;
-    const hits = representatives.hits;
-    const seenPaths = new Set<string>();
-    const selected = hits.filter((hit) => {
-      if (seenPaths.has(hit.sourcePath)) return false;
-      seenPaths.add(hit.sourcePath);
-      return seenPaths.size <= normalizedLimit;
-    });
-    const documents = await this.bm25Index.getCorpusDocumentsByIds(
-      selected.map((hit) => hit.docId),
-    );
-    const documentById = new Map(documents.map((document) => [document.id, document]));
-    const representativeByPath = new Map(selected.map((hit) => [hit.sourcePath, hit] as const));
-    const matches: RAGExhaustiveBm25Match[] = [];
-    hits.forEach((hit, index) => {
-      if (representativeByPath.get(hit.sourcePath) !== hit) return;
-      const document = documentById.get(hit.docId);
-      matches.push({
-        path: hit.sourcePath,
-        ...(document?.startLine !== undefined ? { startLine: document.startLine } : {}),
-        ...(document?.endLine !== undefined ? { endLine: document.endLine } : {}),
-        score: hit.score,
-        rank: index + 1,
-      });
-    });
+    const hits = await this.bm25Index.searchRepresentatives(question, normalizedLimit, signal, allowedPaths);
+    if (!hits || !this.bm25Index.isReady) return null;
+    const [matches] = await this.attachBm25Addresses([hits]);
+    signal?.throwIfAborted();
     return matches;
   }
 
@@ -310,13 +275,13 @@ export class RAGQueryEngine {
     inventories: (RustBm25MatchAggregate | null)[];
   } | null> {
     if (!this.bm25Index?.isReady) return null;
-    const totalDocs = this.bm25Index.totalDocs;
+    const maxPaths = allowedPaths?.length ?? this.bm25Index.totalDocs;
     const normalizedQueries = queries.map(({ query, limit }) => ({
       query,
       limit:
         limit === undefined
-          ? totalDocs
-          : Math.max(0, Math.min(totalDocs, Math.floor(Number.isFinite(limit) ? limit : 0))),
+          ? maxPaths
+          : Math.max(0, Math.min(maxPaths, Math.floor(Number.isFinite(limit) ? limit : 0))),
     }));
     const normalizedAggregates = aggregates.map(({ query, limit }) => ({
       query,
@@ -328,26 +293,28 @@ export class RAGQueryEngine {
       allowedPaths,
       signal,
     );
-    if (!batch) return null;
-    const docIds = [...new Set(batch.queries.flatMap(({ hits }) => hits.map((hit) => hit.docId)))];
-    const documents =
-      docIds.length > 0 ? await this.bm25Index.getCorpusDocumentsByIds(docIds) : [];
-    const documentById = new Map(documents.map((document) => [document.id, document]));
-    return {
-      matches: batch.queries.map(({ hits }) =>
-        hits.map((hit) => {
-          const document = documentById.get(hit.docId);
-          return {
-            path: hit.sourcePath,
-            ...(document?.startLine !== undefined ? { startLine: document.startLine } : {}),
-            ...(document?.endLine !== undefined ? { endLine: document.endLine } : {}),
-            score: hit.score,
-            rank: hit.rank,
-          };
-        }),
-      ),
-      inventories: batch.aggregates.map((aggregate) => aggregate),
-    };
+    if (!batch || batch.queries.length !== queries.length || batch.aggregates.length !== aggregates.length) return null;
+    const matches = await this.attachBm25Addresses(batch.queries.map(({ hits }) => hits));
+    signal?.throwIfAborted();
+    return { matches, inventories: [...batch.aggregates] };
+  }
+
+  private async attachBm25Addresses(
+    hitLists: readonly (readonly BM25BatchSearchHit[])[],
+  ): Promise<RAGExhaustiveBm25Match[][]> {
+    const docIds = [...new Set(hitLists.flatMap((hits) => hits.map(({ docId }) => docId)))];
+    const documents = docIds.length > 0 ? await this.bm25Index?.getCorpusDocumentsByIds(docIds) : [];
+    const documentById = new Map(documents?.map((document) => [document.id, document]));
+    return hitLists.map((hits) => hits.map((hit) => {
+      const document = documentById.get(hit.docId);
+      return {
+        path: hit.sourcePath,
+        ...(document?.startLine !== undefined ? { startLine: document.startLine } : {}),
+        ...(document?.endLine !== undefined ? { endLine: document.endLine } : {}),
+        score: hit.score,
+        rank: hit.rank,
+      };
+    }));
   }
 
   /**
@@ -379,26 +346,6 @@ export class RAGQueryEngine {
     return paths;
   }
 
-  /**
-   * 조회 범위 안에서 대표 경로를 모으고, 더 넓혀야 하는지 함께 돌려줍니다.
-   * 히트 수가 조회 범위보다 적으면 색인을 끝까지 본 것으로 판단합니다.
-   */
-  private async collectBm25Representatives(
-    question: string,
-    lookupLimit: number,
-    normalizedLimit: number,
-    signal?: AbortSignal,
-  ): Promise<{ hits: readonly BM25WorkerHit[]; complete: boolean }> {
-    const hits = await this.bm25Index?.searchTopWithSources(question, lookupLimit, signal);
-    if (!hits) return { hits: [], complete: true };
-    const paths = new Set<string>();
-    for (const hit of hits) {
-      paths.add(hit.sourcePath);
-      if (paths.size >= normalizedLimit) break;
-    }
-    return { hits, complete: paths.size >= normalizedLimit || hits.length < lookupLimit };
-  }
-
   async query(
     question: string,
     topK = 5,
@@ -414,7 +361,7 @@ export class RAGQueryEngine {
       return [];
     }
     const threshold = minScore ?? this.minScore;
-    const candidatePaths = await this.resolveCandidatePaths();
+    const candidatePaths = options.allowedSourcePaths ?? await this.resolveCandidatePaths();
     const isInScope = (entry: VectorEntry): boolean =>
       (!candidatePaths || candidatePaths.has(entry.metadata.filePath)) &&
       this.isEntryInQueryScope(entry, filePathPrefixes);
@@ -452,6 +399,7 @@ export class RAGQueryEngine {
         isEntryCompatible: (entry) =>
           isInScope(entry) && this.isEntryCompatible(entry, qVector, filePathPrefixes),
         isEntryInScope: isInScope,
+        allowedSourcePaths: options.allowedSourcePaths,
         filterCurrentCandidates: this.corpusStore
           ? (candidates) => this.filterCurrentCandidates(candidates)
           : undefined,

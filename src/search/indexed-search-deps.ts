@@ -257,12 +257,13 @@ async function collectCapturedIndexedSearchSource(
     return currentAllowed && !currentAllowed.includes(path) ? { revision: null, text: null } : source;
   };
   const allIndexedPaths = await corpus.getIndexedFilePaths();
-  const allowedPaths = await resolveIndexedSearchPaths(host, allIndexedPaths, restriction);
-  const indexedPaths = allowedPaths;
+  const candidatePaths = await listCandidatePaths(host);
+  const indexedPaths = scopeIndexedSearchPaths(host, allIndexedPaths, candidatePaths ?? allIndexedPaths, restriction);
+  const indexedPathSet = new Set(indexedPaths);
   const indexedPathsMs = performance.now() - startedAt;
   if (signal?.aborted) return null;
   const inventoryStartedAt = performance.now();
-  const inventory = await collectInventory(host, indexedPaths, restriction);
+  const inventory = collectInventory(host, indexedPathSet, candidatePaths, restriction);
   const inventoryMs = performance.now() - inventoryStartedAt;
   if (signal?.aborted) return null;
   const searchPlan = planIndexedSearchQueriesRust({
@@ -286,7 +287,7 @@ async function collectCapturedIndexedSearchSource(
   // facet 검색과 term 집계를 한 batch로 가져와 후보·인벤토리가 같은 색인 호출을 공유합니다.
   // batch가 실패하면 후보는 기존 개별 경로로, 집계는 기존 term 루프로 되돌아갑니다.
   const bm25Batch =
-    searchPlan && indexedPaths.length > 0 && host.isIndexing?.() !== true
+    indexedPaths.length > 0 && host.isIndexing?.() !== true
       ? await collectBm25Batch(host.ragEngine, searchPlan, signal, indexedPaths)
       : null;
   const candidateStartedAt = performance.now();
@@ -308,6 +309,8 @@ async function collectCapturedIndexedSearchSource(
         : await collectHybridCandidates(
             host.ragEngine,
             searchPlan,
+            indexedPaths,
+            indexedPathSet,
             signal,
             semanticTimeoutMs,
             bm25Batch?.matches,
@@ -322,6 +325,8 @@ async function collectCapturedIndexedSearchSource(
     const extra = await collectVariantCandidates(
       host.ragEngine,
       queryVariants,
+      indexedPaths,
+      indexedPathSet,
       signal,
       semanticTimeoutMs,
     );
@@ -335,7 +340,7 @@ async function collectCapturedIndexedSearchSource(
   }
   const candidatesMs = performance.now() - candidateStartedAt;
   const reviewPaths = candidateResolution.exhaustiveReview
-    ? selectExhaustiveReviewPaths(indexedPaths, candidateResolution.candidates)
+    ? selectExhaustiveReviewPaths(indexedPathSet, candidateResolution.candidates)
     : undefined;
   const reviewPathSet = new Set(reviewPaths ?? []);
   const matchStartedAt = performance.now();
@@ -437,7 +442,7 @@ async function collectBm25Batch(
       facets.map((facet) => ({ query: facet.query })),
       terms.map((term) => ({
         query: term,
-        limit: Math.max(1, allowedPaths.length || 40),
+        limit: Math.max(1, allowedPaths.length),
       })),
       allowedPaths,
       signal,
@@ -472,30 +477,12 @@ async function collectMatchInventory(
   allowedPaths?: readonly string[],
 ): Promise<readonly IndexedMatchCount[] | undefined> {
   if (!engine) return undefined;
-  const terms: string[] = [];
-  for (const facet of plan.facets) {
-    for (const term of facet.terms) {
-      const normalized = term.trim();
-      if (normalized.length === 0 || terms.includes(normalized)) continue;
-      terms.push(normalized);
-    }
-  }
   const counts: IndexedMatchCount[] = [];
-  for (const term of terms) {
+  for (const term of planTerms(plan)) {
     signal?.throwIfAborted();
     try {
       const aggregate = await engine.queryMatchInventory(term, Math.max(1, allowedPaths?.length ?? 40), signal, allowedPaths);
-      if (!aggregate) continue;
-      counts.push({
-        query: term,
-        totalDocuments: aggregate.totalDocuments,
-        totalChunks: aggregate.totalChunks,
-        totalOccurrences: aggregate.totalOccurrences,
-        documents: aggregate.documents.map(({ sourcePath, occurrences }) => ({
-          sourcePath,
-          occurrences,
-        })),
-      });
+      if (aggregate) counts.push(toMatchInventory(term, aggregate));
     } catch (error) {
       if (signal?.aborted) throw error;
       // 집계가 없어도 근거 기반 답변은 계속한다. 수치 없이 답한 사실은 dossier가 알린다.
@@ -516,6 +503,15 @@ export async function resolveIndexedSearchPaths(
   restriction?: { scopes: readonly string[]; filters?: RustIndexedEvidenceFilters },
 ): Promise<string[]> {
   const allowedPaths = await listCandidatePaths(host) ?? paths;
+  return scopeIndexedSearchPaths(host, paths, allowedPaths, restriction);
+}
+
+function scopeIndexedSearchPaths(
+  host: IndexedSearchDepsHost,
+  paths: readonly string[],
+  allowedPaths: readonly string[],
+  restriction?: { scopes: readonly string[]; filters?: RustIndexedEvidenceFilters },
+): string[] {
   const scoped = scopeIndexedDiscoveryRust({
     originalPaths: paths, allowedPaths,
     originalScopes: restriction?.scopes ?? [], scopes: restriction?.scopes ?? [],
@@ -547,10 +543,9 @@ export async function resolveIndexedSearchPaths(
  * 한 facet이 검토 예산을 독점하지 않도록 비교 질의는 facet별 순위를 번갈아 선택합니다.
  */
 function selectExhaustiveReviewPaths(
-  indexedPaths: readonly string[],
+  indexed: ReadonlySet<string>,
   candidates: readonly IndexedSearchCandidate[] | undefined,
 ): string[] {
-  const indexed = new Set(indexedPaths);
   const selected: string[] = [];
   const seen = new Set<string>();
   for (const source of ['structural', 'ann', 'vector', 'bm25', undefined] as const) {
@@ -600,28 +595,27 @@ function selectExhaustiveReviewPaths(
  * 색인 완료 수와 허용 범위 대비 미색인 수를 센다.
  * metadata 때문에 엔진 입력에서 빠진 경로는 chat이 unreviewedCount에 가산한다.
  */
-async function collectInventory(
+function collectInventory(
   host: IndexedSearchDepsHost,
-  indexedPaths: readonly string[],
+  indexedPaths: ReadonlySet<string>,
+  allCandidatePaths: readonly string[] | undefined,
   restriction?: { scopes: readonly string[]; filters?: RustIndexedEvidenceFilters },
-): Promise<IndexedEvidenceInventory> {
+): IndexedEvidenceInventory {
   const candidateCount = restriction ? undefined : host.getCandidateCount?.();
   if (Number.isSafeInteger(candidateCount) && candidateCount !== undefined && candidateCount >= 0) {
     return {
-      indexedCount: indexedPaths.length,
+      indexedCount: indexedPaths.size,
       unreviewedCount: 0,
-      notIndexedCount: Math.max(0, candidateCount - indexedPaths.length),
+      notIndexedCount: Math.max(0, candidateCount - indexedPaths.size),
     };
   }
-  const allCandidatePaths = await listCandidatePaths(host);
   const candidatePaths = allCandidatePaths && restriction
-    ? await resolveIndexedSearchPaths(host, allCandidatePaths, restriction) : allCandidatePaths;
-  const indexed = new Set(indexedPaths);
+    ? scopeIndexedSearchPaths(host, allCandidatePaths, allCandidatePaths, restriction) : allCandidatePaths;
   return {
-    indexedCount: indexedPaths.length,
+    indexedCount: indexedPaths.size,
     unreviewedCount: 0,
     notIndexedCount: candidatePaths
-      ? candidatePaths.filter((path) => !indexed.has(path)).length
+      ? candidatePaths.filter((path) => !indexedPaths.has(path)).length
       : 0,
   };
 }
@@ -667,6 +661,8 @@ export function createPluginSearchPort(host: IndexedSearchDepsHost): SearchPort 
 async function collectVariantCandidates(
   engine: RAGQueryEngine | null,
   variants: readonly string[],
+  allowedPaths: readonly string[],
+  allowedPathSet: ReadonlySet<string>,
   signal?: AbortSignal,
   semanticTimeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
 ): Promise<IndexedSearchCandidate[]> {
@@ -681,7 +677,7 @@ async function collectVariantCandidates(
       scopes: [],
     });
     if (!plan) continue;
-    const resolution = await collectHybridCandidates(engine, plan, signal, semanticTimeoutMs);
+    const resolution = await collectHybridCandidates(engine, plan, allowedPaths, allowedPathSet, signal, semanticTimeoutMs);
     for (const candidate of resolution.candidates ?? []) {
       collected.push({ ...candidate, queryIndex: 0 });
     }
@@ -706,6 +702,8 @@ function mergeCandidateLists(
 async function collectHybridCandidates(
   engine: RAGQueryEngine | null,
   plan: IndexedSearchPlan,
+  allowedPaths: readonly string[],
+  allowedPathSet: ReadonlySet<string>,
   signal?: AbortSignal,
   semanticTimeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
   bm25ByFacet?: readonly (readonly RAGExhaustiveBm25Match[])[],
@@ -727,8 +725,8 @@ async function collectHybridCandidates(
       const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
         bm25ByFacet
           ? Promise.resolve(bm25ByFacet[facetIndex] ?? [])
-          : Promise.resolve().then(() => engine.queryBm25Exhaustive(facet.query, undefined, signal)),
-        querySemanticCandidates(engine, facet, signal, semanticTimeoutMs).finally(() => {
+          : Promise.resolve().then(() => engine.queryBm25Exhaustive(facet.query, undefined, signal, allowedPaths)),
+        querySemanticCandidates(engine, facet, allowedPathSet, signal, semanticTimeoutMs).finally(() => {
           semanticDurationMs = performance.now() - semanticStartedAt;
         }),
       ]);
@@ -885,6 +883,7 @@ function compactSemanticQuery(facet: IndexedSearchPlan['facets'][number]): strin
 async function querySemanticCandidates(
   engine: RAGQueryEngine,
   facet: IndexedSearchPlan['facets'][number],
+  allowedPaths: ReadonlySet<string>,
   signal?: AbortSignal,
   timeoutMs = SEMANTIC_CANDIDATE_TIMEOUT_MS,
 ): Promise<QueryResult[]> {
@@ -911,6 +910,7 @@ async function querySemanticCandidates(
           engine.query(query, limit, undefined, undefined, {
             signal: controller.signal,
             excludedProviderIds: ['bm25'],
+            allowedSourcePaths: allowedPaths,
           }),
         ),
       ),
@@ -920,6 +920,7 @@ async function querySemanticCandidates(
     // 전체 질문과 핵심 term 질의의 후보를 점수순으로 합칩니다.
     const merged = new Map<string, QueryResult>();
     for (const result of results.flat()) {
+      if (!allowedPaths.has(result.sourcePath)) continue;
       const current = merged.get(result.sourcePath);
       if (!current) {
         merged.set(result.sourcePath, result);

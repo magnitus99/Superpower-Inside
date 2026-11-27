@@ -23,6 +23,8 @@ TypeScript와의 경계는 `src/rag/rust-core.ts`의 입출력 매핑이며 WASM
 
 토큰 규칙이 바뀐 nonempty 색인에 일부 새 문서를 추가·교체·제거했다고 전체 색인을 새 버전으로 표시하지 않는다. 빈 색인·명시적 전체 재구성만 새 토큰 계약을 채택할 수 있다. 기존 직렬화의 버전·문서와 제한 읽기를 보존하며 버전 불일치를 데이터 삭제·벡터 재생성 권한으로 해석하지 않는다.
 
+BM25 발견의 `allowedPaths`는 정확한 source path 집합이다. 생략/null은 무제한, 빈 배열은 빈 범위다. batch와 개별 대표 경로 검색은 모두 허용 청크만 사전 확장·문서 빈도·평균 길이·점수에 반영해 허용 집합만 색인한 것과 같은 결과를 낸다. rank는 허용 청크 점수 내림차순의 1 기반 순위(동점은 기존 순서)다. 그 순위에서 경로별 첫 청크를 남긴 뒤 요청 경로 상한을 적용하며 별도의 10,000건 절단은 없다. 정확 집계도 같은 범위를 적용한 뒤 총계와 요청 문서 목록을 별도로 반환한다.
+
 BM25 정확 집계는 토큰 위치와 구문을 세며 원문 부분문자열 집계와 다른 단위다. `LiteralSourceScanner`는 LF로 나눈 행 전체에 NFKC→Unicode lowercase만 적용한 needle별 비중첩 부분 일치를 소유한다. CR·공백·구두점을 제거하거나 행을 가로질러 일치시키지 않는다. 같은 원문 범위로 확장된 두 발생도 합치지 않으며 고유 문서·일치 원문 행·발생을 별도로 센다. 반환 주소는 원문 전체 byte/UTF-16 exclusive 범위·1기반 행과 행 내부 정규화 UTF-8 범위다. 추출 구간의 0기반 inclusive 좌표는 원장 index로만 연결하며 reference 자체는 verified 인용이 아니다.
 
 scanner는 한 원문·한 정규화 행·한 출력 페이지만 유지한다. 순서 있는 원문 블록의 실제 hash8·길이·charge를 seal한 뒤에만 결과를 배출하고, 페이지에 넣지 못한 발생의 cursor를 소비하지 않는다. `LiteralInventoryTotals`는 완전한 source summary만 UTF-16 경로 순서·중복·needle identity·expected source 수·안전 정수 overflow를 검사해 합산한다. 누락·부분·미완료·한도 실패는 성공 0이나 BM25 숫자로 대체하지 않는다. needle 1..128(각 UTF-16 4096·합 65536), header 1MiB, summary 16MiB, 페이지 1..256건·1..1MiB를 보정 없이 검증한다. 같은 일치 조건의 발견·집계 대조와 남은 검증 상태는 `engineering-contract`가 소유한다.
