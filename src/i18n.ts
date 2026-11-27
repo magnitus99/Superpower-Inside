@@ -2299,7 +2299,7 @@ const ko: I18nKeys = {
   totalVectorsDesc: '파일 수정 시각·크기 기준으로 현재 문서와 동기화된 임베딩 벡터 개수',
   targetFileTypes: '대상 파일 형식',
   targetFileTypesDesc:
-    '경로·채팅 폴더·확장자 제외를 적용한 지원 텍스트 파일입니다. 같은 파일을 키워드·의미 검색과 채팅 도구에서 사용합니다.',
+    '제외 정책을 적용한 뒤 남은 후보 수이며, 추출 성공 수는 아닙니다. 확장자가 없거나 낯설어도 실제 바이트를 평문으로 읽을 수 있으면 포함합니다. 구조 문서 13종은 PDF(페이지 텍스트·OCR), EPUB(책 본문), DOCX·DOTX·ODT·HWPX(문서 본문), PPTX·POTX·PPSX·ODP(슬라이드), XLSX·XLTX·ODS(시트·셀)를 읽습니다. 일부 페이지만 읽거나 메타데이터만 얻은 경우 전체 본문을 검색할 수 없습니다.',
   targetFileTypesEmpty: '현재 설정 기준으로 RAG 대상 파일이 없습니다.',
   excludeRecommendations: '제외 추천',
   excludeRecommendationEmpty: '추가로 제외할 파일 형식 추천이 없습니다.',
@@ -4517,7 +4517,7 @@ const en: I18nKeys = {
   totalVectorsDesc: 'Embedding vectors synchronized with documents by file mtime and size',
   targetFileTypes: 'Target File Types',
   targetFileTypesDesc:
-    'Supported text files after path, chat folder, and extension exclusions. Keyword search, semantic search, and chat tools share this scope.',
+    'Counts show candidates after exclusions, not successful extractions. Files with unknown or no extensions qualify if their bytes decode as plain text. The 13 structured formats are PDF (page text and OCR), EPUB (book text), DOCX, DOTX, ODT and HWPX (document text), PPTX, POTX, PPSX and ODP (slides), and XLSX, XLTX and ODS (sheets and cells). If only some pages or metadata are available, the full text is not searchable.',
   targetFileTypesEmpty: 'No files are currently eligible for RAG.',
   excludeRecommendations: 'Exclude Recommendations',
   excludeRecommendationEmpty: 'No additional file types are recommended for exclusion.',

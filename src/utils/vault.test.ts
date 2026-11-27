@@ -364,6 +364,30 @@ describe('RAG 후보 파일', () => {
     );
   });
 
+  it.each(['planRagFileTypeSummaryRust', 'planRagFileContentProbeIndicesRust'] as const)(
+    '%s 부재를 빈 집계나 검증된 평문으로 표시하지 않는다', async (planner) => {
+      const spy = vi.spyOn(rustCore, planner).mockReturnValueOnce(null);
+      try {
+        await expect(getRagFileTypeSummary(createVault([createFile('note.md')]), baseRagConfig, baseChatConfig)).rejects.toThrow();
+      } finally { spy.mockRestore(); }
+    },
+  );
+
+  it('두 원장이 빈 원본과 정책 제외를 분리하고 XLSX·XLTX 원본 예산을 읽기 전에 적용한다', async () => {
+    const limit = 128 * 1024 * 1024;
+    const files = [createFile('empty.txt', 0), createFile('Archive/private.txt', 0), createFile('allowed.xlsx', limit),
+      createFile('allowed.xltx', limit), createFile('large.xlsx', limit + 1), createFile('large.xltx', limit + 1)];
+    const vault = createVault(files);
+    const reads = vi.spyOn(vault, 'readBinary');
+    for (const inventory of [getRagIndexingManifest(vault, baseRagConfig, baseChatConfig), await getRagFileInventory(vault, baseRagConfig, baseChatConfig)]) {
+      expect(inventory.candidates).toEqual(files.slice(2, 4));
+      expect(inventory.policyExcluded).toEqual([files[1]]);
+      expect(inventory.emptyFiles).toEqual([files[0]]);
+      expect(inventory.failures).toEqual(files.slice(4).map((file) => ({ file, reason: 'memory-budget' })));
+    }
+    expect(reads).not.toHaveBeenCalled();
+  });
+
   it('파일 형식별 대상 수와 제외 추천을 계산한다', async () => {
     const vault = createVault(
       [createFile('note.md'), createFile('src/main.ts'), createFile('.env')],

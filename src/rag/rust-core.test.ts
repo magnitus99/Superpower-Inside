@@ -1458,7 +1458,7 @@ describe('Rust WASM RAG core bridge', () => {
     ).toEqual({
       candidateIndices: [0, 1, 4],
       failures: [{ index: 5, reason: 'ambiguous-encoding' }, { index: 9, reason: 'probe-unavailable' }],
-      policyExcludedIndices: [2, 3, 6, 7, 8], unsupportedIndices: [],
+      emptyIndices: [3, 8], policyExcludedIndices: [2, 6, 7], unsupportedIndices: [],
       summaryInputs: [
         { filePath: 'note.md', extension: 'MD', indexable: true },
         { filePath: 'src/main.ts', extension: 'ts', indexable: true },
@@ -1506,7 +1506,7 @@ describe('Rust WASM RAG core bridge', () => {
 
     expect(planRagFileIndexabilityRust(files, [], [], [])).toEqual({
       candidateIndices: [6, 7],
-      failures: [], policyExcludedIndices: [0, 1, 2, 3, 4, 5], unsupportedIndices: [],
+      failures: [], emptyIndices: [], policyExcludedIndices: [0, 1, 2, 3, 4, 5], unsupportedIndices: [],
       summaryInputs: [
         { filePath: '.npmrc', extension: '', indexable: false, recommendationReason: 'sensitive' },
         {
@@ -1548,13 +1548,14 @@ describe('Rust WASM RAG core bridge', () => {
   it('inventory wire는 실패 원장·분할 index와 입력 사유를 검증한다', () => {
     const files = [{ filePath: 'damaged.txt', fileName: 'damaged.txt', extension: 'txt', size: 10 }];
     const base = { candidateIndices: [], summaryInputs: [],
-      failures: [{ index: 0, reason: 'ambiguous-encoding' }], policyExcludedIndices: [], unsupportedIndices: [] };
+      failures: [{ index: 0, reason: 'ambiguous-encoding' }], emptyIndices: [], policyExcludedIndices: [], unsupportedIndices: [] };
     rustWireExports.plan_rag_file_indexability_json.mockReturnValueOnce(JSON.stringify(base));
     expect(planRagFileIndexabilityRust(files, [], [], [])).toEqual(base);
     for (const wire of [
       { ...base, failures: [{ index: 1, reason: 'read-failed' }] },
       { ...base, failures: [{ index: 0, reason: '' }] },
       { ...base, candidateIndices: [0] },
+      { ...base, emptyIndices: [0] },
       { ...base, failures: [] },
       { candidateIndices: [], summaryInputs: [] },
     ]) {

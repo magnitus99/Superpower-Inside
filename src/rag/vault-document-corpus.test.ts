@@ -12,6 +12,7 @@ import { VaultIndexer } from './indexer';
 import { MemoryVectorStore } from './store';
 import * as rustCore from './rust-core';
 import * as sourceSnapshots from './source-snapshot';
+import * as sourceAccess from './source-access';
 
 const stores: IndexedDbDocumentCorpusStore[] = [];
 const names: string[] = [];
@@ -126,6 +127,28 @@ describe('파일 중심 문서 생명주기', () => {
       expect((await source.store.getSourceBodyHeaders(null, 8))[0]?.body).toMatchObject({ version: 1, blockCount: 1 });
       expect((await source.store.getSourceBodyBlocks(source.file.path, 0, 8))[0]?.text).toBe('현재 원문 근거');
     } finally { hash.mockRestore(); chunk.mockRestore(); prepare.mockRestore(); }
+  });
+
+  it('부분 PDF의 실제 snapshot은 저장하되 성공 또는 skip으로 집계하지 않는다', async () => {
+    const source = fixture('notes/partial.pdf');
+    const text = 'synthetic valid PDF page';
+    const segments = [{ label: 'Page 1', startLine: 0, endLine: 0 }];
+    const extracted: sourceAccess.SourceText = { text, segments, completeness: { status: 'partial', pageCount: 2,
+      missingPageCount: 1, missingPages: [{ pageNumber: 2, reason: 'page-error' }], failures: [] } };
+    const read = vi.spyOn(sourceAccess, 'readSourceText').mockImplementation((_vault, file, options) => {
+      if (!options?.preparation) throw new Error('Synthetic PDF source preparation config is missing.');
+      const prepared = rustCore.prepareSourceTextRust(file.extension,
+        { ...extracted, ok: true, format: file.extension, reason: null }, options.preparation);
+      if (!prepared?.prepared) throw new Error('Synthetic PDF source preparation failed.');
+      return Promise.resolve({ ...extracted, prepared: prepared.prepared });
+    });
+    try {
+      const result = await source.corpus.refresh();
+      expect((await source.store.getDocuments()).map(({ text }) => text)).toEqual([text]);
+      expect(await source.store.getFileIndexRecords()).toEqual([expect.objectContaining({ filePath: source.file.path,
+        sourceMetadata: { segments, completeness: extracted.completeness } })]);
+      expect(result).toEqual({ documents: [], skipped: 0, partial: 1 });
+    } finally { read.mockRestore(); }
   });
 
   it('lexical 빈 파일도 worker의 실제 revision으로 저장하고 가짜 본문·좌표를 만들지 않는다', async () => {

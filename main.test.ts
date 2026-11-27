@@ -594,6 +594,36 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     } finally { read.mockRestore(); }
   });
 
+  it.each(['cached', 'cached-with-row', 'fresh'] as const)('MAIN proof는 %s binary를 누락 원장에 남긴다', async (mode) => {
+    const { TFile } = await import('obsidian');
+    const { getRagFileInventory, getRagIndexingManifest } = await import('./src/utils/vault');
+    const text = 'synthetic existing source';
+    const bytes = new TextEncoder().encode('PK\u0003\u0004fake');
+    const file = Object.assign(new TFile(), { path: 'Synthetic/opaque.unknown', extension: 'unknown', stat: { ctime: 1, mtime: 1, size: text.length } });
+    const files: TFile[] = mode === 'cached-with-row' ? [file] : [];
+    const plugin = await lexicalRuntime({ files, contents: new Map([[file.path, text]]) });
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    if (mode !== 'cached-with-row') files.push(file);
+    file.stat.mtime++;
+    file.stat.size = bytes.length;
+    const read = vi.spyOn(plugin.app.vault, 'readBinary').mockResolvedValue(bytes.buffer);
+    try {
+      expect(await plugin.documentCorpus!.getIndexedFilePaths()).toEqual(mode === 'cached-with-row' ? [file.path] : []);
+      const { vault } = plugin.app;
+      const { rag, chat } = plugin.settings;
+      if (mode !== 'fresh') expect((await getRagFileInventory(vault, rag, chat)).unsupported).toEqual([file]);
+      const inventory = getRagIndexingManifest(vault, rag, chat);
+      expect(mode === 'fresh' ? inventory.candidates : inventory.unsupported).toEqual([file]);
+      read.mockClear();
+      runtime.io!.invalidate();
+      expect(await plugin['refreshRagRuntimeCheckpoint'](runtime)).toBe(true);
+      expect(read).toHaveBeenCalledTimes(mode === 'fresh' ? 1 : 0);
+      expect(plugin.getRagGenerationSnapshot().serving).toMatchObject({
+        terminal: 'partial', proof: { failures: [{ path: file.path, reason: 'binary' }] },
+      });
+    } finally { read.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
   it('MAIN 완료 seal은 실제 corpus head와 현재 BM25 적용 checkpoint를 기록한다', async () => {
     const plugin = await lexicalRuntime();
     const saved = await plugin['getRagGenerationManifest']().read();
@@ -840,6 +870,26 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     } finally { collect.mockRestore(); read.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
   });
 
+  it('dense modify의 checkpoint는 debounce된 vector 쓰기 전 partial 검증을 반복하지 않는다', async () => {
+    const { plugin, runtime, file, contents } = await denseReadWorkflowFixture();
+    const { OpenAIEmbeddingProvider } = await import('./src/llm/embedding');
+    const embed = vi.spyOn(OpenAIEmbeddingProvider.prototype, 'embedBatch').mockImplementation((texts) => Promise.resolve(texts.map(() => [1, 0])));
+    const schedule = vi.spyOn(runtime.ragIndexingScheduler!, 'scheduleFile');
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
+    try {
+      const changed = 'synthetic changed debounce evidence';
+      contents.set(file.path, changed);
+      file.stat.mtime++; file.stat.size = changed.length;
+      plugin.app.vault.trigger('modify', file);
+      await vi.waitFor(() => expect(schedule).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(embed).toHaveBeenCalledOnce());
+      await runtime.ragIndexingScheduler!.waitForIdle();
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      expect(collect).toHaveBeenCalledOnce();
+      expect(plugin.getRagGenerationSnapshot().coverage).toBe('complete');
+    } finally { embed.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
   it('no-progress writer: 같은 세대 명시 manual update는 무변경이어도 새 검증을 요구한다', async () => {
     const { plugin, runtime } = await denseReadWorkflowFixture();
     const seal = await plugin['readRagRuntimeSeal'](runtime);
@@ -852,6 +902,44 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       expect(await plugin['readRagRuntimeSeal'](runtime)).toEqual(seal);
       expect(collect).toHaveBeenCalledOnce();
     } finally { collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['pause', 'owner'] as const)('명시 업데이트 manifest 조회 중 %s 변경은 이전 요청의 재개를 막는다', async (boundary) => {
+    const { plugin, runtime } = await denseReadWorkflowFixture();
+    const active = plugin['activeRagRuntime'];
+    const manifest = plugin['getRagGenerationManifest']();
+    const state = await manifest.read();
+    vi.spyOn(manifest, 'read').mockImplementationOnce(() => {
+      if (boundary === 'pause') plugin['ragAutoRecoveryPausedByUser'] = true;
+      else plugin['activeRagRuntime'] = { ...active!, io: new (runtime.io!.constructor as typeof import('./src/rag/runtime-generation').RagRuntimeWorkBarrier)() };
+      return Promise.resolve(state);
+    });
+    const resume = vi.spyOn(manifest, 'setPaused');
+    try {
+      await expect(plugin.startRagUpdate()).rejects.toThrow();
+      expect(resume).not.toHaveBeenCalled();
+    } finally { plugin['activeRagRuntime'] = active; await plugin['drainRagRuntimeSnapshot'](runtime); }
+  });
+
+  it.each(['partial', 'cas'] as const)('동일 세대 명시 업데이트는 최종 %s 게시 결과를 기다린다', async (outcome) => {
+    const { plugin, runtime, file } = await denseReadWorkflowFixture();
+    const manifest = plugin['getRagGenerationManifest']();
+    const original = plugin['collectRagRuntimeProof'].bind(plugin);
+    const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never).mockImplementation((async (...args: Parameters<typeof original>) => ({
+      ...await original(...args), failures: [{ path: file.path, reason: 'read-failed' }],
+    })) as never);
+    const publish = vi.spyOn(manifest, 'refreshActive');
+    if (outcome === 'cas') publish.mockResolvedValue(null);
+    try {
+      const update = plugin.startRagUpdate();
+      if (outcome === 'cas') await expect(update).rejects.toThrow();
+      else await expect(update).resolves.toMatchObject({ partial: 1 });
+      expect(publish).toHaveBeenCalledOnce();
+    } finally {
+      await runtime.ragIndexingScheduler!.waitForIdle();
+      await plugin['ragCheckpointRuns']?.get(runtime.io!);
+      publish.mockRestore(); collect.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime);
+    }
   });
 
   it('원문 검증 워크플로: 진행 중 partial checkpoint의 동일 입력 중복 요청은 한 번만 정착한다', async () => {
@@ -1323,7 +1411,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     const gate = new Promise<void>((resolve) => { releaseProof = resolve; });
     const measure = vi.fn(() => lag);
     Object.assign(plugin, { ragPerformanceGuard: { measureEventLoopLag: measure, getState: () => null } });
-    let proof: Promise<void> | undefined;
+    let proof: Promise<boolean> | undefined;
     const original = plugin['collectRagRuntimeProof'].bind(plugin);
     const collect = vi.spyOn(plugin, 'collectRagRuntimeProof' as never);
     if (boundary === 'pause') plugin.cancelRagIndexing({ byUser: true });
@@ -1353,7 +1441,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     if (boundary === 'repair') await runtime.io!.run(() => store['db'].fileIndex.clear());
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    let proof: Promise<void> | undefined;
+    let proof: Promise<boolean> | undefined;
     const pending = boundary !== 'repair' ? await runtime.vaultIndexer!.getAutomaticRecoveryPendingState({}, { repair: false }) : undefined;
     const original = store.getFileIndexRecords.bind(store);
     const records = vi.spyOn(store, 'getFileIndexRecords').mockImplementationOnce(async (options) => {
@@ -1622,7 +1710,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     const read = vi.spyOn(source, 'readSourceFileSnapshot');
     const request = vi.spyOn(plugin, 'refreshRagRuntimeCheckpoint' as never);
     const run = vi.spyOn(runtime.io!, 'run');
-    let pending: Promise<void> | undefined;
+    let pending: Promise<boolean> | undefined;
     try {
       if (inFlight) {
         const row = (await runtime.documentCorpus!.getFileIndexRecords())[0];
@@ -2747,19 +2835,64 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     } finally { snapshot.documentCorpus?.close(); snapshot.bm25Index?.close(); }
   });
 
-  it('lexical-only 명시 업데이트도 동일 UUID에서 새 원문을 증분 반영한다', async () => {
-    const plugin = await lexicalRuntime();
+  it('cold lexical 명시 업데이트는 cutover한 세대의 최초 실제 갱신을 반환한다', async () => {
+    const { default: PluginClass } = await import('./main.ts');
+    const { DEFAULT_SETTINGS } = await import('./src/settings');
+    const { TFile } = await import('obsidian');
+    const text = 'synthetic cold lexical evidence';
+    const file = Object.assign(new TFile(), { path: 'Synthetic/cold-lexical-update.md', basename: 'cold-lexical-update', extension: 'md', stat: { ctime: 1, mtime: 1, size: text.length } });
+    const plugin = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    Object.assign(plugin, { app: createApp({ files: [file], contents: new Map([[file.path, text]]) }), manifest: { id: 'superpower-inside' }, settings: {
+      ...DEFAULT_SETTINGS, providerProfiles: [], rag: { ...DEFAULT_SETTINGS.rag, embeddingModelRef: '', enableBM25: true },
+    } });
+    expect(plugin.getRagGenerationSnapshot().serving).toBeNull();
+    try {
+      const result = await plugin.startRagUpdate();
+      const serving = plugin.getRagGenerationSnapshot().serving;
+      expect(serving?.terminal).toBe('complete');
+      expect((await plugin['getRagGenerationManifest']().read()).active?.id).toBe(serving?.id);
+      expect((await plugin.documentCorpus?.getDocuments())?.map(({ text }) => text)).toEqual([text]);
+      expect(result).toMatchObject({ indexed: 1, vectors: 0, skipped: 0, documents: [file.path] });
+      expect(result!.durationMs).toBeGreaterThan(0);
+      expect(await plugin.startRagUpdate()).toMatchObject({ indexed: 0, vectors: 0, skipped: 1, documents: [] });
+    } finally { await plugin['drainRagRuntimeSnapshot'](plugin['captureRagRuntimeSnapshot']()); }
+  });
+
+  it.each(['complete', 'partial'] as const)('lexical-only 명시 업데이트는 실제 갱신·스킵과 최종 %s를 반환한다', async (terminal) => {
     const { TFile } = await import('obsidian');
     const text = 'synthetic lexical increment';
-    const file = Object.assign(new TFile(), { path: 'Synthetic/lexical-increment.md', extension: 'md', stat: { ctime: 1, mtime: 1, size: text.length } });
-    vi.spyOn(plugin.app.vault, 'getFiles').mockReturnValue([file]);
-    vi.spyOn(plugin.app.vault, 'getAbstractFileByPath').mockReturnValue(file);
-    vi.spyOn(plugin.app.vault, 'readBinary').mockResolvedValue(new TextEncoder().encode(text).buffer);
-    Object.assign(plugin.app, { metadataCache: { getFileCache: () => null } });
-    const id = plugin.getRagGenerationSnapshot().serving?.id;
-    await plugin.startRagUpdate();
-    expect(plugin.getRagGenerationSnapshot().serving?.id).toBe(id);
-    expect(await plugin.documentCorpus?.getIndexedFilePaths()).toEqual([file.path]);
+    const makeFile = (name: string) => Object.assign(new TFile(), { path: `Synthetic/${name}.md`, basename: name, extension: 'md', stat: { ctime: 1, mtime: 1, size: text.length } });
+    const unchanged = makeFile('lexical-unchanged');
+    const added = makeFile('lexical-increment');
+    const files = [unchanged];
+    const plugin = await lexicalRuntime({ files, contents: new Map(files.concat(added).map((file) => [file.path, text])) });
+    const runtime = plugin['captureRagRuntimeSnapshot']();
+    const id = runtime.generation?.id;
+    files.push(added);
+    const source = await import('./src/rag/source-snapshot');
+    const { SourceReadError } = await import('./src/rag/source-access');
+    const originalRead = source.readSourceFileSnapshot;
+    let verifying = false;
+    const read = vi.spyOn(source, 'readSourceFileSnapshot').mockImplementation((...args) =>
+      terminal === 'partial' && verifying && args[1] === added
+        ? Promise.reject(new SourceReadError('read-failed')) : originalRead(...args));
+    const originalProof = plugin['collectRagRuntimeProof'].bind(plugin);
+    const proof = vi.spyOn(plugin, 'collectRagRuntimeProof' as never).mockImplementation((async (...args: Parameters<typeof originalProof>) => {
+      verifying = true;
+      try { return await originalProof(...args); }
+      finally { verifying = false; }
+    }) as never);
+    const write = vi.spyOn(plugin.documentCorpus!, 'replaceFileDocuments');
+    try {
+      const result = await plugin.startRagUpdate();
+      expect(plugin.getRagGenerationSnapshot().serving).toMatchObject({ id, terminal });
+      expect(write).toHaveBeenCalledOnce();
+      expect(write.mock.calls[0][0]).toBe(added.path);
+      expect(await plugin.documentCorpus?.getIndexedFilePaths()).toEqual([added.path, unchanged.path]);
+      expect(result).toMatchObject({ indexed: 1, vectors: 0, skipped: 1, documents: [added.path] });
+      expect(result!.durationMs).toBeGreaterThan(0);
+      expect(result?.partial ?? 0).toBe(terminal === 'partial' ? 1 : 0);
+    } finally { write.mockRestore(); proof.mockRestore(); read.mockRestore(); await plugin['drainRagRuntimeSnapshot'](runtime); }
   });
 
   it('검색 무관 채팅 설정은 동일 runtime과 UUID를 유지한다', async () => {

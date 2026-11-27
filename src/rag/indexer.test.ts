@@ -1731,10 +1731,10 @@ function createVault(contents: Map<string, string>, binaries?: Map<string, Uint8
   } as unknown as Vault;
 }
 
-function createEventVault(contents: Map<string, string>): Vault & {
+function createEventVault(contents: Map<string, string>, binaries?: Map<string, Uint8Array>): Vault & {
   emitModify(file: TFile): Promise<void>;
 } {
-  const baseVault = createVault(contents);
+  const baseVault = createVault(contents, binaries);
   type ListenerRef = { name: string; callback: (file: TFile) => void | Promise<void> };
   const listeners = new Set<ListenerRef>();
   return {
@@ -2072,6 +2072,156 @@ describe('준비 원문의 lexical-first 내구 경계', () => {
       expect(second?.sourceMetadata?.metadataParts).toHaveLength(1);
       expect((await vectors.getEntries())[0].vector).toEqual([1, 0]);
     } finally { reader.mockRestore(); }
+  });
+
+  it('manifest 크기 제한은 기존 자료·복구 owner를 보존하는 deferred debt이며 실행 슬롯을 차지하지 않는다', async () => {
+    const path = 'oversize.md';
+    const vault = createEventVault(new Map([[path, 'now supported'], ['ready.md', 'ready source']]));
+    const file = vault.getFiles()[0];
+    file.stat.size = 128 * 1024 * 1024;
+    const read = vi.spyOn(vault, 'readBinary');
+    const name = `manifest-debt-${crypto.randomUUID()}`;
+    vectorDbNames.add(name);
+    const vectors = new IndexedDbVectorStore(name);
+    try {
+      await vectors.add([createEntry(path)]);
+      await vectors.beginPendingWriteRecovery([path], 'existing-owner');
+      const indexer = new VaultIndexer(vault, vectors, { embed: () => Promise.resolve([1, 0]), embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])) }, createRagConfig(), createChatConfig());
+      const pending = () => indexer.getAutomaticRecoveryPendingState({}, { repair: false });
+      expect(await pending()).toMatchObject({ pendingDocumentCount: 2, actionableDocumentCount: 1, deferredDocumentCount: 1, deferredPaths: [path], batchIndices: [0] });
+      expect(read).not.toHaveBeenCalled();
+      expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 1, documents: ['ready.md'] });
+      expect(read.mock.calls.every(([source]) => source.path === 'ready.md')).toBe(true);
+      expect(await pending()).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: 0, deferredDocumentCount: 1, deferredPaths: [path], batchIndices: [] });
+      indexer.invalidateAutomaticRecoverySource(path);
+      expect(await pending()).toMatchObject({ actionableDocumentCount: 0, deferredPaths: [path] });
+      const before = await vectors.getDurabilityCheckpoint();
+      await indexer.indexPending({ automaticRecovery: true });
+      expect(await vectors.getDurabilityCheckpoint()).toEqual(before);
+      expect(await vectors.readPendingWriteRecovery()).toEqual([path]);
+      expect((await vectors.getEntriesByFilePaths([path])).map(({ id }) => id)).toEqual([`${path}::0`]);
+      expect(await vectors.getMetaValue('write-recovery-requests:v1:owners')).toEqual([[path, 'existing-owner']]);
+      file.stat.size = 'now supported'.length;
+      expect(await pending()).toMatchObject({ actionableDocumentCount: 1, deferredDocumentCount: 0 });
+      expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 1, documents: [path] });
+      expect(await vectors.readPendingWriteRecovery()).toEqual([]);
+    } finally { vectors.close(); }
+  });
+
+  it.each(['binary', 'corrupt-encoding'] as const)('실제 %s 준비 결과는 같은 revision에서 deferred debt이고 수동·사건·변경으로 재평가된다', async (reason) => {
+    const path = 'suspect.txt';
+    const invalidBytes = reason === 'binary' ? Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a) : Uint8Array.of(0xef, 0xbb, 0xbf, 0xe2, 0x82);
+    const validBytes = new TextEncoder().encode('repaired text');
+    const binaries = new Map([[path, invalidBytes]]);
+    const vault = createEventVault(new Map([[path, 'repaired text']]), binaries);
+    const file = vault.getFiles()[0];
+    const read = vi.spyOn(vault, 'readBinary');
+    const vectors = new MemoryVectorStore();
+    const provider = { embed: () => Promise.resolve([1, 0]), embedBatch: vi.fn((texts: string[]) => Promise.resolve(texts.map(() => [1, 0]))) };
+    const indexer = new VaultIndexer(vault, vectors, provider, createRagConfig(), createChatConfig());
+    const pending = () => indexer.getAutomaticRecoveryPendingState();
+    expect(await pending()).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: 1 });
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 0, documents: [path] });
+    expect(indexer.getFailedFileReasons()).toEqual([{ path, reason }]);
+    expect(read).toHaveBeenCalledOnce();
+    expect(provider.embedBatch).not.toHaveBeenCalled();
+    expect(await pending()).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: 0, deferredDocumentCount: 1, deferredPaths: [path], batchIndices: [] });
+    await indexer.indexPending({ automaticRecovery: true });
+    expect(read).toHaveBeenCalledOnce();
+    expect(await vectors.getFileIndexRecords()).toEqual([]);
+
+    // Cached binary verdict도 명시적 pending에서는 같은 stat의 원문을 다시 읽습니다.
+    expect(await indexer.indexPending()).toMatchObject({ indexed: 0, documents: [path] });
+    expect(read).toHaveBeenCalledTimes(2);
+    indexer.invalidateAutomaticRecoverySource(path);
+    expect(await pending()).toMatchObject({ actionableDocumentCount: 1, deferredDocumentCount: 0 });
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 0, documents: [path] });
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(await pending()).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: 0 });
+    binaries.set(path, validBytes);
+    file.stat.mtime++;
+    expect(await pending()).toMatchObject({ actionableDocumentCount: 1, deferredDocumentCount: 0 });
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 1, documents: [path] });
+    expect(indexer.getFailedFileReasons()).toEqual([]);
+    expect(await pending()).toMatchObject({ pendingDocumentCount: 0, actionableDocumentCount: 0 });
+  });
+
+  it('같은 stat이라도 나중에 실제 준비된 정상 본문은 이전 확정 byte 실패를 무효화한다', async () => {
+    const path = 'changed.txt';
+    const binaries = new Map<string, Uint8Array>([[path, Uint8Array.of(0xef, 0xbb, 0xbf, 0xe2, 0x82)]]);
+    const vault = createEventVault(new Map([[path, 'synthetic replacement']]), binaries);
+    const file = vault.getFiles()[0];
+    const indexer = new VaultIndexer(vault, new MemoryVectorStore(), { embed: () => Promise.resolve([1, 0]), embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])) }, createRagConfig(), createChatConfig());
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ failed: 1 });
+    expect(await indexer.getAutomaticRecoveryPendingState()).toMatchObject({ actionableDocumentCount: 0, deferredPaths: [path] });
+    binaries.set(path, new TextEncoder().encode('synthetic replacement'));
+    expect(await sourceSnapshot.readSourceFileSnapshot(vault, file)).toMatchObject({ content: 'synthetic replacement' });
+    expect(await indexer.getAutomaticRecoveryPendingState()).toMatchObject({ actionableDocumentCount: 1, deferredPaths: [] });
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 1 });
+  });
+
+  it('자동 준비에서 확정한 내용 정책 제외는 coverage 실패나 다시 실행할 후보가 아니다', async () => {
+    const path = 'excluded.md';
+    const contents = new Map([[path, '---\nsuperpower-inside-exclude: true \n---\nsynthetic text']]);
+    const vault = createEventVault(contents);
+    const file = vault.getFiles()[0];
+    const read = vi.spyOn(vault, 'readBinary');
+    const vectors = new MemoryVectorStore();
+    const indexer = new VaultIndexer(vault, vectors, { embed: () => Promise.resolve([1, 0]), embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])) }, createRagConfig(), createChatConfig());
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 0, skipped: 1 });
+    expect(await indexer.getAutomaticRecoveryPendingState()).toMatchObject({ pendingDocumentCount: 0, actionableDocumentCount: 0, deferredDocumentCount: 0 });
+    expect(read).toHaveBeenCalledOnce();
+    expect(indexer.getFailedFileReasons()).toEqual([]);
+    contents.set(path, '---\nsuperpower-inside-exclude: false\n---\nsynthetic text');
+    indexer.invalidateAutomaticRecoverySource(path);
+    await vault.emitModify(file);
+    expect(await indexer.getAutomaticRecoveryPendingState()).toMatchObject({ actionableDocumentCount: 1 });
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 1 });
+  });
+
+  it('실패한 준비 중 새 source 사건은 이전 revision의 terminal 증거로 소비되지 않는다', async () => {
+    const path = 'racing.txt';
+    const vault = createEventVault(new Map([[path, 'synthetic current source']]));
+    const read = vi.spyOn(vault, 'readBinary');
+    let finishRead!: (payload: ArrayBuffer) => void;
+    read.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    const indexer = new VaultIndexer(vault, new MemoryVectorStore(), { embed: () => Promise.resolve([1, 0]), embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])) }, createRagConfig(), createChatConfig());
+    const job = indexer.indexPending({ automaticRecovery: true });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    indexer.invalidateAutomaticRecoverySource(path);
+    await vault.emitModify(vault.getFiles()[0]);
+    finishRead(Uint8Array.of(0xef, 0xbb, 0xbf, 0xe2, 0x82).buffer);
+    expect(await job).toMatchObject({ indexed: 0, failed: 1 });
+    expect(indexer.getAutomaticRecoveryInvalidatedPaths()).toEqual([path]);
+    expect(await indexer.getAutomaticRecoveryPendingState()).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: 1, deferredDocumentCount: 0 });
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 1 });
+  });
+
+  it.each(['encrypted', 'corrupt', 'ocr-empty'] as const)('PDF %s에서 암호화만 확정적으로 defer하고 포괄 worker 실패는 재시도 대상으로 남긴다', async (reason) => {
+    const path = 'locked.pdf';
+    const vault = createEventVault(new Map([[path, '%PDF-1.7\nsynthetic document\n%%EOF']]));
+    const extract = vi.spyOn(pdfSource, 'extractPdfSourceText').mockRejectedValue(new pdfSource.PdfSourceExtractionError('synthetic PDF rejection', undefined, reason));
+    try {
+      const indexer = new VaultIndexer(vault, new MemoryVectorStore(), { embed: () => Promise.resolve([1, 0]), embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])) }, createRagConfig(), createChatConfig());
+      expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 0, failed: 1 });
+      const terminal = reason === 'encrypted';
+      expect(await indexer.getAutomaticRecoveryPendingState()).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: terminal ? 0 : 1, deferredPaths: terminal ? [path] : [] });
+      await indexer.indexPending({ automaticRecovery: true });
+      expect(extract).toHaveBeenCalledTimes(terminal ? 1 : 2);
+    } finally { extract.mockRestore(); }
+  });
+
+  it('일시적인 원문 I/O 실패는 stat이 같아도 자동 재시도된다', async () => {
+    const path = 'transient.md';
+    const vault = createEventVault(new Map([[path, 'synthetic valid text']]));
+    const read = vi.spyOn(vault, 'readBinary').mockRejectedValueOnce(new Error('synthetic read outage'));
+    const vectors = new MemoryVectorStore();
+    const indexer = new VaultIndexer(vault, vectors, { embed: () => Promise.resolve([1, 0]), embedBatch: (texts) => Promise.resolve(texts.map(() => [1, 0])) }, createRagConfig(), createChatConfig());
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 0, failed: 1 });
+    expect(await indexer.getAutomaticRecoveryPendingState()).toMatchObject({ pendingDocumentCount: 1, actionableDocumentCount: 1, deferredDocumentCount: 0 });
+    expect(await indexer.indexPending({ automaticRecovery: true })).toMatchObject({ indexed: 1 });
+    expect(read.mock.calls.length).toBeGreaterThan(1);
+    expect(indexer.getFailedFileReasons()).toEqual([]);
   });
 
   it('terminal partial은 같은 revision의 자동 재준비를 막고 수동·변경 revision을 허용한다', async () => {

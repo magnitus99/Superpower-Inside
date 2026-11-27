@@ -64,7 +64,7 @@ describe('중단된 파일 쓰기 복구', () => {
     const target = file('Unreadable.md');
     const remove = vi.fn(() => Promise.resolve());
     const schedule = vi.fn();
-    const recovery = createPendingWriteRecoveryHost({ getAbstractFileByPath: () => target } as never, {} as never, {} as never, schedule, remove, { candidates: [], failures: [{ file: target, reason: 'frontmatter-unreadable' }], policyExcluded: [], unsupported: [], totalVaultFiles: 1 });
+    const recovery = createPendingWriteRecoveryHost({ getAbstractFileByPath: () => target } as never, {} as never, {} as never, schedule, remove, { candidates: [], failures: [{ file: target, reason: 'frontmatter-unreadable' }], policyExcluded: [], emptyFiles: [], unsupported: [], totalVaultFiles: 1 });
     await expect(recoverPendingFileWrites([target.path], recovery)).rejects.toThrow('frontmatter-unreadable');
     expect(remove).not.toHaveBeenCalled();
     expect(schedule).not.toHaveBeenCalled();

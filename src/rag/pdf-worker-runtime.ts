@@ -32,6 +32,7 @@ export class PdfSourceExtractionError extends Error {
   constructor(
     message: string,
     public readonly completeness?: PdfCompleteness,
+    public readonly reason?: string,
   ) {
     super(message);
     this.name = 'PdfSourceExtractionError';
@@ -224,6 +225,7 @@ export async function extractPdfSourceText(
             new PdfSourceExtractionError(
               `Source text extraction failed for ${file.path} (${response.reason ?? 'corrupt'}).`,
               response.completeness,
+              response.reason,
             ),
           );
         }

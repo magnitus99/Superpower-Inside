@@ -16,12 +16,18 @@ export interface SourceBodyBackfillOptions {
 export type SourceBodyBackfillOutcome = 'updated' | 'unchanged' | 'stale' | 'unavailable';
 export type SourceBodyBackfillResult = Record<SourceBodyBackfillOutcome, number>;
 
+interface CorpusRefreshResult {
+  documents: string[];
+  skipped: number;
+  partial?: number;
+}
+
 /** 파일 정책·본문 읽기·생명주기를 검색 엔진과 독립적으로 조정합니다. */
 export class VaultDocumentCorpus {
   private readonly ownership = new Map<string, symbol>();
   private readonly sourceReads = new Map<string, AbortController>();
   private suspended = false;
-  private refreshing: Promise<void> | null = null;
+  private refreshing: Promise<CorpusRefreshResult> | null = null;
   private candidatePaths = new Set<string>();
   private readonly readingPaths = new Set<string>();
   private readonly failedPaths = new Set<string>();
@@ -40,8 +46,8 @@ export class VaultDocumentCorpus {
     try { this.onWork?.(stage, processed, total); } catch { /* 비권위 관측 오류는 저장을 막지 않습니다. */ }
   }
 
-  refresh(inventory?: RagFileInventory): Promise<void> {
-    if (this.suspended) return Promise.resolve();
+  refresh(inventory?: RagFileInventory): Promise<CorpusRefreshResult> {
+    if (this.suspended) return Promise.resolve({ documents: [], skipped: 0 });
     this.refreshing ??= this.refreshAllFiles(inventory).finally(() => {
       this.refreshing = null;
     });
@@ -71,7 +77,12 @@ export class VaultDocumentCorpus {
     file: TFile,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (this.suspended) return;
+    await this.writeFile(file, signal);
+  }
+
+  /** 현재 owner가 저장한 완전 파일과 부분 파일을 구분합니다. */
+  private async writeFile(file: TFile, signal?: AbortSignal): Promise<'indexed' | 'skipped' | 'partial'> {
+    if (this.suspended) return 'skipped';
     signal?.throwIfAborted();
     const path = file.path;
     this.sourceReads.get(path)?.abort();
@@ -87,14 +98,14 @@ export class VaultDocumentCorpus {
       const rag = this.getRagConfig();
       if (isRagFileMetadataExcluded(this.vault, file, rag, this.getChatConfig())) {
         if (isCurrent()) await this.removeFile(path);
-        return;
+        return 'skipped';
       }
       const snapshot = await readSourceFileSnapshot(this.vault, file, { signal: sourceSignal, priority: 'background', preparation: { path, chunkSize: rag.chunkSize, overlap: rag.overlap } });
       signal?.throwIfAborted();
-      if (!snapshot || !isCurrent()) return;
+      if (!snapshot || !isCurrent()) return 'skipped';
       const verdict = getRagPreparedContentVerdict(this.vault, snapshot.file, snapshot.content, this.getRagConfig(), this.getChatConfig());
       if (verdict.kind === 'failed') throw new SourceReadError(verdict.reason ?? 'frontmatter-unreadable');
-      if (verdict.kind === 'policy-excluded') { await this.removeFile(path); return; }
+      if (verdict.kind === 'policy-excluded') { await this.removeFile(path); return 'skipped'; }
       if (!snapshot.chunks) throw new Error('Source worker chunks are unavailable.');
       this.candidatePaths.add(path);
       const documents = buildSourceDocuments(
@@ -106,17 +117,18 @@ export class VaultDocumentCorpus {
         snapshot.chunks,
         snapshot.revision.contentHash,
       );
-      if (isCurrent()) {
-        this.publishWork('lexical');
-        await this.store.replaceFileDocuments(path, documents, snapshot.sourceMetadata, snapshot.sourceMetadataHash, snapshot.revision,
-          snapshot.bodyPlan ? { text: snapshot.content, plan: snapshot.bodyPlan } : undefined);
-      }
-      if (isCurrent()) this.failedPaths.delete(path);
+      if (!isCurrent()) return 'skipped';
+      this.publishWork('lexical');
+      await this.store.replaceFileDocuments(path, documents, snapshot.sourceMetadata, snapshot.sourceMetadataHash, snapshot.revision,
+        snapshot.bodyPlan ? { text: snapshot.content, plan: snapshot.bodyPlan } : undefined);
+      if (!isCurrent()) return 'skipped';
+      this.failedPaths.delete(path);
+      return snapshot.sourceMetadata.completeness?.status === 'partial' ? 'partial' : 'indexed';
     } catch (error) {
       if (signal?.aborted) throw error;
       if (error instanceof SourceReadError && error.reason === 'binary') {
         if (isCurrent()) await this.removeFile(path);
-        return;
+        return 'skipped';
       }
       if (isCurrent()) {
         this.candidatePaths.delete(path);
@@ -256,11 +268,13 @@ export class VaultDocumentCorpus {
     this.suspend();
   }
 
-  private async refreshAllFiles(sharedInventory?: RagFileInventory): Promise<void> {
+  private async refreshAllFiles(sharedInventory?: RagFileInventory): Promise<CorpusRefreshResult> {
+    const result: CorpusRefreshResult = { documents: [], skipped: 0 };
     this.publishWork('planning');
     const inventory = sharedInventory ?? getRagIndexingManifest(this.vault, this.getRagConfig(), this.getChatConfig());
     const files = inventory.candidates;
-    if (this.suspended) return;
+    if (this.suspended) return result;
+    result.skipped = inventory.failures.length + inventory.unsupported.length;
     this.candidatePaths = new Set(files.map((file) => file.path));
     for (const { file } of inventory.failures) this.failedPaths.add(file.path);
     const stalePaths = planStaleIndexSourcePathsRust(
@@ -275,15 +289,26 @@ export class VaultDocumentCorpus {
     let processed = 0;
     this.publishWork('preparing-source', processed, files.length);
     for (const file of files) {
-      if (this.suspended) return;
+      if (this.suspended) return result;
       const record = records.get(file.path);
       if (record && !this.failedPaths.has(file.path) && isSourceRevisionCurrentRust(
         { filePath: record.filePath, sourceMtime: record.sourceMtime ?? -1, sourceSize: record.sourceSize ?? -1, contentHash: record.contentHash ?? '' },
         { filePath: file.path, sourceMtime: file.stat.mtime, sourceSize: file.stat.size, contentHash: record.contentHash ?? '' },
-      )) { this.publishWork('preparing-source', ++processed, files.length); continue; }
-      try { await this.refreshFile(file); }
-      catch (error) { this.logger.warn('Source corpus file refresh failed.', { source: 'rag.corpus', data: { path: file.path }, error }); }
+      )) {
+        result.skipped++;
+      } else {
+        try {
+          const outcome = await this.writeFile(file);
+          if (outcome === 'indexed') result.documents.push(file.path);
+          else if (outcome === 'partial') result.partial = (result.partial ?? 0) + 1;
+          else result.skipped++;
+        } catch (error) {
+          result.skipped++;
+          this.logger.warn('Source corpus file refresh failed.', { source: 'rag.corpus', data: { path: file.path }, error });
+        }
+      }
       this.publishWork('preparing-source', ++processed, files.length);
     }
+    return result;
   }
 }

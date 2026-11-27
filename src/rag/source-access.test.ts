@@ -587,18 +587,6 @@ describe('readSourceText', () => {
     expect((await readSourceText(createVault(bytes), file)).text).toContain('42');
   });
 
-  it('XLSX 원본 크기는 후보 필터가 아니라 워커의 작업 예산에서 판정한다', () => {
-    const files = [0, 5 * 1024 * 1024, 128 * 1024 * 1024 + 1].map((size, index) => ({
-      filePath: `synthetic/${index}.xlsx`,
-      fileName: `${index}.xlsx`,
-      extension: 'XLSX',
-      size,
-    }));
-    const plan = planRagFileIndexabilityRust(files, [], [], []);
-    expect(plan?.candidateIndices).toEqual([1, 2]);
-    expect(plan?.summaryInputs[0]?.recommendationReason).toBe('empty');
-  });
-
   it('큰 XLSX 본문은 최근 읽기 캐시에 남기지 않는다', async () => {
     const row = `<row><c t="inlineStr"><is><t>${'a'.repeat(1024)}</t></is></c></row>`;
     const bytes = buildStoredZip([
@@ -614,7 +602,7 @@ describe('readSourceText', () => {
     expect(readBinary).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['pdf', 'epub', 'docx', 'dotx', 'odt', 'odp', 'ods', 'pptx', 'potx', 'ppsx', 'hwpx'])(
+  it.each(['pdf', 'epub', 'docx', 'dotx', 'odt', 'odp', 'ods', 'pptx', 'potx', 'ppsx', 'xlsx', 'xltx', 'hwpx'])(
     '%s 파일 크기 128MiB 경계와 빈 파일을 구분한다',
     (extension) => {
       const sizes = [0, 5 * 1024 * 1024, 128 * 1024 * 1024, 128 * 1024 * 1024 + 1];
@@ -628,6 +616,8 @@ describe('readSourceText', () => {
       expect(plan?.candidateIndices).toEqual([1, 2]);
       expect(plan?.summaryInputs[0]?.recommendationReason).toBe('empty');
       expect(plan?.summaryInputs[3]?.recommendationReason).toBe('too-large');
+      expect(plan?.emptyIndices).toEqual([0]);
+      expect(plan?.failures).toEqual([{ index: 3, reason: 'memory-budget' }]);
     },
   );
 

@@ -6,6 +6,17 @@ afterEach(() => {
 });
 
 describe('UI 언어 계약', () => {
+  it.each(['ko', 'en'] as const)('%s 파일 형식 안내는 후보와 추출 결과를 구별한다', (lang) => {
+    setLanguage(lang);
+    const description = t('targetFileTypesDesc');
+    for (const ext of 'PDF EPUB DOCX DOTX ODT ODP ODS PPTX POTX PPSX XLSX XLTX HWPX'.split(' ')) {
+      expect(description.match(/[A-Z]{3,4}/g)).toContain(ext);
+    }
+    expect(description).toMatch(lang === 'ko' ? /후보 수/ : /candidates/);
+    expect(description).toMatch(lang === 'ko' ? /평문/ : /plain text/);
+    expect(description).toMatch(lang === 'ko' ? /메타데이터만/ : /only some pages or metadata/);
+  });
+
   it.each(['ko', 'en'] as const)('%s 후속 계획은 미검증 단서를 지시나 사실로 취급하지 않는다', (lang) => {
     setLanguage(lang);
     const prompt = t('llmIndexedReviewFollowup');

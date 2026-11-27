@@ -43,11 +43,12 @@ describe('RAGIndexingScheduler', () => {
     });
     const previous = scheduler.indexPending();
     const cancelled = expect(previous).rejects.toBeInstanceOf(IndexingCancelledError);
+    const duplicate = expect(scheduler.indexPending()).rejects.toBeInstanceOf(IndexingCancelledError);
     scheduler.cancel();
     expect(scheduler.getStatus()).toMatchObject({ running: false, phase: 'idle' });
     const next = scheduler.indexPending();
     finish();
-    await cancelled;
+    await Promise.all([cancelled, duplicate]);
     await expect(next).resolves.toMatchObject({ indexed: 2 });
     await scheduler.waitForIdle();
     expect(indexPending).toHaveBeenCalledTimes(2);
@@ -691,10 +692,9 @@ describe('RAGIndexingScheduler', () => {
     const first = scheduler.indexPending();
     await Promise.resolve();
 
-    await expect(scheduler.indexPending()).resolves.toEqual(
-      expect.objectContaining({ indexed: 0 }),
-    );
+    const duplicate = scheduler.indexPending();
     release();
+    await expect(duplicate).resolves.toEqual(expect.objectContaining({ indexed: 1 }));
     await expect(first).resolves.toEqual(expect.objectContaining({ indexed: 1 }));
     await scheduler.waitForIdle();
 
@@ -724,6 +724,23 @@ describe('RAGIndexingScheduler', () => {
     expect(calls).toEqual(['recovery', 'pending']);
   });
 
+  it.each(['manual', 'all'] as const)('queued 자동 복구는 수동 재시도를 삼키지 않고 %s 작업 결과를 전달한다', async (kind) => {
+    let release!: () => void;
+    const scheduler = new RAGIndexingScheduler({ debounceMs: 0,
+      indexFile: async () => { await new Promise<void>((resolve) => { release = resolve; }); return createResult(); },
+      removeFile: () => Promise.resolve(0),
+      indexPending: (options) => Promise.resolve(createResult({ indexed: options.automaticRecovery ? 1 : 2 })),
+      reindexAll: () => Promise.resolve(createResult({ indexed: 3 })) });
+    scheduler.scheduleFile(createFile('active.md'), 'modify');
+    const recovery = scheduler.indexPending({ automaticRecovery: true });
+    const manual = scheduler.indexPending();
+    const duplicate = scheduler.indexPending();
+    if (kind === 'all') void scheduler.reindexAll();
+    release();
+    const results = await Promise.all([recovery, manual, duplicate]);
+    expect(results.map((result) => result.indexed)).toEqual(kind === 'all' ? [3, 3, 3] : [1, 2, 2]);
+  });
+
   it('전체 재인덱싱이 실행 중이면 중복 전체 재인덱싱 요청은 새 실행을 만들지 않는다', async () => {
     let release = (): void => {
       throw new Error('release가 초기화되지 않았습니다.');
@@ -745,8 +762,9 @@ describe('RAGIndexingScheduler', () => {
     const first = scheduler.reindexAll();
     await Promise.resolve();
 
-    await expect(scheduler.reindexAll()).resolves.toEqual(expect.objectContaining({ indexed: 0 }));
+    const duplicate = scheduler.reindexAll();
     release();
+    await expect(duplicate).resolves.toEqual(expect.objectContaining({ indexed: 5 }));
     await expect(first).resolves.toEqual(expect.objectContaining({ indexed: 5 }));
     await scheduler.waitForIdle();
 

@@ -989,6 +989,7 @@ export interface RustRagRecoveryPartialRecord {
 }
 
 export interface RustRagAutomaticRecoveryBatchFileInput extends RustRagAutomaticRecoveryFileInput {
+  sourceDisposition?: 'manifest-blocked' | 'terminal';
   invalidated?: boolean;
   contentHash?: string;
   sourceMetadataHash?: string;
@@ -1334,6 +1335,7 @@ export interface RustRagFileIndexabilityPlan {
   candidateIndices: number[];
   summaryInputs: RustRagFileTypeInput[];
   failures: { index: number; reason: string }[];
+  emptyIndices: number[];
   policyExcludedIndices: number[];
   unsupportedIndices: number[];
 }
@@ -8418,6 +8420,7 @@ function isRagFileIndexabilityPlan(value: unknown, fileCount: number): value is 
     isNonNegativeIntegerArray(plan.candidateIndices) &&
     Array.isArray(plan.summaryInputs) &&
     plan.summaryInputs.every(isValidRagFileTypeInput) &&
+    isNonNegativeIntegerArray(plan.emptyIndices) &&
     isNonNegativeIntegerArray(plan.policyExcludedIndices) &&
     isNonNegativeIntegerArray(plan.unsupportedIndices) &&
     Array.isArray(plan.failures) &&
@@ -8429,7 +8432,7 @@ function isRagFileIndexabilityPlan(value: unknown, fileCount: number): value is 
 
 function validInventoryIndices(plan: Partial<RustRagFileIndexabilityPlan>, fileCount: number): boolean {
   const indices = [...(plan.candidateIndices ?? []), ...(plan.policyExcludedIndices ?? []),
-    ...(plan.unsupportedIndices ?? []), ...(plan.failures ?? []).map((failure) => failure.index)];
+    ...(plan.emptyIndices ?? []), ...(plan.unsupportedIndices ?? []), ...(plan.failures ?? []).map((failure) => failure.index)];
   return indices.length === fileCount && new Set(indices).size === indices.length &&
     indices.every((index) => index < fileCount);
 }

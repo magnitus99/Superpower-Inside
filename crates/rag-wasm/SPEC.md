@@ -29,6 +29,10 @@ scanner는 한 원문·한 정규화 행·한 출력 페이지만 유지한다. 
 
 BM25의 inverted·위치 posting은 같은 문서 식별자 문자열 할당을 공유해 긴 식별자가 posting 수만큼 중복 상주하지 않게 한다. 이 내부 표현은 삽입·교체·삭제와 legacy/compact 복원에 동일하게 적용하며 metadata·문자열 값 정렬·점수·위치·기존 JSON 형식은 보존한다. 식별자 중복 절감은 전체 색인·JSON peak·RSS의 전역 메모리 상한을 보장하지 않는다.
 
+## 파일 분류 wire
+
+metadata-only manifest와 byte probe inventory의 각 입력 index는 candidate·failure·policyExcluded·unsupported·empty 중 정확히 하나에 속한다. 정책 제외가 우선이고, 정책 밖의 0바이트 파일은 `emptyIndices`에만 속한다. 형식 집계 호출 실패의 `null`은 유효한 빈 집계와 다르다.
+
 ## 실패·생성물 경계
 
 요구 계약은 WASM 초기화·wire 실패를 TypeScript 계산으로 대신하지 않고 기존 오류·빈 결과·비활성 상태로 드러내는 것이다. indexed-evidence wrapper는 실패 시 null을 반환한다.
@@ -45,7 +49,7 @@ WASM glue·base64는 수동 편집하지 않고 `npm run wasm:build`로 같은 �
 
 ## 자동 복구 계획
 
-자동 batch 계획은 pending 전체 범위의 작은 corpus/vector partial scalar와 알려진 현재 hash·source 사건 무효화를 받아 eligible/deferred·한 기회의 bounded batch와 각각의 계수를 반환한다. corpus 행이 있으면 오래된 vector partial로 complete·legacy·불일치 corpus를 가리지 않는다. partial은 정확한 source completeness 상태이며 broader incomplete를 대신 쓰지 않는다. 거대한 source metadata나 원문을 이 계획에 보내지 않으며 I/O·재시도·내구 debt 수명은 `retrieval-index`가 소유한다.
+자동 batch 계획은 pending 전체 범위의 작은 corpus/vector partial scalar와 알려진 현재 hash·source 사건 무효화를 받아 eligible/deferred·한 기회의 bounded batch와 각각의 계수를 반환한다. corpus 행이 있으면 오래된 vector partial로 complete·legacy·불일치 corpus를 가리지 않는다. partial은 정확한 source completeness 상태이며 broader incomplete를 대신 쓰지 않는다. 원문 disposition scalar `manifest-blocked`는 현재 후보 원장에서 실행 불가인 debt를, `terminal`은 동일 revision의 확정적인 준비 실패·미지원을 나타낸다. source 사건은 `terminal`과 partial 억제를 해제하지만 manifest가 여전히 막는 행을 실행 대상으로 만들지 않는다. 두 debt 모두 전체 pending 및 deferred 분할에 남고 자동 batch 슬롯을 소비하지 않는다. 거대한 source metadata나 원문을 이 계획에 보내지 않으며 I/O·재시도·내구 debt 수명은 `retrieval-index`가 소유한다.
 
 source mtime은 유한 비음수 실수로 소수를 보존하고 fingerprint에도 반영한다. byte·문서·index·계수는 안전 정수다. 낯선 필드·희소/중복·잘못된 scalar를 거절하며 batch tie는 UTF-16 경로 순서다. 호스트 wrapper는 pending=actionable+deferred와 서로 겹치지 않는 전체 index 분할·batch 부분집합을 검증한다. 새 필수 분할/계수가 없는 구 생성물은 null로 닫고 TS 판단으로 대체하지 않는다.
 

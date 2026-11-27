@@ -82,6 +82,7 @@ export interface RagFileFailure {
 export interface RagFileInventory {
   candidates: TFile[];
   failures: RagFileFailure[];
+  emptyFiles: TFile[];
   policyExcluded: TFile[];
   unsupported: TFile[];
   totalVaultFiles: number;
@@ -113,6 +114,7 @@ export function getRagIndexingManifest(vault: Vault, ragConfig: RAGConfig, chatC
     verification: 'metadata-only', verdicts: new Map(),
     candidates: selectByRustIndices(files, plan.candidateIndices, { dedupe: true }),
     failures: plan.failures.map(({ index, reason }) => ({ file: files[index], reason })),
+    emptyFiles: selectByRustIndices(files, plan.emptyIndices, { dedupe: true }),
     policyExcluded: selectByRustIndices(files, plan.policyExcludedIndices, { dedupe: true }),
     unsupported: [], totalVaultFiles: files.length,
     isCurrent: () => {
@@ -140,7 +142,7 @@ export function getRagIndexingManifest(vault: Vault, ragConfig: RAGConfig, chatC
 /** 경로·확장자·민감 파일 정책만 확인합니다. YAML은 준비한 현재 본문으로 별도 검사합니다. */
 export function isRagFileMetadataExcluded(vault: Vault, file: TFile, ragConfig: RAGConfig, chatConfig: ChatConfig): boolean {
   const policy = readRagEligibilityPolicy(vault, ragConfig, chatConfig);
-  const plan = planRagIndexingManifestRust([{ ...toRagFileEligibilityInput(file), size: Math.max(1, file.stat.size) }], policy.excludePaths, policy.excludeExts);
+  const plan = planRagIndexingManifestRust([toRagFileEligibilityInput(file)], policy.excludePaths, policy.excludeExts);
   if (!plan) throw new Error('Rust source policy is unavailable.');
   return plan.policyExcludedIndices.length > 0;
 }
@@ -178,7 +180,7 @@ export function getRagUnverifiedIndexingFiles(inventory: RagFileInventory): read
 /** 완료 proof에는 모든 후보가 실제 판정되고 같은 이벤트 epoch인 경우만 반환합니다. */
 export function getSettledRagIndexingInventory(manifest: RagIndexingManifest): RagFileInventory | null {
   if (!manifest.isCurrent()) return null;
-  const inventory: RagFileInventory = { candidates: [], failures: [...manifest.failures], policyExcluded: [...manifest.policyExcluded], unsupported: [...manifest.unsupported], totalVaultFiles: manifest.totalVaultFiles };
+  const inventory: RagFileInventory = { candidates: [], failures: [...manifest.failures], emptyFiles: [...manifest.emptyFiles], policyExcluded: [...manifest.policyExcluded], unsupported: [...manifest.unsupported], totalVaultFiles: manifest.totalVaultFiles };
   for (const file of manifest.candidates) {
     const verdict = manifest.verdicts.get(file.path);
     if (!verdict || verdict.mtime !== file.stat.mtime || verdict.size !== file.stat.size) return null;
@@ -202,6 +204,7 @@ export async function getRagFileInventory(
   return {
     candidates: selectByRustIndices(files, plan.candidateIndices, { dedupe: true }),
     failures: plan.failures.map(({ index, reason }) => ({ file: files[index], reason })),
+    emptyFiles: selectByRustIndices(files, plan.emptyIndices, { dedupe: true }),
     policyExcluded: selectByRustIndices(files, plan.policyExcludedIndices, { dedupe: true }),
     unsupported: selectByRustIndices(files, plan.unsupportedIndices, { dedupe: true }),
     totalVaultFiles: files.length,
@@ -306,11 +309,8 @@ export async function getRagFileTypeSummary(
   const plan = await planRagFileIndexability(vault, vault.getFiles(), () =>
     readRagEligibilityPolicy(vault, ragConfig, chatConfig),
   );
-  const summary = planRagFileTypeSummaryRust(plan.summaryInputs, t('noExtensionLabel')) ?? {
-    targetTypes: [],
-    excludeRecommendations: [],
-    totalTargetFiles: 0,
-  };
+  const summary = planRagFileTypeSummaryRust(plan.summaryInputs, t('noExtensionLabel'));
+  if (!summary) throw new Error('Rust file type summary is unavailable.');
   return {
     ...summary,
     excludeRecommendations: summary.excludeRecommendations.map(localizeRagExcludeRecommendation),
@@ -684,7 +684,8 @@ async function planRagFileIndexability(
       ...(!liveFiles.has(file) ? { frontmatterUnreadable: true } : {}),
     }));
     const probeIndices =
-      planRagFileContentProbeIndicesRust(inputs, excludePaths, excludeExts) ?? [];
+      planRagFileContentProbeIndicesRust(inputs, excludePaths, excludeExts);
+    if (!probeIndices) throw new Error('Rust source probe plan is unavailable.');
     const textProbes = await readRagFileTextProbes(vault, files, probeIndices, inputs, cache);
     // 이미 읽은 앞 파일이 뒤 파일 I/O 중 바뀌어도 이전 판정을 게시하지 않는다.
     if (cache.revision !== revision || JSON.stringify(policy) !== JSON.stringify(readPolicy()))

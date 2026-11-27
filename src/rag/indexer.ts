@@ -38,6 +38,7 @@ import { buildSourceDocuments, buildSearchText, type SourceDocument } from './so
 import type { VaultDocumentCorpus } from './vault-document-corpus';
 import { readSourceFileSnapshot, type SourceFileSnapshot } from './source-snapshot';
 import { SourceReadError, type SourceTextSegment } from './source-access';
+import { PdfSourceExtractionError } from './pdf-worker-runtime';
 export { chunkMarkdown, chunkPlainText, buildSearchText, type Chunk } from './source-document';
 
 export class IndexingCancelledError extends Error {
@@ -614,9 +615,17 @@ async function pauseAfterBatch(ms: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
+// 명시적인 바이트·포맷·고정 예산 판정만 같은 revision의 자동 준비를 막습니다.
+// I/O·worker/codec 가용성·YAML·저장·임베딩 실패는 재시도 대상으로 유지합니다.
+const TERMINAL_SOURCE_READ_REASONS = new Set([
+  'binary', 'unsupported', 'corrupt', 'corrupt-encoding', 'corrupt-utf32', 'ambiguous-encoding',
+  'invalid-text', 'encrypted', 'empty',
+]);
+const TERMINAL_SOURCE_BUDGET_REASONS = new Set(['too-large', 'memory-budget', 'xml-token-budget']);
+
 /** 볼트 인덱서 */
 export class VaultIndexer {
-  private readonly failedFiles = new Map<string, { mtime: number; size: number; reason?: string }>();
+  private readonly failedFiles = new Map<string, { mtime: number; size: number; reason: string; terminalSource?: { file: TFile; extension: string } }>();
   private readonly fileOwners = new Map<string, symbol>();
   private readonly invalidatedRecoveryPaths = new Set<string>();
   private recoverySourceEpoch = 0;
@@ -636,6 +645,7 @@ export class VaultIndexer {
         const current = this.vault.getAbstractFileByPath(path);
         return (
           isCurrentVaultFile(current) &&
+          (!revision.terminalSource || (revision.terminalSource.file === current && revision.terminalSource.extension === current.extension)) &&
           isSourceRevisionCurrentRust(
             {
               filePath: path,
@@ -660,16 +670,31 @@ export class VaultIndexer {
     }));
   }
 
-  private recordInventoryFailures(inventory: RagFileInventory): void {
-    const allowed = new Set([...inventory.candidates, ...inventory.failures.map(({ file }) => file)].map((file) => file.path));
+  private recordInventoryFailures(inventory: RagFileInventory, failures = inventory.failures): void {
+    const allowed = new Set([...inventory.candidates, ...inventory.unsupported, ...inventory.failures.map(({ file }) => file)].map((file) => file.path));
     for (const path of this.failedFiles.keys()) {
       if (!allowed.has(path)) this.failedFiles.delete(path);
     }
-    for (const { file, reason } of inventory.failures) {
+    for (const { file, reason } of failures) {
       this.fileOwners.set(file.path, Symbol(file.path));
       this.failedFiles.set(file.path, { mtime: file.stat.mtime, size: file.stat.size, reason });
       this.logger.warn('Source inventory read failed.', { data: { path: file.path, reason } });
     }
+  }
+
+  private recordIndexingFailure(file: TFile, error: unknown, options: IndexingOptions, fallback: string): void {
+    const sourceReason = error instanceof SourceReadError || error instanceof PdfSourceExtractionError ? error.reason : undefined;
+    if (sourceReason === 'binary') recordRagIndexingVerdict(options.inventory, file, { kind: 'unsupported' });
+    else if (sourceReason || fallback === 'preparation-failed') recordRagIndexingVerdict(options.inventory, file, { kind: 'failed', reason: sourceReason ?? fallback });
+    // PDF의 포괄 corrupt/too-large 및 OCR 오류에는 런타임 실패도 포함될 수 있습니다.
+    const terminal = error instanceof SourceReadError
+      ? TERMINAL_SOURCE_READ_REASONS.has(error.reason) || TERMINAL_SOURCE_BUDGET_REASONS.has(error.reason)
+      : error instanceof PdfSourceExtractionError && error.reason === 'encrypted';
+    this.failedFiles.set(file.path, { mtime: file.stat.mtime, size: file.stat.size,
+      reason: sourceReason ?? (error instanceof Error ? error.message : fallback),
+      ...(terminal ? { terminalSource: { file, extension: file.extension } } : {}) });
+    // 현재 사건을 실제로 재평가했지만 저장할 본문이 없는 경우입니다. 복구 DB 원장은 건드리지 않습니다.
+    if (terminal) this.invalidatedRecoveryPaths.delete(file.path);
   }
 
   private completeInventoryFailures(
@@ -733,7 +758,7 @@ export class VaultIndexer {
     emitIndexingProgress(options, progressTracker, 'plan');
     const inventory = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
     options = { ...options, inventory };
-    const files = inventory.candidates;
+    const files = [...inventory.candidates, ...inventory.unsupported];
     throwIfIndexingCancelled(options.signal, options.isCurrent);
     this.recordInventoryFailures(inventory);
     this.logger.info('Vault indexing started.', { data: { fileCount: files.length } });
@@ -836,8 +861,9 @@ export class VaultIndexer {
             residentBytes >= PREPARED_WINDOW_INPUT_BYTES || chunkCount >= PREPARED_WINDOW_CHUNKS || performance.now() - windowStartedAt >= 12)) break;
           offset++;
           window.push(file);
+          this.fileOwners.set(file.path, Symbol(file.path));
+          const sourceStillCurrent = this.captureRecoverySourceCurrentness([file]);
           try {
-            this.fileOwners.set(file.path, Symbol(file.path));
             progressTracker.stage = 'preparing';
             progressTracker.currentFilePath = file.path;
             progressTracker.currentFileIndex = offset - 1;
@@ -852,9 +878,7 @@ export class VaultIndexer {
             if (isIndexingCancelledError(error) || error instanceof IndexingPerformancePausedError) throw error;
             progressTracker.preparedSources.delete(file.path);
             preparationFailures.set(file.path, error);
-            const unsupported = error instanceof SourceReadError && error.reason === 'binary';
-            recordRagIndexingVerdict(options.inventory, file, unsupported ? { kind: 'unsupported' } : { kind: 'failed', reason: error instanceof SourceReadError ? error.reason : 'preparation-failed' });
-            if (!unsupported) this.failedFiles.set(file.path, { mtime: file.stat.mtime, size: file.stat.size, reason: error instanceof SourceReadError ? error.reason : error instanceof Error ? error.message : 'preparation-failed' });
+            if (sourceStillCurrent()) this.recordIndexingFailure(file, error, options, 'preparation-failed');
           }
         }
         // 이 윈도의 원문과 lexical checkpoint가 내구 반영된 뒤에만 임베딩을 시작합니다.
@@ -977,7 +1001,10 @@ export class VaultIndexer {
     this.fileOwners.set(file.path, owner);
     const invalidated = this.invalidatedRecoveryPaths.has(current.path);
     const reusable = !invalidated && current === file && preloaded?.revision.filePath === current.path && preloaded.revision.sourceMtime === current.stat.mtime && preloaded.revision.sourceSize === current.stat.size;
-    const snapshot = reusable ? preloaded : await readSourceFileSnapshot(this.vault, current, { signal: options.signal, priority: 'background', preparation: { path: current.path, chunkSize: this.ragConfig.chunkSize, overlap: this.ragConfig.overlap }, forceRefresh: options.automaticRecovery !== true || invalidated,
+    // 아직 검증하지 않은 Markdown은 실제로 읽어야 YAML 제외 판정도 다음 manifest에 남습니다.
+    const needsPolicyVerdict = ['md', 'markdown'].includes(current.extension.toLowerCase()) && !getRagPreparedSourceRevision(this.vault, current);
+    const retryTerminal = this.failedFiles.get(current.path)?.terminalSource?.file === current;
+    const snapshot = reusable ? preloaded : await readSourceFileSnapshot(this.vault, current, { signal: options.signal, priority: 'background', preparation: { path: current.path, chunkSize: this.ragConfig.chunkSize, overlap: this.ragConfig.overlap }, forceRefresh: options.automaticRecovery !== true || invalidated || needsPolicyVerdict || retryTerminal,
       onProgress: (page, pageCount) => {
         tracker.sourcePage = page;
         tracker.sourcePageCount = pageCount;
@@ -1071,8 +1098,8 @@ export class VaultIndexer {
   ): Promise<IndexingResult> {
     const path = file.path;
     const owner = progressTracker?.preparedSources.get(path)?.owner ?? Symbol(path);
-    const revision = { mtime: file.stat.mtime, size: file.stat.size };
     this.fileOwners.set(path, owner);
+    const sourceStillCurrent = this.captureRecoverySourceCurrentness([file]);
     const tracker = progressTracker ?? createProgressTracker([file], this.ragConfig);
     if (!progressTracker) tracker.pipeline.totalKnown = true;
     if (!progressTracker) {
@@ -1096,16 +1123,10 @@ export class VaultIndexer {
         completeProgressFile(tracker, 0, 0, error instanceof SourceReadError && error.reason === 'binary' ? 'skipped' : 'failed');
         emitIndexingProgress(options, tracker, 'file-complete');
       }
-      if (this.fileOwners.get(path) === owner && error instanceof SourceReadError) {
-        recordRagIndexingVerdict(options.inventory, file, error.reason === 'binary' ? { kind: 'unsupported' } : { kind: 'failed', reason: error.reason });
+      if (sourceStillCurrent() && !options.signal?.aborted && options.isCurrent?.() !== false &&
+          !isIndexingCancelledError(error) && !(error instanceof IndexingPerformancePausedError)) {
+        this.recordIndexingFailure(file, error, options, 'indexing-failed');
       }
-      if (
-        this.fileOwners.get(path) === owner &&
-        !(error instanceof IndexingCancelledError) &&
-        !(error instanceof IndexingPerformancePausedError) &&
-        !(error instanceof SourceReadError && error.reason === 'binary')
-      )
-        this.failedFiles.set(path, { ...revision, reason: error instanceof SourceReadError ? error.reason : error instanceof Error ? error.message : 'indexing-failed' });
       throw error;
     } finally {
       if (window) {
@@ -1380,7 +1401,7 @@ export class VaultIndexer {
     const progressTracker = createProgressTracker([], this.ragConfig);
     const inventory = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
     options = { ...options, inventory };
-    const files = inventory.candidates;
+    const files = [...inventory.candidates, ...inventory.unsupported];
     throwIfIndexingCancelled(options.signal, options.isCurrent);
     this.recordInventoryFailures(inventory);
     this.logger.info('Vault full reindex started.', { data: { fileCount: files.length } });
@@ -1472,7 +1493,10 @@ export class VaultIndexer {
       await this.bm25Index.flush();
     }
     // 다른 owner가 인수한 복구 요청은 이전 삭제 작업이 해제하지 않습니다.
-    if (this.fileOwners.get(filePath) === owner) await this.vectorStore.completePendingWriteRecovery?.([filePath], recoveryOwner);
+    if (this.fileOwners.get(filePath) === owner) {
+      await this.vectorStore.completePendingWriteRecovery?.([filePath], recoveryOwner);
+      if (this.fileOwners.get(filePath) === owner) this.failedFiles.delete(filePath);
+    }
     return removed;
   }
 
@@ -1484,45 +1508,61 @@ export class VaultIndexer {
     return (await this.vectorStore.probePendingFileWrites?.()) ?? [];
   }
 
-  private captureRecoveryCurrentness(files: readonly TFile[], options: IndexingOptions): () => void {
+  private captureRecoverySourceCurrentness(files: readonly TFile[]): () => boolean {
     const epoch = this.recoverySourceEpoch;
-    const snapshots = files.map((file) => ({ file, path: file.path, mtime: file.stat.mtime, size: file.stat.size, owner: this.fileOwners.get(file.path) }));
+    const snapshots = files.map((file) => ({ file, path: file.path, extension: file.extension,
+      mtime: file.stat.mtime, size: file.stat.size, owner: this.fileOwners.get(file.path) }));
+    return () => epoch === this.recoverySourceEpoch && snapshots.every(({ file, path, extension, mtime, size, owner }) =>
+      this.vault.getAbstractFileByPath(path) === file && file.path === path && file.extension === extension &&
+      file.stat.mtime === mtime && file.stat.size === size && this.fileOwners.get(path) === owner);
+  }
+
+  private captureRecoveryCurrentness(files: readonly TFile[], options: IndexingOptions): () => void {
+    const sourceStillCurrent = this.captureRecoverySourceCurrentness(files);
     return () => {
       throwIfIndexingCancelled(options.signal, options.isCurrent);
-      if (epoch !== this.recoverySourceEpoch || snapshots.some(({ file, path, mtime, size, owner }) =>
-        this.vault.getAbstractFileByPath(path) !== file || file.path !== path || file.stat.mtime !== mtime || file.stat.size !== size || this.fileOwners.get(path) !== owner)) {
-        throw new IndexingCancelledError();
-      }
+      if (!sourceStillCurrent()) throw new IndexingCancelledError();
     };
   }
 
-  private async planPendingFiles(inventory: RagFileInventory, options: IndexingOptions, readOptions?: FileIndexReadOptions) {
-    const requireCurrent = this.captureRecoveryCurrentness(inventory.candidates, options);
+  private getPendingScope(inventory: RagFileInventory, automatic: boolean): TFile[] {
+    return [...inventory.candidates, ...inventory.unsupported, ...(automatic ? inventory.failures.map(({ file }) => file) : [])];
+  }
+
+  private async planPendingFiles(files: readonly TFile[], inventory: RagFileInventory, options: IndexingOptions, readOptions?: FileIndexReadOptions) {
+    const requireCurrent = this.captureRecoveryCurrentness(files, options);
     const status = await calculateRagStatus(this.vault, this.vectorStore, this.ragConfig, this.chatConfig, options.signal, inventory, readOptions);
     requireCurrent();
     const recoveryPaths = (await this.vectorStore.readPendingWriteRecovery?.()) ?? [];
     requireCurrent();
-    // 실패·내구 recovery까지 합친 뒤 Native에서 terminal partial을 판정합니다.
     const requiredPaths = [...getRagUnverifiedIndexingFiles(inventory).map((file) => file.path),
-      ...status.updateRequiredDocuments.map((document) => document.path), ...inventory.failures.map(({ file }) => file.path), ...this.getFailedFilePaths(), ...recoveryPaths, ...this.invalidatedRecoveryPaths];
-    const plan = planIndexPendingFilesRust(inventory.candidates.map((file) => file.path), requiredPaths);
+      ...status.updateRequiredDocuments.map((document) => document.path), ...inventory.unsupported.map((file) => file.path),
+      ...inventory.failures.map(({ file }) => file.path), ...this.getFailedFilePaths(), ...recoveryPaths, ...this.invalidatedRecoveryPaths];
+    const plan = planIndexPendingFilesRust(files.map((file) => file.path), requiredPaths);
     if (!plan) throw new Error('Rust pending index file planning failed');
-    return plan;
+    return normalizeRustIndices(plan.fileIndices, files.length, { dedupe: true }).map((index) => files[index]);
   }
 
-  private async planAutomaticRecovery(inventory: RagFileInventory, pendingIndices: readonly number[], options: IndexingOptions, readOptions?: FileIndexReadOptions) {
-    const requireCurrent = this.captureRecoveryCurrentness(inventory.candidates, options);
+  private async planAutomaticRecovery(inventory: RagFileInventory, pendingFiles: readonly TFile[], options: IndexingOptions, readOptions?: FileIndexReadOptions) {
+    const requireCurrent = this.captureRecoveryCurrentness(pendingFiles, options);
     const [corpusRows, vectorRows] = await Promise.all([
       this.documentCorpus?.getFileIndexRecords?.() ?? Promise.resolve([]), this.vectorStore.getFileIndexRecords(readOptions),
     ]);
     requireCurrent();
     const corpus = new Map(corpusRows.map((row) => [row.filePath, row]));
     const vectors = new Map(vectorRows.map((row) => [row.filePath, row]));
-    const pendingFiles = pendingIndices.map((index) => inventory.candidates[index]);
+    const blocked = new Set(inventory.failures.map(({ file }) => file.path));
+    const unsupported = new Set(inventory.unsupported.map((file) => file.path));
     const plan = planRagAutomaticRecoveryBatchRust(pendingFiles.map((file) => {
       const prepared = getRagPreparedSourceRevision(this.vault, file);
+      const failure = this.failedFiles.get(file.path);
+      // 같은 stat의 나중 성공은 byte/포맷 실패를 뒤집지만 더 가벼운 준비의 성공은 전체 색인 예산 proof가 아닙니다.
+      const terminal = unsupported.has(file.path) || (failure?.terminalSource?.file === file &&
+        failure.terminalSource.extension === file.extension && failure.mtime === file.stat.mtime && failure.size === file.stat.size &&
+        (!prepared || TERMINAL_SOURCE_BUDGET_REASONS.has(failure.reason)));
       return { path: file.path, mtime: file.stat.mtime, size: file.stat.size,
-        invalidated: this.invalidatedRecoveryPaths.has(file.path) || inventory.failures.some((failure) => failure.file.path === file.path),
+        ...(blocked.has(file.path) ? { sourceDisposition: 'manifest-blocked' as const } : terminal ? { sourceDisposition: 'terminal' as const } : {}),
+        invalidated: this.invalidatedRecoveryPaths.has(file.path),
         ...(prepared ? { contentHash: prepared.contentHash, sourceMetadataHash: prepared.sourceMetadataHash } : {}),
         corpusRecord: projectRecoveryPartialRecord(corpus.get(file.path)), vectorRecord: projectRecoveryPartialRecord(vectors.get(file.path)) };
     }));
@@ -1533,12 +1573,12 @@ export class VaultIndexer {
 
   async getAutomaticRecoveryPendingState(options: IndexingOptions = {}, readOptions?: FileIndexReadOptions) {
     throwIfIndexingCancelled(options.signal, options.isCurrent);
-    const manifest = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
-    const inventory = { ...manifest, candidates: [...manifest.candidates, ...manifest.failures.map(({ file }) => file)] };
-    const requireCurrent = this.captureRecoveryCurrentness(inventory.candidates, options);
-    const pending = await this.planPendingFiles(inventory, options, readOptions);
+    const inventory = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
+    const files = this.getPendingScope(inventory, true);
+    const requireCurrent = this.captureRecoveryCurrentness(files, options);
+    const pending = await this.planPendingFiles(files, inventory, options, readOptions);
     requireCurrent();
-    const plan = await this.planAutomaticRecovery(inventory, pending.fileIndices, options, readOptions);
+    const plan = await this.planAutomaticRecovery(inventory, pending, options, readOptions);
     requireCurrent();
     return plan;
   }
@@ -1549,52 +1589,32 @@ export class VaultIndexer {
     const progressTracker = createProgressTracker([], this.ragConfig);
     const inventory = options.inventory ?? getRagIndexingManifest(this.vault, this.ragConfig, this.chatConfig);
     options = { ...options, inventory };
-    const files = inventory.candidates;
-    throwIfIndexingCancelled(options.signal, options.isCurrent);
-    this.recordInventoryFailures(inventory);
-    await this.removeOrphanedSources([...files, ...inventory.failures.map(({ file }) => file)], options);
-    const candidatePaths = files.map((file) => file.path);
+    const failures = options.automaticRecovery ? [] : inventory.failures;
+    const files = this.getPendingScope(inventory, options.automaticRecovery === true);
+    this.recordInventoryFailures(inventory, failures);
     const requireCurrent = this.captureRecoveryCurrentness(files, options);
-    const pendingPlan = await this.planPendingFiles(inventory, options);
+    const pending = await this.planPendingFiles(files, inventory, options);
     requireCurrent();
-
-    const normalizedPendingPlanFileIndices = normalizeRustIndices(
-      [...new Set(pendingPlan.fileIndices)],
-      files.length,
-      {
-        dedupe: true,
-      },
-    );
-    const normalizedPendingPlan = {
-      fileIndices: normalizedPendingPlanFileIndices,
-      skipped: Math.max(candidatePaths.length - normalizedPendingPlanFileIndices.length, 0),
-    };
-    const automatic = options.automaticRecovery
-      ? await this.planAutomaticRecovery(inventory, normalizedPendingPlan.fileIndices, options)
-      : null;
+    const automatic = options.automaticRecovery ? await this.planAutomaticRecovery(inventory, pending, options) : null;
     requireCurrent();
-    const selectedFileIndices = automatic
-      ? automatic.batchIndices.map((index) => normalizedPendingPlan.fileIndices[index])
-      : normalizedPendingPlan.fileIndices;
-    const selectedFiles = selectedFileIndices
-      .map((index) => files[index])
-      .filter((file): file is TFile => file !== undefined);
-    resetProgressTrackerPlan(
-      progressTracker,
-      selectedFiles,
-      this.ragConfig,
-      Math.max(candidatePaths.length - selectedFiles.length, 0),
-    );
+    const selectedFiles = automatic ? automatic.batchIndices.map((index) => pending[index]) : pending;
+    const skipped = files.length - selectedFiles.length + failures.length;
+    if (automatic && automatic.deferredDocumentCount > 0 && selectedFiles.length === 0) {
+      return finishIndexingResult({ indexed: 0, vectors: 0, skipped, documents: [] }, startedAt, options);
+    }
+    await this.removeOrphanedSources(options.automaticRecovery ? files : [...files, ...failures.map(({ file }) => file)], options);
+    requireCurrent();
+    resetProgressTrackerPlan(progressTracker, selectedFiles, this.ragConfig, skipped - failures.length);
     emitIndexingProgress(options, progressTracker, 'plan');
     this.planProgressChunks(selectedFiles, options, progressTracker);
     emitIndexingProgress(options, progressTracker, 'plan');
 
-    this.completeInventoryFailures(inventory.failures, options, progressTracker);
+    this.completeInventoryFailures(failures, options, progressTracker);
     const result = await this.withIndexBatch(async () => {
       const batchResult = createEmptyIndexingResult(startedAt);
-      batchResult.skipped = Math.max(candidatePaths.length - selectedFiles.length, 0) + inventory.failures.length;
-      if (inventory.failures.length > 0) batchResult.failed = inventory.failures.length;
-      batchResult.documents.push(...inventory.failures.map(({ file }) => file.path));
+      batchResult.skipped = skipped;
+      if (failures.length > 0) batchResult.failed = failures.length;
+      batchResult.documents.push(...failures.map(({ file }) => file.path));
       await this.indexBatchFiles(selectedFiles, batchResult, options, progressTracker);
       return batchResult;
     });

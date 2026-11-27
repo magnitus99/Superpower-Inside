@@ -546,6 +546,7 @@ it('부분 추출의 본문·누락 주소를 그대로 반환하고 전체 실�
   const failed = extractPdfSourceText(vault, file);
   const rejected = expect(failed).rejects.toMatchObject({
     name: 'PdfSourceExtractionError',
+    reason: 'ocr-empty',
     completeness,
   });
   await vi.waitFor(() => expect(workers[0]?.posted).toHaveLength(2));

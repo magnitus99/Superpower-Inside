@@ -58,13 +58,21 @@ type QueueJob =
       resolve: (removed: number) => void;
       reject: (error: unknown) => void;
     }
-  | {
-      kind: 'pending';
-      options: RagPendingIndexingOptions;
-      resolve: (result: IndexingResult) => void;
-      reject: (error: unknown) => void;
-    }
-  | { kind: 'all'; resolve: (result: IndexingResult) => void; reject: (error: unknown) => void };
+  | BatchJob;
+
+type BatchRequest = { kind: 'pending'; options: RagPendingIndexingOptions } | { kind: 'all' };
+type BatchJob = BatchRequest & {
+  result: Promise<IndexingResult>;
+  resolve: (result: IndexingResult) => void;
+  reject: (error: unknown) => void;
+};
+
+function createBatchJob(request: BatchRequest): BatchJob {
+  let resolve!: BatchJob['resolve'];
+  let reject!: BatchJob['reject'];
+  const result = new Promise<IndexingResult>((ok, fail) => { resolve = ok; reject = fail; });
+  return { ...request, result, resolve, reject };
+}
 
 export interface RagDirtySetJournalDrain {
   files: TFile[];
@@ -199,26 +207,21 @@ export class RAGIndexingScheduler {
 
   indexPending(options: RagPendingIndexingOptions = {}): Promise<IndexingResult> {
     this.cancelled = false;
-    return new Promise((resolve, reject) => {
-      this.enqueuePending(resolve, reject, options);
-      this.kick();
-    });
+    const job = this.enqueuePending(options);
+    this.kick();
+    return job.result;
   }
 
   reindexAll(): Promise<IndexingResult> {
     this.cancelled = false;
-    if (
-      (this.activeJob?.kind === 'all' && !this.abortController?.signal.aborted) ||
-      this.queue.some((job) => job.kind === 'all')
-    ) {
-      return Promise.resolve(this.lastResult ?? createEmptyIndexingResult());
-    }
+    const existing = this.batchCandidates(true).find((job) => job?.kind === 'all');
+    if (existing?.kind === 'all') return existing.result;
+    const job = createBatchJob({ kind: 'all' });
     this.dirtySet.clear();
-    this.resolveSupersededIndexJobs();
-    return new Promise((resolve, reject) => {
-      this.queue.push({ kind: 'all', resolve, reject });
-      this.kick();
-    });
+    this.resolveSupersededIndexJobs(job);
+    this.queue.push(job);
+    this.kick();
+    return job.result;
   }
 
   cancel(): void {
@@ -373,12 +376,7 @@ export class RAGIndexingScheduler {
     if (this.dirtySet.size === 0 && !this.dirtySet.hasOverflowed) return;
     const { files, overflowed } = this.dirtySet.drain();
     if (overflowed) {
-      this.enqueuePending(
-        () => undefined,
-        () => undefined,
-        {},
-        false,
-      );
+      void this.enqueuePending({}, false).result.catch(() => undefined);
       return;
     }
     for (const file of files) {
@@ -391,36 +389,20 @@ export class RAGIndexingScheduler {
     }
   }
 
-  private enqueuePending(
-    resolve: (result: IndexingResult) => void,
-    reject: (error: unknown) => void,
-    options: RagPendingIndexingOptions = {},
-    mergeActive = true,
-  ): void {
-    if (
-      mergeActive &&
-      !this.abortController?.signal.aborted &&
-      this.coversPendingRequest(this.activeJob, options)
-    ) {
-      resolve(this.lastResult ?? createEmptyIndexingResult());
-      return;
-    }
-    if (this.queue.some((job) => job.kind === 'pending' || job.kind === 'all')) {
-      resolve(this.lastResult ?? createEmptyIndexingResult());
-      return;
-    }
-    this.queue.push({ kind: 'pending', options, resolve, reject });
+  private batchCandidates(mergeActive: boolean): Array<QueueJob | null> {
+    return mergeActive ? [this.abortController?.signal.aborted ? null : this.activeJob, this.parkedJob, ...this.queue] : this.queue;
   }
 
-  /** 실행 중인 작업이 같은 범위를 처음부터 다시 도는 요청인지 판정합니다. */
-  private coversPendingRequest(job: QueueJob | null, options: RagPendingIndexingOptions): boolean {
-    if (!job) return false;
-    if (job.kind === 'all') return true;
-    if (job.kind !== 'pending') return false;
-    return !job.options.automaticRecovery || options.automaticRecovery === true;
+  private enqueuePending(options: RagPendingIndexingOptions, mergeActive = true): BatchJob {
+    for (const job of this.batchCandidates(mergeActive)) {
+      if (job?.kind === 'all' || (job?.kind === 'pending' && (!job.options.automaticRecovery || options.automaticRecovery))) return job;
+    }
+    const job = createBatchJob({ kind: 'pending', options });
+    this.queue.push(job);
+    return job;
   }
 
-  private resolveSupersededIndexJobs(): void {
+  private resolveSupersededIndexJobs(replacement: BatchJob): void {
     const remaining: QueueJob[] = [];
     for (const job of this.queue) {
       if (job.kind === 'file') {
@@ -428,7 +410,7 @@ export class RAGIndexingScheduler {
         continue;
       }
       if (job.kind === 'pending') {
-        job.resolve(this.lastResult ?? createEmptyIndexingResult());
+        void replacement.result.then(job.resolve, job.reject);
         continue;
       }
       remaining.push(job);

@@ -57,6 +57,9 @@ fn valid_recovery_record(value: &JsonValue, source: bool) -> bool {
                 .is_some_and(|number| number <= MAX_SAFE_INTEGER),
             "contentHash" | "sourceMetadataHash" => value.is_string(),
             "invalidated" => source && value.is_boolean(),
+            "sourceDisposition" => {
+                source && matches!(value.as_str(), Some("manifest-blocked" | "terminal"))
+            }
             "partial" | "hasCompleteMetadata" => !source && value.is_boolean(),
             "corpusRecord" | "vectorRecord" => source && valid_recovery_record(value, false),
             _ => false,
@@ -113,11 +116,17 @@ pub fn plan_rag_automatic_recovery_batch_json(files_json: &str) -> String {
         if !paths.insert(path) {
             return String::new();
         }
+        let source_deferred = match file.get("sourceDisposition").and_then(JsonValue::as_str) {
+            Some("manifest-blocked") => true,
+            Some("terminal") => file.get("invalidated").and_then(JsonValue::as_bool) != Some(true),
+            _ => false,
+        };
         // lexical-first corpus가 있으면 이전 vector partial로 새 corpus 실패를 가리지 않습니다.
-        if file
-            .get("corpusRecord")
-            .or_else(|| file.get("vectorRecord"))
-            .is_some_and(|record| defers_partial(file, record))
+        if source_deferred
+            || file
+                .get("corpusRecord")
+                .or_else(|| file.get("vectorRecord"))
+                .is_some_and(|record| defers_partial(file, record))
         {
             deferred_indices.push(index);
         } else {
@@ -461,6 +470,23 @@ mod tests {
     }
 
     #[test]
+    fn source_debt_does_not_consume_automatic_batch_slots() {
+        let files = json!([
+            {"path":"oversize.md", "mtime":1, "size":1, "sourceDisposition":"manifest-blocked", "invalidated":true},
+            {"path":"binary.txt", "mtime":1, "size":1, "sourceDisposition":"terminal"},
+            {"path":"changed.txt", "mtime":1, "size":2, "sourceDisposition":"terminal", "invalidated":true},
+            {"path":"transient.txt", "mtime":1, "size":3}
+        ]);
+        let plan: JsonValue =
+            serde_json::from_str(&plan_rag_automatic_recovery_batch_json(&files.to_string()))
+                .unwrap_or_default();
+        assert_eq!(plan.get("pendingDocumentCount"), Some(&json!(4)));
+        assert_eq!(plan.get("deferredIndices"), Some(&json!([0, 1])));
+        assert_eq!(plan.get("eligibleIndices"), Some(&json!([2, 3])));
+        assert_eq!(plan.get("batchIndices"), Some(&json!([2, 3])));
+    }
+
+    #[test]
     fn partial_hints_allow_changes_and_uncertified_legacy() {
         let base = json!({"path": "partial.pdf", "mtime": 1, "size": 10, "corpusRecord": {"mtime": 1, "size": 10, "contentHash": "1234abcd", "sourceMetadataHash": "abcd1234", "partial": true, "hasCompleteMetadata": true}});
         let cases = [
@@ -524,6 +550,7 @@ mod tests {
             r#"[{"path":"a","mtime":1,"size":1.5}]"#,
             r#"[{"path":"a","mtime":1,"size":9007199254740992}]"#,
             r#"[{"path":"a","mtime":1,"size":1,"unknown":true}]"#,
+            r#"[{"path":"a","mtime":1,"size":1,"sourceDisposition":"unknown"}]"#,
             r#"[{"path":"a","mtime":1,"size":1,"corpusRecord":{"partial":"partial","hasCompleteMetadata":true}}]"#,
             r#"[{"path":"a","mtime":1,"size":1},{"path":"a","mtime":2,"size":2}]"#,
         ] {

@@ -8135,8 +8135,10 @@ struct RagFileIndexabilityPlan {
     summary_inputs: Vec<RagFileTypeInput>,
     /// 지원 텍스트 또는 미판별 자료의 읽기·디코딩 실패.
     failures: Vec<(usize, String)>,
-    /// 사용자 정책·민감 파일·빈 파일 제외.
+    /// 사용자 정책·민감 파일 제외.
     policy_excluded_indices: Vec<usize>,
+    /// 원본 크기 0: 정책 제외나 추출 실패가 아니다.
+    empty_indices: Vec<usize>,
     /// 바이트 판별로 확인된 미지원 바이너리.
     unsupported_indices: Vec<usize>,
 }
@@ -8680,12 +8682,13 @@ fn serialize_rag_file_indexability_plan_json(plan: &RagFileIndexabilityPlan) -> 
         .map(|(index, reason)| serde_json::json!({"index":index,"reason":reason}))
         .collect();
     format!(
-        "{{\"candidateIndices\":{},\"summaryInputs\":{},\"failures\":{},\"policyExcludedIndices\":{},\"unsupportedIndices\":{}}}",
+        "{{\"candidateIndices\":{},\"summaryInputs\":{},\"failures\":{},\"policyExcludedIndices\":{},\"unsupportedIndices\":{},\"emptyIndices\":{}}}",
         serialize_usize_array_json(&plan.candidate_indices),
         serialize_rag_file_type_inputs_json(&plan.summary_inputs),
         serde_json::json!(failures),
         serialize_usize_array_json(&plan.policy_excluded_indices),
         serialize_usize_array_json(&plan.unsupported_indices),
+        serialize_usize_array_json(&plan.empty_indices),
     )
 }
 
@@ -11638,13 +11641,15 @@ pub fn plan_rag_indexing_manifest_json(
     let excluded = normalized_extension_set(&exclude_exts);
     let mut candidates = Vec::new();
     let mut policy_excluded = Vec::new();
+    let mut empty = Vec::new();
     let mut failures = Vec::new();
     for file in &files {
         if is_rag_file_excluded_before_probe(file, &exclude_paths, &excluded)
             || is_sensitive_rag_file(file)
-            || file.size == 0
         {
             policy_excluded.push(file.index);
+        } else if file.size == 0 {
+            empty.push(file.index);
         } else {
             match classify_rag_file_without_probe(file) {
                 RagFileProbeDecision::NotIndexable("too-large") => {
@@ -11657,7 +11662,7 @@ pub fn plan_rag_indexing_manifest_json(
             }
         }
     }
-    serde_json::json!({"candidateIndices":candidates,"policyExcludedIndices":policy_excluded,"unsupportedIndices":[],"failures":failures,"summaryInputs":[]}).to_string()
+    serde_json::json!({"candidateIndices":candidates,"policyExcludedIndices":policy_excluded,"unsupportedIndices":[],"emptyIndices":empty,"failures":failures,"summaryInputs":[]}).to_string()
 }
 
 /// RAG 후보 file index와 summary 입력 row를 계산한다.
@@ -11695,7 +11700,7 @@ fn plan_rag_file_indexability(
         } else {
             match decision {
                 RagFileProbeDecision::NotIndexable("empty") => {
-                    plan.policy_excluded_indices.push(file.index);
+                    plan.empty_indices.push(file.index);
                     plan.summary_inputs
                         .push(rag_file_type_input(file, false, Some("empty")));
                     continue;
@@ -11778,10 +11783,6 @@ fn classify_rag_file_without_probe(file: &RagFileEligibilityInput) -> RagFilePro
         return RagFileProbeDecision::NotIndexable("empty");
     }
     let extension = rag_file_extension(file);
-    // XLSX·XLTX의 원본 크기는 워커의 전체 메모리 예산 안에서 판정합니다.
-    if matches!(extension.as_str(), "xlsx" | "xltx") {
-        return RagFileProbeDecision::Indexable;
-    }
     if is_extractable_source_extension(&extension) {
         return if file.size > MAX_RAG_EXTRACTABLE_SOURCE_BYTES {
             RagFileProbeDecision::NotIndexable("too-large")
@@ -16002,7 +16003,7 @@ mod tests {
                 r#"["png"]"#,
                 r#"[{"index":4,"readable":true,"sample":"plain text content"},{"index":5,"readable":true,"sample":"\u0000binary"}]"#,
             ),
-            "{\"candidateIndices\":[0,1,4],\"summaryInputs\":[{\"filePath\":\"note.md\",\"extension\":\"MD\",\"indexable\":true},{\"filePath\":\"src/main.ts\",\"extension\":\"ts\",\"indexable\":true},{\"filePath\":\".env\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"empty.md\",\"extension\":\"md\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"custom.weird\",\"extension\":\"weird\",\"indexable\":true},{\"filePath\":\"bin.weird\",\"extension\":\"weird\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"empty.txt\",\"extension\":\"txt\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"large.opaque\",\"extension\":\"opaque\",\"indexable\":false,\"recommendationReason\":\"unreadable\"}],\"failures\":[{\"index\":5,\"reason\":\"ambiguous-encoding\"},{\"index\":9,\"reason\":\"probe-unavailable\"}],\"policyExcludedIndices\":[2,3,6,7,8],\"unsupportedIndices\":[]}",
+            "{\"candidateIndices\":[0,1,4],\"summaryInputs\":[{\"filePath\":\"note.md\",\"extension\":\"MD\",\"indexable\":true},{\"filePath\":\"src/main.ts\",\"extension\":\"ts\",\"indexable\":true},{\"filePath\":\".env\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"empty.md\",\"extension\":\"md\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"custom.weird\",\"extension\":\"weird\",\"indexable\":true},{\"filePath\":\"bin.weird\",\"extension\":\"weird\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"empty.txt\",\"extension\":\"txt\",\"indexable\":false,\"recommendationReason\":\"empty\"},{\"filePath\":\"large.opaque\",\"extension\":\"opaque\",\"indexable\":false,\"recommendationReason\":\"unreadable\"}],\"failures\":[{\"index\":5,\"reason\":\"ambiguous-encoding\"},{\"index\":9,\"reason\":\"probe-unavailable\"}],\"policyExcludedIndices\":[2,6,7],\"unsupportedIndices\":[],\"emptyIndices\":[3,8]}",
         );
     }
 
@@ -16028,7 +16029,7 @@ mod tests {
             }]);
             assert_eq!(
                 plan_rag_file_indexability_json(&files.to_string(), "[]", "[]", "[]"),
-                r#"{"candidateIndices":[],"summaryInputs":[],"failures":[],"policyExcludedIndices":[0],"unsupportedIndices":[]}"#,
+                r#"{"candidateIndices":[],"summaryInputs":[],"failures":[],"policyExcludedIndices":[0],"unsupportedIndices":[],"emptyIndices":[]}"#,
             );
         }
         for value in [
@@ -16043,7 +16044,7 @@ mod tests {
         let files = r#"[{"filePath":"hidden.md","fileName":"hidden.md","extension":"md","size":10,"frontmatter":{"superpower-inside-exclude":true}},{"filePath":"public.md","fileName":"public.md","extension":"md","size":10,"frontmatter":{"superpower-inside-exclude":false}}]"#;
         assert_eq!(
             plan_rag_file_indexability_json(files, "[]", "[]", "[]"),
-            r#"{"candidateIndices":[1],"summaryInputs":[{"filePath":"public.md","extension":"md","indexable":true}],"failures":[],"policyExcludedIndices":[0],"unsupportedIndices":[]}"#,
+            r#"{"candidateIndices":[1],"summaryInputs":[{"filePath":"public.md","extension":"md","indexable":true}],"failures":[],"policyExcludedIndices":[0],"unsupportedIndices":[],"emptyIndices":[]}"#,
         );
     }
 
@@ -16059,7 +16060,7 @@ mod tests {
         let plan = plan_rag_file_indexability_json(files, "[]", "[]", "[]");
         assert_eq!(
             plan,
-            "{\"candidateIndices\":[0,1,2],\"summaryInputs\":[{\"filePath\":\"manual.pdf\",\"extension\":\"pdf\",\"indexable\":true},{\"filePath\":\"archive.docx\",\"extension\":\"docx\",\"indexable\":true},{\"filePath\":\"book.epub\",\"extension\":\"epub\",\"indexable\":true},{\"filePath\":\"raw.zip\",\"extension\":\"zip\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"photo.png\",\"extension\":\"png\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"huge.epub\",\"extension\":\"epub\",\"indexable\":false,\"recommendationReason\":\"too-large\"}],\"failures\":[{\"index\":3,\"reason\":\"probe-unavailable\"},{\"index\":4,\"reason\":\"probe-unavailable\"},{\"index\":5,\"reason\":\"memory-budget\"}],\"policyExcludedIndices\":[],\"unsupportedIndices\":[]}",
+            "{\"candidateIndices\":[0,1,2],\"summaryInputs\":[{\"filePath\":\"manual.pdf\",\"extension\":\"pdf\",\"indexable\":true},{\"filePath\":\"archive.docx\",\"extension\":\"docx\",\"indexable\":true},{\"filePath\":\"book.epub\",\"extension\":\"epub\",\"indexable\":true},{\"filePath\":\"raw.zip\",\"extension\":\"zip\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"photo.png\",\"extension\":\"png\",\"indexable\":false,\"recommendationReason\":\"unreadable\"},{\"filePath\":\"huge.epub\",\"extension\":\"epub\",\"indexable\":false,\"recommendationReason\":\"too-large\"}],\"failures\":[{\"index\":3,\"reason\":\"probe-unavailable\"},{\"index\":4,\"reason\":\"probe-unavailable\"},{\"index\":5,\"reason\":\"memory-budget\"}],\"policyExcludedIndices\":[],\"unsupportedIndices\":[],\"emptyIndices\":[]}",
         );
     }
 
@@ -16196,7 +16197,7 @@ mod tests {
 
         assert_eq!(
             plan_rag_file_indexability_json(files, "[]", "[]", "[]"),
-            "{\"candidateIndices\":[6,7],\"summaryInputs\":[{\"filePath\":\".npmrc\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"id_ed25519\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"cert.pem\",\"extension\":\"pem\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"private.key\",\"extension\":\"key\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"secrets.json\",\"extension\":\"json\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"credentials.toml\",\"extension\":\"toml\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"app.config\",\"extension\":\"config\",\"indexable\":true},{\"filePath\":\"app.log\",\"extension\":\"log\",\"indexable\":true}],\"failures\":[],\"policyExcludedIndices\":[0,1,2,3,4,5],\"unsupportedIndices\":[]}",
+            "{\"candidateIndices\":[6,7],\"summaryInputs\":[{\"filePath\":\".npmrc\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"id_ed25519\",\"extension\":\"\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"cert.pem\",\"extension\":\"pem\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"private.key\",\"extension\":\"key\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"secrets.json\",\"extension\":\"json\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"credentials.toml\",\"extension\":\"toml\",\"indexable\":false,\"recommendationReason\":\"sensitive\"},{\"filePath\":\"app.config\",\"extension\":\"config\",\"indexable\":true},{\"filePath\":\"app.log\",\"extension\":\"log\",\"indexable\":true}],\"failures\":[],\"policyExcludedIndices\":[0,1,2,3,4,5],\"unsupportedIndices\":[],\"emptyIndices\":[]}",
         );
     }
 
