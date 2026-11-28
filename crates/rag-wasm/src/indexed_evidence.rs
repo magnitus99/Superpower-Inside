@@ -37,10 +37,10 @@ const EXTRA_CANDIDATE_DRAFTS_PER_DOCUMENT: usize = 2;
 const MAX_HIGHLIGHTS: usize = 32;
 /// `exact` 숫자·식별자 일치마다 더하는 가중치입니다.
 const EXACT_SIGNAL_BONUS: f64 = 0.6;
-/// 정확 구문 일치마다 더하는 가중치입니다.
+/// 근거 구절에 일치한 긍정 구문마다 더할 점수입니다.
 const PHRASE_SIGNAL_BONUS: f64 = 0.8;
-/// 부정 토큰이 구절 안에 있을 때 곱하는 감쇠입니다.
-/// 문서 본문의 자연어 부정·예외 표현은 감지하지 않고 반례 근거를 그대로 보존합니다.
+/// 제외 조건에 해당하는 구문이나 토큰이 인용 범위에 있으면 점수를 낮춥니다.
+/// 해당 구절을 버리는 대신 구문 가산점을 더한 점수에 이 계수를 곱합니다.
 /// 계수는 합성 계약 테스트로만 고정하며 heldout 평가 전 정확도 개선으로 단정하지 않습니다.
 const NEGATION_PENALTY_FACTOR: f64 = 0.5;
 /// 후보 신호 `RRF`의 smoothing 상수입니다.
@@ -65,7 +65,7 @@ const CANDIDATE_DEPTH_RATIO: f64 = 0.5;
 const MERGE_RRF_K: f64 = 60.0;
 /// 원 질의의 `queryIndex`는 0이며 후속 facet에는 1부터 이 상한까지 부여한다.
 const MAX_CANDIDATE_QUERY_INDEX: usize = 3;
-/// 질의의 텍스트 토큰을 하나도 담지 않고 숫자·식별자만 맞은 문서에 곱하는 감쇠입니다.
+/// 일반 질의어가 있지만 하나도 일치하지 않고 본문에도 숫자 일치가 없으면 점수를 낮춥니다.
 /// `51장`만 맞는 다른 책의 장들은 질의의 의미를 담지 않았습니다.
 const NUMBER_ONLY_DEMOTION: f64 = 0.45;
 /// 텍스트 토큰을 모두 담은 문서에 주는 추가 배율입니다.
@@ -640,7 +640,7 @@ const KOREAN_FUNCTION_WORDS: &[&str] = &[
     "의미",
 ];
 
-/// 일반 검색어와 함께 쓰였을 때 변별력이 낮은 기능어인지 반환합니다.
+/// 영어와 한국어 목록을 기준으로 검색어가 정리 대상인 기능어인지 판별합니다.
 fn is_function_word(token: &str) -> bool {
     matches!(
         token,
@@ -4363,7 +4363,7 @@ mod tests {
 
     #[test]
     fn plan_skips_documents_that_only_share_a_directory_name() {
-        // 같은 디렉터리에 있다는 이유만으로 본문이 다른 문서를 근거로 올리지 않습니다.
+        // 합성 데이터에서 상위 폴더명만 일치하는 문서는 근거에서 빠져야 합니다.
         let plan = plan_of(&json!({
             "question": "보고서 51호",
             "documents": [
@@ -4394,7 +4394,7 @@ mod tests {
 
     #[test]
     fn plan_demotes_link_index_documents_below_content() {
-        // 목차·색인 문서는 다른 문서를 안내할 뿐이므로 같은 단어를 담은 본문보다 낮습니다.
+        // 합성 링크 모음보다 질의어를 본문에 담은 문서가 먼저 나와야 합니다.
         let index_lines = (1..=20)
             .map(|number| format!("- [[archive/reports/{number:03}|{number}호]]"))
             .collect::<Vec<_>>()
