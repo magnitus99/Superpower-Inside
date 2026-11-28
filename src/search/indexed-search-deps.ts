@@ -126,7 +126,7 @@ export function createVaultSourceReader(
       if (!after || before.mtime !== after.mtime || before.size !== after.size ||
           app.vault.getAbstractFileByPath(path) !== file || file.path !== path ||
           file.stat.mtime !== after.mtime || file.stat.size !== after.size) {
-        return { revision: null, text: null };
+        return { revision: null, text: null, failure: 'changed-during-read' };
       }
       const { prepared } = source;
       if (prepared) publish?.({ text: source.text, contentHash: prepared.contentHash, sourceMetadataHash: prepared.sourceMetadataHash });
@@ -147,7 +147,7 @@ export function createVaultSourceReader(
         source: 'search.source-read',
         // 추출기 오류에 원문·경로가 포함될 수 있으므로 복제하지 않습니다.
       });
-      return { revision: null, text: null };
+      return { revision: null, text: null, failure: 'read-failed' };
     }
   };
 }
@@ -178,14 +178,14 @@ export async function collectIndexedSearchSource(
       loadQueryVariants, restriction, lease?.chunkConfig,
     );
     if (!source) lease?.release();
-    return source ? ownLiteralSearchSource(source, lease) : null;
+    return source ? ownIndexedSearchSource(source, lease) : null;
   } catch (error) {
     lease?.release();
     throw error;
   }
 }
 
-function ownLiteralSearchSource(
+function ownIndexedSearchSource(
   source: IndexedSearchSource & { diagnostics?: readonly RetrievalProviderDiagnostic[] },
   lease?: IndexedSearchRuntimeLease | null,
 ): IndexedSearchSource & { diagnostics?: readonly RetrievalProviderDiagnostic[] } {
@@ -194,8 +194,22 @@ function ownLiteralSearchSource(
   const open = source.openLiteralInventory;
   let released = false;
   let closing: Promise<void> | undefined;
+  // 요청과 이미 시작한 각 corpus 읽기가 같은 serving lease를 공유합니다.
+  // 논리적 종료는 literal 정리를 기다리지만, 신호를 받지 않는 읽기의 owner는 그 Promise가 반납합니다.
+  let owners = 1;
+  const dropOwner = () => { if (--owners === 0) lease?.release(); };
+  const read = async <T>(operation: () => Promise<T>): Promise<T> => {
+    if (released) throw new Error('Indexed search source is closed');
+    owners++;
+    try { return await operation(); } finally { dropOwner(); }
+  };
   return {
     ...source,
+    ...(source.rankFollowup ? { rankFollowup: (queries, paths, signal) => read(() => source.rankFollowup!(queries, paths, signal)) } : {}),
+    corpus: {
+      getFileIndexRecords: () => read(() => source.corpus.getFileIndexRecords()),
+      getEntriesByFilePaths: (paths) => read(() => source.corpus.getEntriesByFilePaths(paths)),
+    },
     ...(lease?.isCurrent ? { isCurrent: lease.isCurrent } : {}),
     ...(open ? { openLiteralInventory: (needles: readonly string[], signal?: AbortSignal, allowedPaths?: readonly string[]) => {
       if (released) return Promise.reject(new LiteralInventoryError('inventory-closed'));
@@ -211,13 +225,13 @@ function ownLiteralSearchSource(
     release: () => {
       if (released) return closing;
       released = true;
-      if (handles.size === 0 && pending.size === 0) { lease?.release(); return; }
+      if (handles.size === 0 && pending.size === 0) { dropOwner(); return; }
       closing = (async () => {
         try {
           await Promise.allSettled([...pending]);
           const results = await Promise.allSettled([...handles].map((handle) => handle.close()));
           if (results.some((result) => result.status === 'rejected')) throw new LiteralInventoryError('inventory-cleanup-failed');
-        } finally { lease?.release(); }
+        } finally { dropOwner(); }
       })();
       return closing;
     },
@@ -254,7 +268,7 @@ async function collectCapturedIndexedSearchSource(
     const before = liveSettings();
     if (before && isRagFileMetadataExcluded(host.app.vault, file, before.rag, before.chat)) return unavailable;
     const source = await readSource(path, sourceSignal);
-    if (source.text === null) return unavailable;
+    if (source.text === null) return source;
     if (host.getCandidatePaths && !(await host.getCandidatePaths()).includes(path)) return unavailable;
     if (host.app.vault.getAbstractFileByPath?.(path) !== file || file.path !== path) return unavailable;
     const after = liveSettings();
@@ -368,6 +382,16 @@ async function collectCapturedIndexedSearchSource(
   return {
     corpus,
     literalQuery: query,
+    ...(literalEngine ? { rankFollowup: async (queries, paths, querySignal) => {
+      querySignal.throwIfAborted();
+      const allowed = paths.filter(p => indexedPathSet.has(p));
+      if (!allowed.length || !queries.length || queries.length > MAX_QUERY_VARIANTS) return null;
+      const batch = await literalEngine.queryBm25Batch(
+        queries.map(q => ({ query: q, limit: 8 })), [], allowed, querySignal, { includeAddresses: false },
+      );
+      querySignal.throwIfAborted();
+      return batch?.matches.map(group => [...group].sort((a,b) => a.rank-b.rank).map(hit => hit.path)) ?? null;
+    } } : {}),
     ...(literalEngine && typeof literalEngine.openLiteralInventory === 'function' ? { openLiteralInventory: (needles: readonly string[], signal?: AbortSignal, allowedPaths?: readonly string[]) => literalEngine.openLiteralInventory(needles, signal, allowedPaths) } : {}),
     queryVariants: queryVariants?.slice(0, MAX_QUERY_VARIANTS),
     getIndexedPaths: () => Promise.resolve(indexedPaths),

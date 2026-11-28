@@ -1,5 +1,6 @@
 import {
   searchIndexedVault,
+  prepareCurrentEvidenceSource,
   resolveCurrentIndexedPassage,
   distinctCurrentSourceIds,
   type IndexedEvidenceCandidate,
@@ -22,7 +23,10 @@ import { appLogger } from '../utils/logger';
 import type { SourceMetadata } from '../rag/source-access';
 import type { LiteralInventoryHandle } from '../rag/literal-inventory';
 
+import type { RankFollowup } from '../agent/facet-retrieval';
+
 export interface IndexedSearchSource {
+  rankFollowup?: RankFollowup;
   literalQuery?: string;
   openLiteralInventory?: (needles: readonly string[], signal?: AbortSignal, allowedPaths?: readonly string[]) => Promise<LiteralInventoryHandle>;
   release?: () => void | Promise<void>;
@@ -54,6 +58,7 @@ export interface IndexedSearchSource {
 
 /** 현재 vault 원문과 그 revision입니다. 읽을 수 없으면 두 값 모두 null입니다. */
 export interface IndexedEvidenceSourceSnapshot {
+  failure?: 'changed-during-read' | 'read-failed';
   sourceMetadata?: SourceMetadata;
   revision: string | null;
   text: string | null;
@@ -160,28 +165,29 @@ async function keepCurrentSourceEvidence(
     paths.map(async (path) => {
       signal?.throwIfAborted();
       try {
-        return [path, await reader(path, signal)] as const;
+        const snapshot = await reader(path, signal);
+        return [path, (!strict || snapshot.contentHash) ? prepareCurrentEvidenceSource(snapshot) : null] as const;
       } catch (error) {
         if (signal?.aborted) throw error;
-        return [path, { revision: null, text: null }] as const;
+        return [path, null] as const;
       }
     }),
   );
-  const byPath = new Map<string, IndexedEvidenceSourceSnapshot>(snapshots);
+  const byPath = new Map(snapshots);
   const rejectedPaths = new Set<string>();
   const current = evidence.flatMap((item) => {
     const snapshot = byPath.get(item.path);
-    const current = snapshot && (!strict || snapshot.contentHash) && resolveCurrentIndexedPassage(item, snapshot);
-    if (!current || !snapshot) {
+    const current = snapshot && resolveCurrentIndexedPassage(item, snapshot);
+    if (!current) {
       rejectedPaths.add(item.path);
       return [];
     }
-    return [snapshot.contentHash ? { ...current, contentHash: snapshot.contentHash, revision: snapshot.revision } : current];
+    return [current];
   });
   return {
     evidence: distinctCurrentSourceIds(current),
     staleDocuments: rejectedPaths.size,
-    incomplete: snapshots.some(([, snapshot]) => 'sourceMetadata' in snapshot && snapshot.sourceMetadata?.completeness?.status === 'partial'),
+    incomplete: snapshots.some(([, snapshot]) => snapshot?.sourceMetadata?.completeness?.status === 'partial'),
   };
 }
 

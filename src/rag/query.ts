@@ -253,14 +253,14 @@ export class RAGQueryEngine {
     if (normalizedLimit === 0) return [];
     const hits = await this.bm25Index.searchRepresentatives(question, normalizedLimit, signal, allowedPaths);
     if (!hits || !this.bm25Index.isReady) return null;
-    const [matches] = await this.attachBm25Addresses([hits]);
+    const [matches] = await this.mapBm25Matches([hits]);
     signal?.throwIfAborted();
     return matches;
   }
 
   /**
    * 여러 facet 검색과 집계를 한 worker 요청으로 실행하고,
-   * 선택된 chunk의 원문 주소는 코퍼스에서 한 번만 읽습니다.
+   * 기본적으로 선택된 chunk의 원문 주소를 코퍼스에서 한 번 읽습니다.
    */
   async queryBm25Batch(
     queries: readonly { query: string; limit?: number }[],
@@ -270,6 +270,7 @@ export class RAGQueryEngine {
     }[],
     allowedPaths?: readonly string[],
     signal?: AbortSignal,
+    { includeAddresses = true }: { includeAddresses?: boolean } = {},
   ): Promise<{
     matches: (readonly RAGExhaustiveBm25Match[])[];
     inventories: (RustBm25MatchAggregate | null)[];
@@ -293,16 +294,18 @@ export class RAGQueryEngine {
       allowedPaths,
       signal,
     );
+    signal?.throwIfAborted();
     if (!batch || batch.queries.length !== queries.length || batch.aggregates.length !== aggregates.length) return null;
-    const matches = await this.attachBm25Addresses(batch.queries.map(({ hits }) => hits));
+    const matches = await this.mapBm25Matches(batch.queries.map(({ hits }) => hits), includeAddresses);
     signal?.throwIfAborted();
     return { matches, inventories: [...batch.aggregates] };
   }
 
-  private async attachBm25Addresses(
+  private async mapBm25Matches(
     hitLists: readonly (readonly BM25BatchSearchHit[])[],
+    includeAddresses = true,
   ): Promise<RAGExhaustiveBm25Match[][]> {
-    const docIds = [...new Set(hitLists.flatMap((hits) => hits.map(({ docId }) => docId)))];
+    const docIds = includeAddresses ? [...new Set(hitLists.flatMap((hits) => hits.map(({ docId }) => docId)))] : [];
     const documents = docIds.length > 0 ? await this.bm25Index?.getCorpusDocumentsByIds(docIds) : [];
     const documentById = new Map(documents?.map((document) => [document.id, document]));
     return hitLists.map((hits) => hits.map((hit) => {
@@ -489,7 +492,7 @@ export class RAGQueryEngine {
       this.bm25Index?.isReady ?? false,
     );
     // 네트워크·작업자 대기 중 바뀐 제외 정책도 응답 직전에 적용합니다. 재사용 캐시를 쓰지 않습니다.
-    const currentPaths = await this.getCandidatePaths?.();
+    const currentPaths = relevantResults.length ? await this.getCandidatePaths?.() : undefined;
     throwIfQueryAborted(options.signal);
     const allowedResults = currentPaths
       ? relevantResults.filter((result) => currentPaths.has(result.sourcePath))

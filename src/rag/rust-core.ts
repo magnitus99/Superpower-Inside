@@ -4663,6 +4663,8 @@ export interface RustIndexedSearchQueryInput {
 }
 
 export interface RustIndexedSearchFacet {
+  /** Optional request-local complete language equivalents. Never derived from index ngrams. */
+  identities?: readonly (readonly string[])[];
   id: string;
   kind: 'question' | 'subject';
   query: string;

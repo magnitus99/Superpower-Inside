@@ -23,13 +23,15 @@ references: [vault-evidence, deterministic-core]
 
 정확성(누락·오탐·상충 근거 발견)을 최우선하고 초기 색인 비용·색인 지연·저장 사용량 증가를 감수한다. 색인이 느리다는 사실은 검색 품질 실패의 근거가 아니며, 품질을 위해 색인을 더 오래 걸리게 하는 결정을 속도만을 이유로 되돌리지 않는다.
 
+질의 응답 직전 현재 정책 재조회는 반환 가능 후보가 있을 때만 수행한다. 이미 관련 결과가 비었으면 볼트 경로를 재열거하지 않되 취소 검사와 순위 진단·빈 결과 callback은 동일하게 유지한다.
+
 ## 원문 literal 저장과 요청 수명
 
 원문 부분문자열의 계산·주소·집계 정의는 `deterministic-core`가 소유한다. corpus v3는 준비된 전체 추출 본문을 파일별 비중첩 `sourceBlocks` 한 벌로 보존하며 기존 청크·BM25·vector 형식을 바꾸지 않는다. 파일 기록에는 숫자 body manifest와 기존 출처 원장만 둔다. 원문·문서·파일·mutation receipt는 같은 transaction에서 교체·삭제되고 body 없는 갱신이 이전 raw를 새 hash 아래에 남기지 않는다. 청크 overlap·longline·구조 구간으로 원문을 역복원하거나 normalized fulltext/주소맵을 별도 영속 cache로 만들지 않는다.
 
 literal 요청은 metadata-only 범위와 현재 준비의 본문/metadata hash를 고정한다. 요청 허용 경로 밖의 실패나 준비 hash는 이 원장에 참여하지 않는다. eligibility만 확인한 cache나 같은 mtime:size는 그 증명을 대신하지 않는다. 기존 준비 결과의 두 hash를 복사해 읽을 뿐 literal을 위해 질의 중 전 볼트 byte probe/원문 재추출을 시작하지 않는다. 선택 근거의 개별 fresh worker 검증은 같은 파일·이벤트 owner가 유지되면 그 파일의 두 hash만 캐시에 게시할 수 있다. 다른 파일의 수정은 이 게시를 무효화하지 않는다. 현재 해시가 없거나 body capability·출처·완전성·revision이 맞지 않으면 실패 폐쇄한다. 명시적 빈 본문·빈 요청 범위와 legacy 누락을 구분한다.
 
-비동기 원장은 세대·corpus receipt·정책/source epoch와 실제 runtime lease에 묶인다. metadata keyset·원문 한 block·결과 한 페이지씩 I/O하고 source/page 저장·작업자 정착 뒤에만 complete를 게시한다. 요청 파생 페이지는 owner UUID별로 저장하며 corpus receipt를 만들지 않는다. 페이지/요약 재조회마다 currentness를 검사하고, close는 진행 read와 자기 페이지 정리 뒤에만 owner를 반납한다. 기본 검색 수집은 lazy opener만 연결하므로 일반 검색을 위해 자동 raw scan을 시작하지 않는다.
+비동기 원장은 세대·corpus receipt·정책/source epoch와 실제 runtime lease에 묶인다. metadata keyset·원문 한 block·결과 한 페이지씩 I/O하고 source/page 저장·작업자 정착 뒤에만 complete를 게시한다. 요청 파생 페이지는 owner UUID별로 저장하며 corpus receipt를 만들지 않는다. 페이지/요약 재조회마다 currentness를 검사하고, close는 진행 read와 자기 페이지 정리 뒤에만 owner를 반납한다. 검색 source는 요청과 이미 시작한 각 corpus 읽기가 같은 serving lease를 공유한다. 요청 종료는 새 읽기를 막고 literal 정리를 기다린다. 중단된 후속 검색의 물리적 읽기가 남아 있으면 요청은 먼저 반환하되 마지막 읽기의 성공·실패 정착 전에는 그 lease를 반납하지 않는다. 기본 검색 수집은 lazy opener만 연결하므로 일반 검색을 위해 자동 raw scan을 시작하지 않는다.
 
 literal Worker는 기존 source 큐·컴파일 모듈·XLSX 자산을 공유한다. scan charge+16MiB의 검증된 예약을 256MiB 안에서 admission하고 literal에는 단독 oversize 예외를 주지 않는다. active I/O 취소나 callback 실패가 실제 정착보다 예약을 먼저 반환하지 않으며 Node 검증을 계측된 0 여유로 표시하지 않는다. 이 논리 예산은 전역 RSS 보증이 아니다.
 

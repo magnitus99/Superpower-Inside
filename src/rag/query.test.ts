@@ -406,6 +406,17 @@ describe('RAGQueryEngine', () => {
     expect(engine.getLastRetrievalDiagnostics()).toEqual([]);
   });
 
+  it('빈 결과는 응답 직전 전 볼트 정책 재열거 없이 빈 ranking 진단을 보존한다', async () => {
+    const bm25 = await createBm25([['visible.md', 'synthetic']]);
+    const getCandidatePaths = vi.fn(() => Promise.resolve(new Set(['visible.md'])));
+    const engine = new RAGQueryEngine(null, null, bm25, 1, 0, { getCandidatePaths });
+    const onRetrieved = vi.fn();
+    expect(await engine.query('zzzzzzzzzz', 5, 0, undefined, { allowedSourcePaths: new Set(['visible.md']), onRetrieved })).toEqual([]);
+    expect(getCandidatePaths).not.toHaveBeenCalled();
+    const diagnostics = engine.getLastRetrievalDiagnostics();
+    expect(onRetrieved).toHaveBeenCalledWith([], diagnostics);
+    expect(diagnostics.find(item => item.providerId === 'query-ranking')?.ranking).toMatchObject({ policyRejected: 0, returnedCandidates: 0 });
+  });
   it('검색 임베딩 대기 중 제외한 문서는 오래된 벡터·BM25가 남아도 반환하지 않는다', async () => {
     const store = new MemoryVectorStore();
     const entry = createEntry('private.md', [1, 0], 'specialterm');

@@ -21,6 +21,13 @@ describe('offline five-turn closeout', () => {
     expect(result.status).toBe('passed');
     expect(JSON.stringify(result)).not.toContain('synthetic-private-detail');
   });
+  it('same-turn trace pointers identify the seven boundaries without prefilling any judgement', () => {
+    const { observations, review } = newLedgers();
+    for (const [stage, row] of Object.entries(observations.cases[0].trace)) {
+      expect(row).toMatchObject({ observation: stage === 'displayAndCitations' ? 'reopened-ui' : `review.stageTrace.${stage}`, finding: null, analysis: null });
+    }
+    expect(evaluate(observations, review).status).toBe('incomplete');
+  });
   it('blocks an untouched checklist and suppresses unbound trace conclusions', () => {
     const empty = newLedgers();
     expect(evaluate(empty.observations, empty.review).status).toBe('incomplete');

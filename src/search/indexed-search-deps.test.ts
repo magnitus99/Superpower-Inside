@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TFile, type App } from 'obsidian';
-import type { QueryResult, RAGQueryEngine, RAGQueryOptions } from '../rag/query';
+import { RAGQueryEngine, type QueryResult, type RAGQueryOptions } from '../rag/query';
+import type { IndexedDbBM25Index } from '../rag/bm25';
 import { planIndexedEvidenceRust, type IndexedSearchPlan } from '../rag/rust-core';
 import type { IndexedSearchCorpus } from './indexed-search-deps';
+import { reviewIndexedVault, type IndexedVaultSearchResult } from '../agent/indexed-vault-review';
+import { searchIndexedFollowup } from '../agent/indexed-vault-followup';
+import { acquireRuntimeLease, retireRuntime, withRuntimeLease } from '../rag/runtime-generation';
 import {
   collectIndexedSearchSource,
   createPluginSearchPort,
@@ -148,6 +152,124 @@ describe('검색 의존성 factory', () => {
     await port({ query: 'synthetic' });
     expect(oldCorpus.getIndexedFilePaths).toHaveBeenCalledOnce();
     expect(newCorpus.getIndexedFilePaths).toHaveBeenCalledOnce();
+  });
+
+  it.each(['records-resolve', 'entries-reject'])('후속 I/O %s 정착 전에 기본 검토가 끝나도 corpus 소유권은 보존한다', async (mode) => {
+    vi.useFakeTimers();
+    try {
+      const path = 'Synthetic/Alpha.md';
+      const quote = 'Quartz needs two cooling cycles.';
+      const record = { filePath: path, contentHash: 'indexed', sourceMtime: 1, sourceSize: 20, vectorCount: 1, updated: 1 };
+      const entries = [{ id: 'alpha', vector: [], metadata: { filePath: path, text: quote, startLine: 1, endLine: 1, contentHash: 'indexed' } }];
+      let settle!: () => void;
+      const records = vi.fn(() => Promise.resolve([record]));
+      const chunks = vi.fn((_paths: readonly string[]) => Promise.resolve(entries));
+      if (mode === 'records-resolve') records.mockResolvedValueOnce([record]).mockImplementationOnce(() => new Promise(resolve => { settle = () => resolve([record]); }));
+      else chunks.mockResolvedValueOnce(entries).mockImplementationOnce(() => new Promise((_, reject) => { settle = () => reject(new Error('late synthetic failure')); }));
+      const runtime = {}, close = vi.fn();
+      const source = await collectIndexedSearchSource({ app: app({}), ragEngine: null, documentCorpus: null,
+        acquireSnapshot: () => ({ ragEngine: null, documentCorpus: { ...corpus(), getFileIndexRecords: records, getEntriesByFilePaths: chunks }, release: acquireRuntimeLease(runtime) }),
+      }, 'quartz');
+      if (!source) throw new Error('synthetic source missing');
+      const onAnswer = vi.fn();
+      let requests = 0;
+      const outcome = withRuntimeLease(source.release, () => reviewIndexedVault({ corpus: source.corpus,
+        question: 'Explain quartz cooling', indexedPaths: [path], scopes: [],
+        discoveryPaths: [path], discoveryCandidates: [{ path, score: 1, rank: 1, source: 'bm25' }],
+        getFollowupPaths: () => Promise.resolve([path, 'Synthetic/New.md']),
+        provider: { streamChat: (_messages, accept) => {
+          const content = ++requests === 1 ? '["cooling condition"]' : JSON.stringify({ paragraphs: [{ text: 'Two cycles.', sources: [`${path}#L1-L1`] }] });
+          accept({ content, done: true }); return Promise.resolve();
+        } },
+        sourceReader: () => Promise.resolve({ revision: '1:20', text: quote }), onAnswer,
+      }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settle).toBeTypeOf('function');
+      await vi.advanceTimersByTimeAsync(11_999);
+      expect(requests).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await Promise.race([outcome, Promise.resolve(null)]);
+      expect(result?.outcome).toBe('answered');
+      expect(result?.dossier.followup?.status).toBe('failed');
+      expect(result?.citations).toMatchObject([{ filePath: path, preview: quote, status: 'verified' }]);
+      retireRuntime(runtime, close);
+      expect(close).not.toHaveBeenCalled();
+      await source.release?.();
+      await expect(source.corpus.getFileIndexRecords()).rejects.toThrow('Indexed search source is closed');
+      expect(close).not.toHaveBeenCalled();
+      settle();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(close).toHaveBeenCalledOnce();
+      expect(requests).toBe(2);
+      expect(onAnswer).toHaveBeenCalledOnce();
+      expect(records).toHaveBeenCalledTimes(2);
+      expect(chunks.mock.calls).toEqual(mode === 'records-resolve' ? [[[path]]] : [[[path]], [[path]]]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['timeout', 'success'] as const)('후속 BM25 순위 %s: 주소를 읽지 않고 물리 작업 정착까지 lease를 보존한다', async (mode) => {
+    vi.useFakeTimers();
+    try {
+      const paths = ['Synthetic/Alpha.md', 'Synthetic/Beta.md'];
+      const excluded = 'Synthetic/Excluded.md';
+      const response = {
+        queries: [{ hits: [
+          { docId: 'alpha', sourcePath: paths[0], score: 1, rank: 2 },
+          { docId: 'beta', sourcePath: paths[1], score: 2, rank: 1 },
+        ] }],
+        aggregates: [],
+      };
+      let finish!: () => void;
+      const batchSearchAndAggregate = vi.fn(() => new Promise<typeof response>((resolve) => {
+        finish = () => resolve(response);
+      }));
+      const getCorpusDocumentsByIds = vi.fn().mockResolvedValue([]);
+      const bm25 = { isReady: true, batchSearchAndAggregate, getCorpusDocumentsByIds } as unknown as IndexedDbBM25Index;
+      const ragEngine = new RAGQueryEngine(null, null, bm25);
+      const queryBm25Batch = vi.spyOn(ragEngine, 'queryBm25Batch');
+      const runtime = {}, close = vi.fn();
+      // 기본 발견은 이 테스트의 대상이 아니므로 후속 순위 호출만 BM25에 전달한다.
+      planIndexedSearchQueries.mockReturnValue({ mode: 'single', facets: [] });
+      const source = await collectIndexedSearchSource({
+        app: app({}), ragEngine: null, documentCorpus: null,
+        acquireSnapshot: () => ({ ragEngine, documentCorpus: corpus(), release: acquireRuntimeLease(runtime) }),
+      }, 'quartz cooling');
+      if (!source?.rankFollowup) throw new Error('synthetic rankFollowup missing');
+      const discoveryPaths = [...paths, excluded];
+      const runSearch = vi.fn();
+      const outcome = searchIndexedFollowup({
+        question: 'Explain quartz cooling', indexedPaths: paths, scopes: [],
+        discoveryPaths, discoveryCandidates: [{ path: paths[0], score: 1, rank: 1, source: 'bm25' }],
+        getFollowupPaths: () => Promise.resolve(discoveryPaths), rankFollowup: source.rankFollowup,
+        provider: { streamChat: (_messages, accept) => {
+          accept({ content: '["cooling condition"]', done: true });
+          return Promise.resolve();
+        } },
+      }, { evidence: [], coverage: { plannedPaths: [] } } as unknown as IndexedVaultSearchResult, runSearch);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(batchSearchAndAggregate).toHaveBeenCalledExactlyOnceWith(
+        [{ query: 'cooling condition', limit: 2 }], [], paths, expect.any(AbortSignal),
+      );
+      if (mode === 'timeout') {
+        await vi.advanceTimersByTimeAsync(12_000);
+        await expect(outcome).resolves.toEqual({ status: 'failed', failure: 'timeout-search' });
+        retireRuntime(runtime, close);
+        await source.release?.();
+        expect(close).not.toHaveBeenCalled();
+        finish();
+        const [settled] = await Promise.allSettled([queryBm25Batch.mock.results[0].value]);
+        expect(getCorpusDocumentsByIds).not.toHaveBeenCalled();
+        expect(settled).toMatchObject({ status: 'rejected', reason: { name: 'AbortError' } });
+      } else {
+        finish();
+        await expect(outcome).resolves.toMatchObject({ status: 'searched', rankedPaths: [[paths[1], paths[0]]] });
+        expect(getCorpusDocumentsByIds).not.toHaveBeenCalled();
+        retireRuntime(runtime, close);
+        await source.release?.();
+      }
+      expect(close).toHaveBeenCalledOnce();
+      expect(runSearch).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
   it('source 수집 실패·취소는 lease를 남기지 않는다', async () => {
@@ -1519,4 +1641,18 @@ it('현재 원문 재검증은 요청 범위의 파일만 읽고 매 인용마�
     expect(current).toHaveBeenCalledTimes(2);
     expect(read).toHaveBeenCalledTimes(2);
   } finally { full.mockRestore(); current.mockRestore(); metadata.mockRestore(); }
+});
+
+it.each(['changed-during-read', 'read-failed'] as const)('현재 원문 읽기에서 관측한 고정 사유만 돌려준다 (%s)', async reason => {
+  const path = 'Synthetic/transient.md';
+  const file = sourceFile(path, 10, 20);
+  const app = sourceApp(file, 'private');
+  const read = vi.spyOn(await import('../rag/source-access'), 'readSourceText').mockImplementation(() => {
+    if (reason === 'read-failed') return Promise.reject(new Error('private-error'));
+    file.stat.mtime++;
+    return Promise.resolve({ text: 'private', segments: [] });
+  });
+  try {
+    await expect(createVaultSourceReader(app)(path)).resolves.toEqual({ text: null, revision: null, failure: reason });
+  } finally { read.mockRestore(); }
 });

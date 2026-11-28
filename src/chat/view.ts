@@ -3343,6 +3343,7 @@ export class ChatView extends ItemView {
           scopes: mentionedFolders.map((folder) => folder.name),
           corpus: searchSource?.corpus,
           candidates: searchSource?.candidates,
+          rankFollowup: searchSource?.rankFollowup,
           discoveryCandidates: searchSource?.discoveryCandidates,
           discoveryPaths: indexedPaths,
           getFollowupPaths: async () => {

@@ -164,7 +164,7 @@ describe('발견 단서의 한 차례 후속 검색', () => {
   it('provider 실패는 기본 검색을 버리거나 재시도하지 않는다', async () => {
     const f = fixture();
     f.streamChat.mockRejectedValue(new Error('offline'));
-    expect((await searchIndexedFollowup(f.options, f.base, f.runSearch)).status).toBe('failed');
+    expect(await searchIndexedFollowup(f.options, f.base, f.runSearch)).toMatchObject({ status: 'failed', failure: 'provider' });
     expect(f.streamChat).toHaveBeenCalledTimes(1);
     expect(f.runSearch).not.toHaveBeenCalled();
   });
@@ -189,6 +189,39 @@ it('발견 계획 모델에는 아직 재검증되지 않은 색인 본문을 �
   expect(JSON.stringify(f.streamChat.mock.calls)).not.toContain(marker);
 });
 
+it('신호를 무시하는 후속 검색도 사용자 취소는 실패 결과로 삼키지 않는다', async () => {
+  const f = fixture();
+  const controller = new AbortController();
+  f.options.signal = controller.signal;
+  let started!: () => void;
+  const reading = new Promise<void>(resolve => { started = resolve; });
+  const task = searchIndexedFollowup(f.options, f.base, () => new Promise(() => started()));
+  await reading;
+  controller.abort();
+  await expect(task).rejects.toMatchObject({ name: 'AbortError' });
+});
+
+it('계획·검색·제공자 자체 취소는 서로 다른 단계 실패이고 사용자의 취소가 아니다', async () => {
+  const invalid = fixture();
+  invalid.streamChat.mockImplementation((_messages, consume) => { consume({ content: 'invalid', done: true }); return Promise.resolve(); });
+  expect(await searchIndexedFollowup(invalid.options, invalid.base, invalid.runSearch)).toMatchObject({ failure: 'plan' });
+  const search = fixture();
+  expect(await searchIndexedFollowup(search.options, search.base, () => Promise.resolve(null))).toMatchObject({ failure: 'search' });
+  const provider = fixture();
+  provider.streamChat.mockRejectedValue(new DOMException('internal', 'AbortError'));
+  expect(await searchIndexedFollowup(provider.options, provider.base, provider.runSearch)).toMatchObject({ failure: 'provider' });
+});
+
+it('검색 단계 제한 만료는 계획 모델 제한과 구분한다', async () => {
+  vi.useFakeTimers();
+  try {
+    const f = fixture();
+    const task = searchIndexedFollowup(f.options, f.base, () => new Promise(() => undefined));
+    await vi.advanceTimersByTimeAsync(12_001);
+    expect(await task).toEqual({ status: 'failed', failure: 'timeout-search' });
+  } finally { vi.useRealTimers(); }
+});
+
 it('후속 계획 모델의 지연은 기본 검토를 무기한 막지 않는다', async () => {
   vi.useFakeTimers();
   try {
@@ -197,7 +230,21 @@ it('후속 계획 모델의 지연은 기본 검토를 무기한 막지 않는�
     const task = searchIndexedFollowup(f.options, f.base, f.runSearch);
     await vi.advanceTimersByTimeAsync(15_001);
     expect(f.streamChat).toHaveBeenCalledOnce();
-    expect(await Promise.race([task, Promise.resolve('pending')])).toEqual({ status: 'failed' });
+    expect(await Promise.race([task, Promise.resolve('pending')])).toEqual({ status: 'failed', failure: 'timeout-provider' });
     expect(f.runSearch).not.toHaveBeenCalled();
   } finally { vi.useRealTimers(); }
+});
+
+it('ranks short translated queries separately inside the rechecked scope without a full corpus pass', async () => {
+  const f = fixture();
+  f.options.question = '구리와 수정을 비교하세요.';
+  f.options.searchPlan = { mode: 'comparison', facets: [] };
+  f.options.rankFollowup = vi.fn(() => Promise.resolve([[f.paths[1], f.paths[2]], [f.paths[0]]]));
+  f.streamChat.mockImplementation((_m, emit) => { emit({ content: JSON.stringify({ subjects: [
+    { anchor: '구리', identity: 'copper', query: 'copper lattice' }, { anchor: '수정', identity: 'quartz', query: 'quartz lattice' },
+  ] }), done: true }); return Promise.resolve(); });
+  const result = await searchIndexedFollowup(f.options, f.base, f.runSearch);
+  expect(result.rankedPaths).toEqual([[f.paths[1]], [f.paths[0]]]);
+  expect(f.options.rankFollowup).toHaveBeenCalledWith(['"copper" "구리"','"quartz" "수정"'], f.paths.slice(0,2), expect.any(AbortSignal));
+  expect(f.runSearch).not.toHaveBeenCalled();
 });

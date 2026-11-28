@@ -1091,7 +1091,7 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
     ] as import('obsidian').TFile[]);
     const corpus = {
       getIndexedFilePaths: () => Promise.resolve(['Synthetic/Hybrid.md']),
-      getEntriesByFilePaths: () => Promise.resolve([]),
+      getEntriesByFilePaths: vi.fn(() => Promise.resolve([])),
       getFileIndexRecords: () => Promise.resolve([]),
     };
     const query = vi.fn().mockResolvedValue([
@@ -1115,8 +1115,9 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
       },
       updateMessage: vi.fn(),
     });
-    vi.mocked(reviewIndexedVault).mockResolvedValue(
-      createReviewResult({
+    vi.mocked(reviewIndexedVault).mockImplementationOnce(async (options) => {
+      await options.corpus?.getEntriesByFilePaths(options.indexedPaths);
+      return createReviewResult({
         content: '합성 해석',
         citations: [],
         totalFiles: 1,
@@ -1125,11 +1126,11 @@ describe('행동 전송과 일반 전송의 초안 수명 주기', () => {
         providerTransfer: { sentFiles: 1 },
         coverageNotice: '합성 집계',
         engineUnavailable: false,
-      }),
-    );
+      });
+    });
     await view.handleSend('합성 검색 질문');
     const options = vi.mocked(reviewIndexedVault).mock.calls.at(-1)?.[0];
-    expect(options?.corpus).toBe(corpus);
+    expect(corpus.getEntriesByFilePaths).toHaveBeenCalledWith(['Synthetic/Hybrid.md']);
     expect(options?.candidates?.[0]).toMatchObject({
       path: 'Synthetic/Hybrid.md',
       startLine: 4,

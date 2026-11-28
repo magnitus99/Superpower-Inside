@@ -3,6 +3,8 @@ import { t } from '../i18n';
 import { enumerateIndexedDocuments } from './indexed-vault-enumeration';
 import { LLMProviderHttpError, type ChatMessage, type LLMProvider } from '../llm/providers';
 import {
+  createContentHashRust,
+  mergeIndexedEvidencePlansRust,
   planIndexedEvidenceRust,
   planIndexedReviewAnswerPlanRust,
   planModelContextRust,
@@ -25,6 +27,8 @@ vi.mock('../rag/rust-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../rag/rust-core')>();
   return {
     ...actual,
+    createContentHashRust: vi.fn(actual.createContentHashRust),
+    mergeIndexedEvidencePlansRust: vi.fn(actual.mergeIndexedEvidencePlansRust),
     planIndexedEvidenceRust: vi.fn(actual.planIndexedEvidenceRust),
     planIndexedReviewAnswerPlanRust: vi.fn(actual.planIndexedReviewAnswerPlanRust),
     validateIndexedReviewAnswerRust: vi.fn(actual.validateIndexedReviewAnswerRust),
@@ -783,6 +787,147 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.dossier.discoverySummary?.selectedSourceDocuments).toBeGreaterThanOrEqual(2);
   });
 
+  it.each(['empty', 'partial', 'partial-revoked'] as const)('후속 순위가 %s면 기존 단서로 남은 원문 심사 예산을 채운다', async mode => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const basePath = 'Synthetic/Base.md';
+    const rankedPath = 'Synthetic/Ranked.md';
+    const revoked = 'Synthetic/Revoked.md';
+    const outside = 'Synthetic/New.md';
+    const fallback = Array.from({ length: 10 }, (_, i) => `Synthetic/Discovery-${i}.md`);
+    const original = [basePath, rankedPath, revoked, ...fallback];
+    const textFor = (path: string) => path === rankedPath ? 'The interferometer isolates motion.' : `The quartz threshold is documented in ${path}.`;
+    let allowed = [...original, outside];
+    const getEntriesByFilePaths = vi.fn((paths: readonly string[]) => {
+      if (mode === 'partial-revoked' && paths.includes(rankedPath)) allowed = allowed.filter(path => path !== fallback[2]);
+      return Promise.resolve(paths.map(path => ({ id: path, vector: [], metadata: {
+        filePath: path, startLine: 1, endLine: 1, text: textFor(path), contentHash: 'indexed',
+      } })));
+    });
+    const sourceReader = vi.fn((path: string) => {
+      const text = textFor(path);
+      return Promise.resolve(path === fallback[0] ? { text: null, revision: null } : {
+        text, revision: '1:10', chunks: [{ startLine: 1, endLine: 1, text }],
+      });
+    });
+    const rankFollowup = vi.fn(() => {
+      allowed = [basePath, rankedPath, outside, ...fallback];
+      return Promise.resolve(mode === 'empty' ? [[]] : [[revoked, outside, rankedPath, rankedPath]]);
+    });
+    const corpus = { getEntriesByFilePaths, getFileIndexRecords: () => Promise.resolve(original.map(filePath => ({
+      filePath, contentHash: 'indexed', sourceMtime: 1, sourceSize: 10, vectorCount: 1, updated: 1,
+    }))) };
+    const { provider } = scriptedAnswerProvider(['["interferometer"]']);
+    const candidates = [basePath, revoked, outside, ...(mode === 'empty' ? [] : [rankedPath]), ...fallback]
+      .map((path, i) => ({ path, score: 1, source: 'bm25' as const, rank: i + 1 }));
+    const result = await reviewIndexedVault(reviewOptions({ question: 'Quartz threshold', indexedPaths: [basePath],
+      scopes: ['Synthetic'], deferAnswer: true, corpus, sourceReader, provider, candidates: candidates.slice(0, 1),
+      discoveryPaths: original, discoveryCandidates: candidates, getFollowupPaths: () => Promise.resolve(allowed), rankFollowup,
+    }));
+    const denied = [revoked, outside, ...(mode === 'partial-revoked' ? [fallback[2]] : [])];
+    const expected = (mode === 'empty' ? fallback.slice(0, 8) : [rankedPath, ...fallback.slice(0, 7)])
+      .filter(path => !denied.includes(path));
+    expect(rankFollowup).toHaveBeenCalledOnce();
+    expect(getEntriesByFilePaths.mock.calls.flatMap(([paths]) => paths)).toEqual([basePath, ...expected]);
+    expect(result.diagnostics.counts.discoveryInspectedDocuments).toBe(expected.length);
+    expect(result.diagnostics.stageTrace?.selectionAndFollowup).toMatchObject({ pages: 1, inspected: expected.length });
+    expect(result.citations).toContainEqual(expect.objectContaining({ filePath: fallback[1], status: 'verified' }));
+    if (mode !== 'empty') expect(result.citations).toContainEqual(expect.objectContaining({ filePath: rankedPath, status: 'verified' }));
+    expect(sourceReader.mock.calls.some(([path]) => denied.includes(path))).toBe(false);
+    expect(result.citations.some(citation => citation.filePath === fallback[0])).toBe(false);
+  });
+
+  it('반대쪽 원표기로 뒤바뀐 번역 계획은 기본 비교 계획을 대체하지 않는다', async () => {
+    const plan = { ...COMPARISON_SEARCH_PLAN };
+    const { provider, calls } = scriptedAnswerProvider([JSON.stringify({ subjects: [
+      { anchor: 'Synthetic Alpha', identity: 'ＳＹＮＴＨＥＴＩＣ ＢＥＴＡ', query: 'physics' },
+      { anchor: 'Synthetic Beta', identity: 'synthetic alpha', query: 'physics' },
+    ] })]);
+    const rankFollowup = vi.fn(() => Promise.resolve([[RELEVANT], [OTHER]]));
+    const result = await reviewIndexedVault(reviewOptions({ question: 'Compare Synthetic Alpha and Synthetic Beta.', searchPlan: plan,
+      deferAnswer: true, provider, rankFollowup, discoveryPaths: [RELEVANT, OTHER],
+      discoveryCandidates: [{ path: RELEVANT, score: 1, rank: 1, source: 'bm25' }],
+      getFollowupPaths: () => Promise.resolve([RELEVANT, OTHER]),
+    }));
+    expect(calls).toHaveLength(1);
+    expect(rankFollowup).not.toHaveBeenCalled();
+    expect(result.diagnostics.stageTrace?.selectionAndFollowup).toMatchObject({ followup: 'failed', failure: 'plan' });
+    expect(result.dossier.searchPlan).toEqual(plan);
+  });
+
+  it.each(['no-ranked-chunks', 'merge-failure', 'current-read-failure', 'duplicate-evidence', 'regresses-support', 'regresses-recovered-support', 'verified-support'] as const)(
+    '후속 순위 %s: 새 검증 근거가 양측 지원을 유지할 때만 비교 계획을 바꾼다', async mode => {
+      const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+      vi.mocked(planIndexedReviewAnswerPlanRust).mockImplementation(actual.planIndexedReviewAnswerPlanRust);
+      vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+      const question = 'Compare Synthetic Alpha and Synthetic Beta.';
+      const right = 'Synthetic/RankedBeta.md';
+      const duplicate = mode === 'duplicate-evidence';
+      const regresses = mode === 'regresses-support' || mode === 'regresses-recovered-support';
+      const ranked = duplicate ? [[RELEVANT], [OTHER]] : [[HIDDEN], regresses ? [] : [right]];
+      const paths = [...new Set([RELEVANT, OTHER, ...ranked.flat()])];
+      const quotes = new Map([
+        [RELEVANT, 'Alpha yields under pressure.'], [OTHER, 'Beta fractures under pressure.'],
+        [HIDDEN, 'Copper exhibits ductility.'], [right, 'Quartz forms a lattice.'],
+      ]);
+      const isRanked = (path: string) => path === HIDDEN || path === right;
+      const getEntriesByFilePaths = vi.fn((requested: readonly string[]) => Promise.resolve(requested.flatMap(path =>
+        isRanked(path) && mode === 'no-ranked-chunks' ? [] : [{ id: path, vector: [], metadata: {
+          filePath: path, startLine: 1, endLine: 1, text: quotes.get(path)!, contentHash: 'indexed',
+        } }])));
+      const corpus = { getEntriesByFilePaths, getFileIndexRecords: () => Promise.resolve(paths.map(filePath => ({
+        filePath, contentHash: 'indexed', sourceMtime: 1, sourceSize: 10, vectorCount: 1, updated: 1,
+      }))) };
+      const sourceReader = vi.fn((path: string) => {
+        const text = quotes.get(path)!;
+        return Promise.resolve(isRanked(path) && mode === 'current-read-failure' ? { text: null, revision: null } : {
+          text, revision: '1:10', chunks: [{ startLine: 1, endLine: 1, text }],
+        });
+      });
+      const rankFollowup = vi.fn(() => Promise.resolve(ranked));
+      const { provider } = scriptedAnswerProvider([JSON.stringify({ subjects: [
+        { anchor: duplicate ? 'Alpha' : 'Synthetic Alpha', identity: 'copper', query: duplicate ? 'alpha' : 'ductility' },
+        { anchor: duplicate ? 'Beta' : 'Synthetic Beta', identity: 'quartz', query: duplicate ? 'beta' : 'lattice' },
+      ] })]);
+      const candidates = [{ path: RELEVANT, queryIndex: 1 }, { path: OTHER, queryIndex: 2 }]
+        .map((candidate, i) => ({ ...candidate, score: 1, rank: i + 1, source: 'bm25' as const }));
+      const review = () => reviewIndexedVault(reviewOptions({ question,
+        searchPlan: COMPARISON_SEARCH_PLAN, deferAnswer: true, provider, corpus, sourceReader, rankFollowup,
+        candidates, discoveryPaths: paths, discoveryCandidates: candidates, getFollowupPaths: () => Promise.resolve(paths),
+      }));
+      let result!: Awaited<ReturnType<typeof review>>;
+      await vi.mocked(planIndexedEvidenceRust).withImplementation(input => {
+        const plan = actual.planIndexedEvidenceRust(input);
+        if (!plan || input.question !== question || mode === 'regresses-recovered-support') return plan;
+        return { ...plan, evidence: plan.evidence.map(item => ({ ...item, queryIndexes: [item.path === RELEVANT ? 1 : 2] })) };
+      }, async () => {
+        if (mode === 'merge-failure') {
+          await vi.mocked(mergeIndexedEvidencePlansRust).withImplementation(input =>
+            input.plans.length > 1 && input.plans.some(plan => plan.evidence.some(item => isRanked(item.path)))
+              ? null : actual.mergeIndexedEvidencePlansRust(input), async () => { result = await review(); });
+        } else result = await review();
+      });
+      const accepted = mode === 'verified-support';
+      expect(rankFollowup).toHaveBeenCalledOnce();
+      expect(getEntriesByFilePaths.mock.calls.flatMap(([requested]) => requested)).toEqual([RELEVANT, OTHER, ...ranked.flat()]);
+      if (mode === 'current-read-failure') expect(sourceReader).toHaveBeenCalledWith(HIDDEN, expect.any(AbortSignal));
+      if (regresses) {
+        const rankedEvidence = result.dossier.evidence.find(item => item.path === HIDDEN);
+        expect(rankedEvidence).toBeDefined();
+        expect(rankedEvidence?.queryIndexes ?? []).toEqual([]);
+      }
+      if (mode === 'regresses-recovered-support') expect(result.diagnostics.stageTrace?.selectionAndFollowup?.currentFacetPassages).toBe(2);
+      else expect(result.diagnostics.stageTrace?.selectionAndFollowup?.currentFacetScan).toBeUndefined();
+      if (accepted) expect(result.dossier.searchPlan?.facets.slice(1).map(f => f.terms)).toEqual([['copper'], ['quartz']]);
+      else expect(result.dossier.searchPlan).toEqual(COMPARISON_SEARCH_PLAN);
+      expect(result.dossier.answerPlan).toMatchObject({
+        requiredFacetIds: ['subject-0', 'subject-1'], missingFacetIds: [], synthesisRequired: true,
+        facets: (accepted ? [HIDDEN, right] : [RELEVANT, OTHER]).map(path => ({ status: 'supported', sourceIds: [`${path}#L1-L1`] })),
+      });
+    },
+  );
+
   it('앞선 discovery 페이지가 모두 검토 상태여도 다음 페이지의 미검토 경로를 조사한다', async () => {
     const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
     vi.mocked(planIndexedEvidenceRust).mockImplementation(actual.planIndexedEvidenceRust);
@@ -920,7 +1065,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(progress.filter((item) => item.phase === 'complete').at(-1)?.totalFiles).toBe(2);
   });
 
-  it('원문 변경 복구에도 discovery 후보의 비교 facet 귀속을 보존한다', async () => {
+  it('원문 변경 복구 후보는 보존하되 부족 facet을 입증하지 못한 새 구절에는 옛 귀속을 붙이지 않는다', async () => {
     const revisedHidden = 'Quartz cooling cycles now require a fourth cycle.';
     const initialPlan = comparisonEvidencePlan();
     const first = initialPlan.evidence[0];
@@ -988,7 +1133,7 @@ describe('엔진 근거 기반 색인 검토', () => {
       sourceReader: (path) =>
         Promise.resolve(
           path === HIDDEN
-            ? { revision: '2:20', text: revisedHidden, contentHash: 'hash-hidden-2' }
+            ? { revision: '2:20', text: revisedHidden }
             : {
                 revision: '1:10',
                 text: 'Quartz restarts only after two cooling cycles.',
@@ -996,7 +1141,7 @@ describe('엔진 근거 기반 색인 검토', () => {
               },
         ),
     }));
-    expect(result.evidence.find((item) => item.path === HIDDEN)?.queryIndexes).toEqual([2]);
+    expect(result.evidence.find((item) => item.path === HIDDEN)).toMatchObject({ queryIndexes: [], contentHash: createContentHashRust(revisedHidden) });
     const recoveryCall = vi.mocked(planIndexedEvidenceRust).mock.calls.at(-1)?.[0];
     expect(recoveryCall?.documents.some((document) => document.revision === '2:20')).toBe(true);
     expect(recoveryCall?.candidates).toEqual(
@@ -1004,7 +1149,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     );
     expect(
       result.dossier.answerPlan?.facets.find((facet) => facet.id === 'subject-1')?.status,
-    ).toBe('supported');
+    ).toBe('missing');
   });
 
   it('원문 변경 복구가 기존 검증 근거를 고정 상한으로 자르지 않는다', async () => {
@@ -1367,6 +1512,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     const result = await reviewIndexedVault(
       reviewOptions({ provider: { ...provider, contextBudget } }),
     );
+    expect(result.diagnostics.stageTrace?.generationAndCorrection).toMatchObject({ requests: 0, sentPassages: 0, inputByteLimit: 1, preparationFailed: true });
     expect(calls).toHaveLength(0);
     expect(result.outcome).toBe('evidence-only');
     expect(result.citations[0]?.status).toBe('verified');
@@ -1440,21 +1586,10 @@ describe('엔진 근거 기반 색인 검토', () => {
     const answerPlan = comparisonAnswerPlan();
     vi.mocked(planIndexedReviewAnswerPlanRust).mockReset();
     vi.mocked(planIndexedReviewAnswerPlanRust).mockReturnValue(answerPlan);
-    const validate = vi.mocked(validateIndexedReviewAnswerRust);
-    validate.mockReset();
-    validate
-      .mockReturnValueOnce({
-        valid: false,
-        reason: 'missing-facet',
-        missingFacetIds: ['subject-1'],
-      })
-      .mockReturnValueOnce({
-        valid: true,
-        content: `종합한 비교 답변 [${SOURCE_ID}] [${OTHER_SOURCE_ID}]`,
-      });
+    vi.mocked(validateIndexedReviewAnswerRust).mockReset();
     const { provider, calls } = scriptedAnswerProvider([
-      JSON.stringify({ paragraphs: [] }),
-      JSON.stringify({ paragraphs: [] }),
+      JSON.stringify({ paragraphs: [{ text: '왼쪽 근거만 다룬 답변', supports: ['F1.S1'] }] }),
+      JSON.stringify({ paragraphs: [{ text: '종합한 비교 답변', supports: ['F1.S1', 'F2.S2'] }] }),
     ]);
     const result = await reviewIndexedVault(
       reviewOptions({
@@ -1493,6 +1628,30 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(result.citations.map((citation) => citation.id)).toEqual([SOURCE_ID, OTHER_SOURCE_ID]);
   });
 
+  it('생성과 교정 모두 비교의 legacy source ID 응답을 Rust에 넘기지 않는다', async () => {
+    vi.mocked(planIndexedEvidenceRust).mockReturnValue(comparisonEvidencePlan());
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
+    vi.mocked(planIndexedReviewAnswerPlanRust).mockReturnValue(comparisonAnswerPlan());
+    const validate = vi.mocked(validateIndexedReviewAnswerRust).mockReset();
+    const legacy = JSON.stringify({ paragraphs: [{
+      text: 'Synthetic legacy comparison.',
+      sources: [SOURCE_ID, OTHER_SOURCE_ID],
+      covers: ['subject-0', 'subject-1'],
+    }] });
+    const { provider, calls } = scriptedAnswerProvider([legacy, `Synthetic intro.\n${legacy}\nSynthetic outro.`]);
+    const result = await reviewIndexedVault(reviewOptions({ provider, searchPlan: COMPARISON_SEARCH_PLAN }));
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.at(-1)).toEqual({
+      role: 'user',
+      content: t('llmIndexedBoundCorrection', { reason: 'paragraph-1:mixed-or-missing-supports', facets: '-' }),
+    });
+    expect(validate.mock.calls.map(([input]) => input.response)).toEqual(['', '']);
+    expect(result.diagnostics.counts.answerCorrectionRequests).toBe(1);
+    expect(result.outcome).toBe('evidence-only');
+    expect(result.content).not.toContain('Synthetic legacy comparison.');
+  });
+
   it('형식 실패의 고정 코드를 원문 없이 교정 요청에 전달하고 한 번만 재시도한다', async () => {
     vi.mocked(planIndexedEvidenceRust).mockReturnValue(comparisonEvidencePlan());
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation(verifiedStatuses);
@@ -1511,7 +1670,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(calls).toHaveLength(2);
     expect(calls[1]?.at(-1)).toEqual({
       role: 'user',
-      content: t('llmIndexedReviewAnswerCorrection', {
+      content: t('llmIndexedBoundCorrection', {
         reason: 'invalid-format:invalid-covers:duplicate-id',
         facets: '-',
       }),
@@ -1610,11 +1769,10 @@ describe('엔진 근거 기반 색인 검토', () => {
       synthesisRequired: false,
     });
     vi.mocked(planIndexedReviewAnswerPlanRust).mockReturnValue(answerPlan);
-    vi.mocked(validateIndexedReviewAnswerRust).mockReturnValue({
-      valid: true,
-      content: `Synthetic Alpha만 확인했습니다. [${SOURCE_ID}]`,
-    });
-    const { provider, calls } = scriptedAnswerProvider(['valid response']);
+    vi.mocked(validateIndexedReviewAnswerRust).mockReset();
+    const { provider, calls } = scriptedAnswerProvider([
+      JSON.stringify({ paragraphs: [{ text: 'Synthetic Alpha만 확인했습니다.', supports: ['F1.S1'] }] }),
+    ]);
     const result = await reviewIndexedVault(
       reviewOptions({ provider, searchPlan: COMPARISON_SEARCH_PLAN }),
     );
@@ -1627,9 +1785,10 @@ describe('엔진 근거 기반 색인 검토', () => {
         missingFacetIds: ['subject-1'],
       },
       paragraphContract: {
-        sources: { minItems: 1, maxItems: 8, enum: [SOURCE_ID, OTHER_SOURCE_ID] },
-        covers: { minItems: 1, maxItems: 3, uniqueItems: true, enum: ['subject-0'] },
-        example: { paragraphs: [{ text: '…', sources: [SOURCE_ID], covers: ['subject-0'] }] },
+        supportChoices: [{ key: 'F1.S1', sourceId: SOURCE_ID, facetId: 'subject-0' }],
+        supplementalChoices: [{ key: 'S2', sourceId: OTHER_SOURCE_ID, facetId: null }],
+        allowedSourcesByFacet: { 'subject-0': [SOURCE_ID] },
+        example: { paragraphs: [{ text: '…', supports: ['F1.S1'] }] },
       },
       evidence: [
         { sourceId: SOURCE_ID, facetIds: ['subject-0'] },
@@ -1862,6 +2021,40 @@ describe('엔진 근거 기반 색인 검토', () => {
     });
   });
 
+  it.each(['일반', '주소 교정', '재선택 복구'])('hash 없는 현재 원문의 %s 근거에는 현재 전체 본문 hash만 남긴다', async (mode) => {
+    const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+    vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
+    const initial = planFixture();
+    const original = { ...initial.evidence[0], endLine: 3, sourceId: `${RELEVANT}#L3-L3` };
+    const revision = mode === '일반' ? '1:10' : '2:20';
+    const line = mode === '일반' ? 3 : 5;
+    const quote = mode === '재선택 복구' ? 'Quartz now requires three cooling cycles.' : original.quote;
+    const text = '\n'.repeat(line - 1) + quote + '\nCurrent footer';
+    const id = `${RELEVANT}#L${line}-L${line}`;
+    const planner = vi.mocked(planIndexedEvidenceRust).mockReset()
+      .mockReturnValueOnce({ ...initial, evidence: [original] })
+      .mockReturnValue({ ...initial, evidence: [{ ...original, sourceId: id, startLine: line, endLine: line,
+        revision, quote, contentHash: 'obsolete-recovery-hash' }] });
+    const result = await reviewIndexedVault(reviewOptions({ indexedPaths: [RELEVANT], deferAnswer: true,
+      sourceReader: () => Promise.resolve({ revision, text }),
+    }));
+    expect(planner).toHaveBeenCalledTimes(mode === '재선택 복구' ? 2 : 1);
+    expect(result.citations).toMatchObject([{ id, line, preview: quote, status: 'verified' }]);
+    expect(result.dossier.evidence).toMatchObject([{ sourceId: id, revision, quote, contentHash: actual.createContentHashRust(text) }]);
+  });
+
+  it('현재 hash를 계산하지 못하면 과거 hash나 revision만으로 복구·인용하지 않는다', async () => {
+    vi.mocked(createContentHashRust).mockReturnValueOnce(null);
+    const { provider, calls } = answerProvider();
+    const result = await reviewIndexedVault(reviewOptions({ indexedPaths: [RELEVANT], provider,
+      sourceReader: () => Promise.resolve({ revision: '1:10', text: '\n\n' + planFixture().evidence[0].quote }),
+    }));
+    expect(result.coverage.unreviewedPaths).toContain(RELEVANT);
+    expect(result.dossier.evidence).toEqual([]);
+    expect(result.citations).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
   it('청크에만 있는 구절은 재선택 뒤에도 현재 원문 증거가 아니다', async () => {
     const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
     vi.mocked(verifyIndexedEvidenceRust).mockImplementation(actual.verifyIndexedEvidenceRust);
@@ -2077,7 +2270,7 @@ describe('엔진 근거 기반 색인 검토', () => {
     expect(recovery?.candidates).toEqual(candidates);
     expect(recovery?.queryVariants).toEqual(['cooling cycles']);
     expect(verify.mock.calls.at(-1)?.[0].documents).toMatchObject([{ text: '\n'.repeat(3) + item.quote, startLine: 78 }]);
-    expect(result.evidence).toEqual([recovered]);
+    expect(result.evidence).toEqual([{ ...recovered, contentHash: createContentHashRust('\n'.repeat(80) + item.quote) }]);
     expect(result.citations[0]?.line).toBe(81);
     expect(calls).toHaveLength(1);
   });
@@ -2211,6 +2404,7 @@ describe('엔진 근거 기반 색인 검토', () => {
       },
     } as unknown as LLMProvider;
     const result = await reviewIndexedVault(reviewOptions({ provider }));
+    expect(result.diagnostics.stageTrace?.generationAndCorrection).toMatchObject({ requests: 2, validationFailures: ['invalid-format', 'invalid-format'] });
     expect(calls).toHaveLength(2);
     expect(result.diagnostics.counts.answerCorrectionRequests).toBe(1);
     const coverage = t('indexedReviewCoverage', {
@@ -2585,4 +2779,110 @@ it('legacy overlap 청크의 행이 틀려도 재색인 없이 현재 원문의 
   }));
   expect(run.evidence).toMatchObject([{ quote, startLine: 2, endLine: 2 }]);
   expect(run.citations).toMatchObject([{ filePath: RELEVANT, id: `${RELEVANT}#L2-L2`, line: 2, endLine: 2, preview: quote }]);
+});
+
+
+it('현재 검증에서 탈락한 비교 facet의 미검토 단서를 순위가 높은 이미 지원된 쪽보다 먼저 조사한다', async () => {
+  const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+  vi.mocked(verifyIndexedEvidenceRust).mockReset().mockImplementation(actual.verifyIndexedEvidenceRust);
+  vi.mocked(planIndexedEvidenceRust).mockReset().mockImplementation(input => input.documents.some(d => d.path === HIDDEN) ? hiddenPlan() : { ...comparisonEvidencePlan(), evidence: comparisonEvidencePlan().evidence.map(item => ({ ...item, endLine: item.startLine })) });
+  vi.mocked(planIndexedReviewAnswerPlanRust).mockReset().mockImplementation(actual.planIndexedReviewAnswerPlanRust);
+  const corpus = corpusWithDiscoverableDocument();
+  const filler = Array.from({ length: 98 }, (_, i) => `Synthetic/a${i}.md`);
+  const sourceReader = vi.fn((path: string) => Promise.resolve({ revision: '1:10', text: path === RELEVANT ? `x
+y
+${planFixture().evidence[0].quote}` : path === HIDDEN ? hiddenPlan().evidence[0].quote : null }));
+  const searchPlan = { ...COMPARISON_SEARCH_PLAN, facets: COMPARISON_SEARCH_PLAN.facets.map(f => f.queryIndex === 2 ? { ...f, query: 'winter cooling', terms: ['winter', 'cooling'] } : f) };
+  const result = await reviewIndexedVault(reviewOptions({ corpus, sourceReader, executionMode: 'engine-only', searchPlan,
+    discoveryPaths: [RELEVANT, OTHER, ...filler, HIDDEN],
+    discoveryCandidates: [...filler, HIDDEN].map((path, i) => ({ path, source: 'bm25', score: 200-i, rank: i+1, queryIndex: path === HIDDEN ? 2 : 1 })),
+  }));
+  expect(result.evidence.map(e => e.path)).toContain(HIDDEN);
+  const inspection = vi.mocked(planIndexedEvidenceRust).mock.calls.map(([input]) => input).find(input => input.documents.some(d => d.path === HIDDEN));
+  expect(inspection).toMatchObject({ question: 'winter cooling', queryVariants: ['winter', 'cooling'] });
+  expect(inspection?.candidates).toBeUndefined();
+  expect(sourceReader.mock.calls.filter(([p]) => p === RELEVANT)).toHaveLength(2);
+  expect(sourceReader.mock.calls.filter(([p]) => p === OTHER)).toHaveLength(2);
+  expect(result.dossier.answerPlan?.missingFacetIds).toEqual([]);
+  expect(result.diagnostics.stageTrace).toMatchObject({ selectionAndFollowup: { missingBeforeInspection: [2] }, currentSource: { failures: { 'body-unavailable': 1 } }, dossier: { facetSourceCounts: [1, 1] } });
+  expect(result.diagnostics.counts.discoveryInspectedDocuments).toBeLessThanOrEqual(8);
+});
+
+it.each(['shared-chunk', 'next-chunk', 'different-segment', 'wrong-chunk'] as const)('인접 조건은 현재 원문의 확인된 행만 별도 인용한다 (%s)', async (mode) => {
+  const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+  vi.mocked(verifyIndexedEvidenceRust).mockReset().mockImplementation(actual.verifyIndexedEvidenceRust);
+  const plan = planFixture();
+  const anchor = { ...plan.evidence[0], startLine: 3, endLine: 3, sourceId: `${RELEVANT}#L3-L3`, contextAfter: 'private stale context' };
+  vi.mocked(planIndexedEvidenceRust).mockReset().mockReturnValue({ ...plan, evidence: [anchor], order: [anchor.sourceId] });
+  const text = `
+${anchor.quote}
+${anchor.quote}
+Except during frost.`;
+  const chunks = mode === 'shared-chunk' ? [{ startLine: 1, endLine: 4, text }] : [
+    { startLine: 3, endLine: 3, text: anchor.quote },
+    { startLine: 4, endLine: 4, text: mode === 'wrong-chunk' ? 'different' : 'Except during frost.' },
+  ];
+  const segments = mode === 'different-segment' ? [{ startLine: 0, endLine: 2, label: 'a' }, { startLine: 3, endLine: 3, label: 'b' }] : [];
+  const result = await reviewIndexedVault(reviewOptions({ indexedPaths: [RELEVANT], executionMode: 'engine-only', sourceReader: () => Promise.resolve({ revision: '1:10', text, chunks, sourceMetadata: { segments } }) }));
+  const accepted = mode === 'shared-chunk' || mode === 'next-chunk';
+  expect(result.evidence.map(e => e.quote)).toEqual(accepted ? [anchor.quote, 'Except during frost.'] : [anchor.quote]);
+  if (accepted) expect(result.citations).toContainEqual(expect.objectContaining({ line: 4, endLine: 4, preview: 'Except during frost.', status: 'verified' }));
+  if (mode === 'wrong-chunk') expect(result.diagnostics.stageTrace?.currentSource?.adjacentRejected).toMatchObject({ 'chunk-boundary': 1 });
+  if (mode === 'different-segment') expect(result.diagnostics.stageTrace?.currentSource?.adjacentRejected).toMatchObject({ 'segment-boundary': 1 });
+  expect(JSON.stringify(toModelIndexedEvidenceDossier(result.dossier))).not.toContain('private stale context');
+  expect(JSON.stringify(result.diagnostics.stageTrace)).not.toMatch(/Synthetic|frost|Quartz|.md/);
+  expect(result.diagnostics.stageTrace).toMatchObject({ currentSource: { adjacentVerified: Number(accepted) }, dossier: { passages: 1 + Number(accepted) }, generationAndCorrection: { requests: 0 }, displayAndCitations: null });
+});
+
+it('선택 인접 행으로 전송 예산을 넘으면 필수 근거와 한 번의 생성 예산을 보존한다', async () => {
+  const actual = await vi.importActual<typeof import('../rag/rust-core')>('../rag/rust-core');
+  vi.mocked(verifyIndexedEvidenceRust).mockReset().mockImplementation(actual.verifyIndexedEvidenceRust);
+  const plan = planFixture();
+  const anchor = { ...plan.evidence[0], endLine: 3, sourceId: `${RELEVANT}#L3-L3` };
+  vi.mocked(planIndexedEvidenceRust).mockReset().mockReturnValue({ ...plan, evidence: [anchor], order: [anchor.sourceId] });
+  const { provider, calls } = scriptedAnswerProvider([JSON.stringify({ paragraphs: [{ text: 'Synthetic.', sources: [anchor.sourceId] }] })]);
+  const run = (line: string, inputBytes: number) => {
+    const text = `\n\n${anchor.quote}\n${line}`;
+    return reviewIndexedVault(reviewOptions({ indexedPaths: [RELEVANT], provider: { ...provider, contextBudget: { ...planModelContextRust({})!, inputBytes } },
+      sourceReader: () => Promise.resolve({ revision: '1:10', text, chunks: [{ startLine: 1, endLine: 4, text }] }),
+    }));
+  };
+  const base = await run('', 32_768);
+  const neighbor = 'Synthetic adjacent context. '.repeat(100);
+  const result = await run(neighbor, base.diagnostics.stageTrace!.generationAndCorrection!.preparedBytes! + 64);
+  expect(calls).toHaveLength(2);
+  expect(JSON.stringify(calls[1])).not.toContain(neighbor);
+  expect(result.outcome).toBe('answered');
+  expect(result.evidence.map(item => item.sourceId)).toEqual([anchor.sourceId]);
+  expect(result.diagnostics.stageTrace).toMatchObject({ currentSource: { adjacentVerified: 1 }, dossier: { passages: 1 }, generationAndCorrection: { sentPassages: 1, citedPositions: [0] } });
+});
+
+it('발견 후보가 비면 후속 계획·경로 심사에서 전 볼트 범위를 다시 열거하지 않는다', async () => {
+  const getFollowupPaths = vi.fn(() => Promise.resolve([RELEVANT]));
+  const { provider, calls } = answerProvider();
+  const result = await reviewIndexedVault(reviewOptions({ indexedPaths: [RELEVANT], discoveryCandidates: [],
+    discoveryPaths: [RELEVANT], getFollowupPaths, provider, deferAnswer: true }));
+  expect(getFollowupPaths).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
+  expect(result.dossier.followup?.status).toBe('skipped');
+});
+
+it('shares identical model quote text without collapsing independent source addresses or conditions', async () => {
+  const { dossier } = await reviewIndexedVault(reviewOptions({ executionMode: 'engine-only' }));
+  const a = planFixture().evidence[0], b = { ...a, sourceId: OTHER_SOURCE_ID, path: OTHER };
+  const quote = 'Glaze cracks only if frozen.';
+  const projected = toModelIndexedEvidenceDossier({ ...dossier, evidence: [{ ...a, quote }, { ...b, quote }] });
+  expect(projected.evidence).toMatchObject([{ sourceId: a.sourceId, quote }, { sourceId: b.sourceId, sameQuoteAs: a.sourceId }]);
+  expect(JSON.stringify(projected.evidence).split(quote)).toHaveLength(2);
+});
+
+it('does not require a comparison-pair wire format for answers with only the question facet', async () => {
+  const { provider, calls } = answerProvider();
+  const plan: IndexedSearchPlan = { mode:'single', facets:[{kind:'question',id:'question',query:'Quartz cooling',queryIndex:0,terms:['quartz']}] };
+  const result = await reviewIndexedVault(reviewOptions({provider, searchPlan:plan}));
+  expect(calls[0]?.[0]?.content).toContain(t('llmIndexedReviewAnswer'));
+  expect(toModelIndexedEvidenceDossier(result.dossier).paragraphContract).not.toHaveProperty('supportChoices');
+  const ids = result.dossier.answerPlan?.facets[0]?.sourceIds;
+  expect(ids?.length).toBeGreaterThan(0);
+  expect(toModelIndexedEvidenceDossier(result.dossier).paragraphContract).toMatchObject({allowedSourcesByFacet:{question:ids},example:{paragraphs:[{sources:[ids?.[0]],covers:['question']}]}});
 });

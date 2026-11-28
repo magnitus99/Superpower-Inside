@@ -396,7 +396,7 @@ fn search_args(query: &str, path: &str) -> Value {
 /// 비교 probe와 계획 facet이 함께 쓰는 검색 토큰 정규화입니다.
 fn focused_search_query(text: &str, limit: usize) -> String {
     let mut tokens = Vec::new();
-    append_meaningful_tokens(&mut tokens, text);
+    append_meaningful_tokens(&mut tokens, &crate::normalize_search_text(text));
     tokens.retain(|token| {
         ![
             "compare",
@@ -453,12 +453,134 @@ fn korean_subject_head(text: &str) -> &str {
     text
 }
 
-/// 기존 비교 probe 분할에서 subject 정체성을 순서대로 보존합니다.
-fn comparison_subject_queries(question: &str) -> Vec<String> {
-    let question = crate::normalize_nfc(question);
-    let question = question.as_ref();
-    let normalized = question.to_lowercase();
-    let interpretation = [
+/// 문장 경계와 비교 연결사가 같은 큰따옴표 및 escape 경계를 사용합니다.
+fn quoted_characters(text: &str) -> impl Iterator<Item = (usize, char, bool)> {
+    let mut closing = None;
+    let mut escaped = false;
+    text.char_indices().map(move |(index, character)| {
+        let quoted = closing.is_some();
+        if !escaped {
+            closing = match (closing, character) {
+                (Some(mark), character) if mark == character => None,
+                (None, '"') => Some('"'),
+                (None, '“') => Some('”'),
+                _ => closing,
+            };
+        }
+        escaped = character == '\\' && !escaped;
+        (index, character, quoted || closing.is_some())
+    })
+}
+
+/// 인용을 가로질러 비교 표지를 합치지 않도록 인용 밖 구간을 따로 검사합니다.
+fn unquoted_spans(text: &str) -> impl Iterator<Item = &str> {
+    let mut start = None;
+    quoted_characters(text)
+        .chain(core::iter::once((text.len(), '\0', true)))
+        .filter_map(move |(index, _, quoted)| {
+            if quoted {
+                start.take().map(|start| &text[start..index])
+            } else {
+                start.get_or_insert(index);
+                None
+            }
+        })
+}
+
+/// 인용 밖 연결사만 문장 선택과 대상 분리에 사용합니다.
+fn subject_connectors(text: &str) -> impl Iterator<Item = (usize, usize)> {
+    quoted_characters(text).filter_map(move |(start, _, quoted)| {
+        if quoted {
+            return None;
+        }
+        // 연결사 자체에는 따옴표가 없으므로 시작 위치에서만 인용 여부를 확인합니다.
+        [
+            " versus ", " vs ", " and ", " 및 ", "와의 ", "과의 ", "와 ", "과 ",
+        ]
+        .iter()
+        .find_map(|delimiter| {
+            let end = start + delimiter.len();
+            text.get(start..end)?
+                .eq_ignore_ascii_case(delimiter)
+                .then_some((start, end))
+        })
+    })
+}
+
+/// 내부 점과 문장이 이어지는 일반 약어의 점을 종결부에서 제외합니다.
+fn is_nonterminal_period(before: &str, after: &str) -> bool {
+    if before
+        .chars()
+        .next_back()
+        .is_some_and(char::is_alphanumeric)
+        && after.chars().next().is_some_and(char::is_alphanumeric)
+    {
+        return true;
+    }
+    let after = after.trim_start_matches(|c: char| c != '\n' && c.is_whitespace());
+    let Some(next) = after.chars().next() else {
+        return false;
+    };
+    let word = before
+        .rsplit(|c: char| !c.is_alphanumeric() && !matches!(c, '.' | '-' | '_'))
+        .next()
+        .unwrap_or_default();
+    if word.contains('.')
+        && word
+            .split('.')
+            .all(|part| matches!(part.as_bytes(), [letter] if letter.is_ascii_alphabetic()))
+    {
+        // 대문자만으로는 종결하지 않고, 다음 검색 토큰 전체가 지시 표지일 때만 종결합니다.
+        let next_word = after
+            .split(|c: char| !c.is_alphanumeric() && !matches!(c, '-' | '_'))
+            .next()
+            .unwrap_or_default();
+        return ![
+            "explain",
+            "include",
+            "compare",
+            "describe",
+            "summarize",
+            "discuss",
+            "define",
+            "identify",
+            "specify",
+        ]
+        .iter()
+        .any(|marker| next_word.eq_ignore_ascii_case(marker));
+    }
+    next.is_uppercase()
+        && [
+            "st", "mt", "ft", "dr", "mr", "mrs", "ms", "prof", "rev", "gen", "sgt", "capt", "lt",
+            "col",
+        ]
+        .iter()
+        .any(|abbreviation| word.eq_ignore_ascii_case(abbreviation))
+}
+
+/// 따옴표 안의 구두점과 실제 문장 종결부를 구분합니다.
+fn comparison_sentences(question: &str) -> impl Iterator<Item = &str> {
+    let mut start = 0;
+    quoted_characters(question)
+        .filter_map(|(end, mark, quoted)| {
+            if quoted || !matches!(mark, '.' | '!' | '?' | '。' | '！' | '？' | '\n') {
+                return None;
+            }
+            let next = end.saturating_add(mark.len_utf8());
+            (mark != '.' || !is_nonterminal_period(question.get(..end)?, question.get(next..)?))
+                .then_some((end, next))
+        })
+        .chain(core::iter::once((question.len(), question.len())))
+        .filter_map(move |(end, next)| {
+            let sentence = question.get(start..end)?;
+            start = next;
+            Some(sentence.trim()).filter(|part| !part.is_empty())
+        })
+}
+
+/// 명시적 비교 표지가 없을 때 해석·관점 질문도 독립 대상 검색에 사용합니다.
+fn has_interpretation_marker(text: &str) -> bool {
+    [
         "어떻게 해석",
         "해석하고",
         "해석은",
@@ -467,36 +589,28 @@ fn comparison_subject_queries(question: &str) -> Vec<String> {
         "어떻게 보",
     ]
     .iter()
-    .any(|marker| normalized.contains(marker));
-    if !requires_multiple_source_evidence(question) && !interpretation {
-        return Vec::new();
-    }
-    let mut delimiters = Vec::<(usize, usize)>::new();
-    for delimiter in [
-        " versus ", " vs ", " and ", " 및 ", "와 ", "과 ", "와의 ", "과의 ",
-    ] {
-        for (start, _) in question.char_indices() {
-            let Some(end) = start.checked_add(delimiter.len()) else {
-                continue;
-            };
-            let Some(candidate) = question.get(start..end) else {
-                continue;
-            };
-            if candidate.eq_ignore_ascii_case(delimiter) && !inside_quotes(question, start, end) {
-                delimiters.push((start, end));
-            }
-        }
-    }
-    delimiters.sort_by(|left, right| {
-        left.0.cmp(&right.0).then_with(|| {
-            right
-                .1
-                .saturating_sub(right.0)
-                .cmp(&left.1.saturating_sub(left.0))
+    .any(|marker| text.contains(marker))
+}
+
+/// 기존 비교 probe 분할에서 subject 정체성을 순서대로 보존합니다.
+fn comparison_subject_queries(question: &str) -> Vec<String> {
+    let question = crate::normalize_search_text(question);
+    // 표지와 연결사는 같은 문장의 인용 밖에서 찾되 인용된 피연산자는 보존합니다.
+    let sentences_with_connectors = || {
+        comparison_sentences(question.as_ref())
+            .filter(|sentence| subject_connectors(sentence).next().is_some())
+    };
+    let Some(question) = sentences_with_connectors()
+        .find(|clause| unquoted_spans(clause).any(requires_multiple_source_evidence))
+        .or_else(|| {
+            sentences_with_connectors()
+                .find(|clause| unquoted_spans(clause).any(has_interpretation_marker))
         })
-    });
+    else {
+        return Vec::new();
+    };
     let mut selected = Vec::<(usize, usize)>::new();
-    for delimiter in delimiters {
+    for delimiter in subject_connectors(question) {
         if selected
             .last()
             .is_some_and(|(_, previous_end)| delimiter.0 < *previous_end)
@@ -524,27 +638,6 @@ fn comparison_subject_queries(question: &str) -> Vec<String> {
         .filter(|query| !query.is_empty())
         .take(2)
         .collect()
-}
-
-/// 비교 구분자가 따옴표 안의 구문 일부인지 확인합니다.
-fn inside_quotes(text: &str, start: usize, end: usize) -> bool {
-    let bytes = text.as_bytes();
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, byte) in bytes.iter().enumerate() {
-        let in_range = index >= start && index < end;
-        if in_range && quoted {
-            return true;
-        }
-        if *byte == b'"' && !escaped {
-            quoted = !quoted;
-        }
-        escaped = *byte == b'\\' && !escaped;
-        if *byte != b'\\' {
-            escaped = false;
-        }
-    }
-    false
 }
 
 /// 비교 구절을 독립 검색 입력으로 사용해 모델의 번역·분해에만 의존하지 않습니다.
@@ -1111,6 +1204,151 @@ mod tests {
     }
 
     #[test]
+    fn comparison_subjects_do_not_cross_instruction_sentences() {
+        assert_eq!(
+            comparison_subject_queries(
+                "Explain the procedure. Compare bronze and quartz. Include conditions and exceptions."
+            ),
+            vec!["bronze", "quartz"]
+        );
+    }
+
+    #[test]
+    fn comparison_subjects_keep_internal_periods_without_crossing_sentences() {
+        for (question, expected) in [
+            (
+                "Explain the setup. Compare Node.js and Quartz. Include conditions and exceptions.",
+                ["node js", "quartz"],
+            ),
+            (
+                "Compare Quartz and Node.js. Explain the cooling assumptions.",
+                ["quartz", "node js"],
+            ),
+        ] {
+            assert_eq!(comparison_subject_queries(question), expected);
+        }
+    }
+
+    #[test]
+    fn comparison_subjects_keep_abbreviations_and_quoted_punctuation() {
+        for (question, expected) in [
+            (
+                "Explain the setup. Compare St. Louis and Dr. Smith. Include conditions and exceptions.",
+                ["st louis", "dr smith"],
+            ),
+            (
+                "Compare a conductor, e.g. copper, and quartz. Explain limits.",
+                ["conductor copper", "quartz"],
+            ),
+            (
+                "Explain the setup. Compare \"Stop! Hammer Time\" and Quartz. Include assumptions.",
+                ["stop hammer time", "quartz"],
+            ),
+            (
+                "Compare Quartz and “Stop! Hammer Time”. Explain the cooling assumptions.",
+                ["quartz", "stop hammer time"],
+            ),
+        ] {
+            assert_eq!(comparison_subject_queries(question), expected, "{question}");
+        }
+    }
+
+    #[test]
+    fn search_query_plan_distinguishes_dotted_abbreviations_from_sentence_ends() {
+        for (question, first, second) in [
+            (
+                "Compare a conductor, e.g., copper, and quartz. Explain limits.",
+                "conductor copper",
+                "quartz",
+            ),
+            (
+                "Compare U.S. steel and quartz. Explain limits.",
+                "steel",
+                "quartz",
+            ),
+            (
+                "Compare steel from the U.S., especially alloys, and quartz. Explain limits.",
+                "steel especially alloys",
+                "quartz",
+            ),
+            (
+                "Compare quartz and steel from the U.S. Explain limits.",
+                "quartz",
+                "steel",
+            ),
+            ("Compare quartz and U.S. Steel.", "quartz", "steel"),
+            (
+                "Compare quartz and U.S. Explainable Steel.",
+                "quartz",
+                "explainable steel",
+            ),
+            (
+                "Compare quartz and ore from the U.S. Explain limits.",
+                "quartz",
+                "ore",
+            ),
+            (
+                "Compare quartz and Node.js. explain limits.",
+                "quartz",
+                "node js",
+            ),
+        ] {
+            let plan: Value = serde_json::from_str(&plan_indexed_search_queries_json(
+                &json!({"question": question}).to_string(),
+            ))
+            .unwrap_or(Value::Null);
+            assert_eq!(plan.get("mode"), Some(&json!("comparison")), "{question}");
+            assert_eq!(plan.pointer("/facets/0/query"), Some(&json!(question)));
+            assert_eq!(
+                plan.pointer("/facets/1/query"),
+                Some(&json!(first)),
+                "{question}"
+            );
+            assert_eq!(
+                plan.pointer("/facets/2/query"),
+                Some(&json!(second)),
+                "{question}"
+            );
+        }
+    }
+
+    #[test]
+    fn search_query_plan_ignores_quoted_markers_and_connectors_when_choosing_a_sentence() {
+        for question in [
+            r#"Define "compare" and give an example. Compare bronze and quartz."#,
+            r#"Explain the phrase "compare and contrast". Compare bronze and quartz."#,
+            "Explain the phrase “compare and contrast”. Compare bronze AND quartz.",
+            r#"Explain the phrase "compare \"terms\" and contrast". Compare bronze and quartz."#,
+        ] {
+            let plan: Value = serde_json::from_str(&plan_indexed_search_queries_json(
+                &json!({"question": question}).to_string(),
+            ))
+            .unwrap_or(Value::Null);
+            assert_eq!(plan.get("mode"), Some(&json!("comparison")), "{question}");
+            assert_eq!(plan.pointer("/facets/0/query"), Some(&json!(question)));
+            assert_eq!(plan.pointer("/facets/1/query"), Some(&json!("bronze")));
+            assert_eq!(plan.pointer("/facets/2/query"), Some(&json!("quartz")));
+        }
+    }
+
+    #[test]
+    fn comparison_plan_keeps_compound_words_in_each_subject() {
+        let plan = super::search_query_plan(&json!({
+            "question": "Compare beta－phase and beta＿phase. Include assumptions."
+        }));
+        assert_eq!(
+            plan.as_ref()
+                .and_then(|value| value.pointer("/facets/1/terms")),
+            Some(&json!(["beta-phase"]))
+        );
+        assert_eq!(
+            plan.as_ref()
+                .and_then(|value| value.pointer("/facets/2/terms")),
+            Some(&json!(["beta_phase"]))
+        );
+    }
+
+    #[test]
     fn comparison_subjects_keep_distinguishing_tokens_after_a_shared_prefix() {
         assert_eq!(
             comparison_subject_queries(
@@ -1264,7 +1502,12 @@ mod tests {
 
     #[test]
     fn search_query_plan_requires_two_valid_subject_facets_for_comparison() {
-        for question in ["구리·유리 차이", "Compare copper only"] {
+        for question in [
+            "구리·유리 차이",
+            "Compare copper only",
+            r#"Define "compare" and give an example."#,
+            "Compare copper only. Describe bronze and quartz.",
+        ] {
             let plan: Value = serde_json::from_str(&plan_indexed_search_queries_json(
                 &json!({"question": question}).to_string(),
             ))

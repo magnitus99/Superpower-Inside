@@ -20,7 +20,10 @@ export function newLedgers() {
       run, checks: blank(setup),
       cases: cases.map(row => ({
         ...row, ui: blank(history),
-        trace: Object.fromEntries(stages.map(key => [key, { finding: null, analysis: null }])),
+        trace: Object.fromEntries(stages.map(key => [key, {
+          observation: key === 'displayAndCitations' ? 'reopened-ui' : `review.stageTrace.${key}`,
+          finding: null, analysis: null,
+        }])),
       })),
     },
     review: {

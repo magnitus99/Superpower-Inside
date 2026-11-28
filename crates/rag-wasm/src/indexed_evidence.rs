@@ -37,11 +37,10 @@ const EXTRA_CANDIDATE_DRAFTS_PER_DOCUMENT: usize = 2;
 const MAX_HIGHLIGHTS: usize = 32;
 /// `exact` 숫자·식별자 일치마다 더하는 가중치입니다.
 const EXACT_SIGNAL_BONUS: f64 = 0.6;
-/// 근거 구절에 일치한 긍정 구문마다 더할 점수입니다.
+/// 채택할 구절에서 실제로 찾은 양의 구문마다 더하는 점수.
 const PHRASE_SIGNAL_BONUS: f64 = 0.8;
-/// 제외 조건에 해당하는 구문이나 토큰이 인용 범위에 있으면 점수를 낮춥니다.
-/// 해당 구절을 버리는 대신 구문 가산점을 더한 점수에 이 계수를 곱합니다.
-/// 계수는 합성 계약 테스트로만 고정하며 heldout 평가 전 정확도 개선으로 단정하지 않습니다.
+/// 제외 토큰이나 구문이 구절에 있으면 탈락 대신 감점을 적용한다.
+/// 여러 제외 신호가 겹쳐도 이 배율은 한 번만 곱한다.
 const NEGATION_PENALTY_FACTOR: f64 = 0.5;
 /// 후보 신호 `RRF`의 smoothing 상수입니다.
 const CANDIDATE_RRF_K: f64 = 8.0;
@@ -65,8 +64,8 @@ const CANDIDATE_DEPTH_RATIO: f64 = 0.5;
 const MERGE_RRF_K: f64 = 60.0;
 /// 원 질의의 `queryIndex`는 0이며 후속 facet에는 1부터 이 상한까지 부여한다.
 const MAX_CANDIDATE_QUERY_INDEX: usize = 3;
-/// 일반 질의어가 있지만 하나도 일치하지 않고 본문에도 숫자 일치가 없으면 점수를 낮춥니다.
-/// `51장`만 맞는 다른 책의 장들은 질의의 의미를 담지 않았습니다.
+/// 본문 어휘가 불일치하면 수치 또는 식별자의 단독 적중에 낮은 가중치를 적용한다.
+/// 서로 다른 자료에서 동일한 번호를 쓸 수 있기 때문이다.
 const NUMBER_ONLY_DEMOTION: f64 = 0.45;
 /// 텍스트 토큰을 모두 담은 문서에 주는 추가 배율입니다.
 const TEXT_COVERAGE_BONUS: f64 = 0.6;
@@ -640,7 +639,7 @@ const KOREAN_FUNCTION_WORDS: &[&str] = &[
     "의미",
 ];
 
-/// 영어와 한국어 목록을 기준으로 검색어가 정리 대상인 기능어인지 판별합니다.
+/// 영문과 국문에서 질의의 연결 및 요청에 쓰이는 표현을 분류한다.
 fn is_function_word(token: &str) -> bool {
     matches!(
         token,
@@ -4363,58 +4362,68 @@ mod tests {
 
     #[test]
     fn plan_skips_documents_that_only_share_a_directory_name() {
-        // 합성 데이터에서 상위 폴더명만 일치하는 문서는 근거에서 빠져야 합니다.
+        // 세 경로의 상위 폴더는 동일하지만 한 문서에만 본문과 제목의 단서가 있다.
+        let matching_path = "분광 렌즈/alignment.md";
         let plan = plan_of(&json!({
-            "question": "보고서 51호",
+            "question": "분광 렌즈",
             "documents": [
                 {
-                    "path": "archive/reports/051.md",
-                    "title": "051호",
-                    "text": "첫 번째 보고서의 본문이 시작된다."
+                    "path": matching_path,
+                    "title": "렌즈 교정",
+                    "text": "분광 장치를 받침대에 고정했다."
                 },
                 {
-                    "path": "archive/reports/052.md",
-                    "title": "052호",
-                    "text": "다른 호의 본문만 있다."
+                    "path": "분광 렌즈/cooling.md",
+                    "title": "냉각팬",
+                    "text": "보호망의 나사를 조였다."
                 },
                 {
-                    "path": "archive/reports/125.md",
-                    "title": "125호",
-                    "text": "또 다른 호의 본문만 있다."
+                    "path": "분광 렌즈/power.md",
+                    "title": "전원부",
+                    "text": "여분의 퓨즈를 상자에 넣었다."
                 }
             ],
         }));
         let evidence = rows(&plan, "evidence");
-        assert_eq!(evidence.len(), 1, "only the matching report is evidence");
+        assert_eq!(
+            evidence.len(),
+            1,
+            "directory matches alone are not evidence"
+        );
         assert_eq!(
             get(evidence.first().unwrap_or(&NULL), "path"),
-            &json!("archive/reports/051.md")
+            &json!(matching_path)
         );
     }
 
     #[test]
     fn plan_demotes_link_index_documents_below_content() {
-        // 합성 링크 모음보다 질의어를 본문에 담은 문서가 먼저 나와야 합니다.
-        let index_lines = (1..=20)
-            .map(|number| format!("- [[archive/reports/{number:03}|{number}호]]"))
+        // 양쪽 본문 모두 검색어를 포함하되 목록은 안내문 뒤에 링크를 나열한다.
+        let content_path = "optics/alignment.md";
+        let index_path = "optics/catalog.md";
+        let content = "분광 렌즈 앞에 눈금판을 놓고 초점을 맞췄다.";
+        let index_lines = std::iter::once("분광 렌즈 관련 부품은 아래 목록에서 찾는다.".to_owned())
+            .chain((1..=20).map(|number| format!("- [[optics/sample-{number}|교정표]]")))
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(super::navigation_factor(&index_lines) < super::navigation_factor(content));
         let plan = plan_of(&json!({
-            "question": "보고서 51호",
+            "question": "분광 렌즈",
             "documents": [
-                {"path": "archive/reports/000-색인.md", "title": "000-색인", "text": index_lines},
-                {
-                    "path": "archive/reports/051.md",
-                    "title": "051호",
-                    "text": "보고서 51호\n첫 번째 보고서의 본문."
-                }
+                {"path": index_path, "title": "분광 렌즈 목록", "text": index_lines},
+                {"path": content_path, "title": "분광 렌즈 교정", "text": content}
             ],
         }));
         let evidence = rows(&plan, "evidence");
+        assert!(
+            evidence
+                .iter()
+                .any(|row| get(row, "path") == &json!(index_path))
+        );
         assert_eq!(
             get(evidence.first().unwrap_or(&NULL), "path"),
-            &json!("archive/reports/051.md"),
-            "content outranks a link index"
+            &json!(content_path),
+            "a link catalog ranks beneath prose evidence"
         );
     }
 

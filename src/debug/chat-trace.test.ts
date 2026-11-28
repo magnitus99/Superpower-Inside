@@ -143,6 +143,8 @@ describe('chat debug trace', () => {
     const trace = buildChatDebugTrace({
       message: createMessage({
         indexedReviewDiagnostics: {
+          stageTrace: { plan: null, retrieval: null, selectionAndFollowup: null, dossier: null, currentSource: null,
+            generationAndCorrection: { requests: 0, sentPassages: 0, validationFailures: [] }, displayAndCitations: null },
           phases,
           counts: {
             candidateSegments: 0,
@@ -172,6 +174,9 @@ describe('chat debug trace', () => {
       config,
     });
 
+    const reopened = extractChatDebugTrace(formatChatDebugTraceSection(trace).join('\n'));
+    expect(reopened?.turn.messageId).toBe('msg-trace');
+    expect(reopened?.review?.stageTrace).toMatchObject({ generationAndCorrection: { requests: 0, sentPassages: 0 }, displayAndCitations: null });
     expect(trace.review?.outcome).toBe('no-evidence');
     expect(trace.review?.search?.zeroHitReason).toBe('no-lexical-match');
     expect(trace.review?.search?.unmatchedTerms).toHaveLength(40);
