@@ -239,6 +239,7 @@ interface RagRuntimeSnapshot {
   retireProvider?: (close: () => void, failed?: () => void) => void;
   clearEmbeddingCache?: () => Promise<void>;
   coverageLimited?: boolean;
+  coldProofDeferred?: boolean;
   admitsEmbedding?: () => boolean;
   config?: Pick<SuperpowerInsideSettings, 'rag' | 'chat'>;
   generation?: RagGenerationRecord;
@@ -280,6 +281,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private deletingLocalModels?: Set<string>;
   private ragManifestRestored = false;
   private ragGenerationRestorePromise: Promise<void> | null = null;
+  private ragLexicalRestorePromise: Promise<void> | null = null;
+  private ragSharedBm25Owners?: WeakMap<IndexedDbBM25Index, Set<RagRuntimeWorkBarrier>>;
   private ragManifestRevision = 0;
   private ragGenerationRestoring = false;
   private ragRestoreOwner: object | null = null;
@@ -794,7 +797,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
     const release = this.ragEngine ? acquireRuntimeLease(this.ragEngine) : () => undefined;
     void runtime.io!.run(() => {
       if (!isCurrent()) throw new IndexingCancelledError();
-      return index.recoverClosedWorker();
+      return index.recoverClosedWorker(isCurrent);
     })
       .catch((error: unknown) => {
         if (!isCurrent()) return;
@@ -1660,25 +1663,55 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private startBM25BackgroundLoad(
     bm25Index: IndexedDbBM25Index,
     runtime: RagRuntimeSnapshot,
+    isRestoreOwner: () => boolean = () => true,
   ): Promise<BM25BackgroundLoadOutcome> {
     const startedAt = Date.now();
+    const view = typeof document === 'undefined' ? null : document;
+    const postingVisibilityAtStart = view?.visibilityState ?? null;
+    let hiddenSince = view?.hidden ? performance.now() : null;
+    let rendererHiddenMs = 0;
+    const onVisibility = (): void => {
+      const now = performance.now();
+      if (hiddenSince !== null) rendererHiddenMs += now - hiddenSince;
+      hiddenSince = view?.hidden ? now : null;
+    };
+    view?.addEventListener('visibilitychange', onVisibility);
     this.getLogger().info('BM25 index background initialization started.', {
       source: 'rag.bm25',
     });
-    // 물리 load만 등록합니다. 완료 checkpoint는 이 run 밖에서 실행해야 합니다.
+    // The derived posting migration drains with physical hydration; generation proof stays outside this run.
+    // A paused user still permits this DB-local derivative (no embedding or source writes).
     const io = runtime.io ??= new RagRuntimeWorkBarrier();
-    return io.run(() => bm25Index.load((progress) => {
-      const key = runtime.ragEngine ?? runtime.documentCorpus ?? runtime.vectorStore ?? runtime;
-      if (this.ragRuntimeDisposals?.has(key) || this.ragAutoRecoveryPausedByUser) return;
-      this.observeRagRuntimeWork(runtime, progress.stage, progress.unit, progress.processedUnits, progress.totalUnits);
-    })).then(
-      () => ({ error: null, startedAt, loadDurationMs: Date.now() - startedAt }),
+    const runId = this.ragRuntimeInitRunId;
+    // Source events still invalidate generation proof, but this snapshot only certifies the durable BM25 prefix.
+    const canPublishDerived = (): boolean => io.captureReadSnapshot()() && !this.unloaded && !this.ragResetInProgress &&
+      this.ragRuntimeInitRunId === runId && isRestoreOwner();
+    const admitted = performance.now();
+    let barrierWaitMs = 0;
+    return io.run(() => {
+      barrierWaitMs = performance.now() - admitted;
+      return bm25Index.load((progress) => {
+        const key = runtime.ragEngine ?? runtime.documentCorpus ?? runtime.vectorStore ?? runtime;
+        if (this.ragRuntimeDisposals?.has(key) || this.ragAutoRecoveryPausedByUser) return;
+        this.observeRagRuntimeWork(runtime, progress.stage, progress.unit, progress.processedUnits, progress.totalUnits);
+      }, canPublishDerived);
+    }).then(
+      () => {
+        const loadDurationMs = Date.now() - startedAt;
+        const posting = bm25Index.recoveryTiming;
+        const totalHiddenMs = rendererHiddenMs + (hiddenSince === null ? 0 : performance.now() - hiddenSince);
+        this.getLogger().debug('BM25 storage hydration settled.', { source: 'rag.bm25', data: {
+          loadDurationMs, totalDocs: bm25Index.totalDocs, recoveryMode: bm25Index.recoveryMode,
+          ...(posting ? { posting, barrierWaitMs, rendererHiddenMs: totalHiddenMs, postingVisibilityAtStart, postingVisibilityAtEnd: view?.visibilityState ?? null } : {}),
+        } });
+        return { error: null, startedAt, loadDurationMs };
+      },
       (error: unknown) => ({
         error: error instanceof Error ? error : new Error(String(error)),
         startedAt,
         loadDurationMs: Date.now() - startedAt,
       }),
-    );
+    ).finally(() => view?.removeEventListener('visibilitychange', onVisibility));
   }
 
   private async indexBM25File(
@@ -1753,7 +1786,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   async prepareRagForChat(): Promise<boolean> {
     if (this.ragResetInProgress || this.unloaded) return false;
     if (!this.ragEngine) {
-      try { await this.restorePersistedRagGeneration(); }
+      try { await this.restoreServingRagGeneration(true); }
       catch (error) { this.getLogger().warn('Previous search generation unavailable.', { source: 'rag.generation', error }); }
       if (this.unloaded || this.ragResetInProgress) return false;
       if (this.ragEngine && !this.ragAutoRecoveryPausedByUser) {
@@ -1771,8 +1804,11 @@ export default class SuperpowerInsidePlugin extends Plugin {
       const release = runtime.ragEngine ? acquireRuntimeLease(runtime.ragEngine) : () => undefined;
       try {
         await runtime.io!.run(() => {
-          if (this.unloaded || this.ragResetInProgress || this.ragAutoRecoveryPausedByUser || this.bm25Index !== runtime.bm25Index) throw new IndexingCancelledError();
-          return runtime.bm25Index!.recoverClosedWorker();
+          const ownerAlive = runtime.io!.captureInvalidationSnapshot();
+          const isCurrent = (): boolean => ownerAlive() && !this.unloaded && !this.ragResetInProgress &&
+            !this.ragAutoRecoveryPausedByUser && this.bm25Index === runtime.bm25Index && this.ragEngine === runtime.ragEngine;
+          if (!isCurrent()) throw new IndexingCancelledError();
+          return runtime.bm25Index!.recoverClosedWorker(isCurrent);
         });
       } finally { release(); }
     }
@@ -1909,6 +1945,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       retireProvider: this.activeRagRuntime?.retireProvider,
       clearEmbeddingCache: this.activeRagRuntime?.clearEmbeddingCache,
       coverageLimited: this.activeRagRuntime?.coverageLimited,
+      coldProofDeferred: this.activeRagRuntime?.coldProofDeferred,
       admitsEmbedding: this.activeRagRuntime?.admitsEmbedding,
       config: this.activeRagRuntime?.config,
       generation: this.activeRagRuntime?.generation,
@@ -1985,6 +2022,31 @@ export default class SuperpowerInsidePlugin extends Plugin {
     void this.drainRagRuntimeSnapshot(snapshot);
   }
 
+  private closeRagBm25Owner(runtime: RagRuntimeSnapshot): void {
+    const index = runtime.bm25Index;
+    if (!index) return;
+    const owners = this.ragSharedBm25Owners?.get(index);
+    if (owners && runtime.io) {
+      owners.delete(runtime.io);
+      if (owners.size > 0) return;
+      this.ragSharedBm25Owners!.delete(index);
+    }
+    index.close();
+  }
+
+  /** A cold lexical owner and its same-generation hydrate share one initialized worker. */
+  private borrowColdRagBm25(previous: RagRuntimeSnapshot, next: RagRuntimeSnapshot): IndexedDbBM25Index | null {
+    const index = previous.bm25Index;
+    if (!previous.coldProofDeferred || !index || index.hasFailure || !previous.io?.captureReadSnapshot()() || !next.io ||
+        previous.generation?.databases.bm25 !== next.generation?.databases.bm25) return null;
+    const shared = this.ragSharedBm25Owners ??= new WeakMap();
+    const owners = shared.get(index) ?? new Set<RagRuntimeWorkBarrier>();
+    owners.add(previous.io);
+    owners.add(next.io);
+    shared.set(index, owners);
+    return index;
+  }
+
   private drainRagRuntimeSnapshot(snapshot: RagRuntimeSnapshot): Promise<void> {
     const key = snapshot.ragEngine ?? snapshot.documentCorpus ?? snapshot.vectorStore ?? snapshot;
     const disposals = this.ragRuntimeDisposals ??= new WeakMap<object, Promise<void>>();
@@ -2014,7 +2076,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
         () => snapshot.vaultDocumentCorpus?.dispose(),
         () => snapshot.documentCorpus?.close(),
         () => snapshot.vectorStore?.close?.(),
-        () => snapshot.bm25Index?.close?.(),
+        () => this.closeRagBm25Owner(snapshot),
         () => snapshot.embeddingProvider?.close?.(),
       ]) {
         try { action(); }
@@ -2056,7 +2118,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   /** 품질 검사는 기존 lexical만 빌리고 선택된 모델이나 새 구축을 시작하지 않습니다. */
   async acquireRagEngineOnlySnapshot() {
     if (this.unloaded || this.ragResetInProgress) return null;
-    try { await this.restorePersistedRagGeneration(); }
+    try { await this.restoreServingRagGeneration(); }
     catch { return null; }
     if (this.unloaded || this.ragResetInProgress) return null;
     const runtime = this.captureRagRuntimeSnapshot();
@@ -2287,7 +2349,10 @@ export default class SuperpowerInsidePlugin extends Plugin {
     return { version: 1, corpus, lexical, vector };
   }
 
-  private async collectRagRuntimeProof(runtime: RagRuntimeSnapshot, requireCurrent: () => void, initialize: boolean): Promise<RagGenerationProof> {
+  private async collectRagRuntimeProof(runtime: RagRuntimeSnapshot, requireCurrent: () => void, initialize: boolean, workOwner = runtime): Promise<RagGenerationProof> {
+    const startedAt = performance.now();
+    let sourceReadMs = 0;
+    let projectionReadMs = 0;
     const corpus = runtime.documentCorpus;
     const captured = runtime.config;
     if (!corpus || !captured) throw new Error('rag-runtime-durability-unverified');
@@ -2302,11 +2367,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
     const before = await this.readRagRuntimeSeal(runtime);
     const rows = new Map((await corpus.getFileIndexRecords()).map((record) => [record.filePath, record]));
+    // Read the vector record inventory once without triggering a migration inside verification.
+    const vectorRows = new Map((await runtime.vectorStore?.getFileIndexRecords({ repair: false }) ?? []).map((record) => [record.filePath, record]));
     const failures = new Map((runtime.vaultIndexer?.getFailedFilePaths() ?? []).map((path) => [path, { path, reason: 'indexing-failed' }]));
     const inventory = getRagIndexingManifest(this.app.vault, config.rag, config.chat);
     const considered = new Set<string>();
     let verified = 0;
-    this.observeRagRuntimeWork(runtime, 'verifying', 'files', 0, inventory.candidates.length);
+    this.observeRagRuntimeWork(workOwner, 'verifying', 'files', 0, inventory.candidates.length);
     for (const { file, reason } of inventory.failures) {
       considered.add(file.path);
       failures.set(file.path, { path: file.path, reason });
@@ -2319,7 +2386,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       requireCurrent();
       considered.add(file.path);
       try {
-        const snapshot = await readSourceFileSnapshot(this.app.vault, file, { priority: 'background', preparation: { path: file.path, chunkSize: config.rag.chunkSize, overlap: config.rag.overlap } });
+        const readingAt = performance.now();
+        const snapshot = await readSourceFileSnapshot(this.app.vault, file, { priority: 'background', preparation: { path: file.path, chunkSize: config.rag.chunkSize, overlap: config.rag.overlap } })
+          .finally(() => { sourceReadMs += performance.now() - readingAt; });
         requireCurrent();
         if (!snapshot?.chunks) throw new Error('Source verification unavailable.');
         const verdict = getRagPreparedContentVerdict(this.app.vault, snapshot.file, snapshot.content, config.rag, config.chat);
@@ -2328,7 +2397,17 @@ export default class SuperpowerInsidePlugin extends Plugin {
           continue;
         }
         const row = rows.get(file.path);
-        const documents = await corpus.getDocumentsByFilePath(file.path);
+        const projectionAt = performance.now();
+        // A failure must not let sibling physical reads escape the checkpoint's drain.
+        const [sourceDocs, lexicalDocs, vectorDocs] = await Promise.allSettled([
+          corpus.getDocumentsByFilePath(file.path),
+          runtime.bm25Index?.getCorpusDocumentsBySourcePaths([file.path], { flush: false }),
+          runtime.vectorStore?.getEntriesByFilePaths([file.path]),
+        ]);
+        projectionReadMs += performance.now() - projectionAt;
+        requireCurrent();
+        if (sourceDocs.status === 'rejected') throw sourceDocs.reason;
+        const documents = sourceDocs.value;
         const byId = new Map(documents.map((document) => [document.id, document]));
         const matches = row?.hasCompleteMetadata === true && row.contentHash === snapshot.revision.contentHash &&
           row.sourceMtime === snapshot.revision.sourceMtime && row.sourceSize === snapshot.revision.sourceSize && row.sourceMetadataHash === snapshot.sourceMetadataHash &&
@@ -2340,7 +2419,8 @@ export default class SuperpowerInsidePlugin extends Plugin {
           });
         if (!matches) failures.set(file.path, { path: file.path, reason: 'source-not-current-at-checkpoint' });
         if (runtime.bm25Index) {
-          const lexical = await runtime.bm25Index.getCorpusDocumentsBySourcePaths([file.path]);
+          if (lexicalDocs.status === 'rejected') throw lexicalDocs.reason;
+          const lexical = lexicalDocs.value ?? [];
           const lexicalById = new Map(lexical.map((document) => [document.id, document]));
           if (lexical.length !== documents.length || documents.some((document) => {
             const stored = lexicalById.get(document.id);
@@ -2349,8 +2429,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
           })) failures.set(file.path, { path: file.path, reason: 'lexical-projection-not-current' });
         }
         if (runtime.vectorStore) {
-          const record = await runtime.vectorStore.getFileIndexRecord(file.path);
-          const vectors = await runtime.vectorStore.getEntriesByFilePaths([file.path]);
+          if (vectorDocs.status === 'rejected') throw vectorDocs.reason;
+          const record = vectorRows.get(file.path);
+          const vectors = vectorDocs.value ?? [];
           const byVectorId = new Map(vectors.map((entry) => [entry.id, entry]));
           if (!record || record.contentHash !== snapshot.revision.contentHash || record.sourceMetadataHash !== snapshot.sourceMetadataHash ||
               record.sourceMtime !== snapshot.revision.sourceMtime || record.sourceSize !== snapshot.revision.sourceSize || vectors.length !== snapshot.chunks.length ||
@@ -2363,15 +2444,19 @@ export default class SuperpowerInsidePlugin extends Plugin {
         failures.set(file.path, { path: file.path, reason: error instanceof SourceReadError ? error.reason : 'source-verification-failed' });
       } finally {
         requireCurrent();
-        this.observeRagRuntimeWork(runtime, 'verifying', 'files', ++verified, inventory.candidates.length);
+        this.observeRagRuntimeWork(workOwner, 'verifying', 'files', ++verified, inventory.candidates.length);
       }
     }
     for (const path of rows.keys()) if (!considered.has(path)) failures.set(path, { path, reason: 'source-not-candidate' });
     requireCurrent();
-    this.observeRagRuntimeWork(runtime, 'publishing');
+    this.observeRagRuntimeWork(workOwner, 'publishing');
     const seal = await this.readRagRuntimeSeal(runtime);
     if (!sameRagDurabilitySeal(before, seal) || policy !== this.getRagSourcePolicyIdentity()) throw new IndexingCancelledError();
     requireCurrent();
+    this.getLogger().debug('RAG fresh proof settled.', { source: 'rag.generation', data: {
+      candidates: inventory.candidates.length, failures: failures.size,
+      durationMs: Math.round(performance.now() - startedAt), sourceReadMs: Math.round(sourceReadMs), projectionReadMs: Math.round(projectionReadMs),
+    } });
     return { seal, corpusDurable: true, lexicalDurable: true, lexicalApplied: true, vectorDurable: true,
       pendingWrites: 0, targetsSettled: true, documentCount: rows.size, failures: [...failures.values()] };
   }
@@ -2496,7 +2581,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       documentCorpus: new IndexedDbDocumentCorpusStore(layout.active.corpus, this.generatedArtifacts.forFeature('rag-corpus')),
       vaultDocumentCorpus: null, vectorStore: null, embeddingProvider: null, vaultIndexer: null,
       ragIndexingScheduler: null, automaticRagRecovery: null,
-      bm25Index: hasBm25 ? new IndexedDbBM25Index(layout.active.bm25, this.app.vault.adapter, undefined, { artifactOwnership: this.generatedArtifacts.forFeature('rag-bm25') }) : null,
+      bm25Index: hasBm25 ? new IndexedDbBM25Index(layout.active.bm25, this.app.vault.adapter, undefined, { artifactOwnership: this.generatedArtifacts.forFeature('rag-bm25'), logger: this.getLogger().child('rag.bm25') }) : null,
     };
     try {
       this.observeRagRuntimeSources(runtime);
@@ -2508,7 +2593,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       if (records.length === 0) { this.disposeRagRuntimeSnapshot(runtime); return; }
       try {
         if (runtime.bm25Index) {
-          const outcome = await this.startBM25BackgroundLoad(runtime.bm25Index, runtime);
+          const outcome = await this.startBM25BackgroundLoad(runtime.bm25Index, runtime, () => this.ragRestoreOwner === owner);
           if (outcome.error) throw outcome.error;
         }
       }
@@ -2534,7 +2619,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
     }
   }
 
-  private restorePersistedRagGeneration(): Promise<void> {
+  private restoreServingRagGeneration(forInitialization = false): Promise<void> {
+    const completion = this.restorePersistedRagGeneration(forInitialization);
+    // The full restore continues to own and drain any in-flight fresh verification.
+    return this.ragLexicalRestorePromise ? Promise.race([this.ragLexicalRestorePromise, completion]) : completion;
+  }
+
+  private restorePersistedRagGeneration(forInitialization = false): Promise<void> {
     if (this.ragManifestRestored) return Promise.resolve();
     if (!this.ragGenerationRestorePromise) {
       this.ragGenerationRestoring = true;
@@ -2543,7 +2634,9 @@ export default class SuperpowerInsidePlugin extends Plugin {
       this.ragRestoreOwner = owner;
       this.ragRestoreFailure = null;
       this.beginRagRuntimeWork(owner);
-      this.ragGenerationRestorePromise = this.loadPersistedRagGeneration(owner).catch((error: unknown) => {
+      let servingReady!: () => void;
+      this.ragLexicalRestorePromise = new Promise<void>((resolve) => { servingReady = resolve; });
+      this.ragGenerationRestorePromise = this.loadPersistedRagGeneration(owner, servingReady, forInitialization).catch((error: unknown) => {
         this.recordRagRestoreFailure(error, owner, runId);
         throw error;
       }).finally(() => {
@@ -2554,12 +2647,13 @@ export default class SuperpowerInsidePlugin extends Plugin {
         this.ragManifestRestored = true;
         this.ragGenerationRestoring = false;
         this.ragGenerationRestorePromise = null;
+        this.ragLexicalRestorePromise = null;
       });
     }
     return this.ragGenerationRestorePromise;
   }
 
-  private async loadPersistedRagGeneration(owner: object): Promise<void> {
+  private async loadPersistedRagGeneration(owner: object, servingReady: () => void, forInitialization: boolean): Promise<void> {
     const restoreRunId = this.ragRuntimeInitRunId;
     const saved = await this.getRagGenerationManifest().read();
     if (this.ragRestoreOwner !== owner || this.unloaded || this.ragResetInProgress || this.ragRuntimeInitRunId !== restoreRunId) return;
@@ -2589,7 +2683,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       documentCorpus: new IndexedDbDocumentCorpusStore(generation.databases.corpus, this.generatedArtifacts.forFeature('rag-corpus')),
       vaultDocumentCorpus: null, vectorStore: null, embeddingProvider: null, vaultIndexer: null,
       ragIndexingScheduler: null, automaticRagRecovery: null,
-      bm25Index: generation.contract.bm25Enabled && existingNames.includes(generation.databases.bm25) ? new IndexedDbBM25Index(generation.databases.bm25, this.app.vault.adapter, undefined, { artifactOwnership: this.generatedArtifacts.forFeature('rag-bm25') }) : null,
+      bm25Index: generation.contract.bm25Enabled && existingNames.includes(generation.databases.bm25) ? new IndexedDbBM25Index(generation.databases.bm25, this.app.vault.adapter, undefined, { artifactOwnership: this.generatedArtifacts.forFeature('rag-bm25'), logger: this.getLogger().child('rag.bm25') }) : null,
     };
     try {
       this.observeRagRuntimeSources(runtime);
@@ -2603,7 +2697,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
       runtime.generation = { ...generation, terminal: 'partial' };
       try {
         if (runtime.bm25Index) {
-          const outcome = await this.startBM25BackgroundLoad(runtime.bm25Index, runtime);
+          const outcome = await this.startBM25BackgroundLoad(runtime.bm25Index, runtime, () => this.ragRestoreOwner === owner);
           if (outcome.error) throw outcome.error;
         }
       }
@@ -2615,6 +2709,18 @@ export default class SuperpowerInsidePlugin extends Plugin {
         runtime.generation = { ...generation, terminal: 'partial' };
         this.getLogger().warn('Stored lexical worker unavailable; preserving limited corpus-only search.', { source: 'rag.generation', error });
       }
+      this.observeRagRuntimeWork(runtime, 'publishing');
+      runtime.ragEngine = new RAGQueryEngine(null, null, runtime.bm25Index ?? undefined, 1, this.settings.rag.minScore, {
+        literalInventorySource: this.createRagLiteralInventorySource(runtime),
+        corpusStore: runtime.documentCorpus!,
+        getCandidatePaths: async () => new Set((await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)).map((file) => file.path)),
+      });
+      if (this.ragRestoreOwner !== owner || this.unloaded || this.ragResetInProgress || this.ragRuntimeInitRunId !== restoreRunId) { this.disposeRagRuntimeSnapshot(runtime); return; }
+      runtime.coldProofDeferred = forInitialization && !this.forceRagGenerationBuild && !this.ragAutoRecoveryPausedByUser && this.matchesRagStorageContract(runtime);
+      if (!this.restoreRagRuntimeSnapshot(runtime)) { this.disposeRagRuntimeSnapshot(runtime); return; }
+      this.refreshActiveArtifactDatabaseNames();
+      servingReady();
+      if (runtime.coldProofDeferred) return;
       if (!this.ragAutoRecoveryPausedByUser && generation.proof?.seal && generation.contract.vectorMode !== 'memory' &&
           (generation.contract.vectorMode === 'disabled' || generation.contract.embeddingBinding !== undefined)) {
         let vectorProbe: IndexedDbVectorStore | null = null;
@@ -2623,39 +2729,29 @@ export default class SuperpowerInsidePlugin extends Plugin {
             if (!existingNames.includes(generation.databases.vector)) throw new Error('rag-runtime-vector-unverified');
             vectorProbe = new IndexedDbVectorStore(generation.databases.vector, { artifactOwnership: this.generatedArtifacts.forFeature('rag-vectors') });
           }
-          runtime.vectorStore = vectorProbe;
+          const proofRuntime = { ...runtime, vectorStore: vectorProbe };
           await runtime.io!.checkpoint(async (stable) => {
             const policy = this.getRagSourcePolicyIdentity();
             const requireRestore = (): void => {
-              if (!stable() || this.ragAutoRecoveryPausedByUser || policy !== this.getRagSourcePolicyIdentity() || this.unloaded || this.ragResetInProgress || this.ragRuntimeInitRunId !== restoreRunId || this.ragEngine) throw new IndexingCancelledError();
+              if (!stable() || this.ragAutoRecoveryPausedByUser || policy !== this.getRagSourcePolicyIdentity() || this.unloaded || this.ragResetInProgress || this.ragRuntimeInitRunId !== restoreRunId || this.activeRagRuntime !== runtime) throw new IndexingCancelledError();
             };
             requireRestore();
-            const observed = await this.readRagRuntimeSeal(runtime);
+            const observed = await this.readRagRuntimeSeal(proofRuntime);
             const stored = generation.proof!.seal!;
             const expected: RagDurabilitySeal = { ...stored, lexical: stored.lexical.state === 'enabled' && observed.lexical.state === 'enabled'
               ? { ...stored.lexical, applied: observed.lexical.applied } : stored.lexical };
             if (!sameRagDurabilitySeal(expected, observed)) return;
-            const fresh = await this.collectRagRuntimeProof(runtime, requireRestore, false);
+            const fresh = await this.collectRagRuntimeProof(proofRuntime, requireRestore, false, runtime);
             requireRestore();
             runtime.coverageLimited = false;
             runtime.generation = { ...generation, terminal: fresh.failures.length ? 'partial' : 'complete', proof: fresh };
+            this.rememberRagRuntimeProof(runtime, fresh, generation.proof);
           });
         } catch {
           runtime.coverageLimited = true;
           this.getLogger().debug('Stored generation receipt unverified; keeping limited lexical serving.', { source: 'rag.generation' });
-        } finally { runtime.vectorStore = null; vectorProbe?.close(); }
+        } finally { vectorProbe?.close(); }
       }
-      this.observeRagRuntimeWork(runtime, 'publishing');
-      runtime.ragEngine = new RAGQueryEngine(null, null, runtime.bm25Index ?? undefined, 1, this.settings.rag.minScore, {
-        literalInventorySource: this.createRagLiteralInventorySource(runtime),
-        corpusStore: runtime.documentCorpus!,
-        getCandidatePaths: async () => new Set((await getRagCandidateFiles(this.app.vault, this.settings.rag, this.settings.chat)).map((file) => file.path)),
-      });
-      if (this.ragRestoreOwner !== owner || this.unloaded || this.ragResetInProgress || this.ragRuntimeInitRunId !== restoreRunId) { this.disposeRagRuntimeSnapshot(runtime); return; }
-      if (this.restoreRagRuntimeSnapshot(runtime) && !runtime.coverageLimited && runtime.generation?.proof) {
-        this.rememberRagRuntimeProof(runtime, runtime.generation.proof, generation.proof);
-      }
-      this.refreshActiveArtifactDatabaseNames();
     } catch (error) {
       this.recordRagRestoreFailure(error, owner, restoreRunId);
       this.disposeRagRuntimeSnapshot(runtime);
@@ -2814,7 +2910,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
   private async initRAGRuntime(): Promise<void> {
     if (this.unloaded || this.ragResetInProgress || this.isSelectedLocalModelDeleting()) return;
     this.synchronizeEmbeddingBindings();
-    try { await this.restorePersistedRagGeneration(); }
+    try { await this.restorePersistedRagGeneration(true); }
     catch (error) {
       this.getLogger().warn('Stored RAG generation could not be restored; preserving its databases.', { source: 'rag.generation', error });
     }
@@ -3059,11 +3155,12 @@ export default class SuperpowerInsidePlugin extends Plugin {
         });
       };
       if (rag.enableBM25) {
-        const nextBm25Index = new IndexedDbBM25Index(
+        const borrowed = hydrate ? this.borrowColdRagBm25(previousRuntime, runtime) : null;
+        const nextBm25Index = borrowed ?? new IndexedDbBM25Index(
           storageLayout.active.bm25,
           this.app.vault.adapter,
           undefined,
-          { artifactOwnership: this.generatedArtifacts.forFeature('rag-bm25') },
+          { artifactOwnership: this.generatedArtifacts.forFeature('rag-bm25'), logger: this.getLogger().child('rag.bm25') },
         );
         bm25Index = nextBm25Index;
         runtime.bm25Index = nextBm25Index;
@@ -3080,7 +3177,7 @@ export default class SuperpowerInsidePlugin extends Plugin {
             ),
         });
         // 큰 로컬 색인은 채팅과 벡터 검색 런타임을 막지 않고 worker에서 준비한다.
-        bm25LoadOutcome = this.startBM25BackgroundLoad(nextBm25Index, runtime);
+        if (!borrowed) bm25LoadOutcome = this.startBM25BackgroundLoad(nextBm25Index, runtime);
       }
       runtime.ragEngine ??= new RAGQueryEngine(null, null, undefined, rag.bm25Weight, rag.minScore, {
         literalInventorySource: this.createRagLiteralInventorySource(runtime),

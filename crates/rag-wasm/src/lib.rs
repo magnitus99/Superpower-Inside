@@ -77,6 +77,8 @@ pub use performance_guard::{plan_local_rag_admission_json, plan_rag_performance_
 mod chat_input;
 mod evidence_collection;
 pub use evidence_collection::{plan_evidence_collection_json, plan_indexed_search_queries_json};
+mod bm25_checkpoint;
+mod bm25_packed;
 /// 위치·필드 기반 `BM25` 질의 parser와 구문 검증.
 mod bm25_query;
 mod indexed_discovery;
@@ -296,7 +298,7 @@ pub(crate) fn normalize_nfc(text: &str) -> Cow<'_, str> {
 /// 원문 보존용 `NFC`와 분리한 검색 비교용 `NFKC`입니다.
 #[must_use]
 pub(crate) fn normalize_search_text(text: &str) -> Cow<'_, str> {
-    if unicode_normalization::is_nfkc(text) {
+    if text.is_ascii() || unicode_normalization::is_nfkc(text) {
         Cow::Borrowed(text)
     } else {
         Cow::Owned(text.nfkc().collect())
@@ -326,17 +328,18 @@ pub fn tokenizer_version() -> u32 {
 pub fn tokenize(text: &str) -> Vec<String> {
     let text = normalize_search_text(text);
     let mut tokens = Vec::new();
-    let mut part = String::new();
-
-    for character in text.chars() {
-        if is_token_part_character(character) {
-            part.push(character);
-        } else {
-            tokens.extend(tokenize_part(&part));
-            part.clear();
+    let mut start = 0;
+    for (offset, character) in text.char_indices() {
+        if !is_token_part_character(character) {
+            if let Some(part) = text.get(start..offset) {
+                append_tokenized_part(part, &mut tokens);
+            }
+            start = offset.saturating_add(character.len_utf8());
         }
     }
-    tokens.extend(tokenize_part(&part));
+    if let Some(part) = text.get(start..) {
+        append_tokenized_part(part, &mut tokens);
+    }
     tokens
 }
 
@@ -4424,6 +4427,8 @@ impl IvfRuntimeIndex {
 pub struct Bm25RuntimeIndex {
     /// runtime BM25 index state.
     index: Bm25IndexData,
+    /// Last document key exported by the serialized worker checkpoint stream.
+    posting_cursor: Option<String>,
 }
 
 #[wasm_bindgen]
@@ -4434,6 +4439,7 @@ impl Bm25RuntimeIndex {
     pub fn new(tokenizer_version: u32) -> Self {
         Self {
             index: Bm25IndexData::empty(wasm_bridge_u32(tokenizer_version)),
+            posting_cursor: None,
         }
     }
 
@@ -4442,13 +4448,16 @@ impl Bm25RuntimeIndex {
     pub fn from_json(payload: &str, fallback_tokenizer_version: u32) -> Self {
         let index = parse_bm25_index_json(payload)
             .unwrap_or_else(|| Bm25IndexData::empty(fallback_tokenizer_version));
-        Self { index }
+        Self {
+            index,
+            posting_cursor: None,
+        }
     }
 
     /// document가 하나 이상 있는지 반환한다.
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        !self.index.doc_lengths.is_empty()
+        !self.index.doc_lengths.is_empty() && !self.index.posting_base.is_importing()
     }
 
     /// tokenizer contract version을 반환한다.
@@ -4585,14 +4594,10 @@ impl Bm25RuntimeIndex {
     /// source path에 속한 document들을 runtime index에서 제거한다.
     pub fn remove_source(&mut self, source_path: &str, tokenizer_version: u32) {
         self.index.adopt_tokenizer_if_empty(tokenizer_version);
-        let doc_ids = self
-            .index
-            .doc_sources
-            .iter()
-            .filter_map(|(doc_id, source)| (source == source_path).then_some(doc_id.clone()))
-            .collect::<Vec<_>>();
-        for doc_id in doc_ids {
-            remove_bm25_document(&mut self.index, &doc_id);
+        if let Some(doc_ids) = self.index.source_docs.remove(source_path) {
+            for doc_id in doc_ids {
+                remove_bm25_document(&mut self.index, &doc_id);
+            }
         }
     }
 
@@ -4753,10 +4758,50 @@ impl Bm25RuntimeIndex {
         .to_string()
     }
 
+    /// Export one bounded binary posting page. Empty means EOF, one byte means unsupported.
+    #[must_use]
+    pub fn next_posting_page(&mut self, reset: bool) -> Vec<u8> {
+        if reset {
+            self.posting_cursor = None;
+        }
+        bm25_checkpoint::export(&self.index, &mut self.posting_cursor).unwrap_or_else(|| vec![0])
+    }
+
+    /// Apply one binary page without tokenizing. Discard the candidate runtime on failure.
+    pub fn apply_posting_page(&mut self, page: &[u8]) -> bool {
+        if self
+            .index
+            .posting_base
+            .begin(self.index.doc_lengths.len())
+            .is_none()
+        {
+            return false;
+        }
+        let valid = bm25_checkpoint::apply(&mut self.index, page).is_some();
+        if !valid {
+            self.index.posting_base.fail();
+        }
+        valid
+    }
+
+    /// Seal the validated ordered checkpoint base before applying a delta or serving a query.
+    #[must_use]
+    pub fn finish_posting_import(&mut self, expected: usize) -> bool {
+        self.index
+            .posting_base
+            .finish(expected, self.index.doc_lengths.len())
+    }
+
     /// compact v3 JSON payload로 직렬화한다.
     #[must_use]
     pub fn to_json(&self) -> String {
-        serialize_bm25_compact_index_json(&self.index)
+        self.to_json_bounded(usize::MAX)
+    }
+
+    /// Returns the complete compact snapshot, or an empty string if it exceeds the UTF-8 cap.
+    #[must_use]
+    pub fn to_json_bounded(&self, max_bytes: usize) -> String {
+        serialize_bm25_compact_index_json(&self.index, max_bytes).unwrap_or_default()
     }
 }
 
@@ -4881,16 +4926,57 @@ struct Bm25Hit {
 struct Bm25IndexData {
     /// tokenizer contract version.
     tokenizer_version: u32,
+    /// Append-only packed checkpoint base; live document changes use the two ordered overlays.
+    posting_base: bm25_packed::PackedBase,
     /// term -> doc id -> term frequency. 문서 식별자 할당은 위치 posting과 공유한다.
-    inverted: BTreeMap<String, BTreeMap<Rc<str>, f64>>,
+    inverted: BTreeMap<Rc<str>, BTreeMap<Rc<str>, f64>>,
     /// term -> doc id -> 문서 token stream 안의 위치 목록(오름차순).
-    positions: BTreeMap<String, BTreeMap<Rc<str>, Vec<u32>>>,
+    positions: BTreeMap<Rc<str>, BTreeMap<Rc<str>, Bm25Positions>>,
     /// doc id -> 필드별 token 구간. key가 있으면 위치 정보가 완전하다.
     doc_field_runs: BTreeMap<String, Vec<Bm25FieldRun>>,
     /// doc id -> document token count.
     doc_lengths: BTreeMap<String, f64>,
     /// doc id -> source file path.
     doc_sources: BTreeMap<String, String>,
+    /// doc id -> shared keys of its frequency/position postings.
+    doc_terms: BTreeMap<Rc<str>, Vec<Rc<str>>>,
+    /// source path -> its live document IDs.
+    source_docs: BTreeMap<String, BTreeSet<Rc<str>>>,
+}
+
+/// Most terms in a chunk occur once. Store their position without a heap allocation.
+#[derive(Default)]
+enum Bm25Positions {
+    /// No position has been added yet.
+    #[default]
+    Empty,
+    /// One token occurrence.
+    One(u32),
+    /// Multiple sorted token occurrences.
+    Many(Vec<u32>),
+}
+
+impl Bm25Positions {
+    /// Append the next position in stream order.
+    fn push(&mut self, position: u32) {
+        match self {
+            Self::Empty => *self = Self::One(position),
+            Self::One(first) => *self = Self::Many(vec![*first, position]),
+            Self::Many(positions) => positions.push(position),
+        }
+    }
+}
+
+impl core::ops::Deref for Bm25Positions {
+    type Target = [u32];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Empty => &[],
+            Self::One(position) => core::slice::from_ref(position),
+            Self::Many(positions) => positions,
+        }
+    }
 }
 
 /// 문서 token stream 안에서 한 필드가 차지하는 연속 구간.
@@ -4939,15 +5025,55 @@ impl Bm25IndexData {
     }
 
     /// 빈 BM25 index data를 만든다.
-    const fn empty(tokenizer_version: u32) -> Self {
+    fn empty(tokenizer_version: u32) -> Self {
         Self {
             tokenizer_version,
+            posting_base: bm25_packed::PackedBase::default(),
             inverted: BTreeMap::new(),
             positions: BTreeMap::new(),
             doc_field_runs: BTreeMap::new(),
             doc_lengths: BTreeMap::new(),
             doc_sources: BTreeMap::new(),
+            doc_terms: BTreeMap::new(),
+            source_docs: BTreeMap::new(),
         }
+    }
+
+    /// Reconstruct runtime-only membership from either persisted representation.
+    fn with_membership(mut self) -> Self {
+        for (term, posting) in &self.inverted {
+            for id in posting.keys() {
+                self.doc_terms
+                    .entry(Rc::clone(id))
+                    .or_default()
+                    .push(Rc::clone(term));
+            }
+        }
+        for (term, posting) in &self.positions {
+            for id in posting.keys() {
+                if !self
+                    .inverted
+                    .get(term)
+                    .is_some_and(|by_id| by_id.contains_key(id))
+                {
+                    self.doc_terms
+                        .entry(Rc::clone(id))
+                        .or_default()
+                        .push(Rc::clone(term));
+                }
+            }
+        }
+        for (id, source) in &self.doc_sources {
+            let id = self
+                .doc_terms
+                .get_key_value(id.as_str())
+                .map_or_else(|| Rc::from(id.as_str()), |(key, _)| Rc::clone(key));
+            self.source_docs
+                .entry(source.clone())
+                .or_default()
+                .insert(id);
+        }
+        self
     }
 }
 
@@ -5496,7 +5622,10 @@ fn merge_retrieval_source(
 /// BM25 index에 document를 추가하거나 기존 document를 교체한다.
 fn add_bm25_document(index: &mut Bm25IndexData, doc_id: &str, text: &str, source_path: &str) {
     // 새 문서는 삭제할 posting이 없으므로 전체 용어 사전 순회를 생략한다.
-    if index.doc_lengths.contains_key(doc_id) {
+    if index.doc_lengths.contains_key(doc_id)
+        || index.doc_terms.contains_key(doc_id)
+        || index.doc_sources.contains_key(doc_id)
+    {
         remove_bm25_document(index, doc_id);
     }
     insert_bm25_document(index, doc_id, text, source_path);
@@ -5521,32 +5650,71 @@ fn insert_bm25_document_fields(
     source_path: &str,
     fields: &Bm25DocumentFields,
 ) {
-    let (stream, position_runs) = build_bm25_document_stream(text, source_path, fields);
-    let (token_count, frequencies) =
-        accumulate_token_frequencies(stream.iter().map(|(term, _field)| term.as_str()));
-    let posting_doc_id = Rc::<str>::from(doc_id);
-    for (term, frequency) in frequencies {
-        let Some(frequency) = usize_to_f64(frequency) else {
+    let mut terms = BTreeMap::<String, (usize, Bm25Positions)>::new();
+    let mut runs = Vec::new();
+    let mut positioned = true;
+    let mut token_count: usize = 0;
+    for (field, segment) in bm25_document_segments(text, source_path, fields) {
+        let tokens = tokenize(segment);
+        if tokens.is_empty() {
             continue;
-        };
-        index
-            .inverted
-            .entry(term)
-            .or_default()
-            .insert(Rc::clone(&posting_doc_id), frequency);
-    }
-    if let Some(runs) = position_runs {
-        // 위치 목록을 모두 만든 뒤에만 commit해 부분 위치가 남지 않게 한다.
-        if let Some(positions_by_term) = bm25_term_positions(&stream) {
-            for (term, positions) in positions_by_term {
-                index
-                    .positions
-                    .entry(term)
-                    .or_default()
-                    .insert(Rc::clone(&posting_doc_id), positions);
-            }
-            index.doc_field_runs.insert(doc_id.to_owned(), runs);
         }
+        match (u32::try_from(token_count), u32::try_from(tokens.len())) {
+            (Ok(start), Ok(length)) if positioned => runs.push(Bm25FieldRun {
+                field,
+                start,
+                length,
+            }),
+            _ => positioned = false,
+        }
+        for term in tokens {
+            let (frequency, positions) = terms.entry(term).or_default();
+            *frequency = frequency.saturating_add(1);
+            if positioned {
+                if let Ok(position) = u32::try_from(token_count) {
+                    positions.push(position);
+                } else {
+                    positioned = false;
+                }
+            }
+            token_count = token_count.saturating_add(1);
+        }
+    }
+    let posting_doc_id = Rc::<str>::from(doc_id);
+    let mut membership = Vec::with_capacity(terms.len());
+    for (term, (frequency, positions)) in terms {
+        let key = index
+            .inverted
+            .get_key_value(term.as_str())
+            .map(|(key, _)| key)
+            .or_else(|| index.posting_base.key(term.as_str()))
+            .map_or_else(|| Rc::<str>::from(term.as_str()), Rc::clone);
+        if let Some(frequency) = usize_to_f64(frequency) {
+            index
+                .inverted
+                .entry(Rc::clone(&key))
+                .or_default()
+                .insert(Rc::clone(&posting_doc_id), frequency);
+        }
+        if positioned {
+            index
+                .positions
+                .entry(Rc::clone(&key))
+                .or_default()
+                .insert(Rc::clone(&posting_doc_id), positions);
+        }
+        membership.push(key);
+    }
+    index
+        .doc_terms
+        .insert(Rc::clone(&posting_doc_id), membership);
+    index
+        .source_docs
+        .entry(source_path.to_owned())
+        .or_default()
+        .insert(posting_doc_id);
+    if positioned {
+        index.doc_field_runs.insert(doc_id.to_owned(), runs);
     }
     index.doc_lengths.insert(
         doc_id.to_owned(),
@@ -5565,7 +5733,10 @@ fn add_bm25_document_fields(
     source_path: &str,
     fields: &Bm25DocumentFields,
 ) {
-    if index.doc_lengths.contains_key(doc_id) {
+    if index.doc_lengths.contains_key(doc_id)
+        || index.doc_terms.contains_key(doc_id)
+        || index.doc_sources.contains_key(doc_id)
+    {
         remove_bm25_document(index, doc_id);
     }
     insert_bm25_document_fields(index, doc_id, text, source_path, fields);
@@ -5602,53 +5773,6 @@ fn bm25_document_segments<'a>(
     segments
 }
 
-/// 문서 segment를 token stream과 필드 구간으로 만든다.
-///
-/// token 위치를 'u32'로 표현할 수 없으면 token stream만 반환하고 위치 정보는 만들지 않는다.
-#[must_use]
-fn build_bm25_document_stream(
-    text: &str,
-    source_path: &str,
-    fields: &Bm25DocumentFields,
-) -> (Vec<(String, u8)>, Option<Vec<Bm25FieldRun>>) {
-    let mut stream = Vec::<(String, u8)>::new();
-    let mut runs = Vec::<Bm25FieldRun>::new();
-    let mut positioned = true;
-    for (field, segment) in bm25_document_segments(text, source_path, fields) {
-        let tokens = tokenize(segment);
-        if tokens.is_empty() {
-            continue;
-        }
-        match (u32::try_from(stream.len()), u32::try_from(tokens.len())) {
-            (Ok(start), Ok(length)) if positioned => runs.push(Bm25FieldRun {
-                field,
-                start,
-                length,
-            }),
-            _ => {
-                positioned = false;
-                runs.clear();
-            }
-        }
-        stream.extend(tokens.into_iter().map(|token| (token, field)));
-    }
-    (stream, positioned.then_some(runs))
-}
-
-/// token stream에서 term별 위치 목록을 만든다.
-#[must_use]
-fn bm25_term_positions(stream: &[(String, u8)]) -> Option<BTreeMap<String, Vec<u32>>> {
-    let mut positions_by_term = BTreeMap::<String, Vec<u32>>::new();
-    for (index, (term, _field)) in stream.iter().enumerate() {
-        let position = u32::try_from(index).ok()?;
-        positions_by_term
-            .entry(term.clone())
-            .or_default()
-            .push(position);
-    }
-    Some(positions_by_term)
-}
-
 /// tokenizer output을 소비하면서 total token 수와 token별 frequency를 한 번에 누적한다.
 fn accumulate_token_frequencies<T>(
     tokens: impl IntoIterator<Item = T>,
@@ -5668,17 +5792,33 @@ where
 
 /// BM25 index에서 doc id를 제거하고 빈 posting term을 정리한다.
 fn remove_bm25_document(index: &mut Bm25IndexData, doc_id: &str) {
-    for posting in index.inverted.values_mut() {
-        posting.remove(doc_id);
+    if let Some(terms) = index.doc_terms.remove(doc_id) {
+        index.posting_base.remove_document(doc_id, &terms);
+        for term in terms {
+            if let Entry::Occupied(mut entry) = index.inverted.entry(Rc::clone(&term)) {
+                entry.get_mut().remove(doc_id);
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+            }
+            if let Entry::Occupied(mut entry) = index.positions.entry(term) {
+                entry.get_mut().remove(doc_id);
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+            }
+        }
     }
-    index.inverted.retain(|_, posting| !posting.is_empty());
-    for posting in index.positions.values_mut() {
-        posting.remove(doc_id);
-    }
-    index.positions.retain(|_, posting| !posting.is_empty());
     index.doc_field_runs.remove(doc_id);
     index.doc_lengths.remove(doc_id);
-    index.doc_sources.remove(doc_id);
+    if let Some(source) = index.doc_sources.remove(doc_id)
+        && let Entry::Occupied(mut entry) = index.source_docs.entry(source)
+    {
+        entry.get_mut().remove(doc_id);
+        if entry.get().is_empty() {
+            entry.remove();
+        }
+    }
 }
 
 /// BM25 index에서 query score를 계산한다.
@@ -5706,25 +5846,23 @@ fn search_bm25_index(index: &Bm25IndexData, query: &str) -> Vec<Bm25SearchScore>
     let mut scores = Vec::<Bm25SearchScore>::new();
     let mut score_index_by_doc_id = BTreeMap::<String, usize>::new();
     for token in query_tokens {
-        let Some(posting) = index.inverted.get(&token) else {
-            continue;
-        };
-        let Some(df_f64) = usize_to_f64(posting.len()) else {
+        let posting = index.posting(&token);
+        let Some(df_f64) = usize_to_f64(posting.frequency_count()) else {
             continue;
         };
         // Lucene·Tantivy처럼 같은 용어의 IDF는 posting 순회 전에 한 번만 계산한다.
         let idf = ((total_docs_f64 - df_f64 + 0.5) / (df_f64 + 0.5)).ln_1p();
-        for (doc_id, term_frequency) in posting {
-            if !term_frequency.is_finite() || *term_frequency <= 0.0 {
+        for (doc_id, term_frequency) in posting.frequencies() {
+            if !term_frequency.is_finite() || term_frequency <= 0.0 {
                 continue;
             }
             let doc_length = index
                 .doc_lengths
-                .get(doc_id.as_ref())
+                .get(doc_id)
                 .copied()
                 .filter(|value| value.is_finite() && *value > 0.0)
                 .unwrap_or(1.0);
-            let score = bm25_score_value(idf, *term_frequency, doc_length, avg_doc_length);
+            let score = bm25_score_value(idf, term_frequency, doc_length, avg_doc_length);
             if score <= 0.0 || !score.is_finite() {
                 continue;
             }
@@ -8944,10 +9082,8 @@ struct TextSegment {
     end_line: usize,
 }
 
-/// 선두 YAML frontmatter를 같은 줄 수의 빈 줄로 치환합니다.
-///
-/// 메타데이터는 검색 필드(tags·aliases)로 따로 색인하므로 chunk 본문에서 빼고,
-/// 원문 행 번호는 유지합니다.
+/// 닫는 구분자를 찾은 YAML 머리말만 내용에서 제외한다.
+/// 그 블록의 행을 빈 행으로 바꿔 본문의 원래 행 번호는 유지한다.
 fn strip_frontmatter_lines(content: &str) -> Option<String> {
     const MAX_FRONTMATTER_LINES: usize = 120;
     let mut lines = content.split('\n').collect::<Vec<_>>();
@@ -8967,7 +9103,7 @@ fn strip_frontmatter_lines(content: &str) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// Markdown을 heading/code block/paragraph 경계를 존중해 chunk로 나눈다.
+/// 제목과 코드 펜스의 구조를 고려해 Markdown 본문을 구간으로 나눈다.
 fn chunk_markdown(content: &str, max_chunk_size: usize, overlap_chars: usize) -> Vec<Chunk> {
     let body = strip_frontmatter_lines(content);
     let content = body.as_deref().unwrap_or(content);
@@ -13129,7 +13265,7 @@ fn serialize_bm25_index_json(index: &Bm25IndexData) -> String {
     format!(
         "{{\"tokenizerVersion\":{},\"inverted\":{},\"docLengths\":{},\"docSources\":{},\"totalDocs\":{},\"avgDocLength\":{}}}",
         index.tokenizer_version,
-        serialize_bm25_inverted_json(&index.inverted),
+        serialize_bm25_inverted_json(index),
         serialize_string_number_map_json(&index.doc_lengths),
         serialize_string_string_map_json(&index.doc_sources),
         total_docs,
@@ -13137,18 +13273,32 @@ fn serialize_bm25_index_json(index: &Bm25IndexData) -> String {
     )
 }
 
-/// BM25 index data를 compact v3 JSON 문자열로 serialize한다.
-///
-/// `runs`와 `pos`는 위치·필드 색인의 선택 키다. 키가 없는 payload도 그대로 읽을 수 있고, 이 키를
-/// 모르는 reader도 기존 키만으로 동작하므로 schema version을 올리지 않는다.
-fn serialize_bm25_compact_index_json(index: &Bm25IndexData) -> String {
+/// Append an exact fragment only while the compact JSON is inside the byte cap.
+fn append_bm25_snapshot(output: &mut String, fragment: &str, max_bytes: usize) -> Option<()> {
+    if fragment.len() > max_bytes.saturating_sub(output.len()) {
+        return None;
+    }
+    output.push_str(fragment);
+    Some(())
+}
+
+/// BM25 compact v3 JSON with optional position information, emitted without an unbounded join.
+fn serialize_bm25_compact_index_json(index: &Bm25IndexData, max_bytes: usize) -> Option<String> {
+    let mut output = String::new();
     let mut doc_index_by_id = BTreeMap::<&str, usize>::new();
-    let mut docs = Vec::<String>::new();
+    append_bm25_snapshot(
+        &mut output,
+        &format!(
+            "{{\"schemaVersion\":{},\"tokenizerVersion\":{},\"docs\":[",
+            BM25_COMPACT_SCHEMA_VERSION, index.tokenizer_version
+        ),
+        max_bytes,
+    )?;
     for (doc_id, length) in &index.doc_lengths {
         let Some(length_json) = finite_json_number(*length) else {
             continue;
         };
-        let doc_index = docs.len();
+        let doc_index = doc_index_by_id.len();
         doc_index_by_id.insert(doc_id.as_str(), doc_index);
         let source_path = index.doc_sources.get(doc_id).unwrap_or(doc_id);
         let runs_json = index
@@ -13157,63 +13307,82 @@ fn serialize_bm25_compact_index_json(index: &Bm25IndexData) -> String {
             .map_or_else(String::new, |runs| {
                 format!(",\"runs\":[{}]", serialize_bm25_field_runs_json(runs))
             });
-        docs.push(format!(
-            "{{\"id\":\"{}\",\"sourcePath\":\"{}\",\"length\":{}{runs_json}}}",
-            escape_json_string(doc_id),
-            escape_json_string(source_path),
-            length_json,
-        ));
+        let comma = if doc_index == 0 { "" } else { "," };
+        append_bm25_snapshot(
+            &mut output,
+            &format!(
+                "{comma}{{\"id\":\"{}\",\"sourcePath\":\"{}\",\"length\":{}{runs_json}}}",
+                escape_json_string(doc_id),
+                escape_json_string(source_path),
+                length_json
+            ),
+            max_bytes,
+        )?;
     }
-
-    let mut terms = Vec::<String>::new();
-    for (term, posting) in &index.inverted {
-        let mut posting_values = Vec::<String>::new();
-        for (doc_id, frequency) in posting {
-            let Some(doc_index) = doc_index_by_id.get(doc_id.as_ref()).copied() else {
+    append_bm25_snapshot(&mut output, "],\"terms\":[", max_bytes)?;
+    let mut term_comma = "";
+    for term in index.posting_terms("") {
+        let posting = index.posting(term);
+        let mut posting_comma = "";
+        for (doc_id, frequency) in posting.frequencies() {
+            let Some(doc_index) = doc_index_by_id.get(doc_id).copied() else {
                 continue;
             };
-            let Some(frequency_json) = finite_json_number(*frequency) else {
+            let Some(frequency_json) = finite_json_number(frequency) else {
                 continue;
             };
-            posting_values.push(doc_index.to_string());
-            posting_values.push(frequency_json);
+            if posting_comma.is_empty() {
+                append_bm25_snapshot(
+                    &mut output,
+                    &format!(
+                        "{term_comma}{{\"term\":\"{}\",\"postings\":[",
+                        escape_json_string(term)
+                    ),
+                    max_bytes,
+                )?;
+            }
+            append_bm25_snapshot(
+                &mut output,
+                &format!("{posting_comma}{doc_index},{frequency_json}"),
+                max_bytes,
+            )?;
+            posting_comma = ",";
         }
-        if posting_values.is_empty() {
+        if posting_comma.is_empty() {
             continue;
         }
-        let mut position_values = Vec::<String>::new();
-        if let Some(positions_by_doc) = index.positions.get(term) {
-            for (doc_id, positions) in positions_by_doc {
-                let Some(doc_index) = doc_index_by_id.get(doc_id.as_ref()).copied() else {
-                    continue;
-                };
-                let Some(encoded) = encode_bm25_positions(positions) else {
-                    continue;
-                };
-                position_values.push(format!("[{doc_index},{encoded}]"));
-            }
+        append_bm25_snapshot(&mut output, "]", max_bytes)?;
+        let mut positions_prefix = ",\"pos\":[";
+        for (doc_id, positions) in posting.positions() {
+            let Some(doc_index) = doc_index_by_id.get(doc_id).copied() else {
+                continue;
+            };
+            let Some(encoded) = encode_bm25_positions(positions) else {
+                continue;
+            };
+            append_bm25_snapshot(
+                &mut output,
+                &format!("{positions_prefix}[{doc_index},{encoded}]"),
+                max_bytes,
+            )?;
+            positions_prefix = ",";
         }
-        let positions_json = if position_values.is_empty() {
-            String::new()
-        } else {
-            format!(",\"pos\":[{}]", position_values.join(","))
-        };
-        terms.push(format!(
-            "{{\"term\":\"{}\",\"postings\":[{}]{positions_json}}}",
-            escape_json_string(term),
-            posting_values.join(","),
-        ));
+        if positions_prefix == "," {
+            append_bm25_snapshot(&mut output, "]", max_bytes)?;
+        }
+        append_bm25_snapshot(&mut output, "}", max_bytes)?;
+        term_comma = ",";
     }
-
-    format!(
-        "{{\"schemaVersion\":{},\"tokenizerVersion\":{},\"docs\":[{}],\"terms\":[{}],\"totalDocs\":{},\"avgDocLength\":{}}}",
-        BM25_COMPACT_SCHEMA_VERSION,
-        index.tokenizer_version,
-        docs.join(","),
-        terms.join(","),
-        docs.len(),
-        finite_json_number(bm25_average_doc_length(index)).unwrap_or_else(|| "1".to_owned()),
-    )
+    append_bm25_snapshot(
+        &mut output,
+        &format!(
+            "],\"totalDocs\":{},\"avgDocLength\":{}}}",
+            doc_index_by_id.len(),
+            finite_json_number(bm25_average_doc_length(index)).unwrap_or_else(|| "1".to_owned())
+        ),
+        max_bytes,
+    )?;
+    Some(output)
 }
 
 /// 필드 구간 목록을 JSON 배열로 serialize한다.
@@ -13244,15 +13413,23 @@ fn encode_bm25_positions(positions: &[u32]) -> Option<String> {
 }
 
 /// BM25 inverted index를 JSON 문자열로 serialize한다.
-fn serialize_bm25_inverted_json(inverted: &BTreeMap<String, BTreeMap<Rc<str>, f64>>) -> String {
-    let body = inverted
-        .iter()
-        .map(|(term, posting)| {
-            format!(
-                "\"{}\":{}",
-                escape_json_string(term),
-                serialize_string_number_map_json(posting)
-            )
+fn serialize_bm25_inverted_json(index: &Bm25IndexData) -> String {
+    let body = index
+        .posting_terms("")
+        .map(|term| {
+            let posting = index
+                .posting(term)
+                .frequencies()
+                .filter_map(|(doc_id, value)| {
+                    Some(format!(
+                        "\"{}\":{}",
+                        escape_json_string(doc_id),
+                        finite_json_number(value)?
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("\"{}\":{{{posting}}}", escape_json_string(term))
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -13613,16 +13790,22 @@ fn parse_bm25_index_json(payload: &str) -> Option<Bm25IndexData> {
             },
             parse_string_string_object,
         );
-    Some(Bm25IndexData {
-        tokenizer_version,
-        inverted: parse_bm25_inverted_object(
-            object.get("inverted").and_then(JsonValue::as_object)?,
-        ),
-        positions: BTreeMap::new(),
-        doc_field_runs: BTreeMap::new(),
-        doc_lengths,
-        doc_sources,
-    })
+    Some(
+        Bm25IndexData {
+            tokenizer_version,
+            posting_base: bm25_packed::PackedBase::default(),
+            inverted: parse_bm25_inverted_object(
+                object.get("inverted").and_then(JsonValue::as_object)?,
+            ),
+            positions: BTreeMap::new(),
+            doc_field_runs: BTreeMap::new(),
+            doc_lengths,
+            doc_sources,
+            doc_terms: BTreeMap::new(),
+            source_docs: BTreeMap::new(),
+        }
+        .with_membership(),
+    )
 }
 
 /// compact v3 BM25 index JSON object를 파싱한다.
@@ -13635,8 +13818,7 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
     let docs = object.get("docs")?.as_array()?;
     let mut doc_ids = Vec::<Rc<str>>::with_capacity(docs.len());
     let mut posting_doc_ids = BTreeSet::<Rc<str>>::new();
-    let mut doc_lengths = BTreeMap::<String, f64>::new();
-    let mut doc_sources = BTreeMap::<String, String>::new();
+    let (mut doc_lengths, mut doc_sources) = (BTreeMap::new(), BTreeMap::new());
     let mut doc_field_runs = BTreeMap::<String, Vec<Bm25FieldRun>>::new();
     let mut doc_stream_lengths = BTreeMap::<String, u32>::new();
 
@@ -13680,8 +13862,8 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
         doc_sources.insert(id, source_path);
     }
 
-    let mut inverted = BTreeMap::<String, BTreeMap<Rc<str>, f64>>::new();
-    let mut positions = BTreeMap::<String, BTreeMap<Rc<str>, Vec<u32>>>::new();
+    let mut inverted = BTreeMap::<Rc<str>, BTreeMap<Rc<str>, f64>>::new();
+    let mut positions = BTreeMap::<Rc<str>, BTreeMap<Rc<str>, Bm25Positions>>::new();
     for term_value in object.get("terms")?.as_array()? {
         let term_object = term_value.as_object()?;
         let term = term_object.get("term")?.as_str()?.trim().to_owned();
@@ -13707,6 +13889,7 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
         if posting.is_empty() {
             continue;
         }
+        let term = Rc::<str>::from(term.as_str());
         if let Some(values) = term_object.get("pos") {
             let parsed = parse_bm25_term_positions(values, &doc_ids, &doc_stream_lengths)?;
             if !parsed.is_empty() {
@@ -13716,14 +13899,20 @@ fn parse_bm25_compact_index_object(object: &JsonMap<String, JsonValue>) -> Optio
         inverted.insert(term, posting);
     }
 
-    Some(Bm25IndexData {
-        tokenizer_version,
-        inverted,
-        positions,
-        doc_field_runs,
-        doc_lengths,
-        doc_sources,
-    })
+    Some(
+        Bm25IndexData {
+            tokenizer_version,
+            posting_base: bm25_packed::PackedBase::default(),
+            inverted,
+            positions,
+            doc_field_runs,
+            doc_lengths,
+            doc_sources,
+            doc_terms: BTreeMap::new(),
+            source_docs: BTreeMap::new(),
+        }
+        .with_membership(),
+    )
 }
 
 /// compact `runs` 키 해석 결과.
@@ -13781,9 +13970,9 @@ fn parse_bm25_term_positions(
     value: &JsonValue,
     doc_ids: &[Rc<str>],
     doc_stream_lengths: &BTreeMap<String, u32>,
-) -> Option<BTreeMap<Rc<str>, Vec<u32>>> {
+) -> Option<BTreeMap<Rc<str>, Bm25Positions>> {
     let entries = value.as_array()?;
-    let mut positions_by_doc = BTreeMap::<Rc<str>, Vec<u32>>::new();
+    let mut positions_by_doc = BTreeMap::<Rc<str>, Bm25Positions>::new();
     for entry in entries {
         let [doc_index_value, first_value, rest @ ..] = entry.as_array()?.as_slice() else {
             return None;
@@ -13799,8 +13988,7 @@ fn parse_bm25_term_positions(
         if first >= stream_length {
             return None;
         }
-        let mut positions = Vec::<u32>::with_capacity(rest.len().saturating_add(1));
-        positions.push(first);
+        let mut positions = Bm25Positions::One(first);
         let mut previous = first;
         for delta_value in rest {
             let delta = delta_value
@@ -13834,7 +14022,7 @@ const fn is_known_bm25_field(field: u8) -> bool {
 /// BM25 inverted object를 파싱한다.
 fn parse_bm25_inverted_object(
     object: &JsonMap<String, JsonValue>,
-) -> BTreeMap<String, BTreeMap<Rc<str>, f64>> {
+) -> BTreeMap<Rc<str>, BTreeMap<Rc<str>, f64>> {
     let mut inverted = BTreeMap::new();
     let mut doc_ids = BTreeMap::<&str, Rc<str>>::new();
     for (term, posting_value) in object {
@@ -13852,7 +14040,7 @@ fn parse_bm25_inverted_object(
             })
             .collect::<BTreeMap<_, _>>();
         if !posting.is_empty() {
-            inverted.insert(term.clone(), posting);
+            inverted.insert(Rc::from(term.as_str()), posting);
         }
     }
     inverted
@@ -14927,22 +15115,58 @@ fn serialize_chunk_json(chunk: &Chunk) -> String {
 
 /// 문자가 `BM25` 토큰 부분 문자 클래스에 속하는지 반환한다.
 fn is_token_part_character(character: char) -> bool {
+    if character.is_ascii() {
+        return character.is_ascii_alphanumeric() || is_ascii_separator(character);
+    }
     character.is_alphanumeric()
         || unicode_normalization::char::is_combining_mark(character)
-        || matches!(character, '_' | '-' | '/' | '\\' | '@' | '.')
-        || (!character.is_ascii()
-            && character.nfkc().any(|normalized| {
-                normalized.is_alphanumeric()
-                    || matches!(normalized, '_' | '-' | '/' | '\\' | '@' | '.')
-            }))
+        || character
+            .nfkc()
+            .any(|normalized| normalized.is_alphanumeric() || is_ascii_separator(normalized))
+}
+
+/// Tokenize one part for native occurrence checks.
+fn tokenize_part(part: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    append_tokenized_part(part, &mut tokens);
+    tokens
 }
 
 /// 하나의 연속 부분을 토큰화하고 지역 중복 토큰을 삽입 순서대로 제거한다.
-fn tokenize_part(part: &str) -> Vec<String> {
+fn append_tokenized_part(part: &str, output: &mut Vec<String>) {
+    if part.len() < 2 {
+        return;
+    }
+    if part.len() <= 64
+        && part
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        // Whole identifier first, then distinct maximal digit/letter runs (minimum two chars).
+        let start = output.len();
+        output.push(part.to_owned());
+        let mut offset = 0;
+        let mut previous = part.as_bytes().first().is_some_and(u8::is_ascii_digit);
+        for (index, byte) in part.bytes().enumerate() {
+            if byte.is_ascii_digit() != previous {
+                if let Some(run) = part.get(offset..index) {
+                    push_unique_ascii_run(output, start, run);
+                }
+                offset = index;
+                previous = byte.is_ascii_digit();
+            }
+        }
+        if offset > 0
+            && let Some(run) = part.get(offset..)
+        {
+            push_unique_ascii_run(output, start, run);
+        }
+        return;
+    }
     let part = normalize_search_text(part);
     let trimmed = part.trim();
     if !trimmed.chars().any(char::is_alphanumeric) {
-        return Vec::new();
+        return;
     }
 
     let mut tokens = Vec::new();
@@ -14955,7 +15179,18 @@ fn tokenize_part(part: &str) -> Vec<String> {
         tokenize_unicode_part(&normalized, &mut tokens);
     }
 
-    dedupe_in_order(tokens)
+    output.extend(dedupe_in_order(tokens));
+}
+
+/// Append a lowercase ASCII run once within the current identifier, not across words.
+fn push_unique_ascii_run(output: &mut Vec<String>, start: usize, run: &str) {
+    if run.len() >= 2
+        && output
+            .get(start..)
+            .is_some_and(|tokens| !tokens.iter().any(|token| token == run))
+    {
+        output.push(run.to_owned());
+    }
 }
 
 /// `ASCII` 부분을 압축 토큰, 구분자 토큰, `camel-case` 토큰으로 나눈다.
@@ -16409,11 +16644,12 @@ mod tests {
             "candidateSegments": 0, "screenAcceptedSegments": 0, "extractedSegments": 0,
             "screenRetries": 0, "extractRetries": 0, "splitBatches": 0, "reduceRequests": 0,
             "cacheHits": 0});
+        let synthetic_keyword = "빙정격자";
         let search = serde_json::json!({
             "candidateDepth": 0, "candidateDocuments": 0, "candidateChunks": 0,
             "selectedDocuments": 0, "selectedChunks": 0, "truncated": false,
             "droppedDocuments": {"budget": 0, "belowThreshold": 0, "filtered": 0},
-            "unmatchedTerms": ["질문토큰"], "missingCandidatePaths": 0,
+            "unmatchedTerms": [synthetic_keyword], "missingCandidatePaths": 0,
             "zeroHitReason": "no-lexical-match", "extra": "private synthetic text"});
         let mut value = serde_json::json!({"phases": phases, "counts": counts, "outcome": "no-evidence",
                 "search": search, "question": "private synthetic question"});
@@ -16432,7 +16668,7 @@ mod tests {
             result
                 .pointer("/search/unmatchedTerms/0")
                 .and_then(JsonValue::as_str),
-            Some("질문토큰")
+            Some(synthetic_keyword)
         );
         assert!(!result.to_string().contains("private synthetic text"));
         assert!(!result.to_string().contains("private synthetic question"));
@@ -17349,6 +17585,59 @@ mod tests {
                 .values()
                 .all(|posting| !posting.contains_key(doc_id.as_str())),
             "위치 posting 제거"
+        );
+    }
+
+    /// A bounded capture returns the same complete JSON or no payload, never a prefix.
+    #[test]
+    fn bm25_bounded_snapshot_has_exact_utf8_limit() {
+        let mut index = Bm25RuntimeIndex::new(TOKENIZER_VERSION);
+        index.add_document("합성", "합성 토큰 토큰", "합성.md", TOKENIZER_VERSION);
+        let full = index.to_json();
+        assert_eq!(
+            index.to_json_bounded(full.len()),
+            full,
+            "exact UTF-8 limit succeeds"
+        );
+        assert_eq!(
+            index.to_json_bounded(full.len().saturating_sub(1)),
+            "",
+            "oversized snapshot must not cross the wire"
+        );
+    }
+
+    /// 역방향 원장은 문서와 출처에 실제로 속하는 posting만 기록한다.
+    #[test]
+    fn bm25_reverse_membership_survives_restore_replace_and_remove() {
+        let mut runtime = Bm25RuntimeIndex::new(TOKENIZER_VERSION);
+        runtime.add_document("same", "alpha alpha beta", "old.md", TOKENIZER_VERSION);
+        runtime.add_document("other", "unrelated", "other.md", TOKENIZER_VERSION);
+        let mut runtime = Bm25RuntimeIndex::from_json(&runtime.to_json(), TOKENIZER_VERSION);
+        assert_eq!(
+            runtime.index.doc_terms.get("same").map(Vec::len),
+            Some(2),
+            "one membership per distinct posting term"
+        );
+        runtime.add_document("same", "gamma", "new.md", TOKENIZER_VERSION);
+        runtime.remove_source("old.md", TOKENIZER_VERSION);
+        assert_eq!(
+            runtime.total_docs(),
+            2,
+            "replacement removes old source membership"
+        );
+        assert!(
+            !runtime.index.inverted.contains_key("alpha"),
+            "replacement removes old posting"
+        );
+        runtime.remove_source("new.md", TOKENIZER_VERSION);
+        assert_eq!(
+            runtime.total_docs(),
+            1,
+            "remove only documents for requested source"
+        );
+        assert!(
+            !runtime.index.positions.contains_key("gamma"),
+            "remove unreferenced position posting"
         );
     }
 

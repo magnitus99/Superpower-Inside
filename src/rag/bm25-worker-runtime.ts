@@ -1,5 +1,6 @@
 import { BM25_WORKER_SOURCE } from '../../.local/generated/bm25-worker-source';
 import { RAG_WASM_BASE64 } from '../../.local/generated/rag-wasm-bytes';
+import { isBm25PostingPage, type BM25PostingManifest, type BM25PostingWorkerTiming } from './bm25-posting-checkpoint';
 
 export interface BM25WorkerDocument {
   id: string;
@@ -55,6 +56,7 @@ export interface BM25WorkerRequest {
     | 'remove-source'
     | 'clear'
     | 'serialize'
+    | 'posting-page'
     | 'search-top'
     | 'search-representatives'
     | 'aggregate'
@@ -62,8 +64,11 @@ export interface BM25WorkerRequest {
   wasmBase64?: string;
   dbName?: string;
   snapshot?: string;
+  maxSnapshotBytes?: number;
   sinceOrder?: number;
   expectedDocs?: number;
+  posting?: BM25PostingManifest;
+  postingPart?: number;
   documents?: readonly BM25WorkerDocument[];
   document?: BM25WorkerDocument;
   target?: string;
@@ -86,6 +91,11 @@ export interface BM25WorkerResponse {
   totalDocs?: number;
   snapshot?: string;
   snapshotRejected?: boolean;
+  postingVersion?: 1;
+  postingPart?: number;
+  postingPage?: Uint8Array;
+  postingRejected?: boolean;
+  postingTiming?: BM25PostingWorkerTiming;
   hits?: BM25WorkerHit[];
   representativeHitsJson?: string;
   /** 점수 없이 센 질의 일치 인벤토리입니다. TS가 형식을 검증합니다. */
@@ -175,6 +185,7 @@ export class BM25WorkerRuntime {
     snapshot: string,
     sinceOrder?: number,
     expectedDocs?: number,
+    posting?: BM25PostingManifest,
   ): Promise<BM25WorkerResponse> {
     this.issuedRevision = 0;
     return this.request(
@@ -185,16 +196,21 @@ export class BM25WorkerRuntime {
         snapshot,
         sinceOrder,
         expectedDocs,
+        ...(posting ? { posting } : {}),
       },
       undefined,
       this.requestTimeoutMs * RESTORE_TIMEOUT_MULTIPLIER,
-      snapshot.trim().length > 0 ? undefined : expectedDocs,
+      posting?.docCount ?? (snapshot.trim().length > 0 ? undefined : expectedDocs),
     );
   }
 
-  async serializeCheckpoint(): Promise<BM25WorkerCheckpoint> {
+  async readPostingPage(postingPart: number): Promise<BM25WorkerResponse> {
+    return this.request({ operation: 'posting-page', postingPart });
+  }
+
+  async serializeCheckpoint(maxSnapshotBytes?: number): Promise<BM25WorkerCheckpoint> {
     const response = await this.request(
-      { operation: 'serialize' },
+      { operation: 'serialize', maxSnapshotBytes },
       undefined,
       this.requestTimeoutMs * RESTORE_TIMEOUT_MULTIPLIER,
     );
@@ -525,13 +541,16 @@ export class BM25WorkerRuntime {
   private validAcknowledgement(request: BM25WorkerRequest, response: BM25WorkerResponse): boolean {
     if (request.operation === 'initialize')
       return (
-        response.appliedRevision === 0 &&
+        response.appliedRevision === (request.posting && response.postingRejected === true ? null : 0) &&
         response.pendingRevision === null &&
         response.nextPart === 0
       );
     if (!isMutation(request.operation))
       return (
         (request.operation !== 'serialize' || typeof response.snapshot === 'string') &&
+        (request.operation !== 'posting-page' || (response.postingPart === request.postingPart &&
+          (response.postingRejected === true ? response.postingPage === undefined :
+            (response.postingPage instanceof Uint8Array && response.postingPage.length === 0) || isBm25PostingPage(response.postingPage)))) &&
         response.appliedRevision === this.appliedRevisionValue &&
         response.pendingRevision === this.pendingRevisionValue &&
         response.nextPart === this.nextPart

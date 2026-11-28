@@ -29,7 +29,9 @@ BM25 정확 집계는 토큰 위치와 구문을 세며 원문 부분문자열 �
 
 scanner는 한 원문·한 정규화 행·한 출력 페이지만 유지한다. 순서 있는 원문 블록의 실제 hash8·길이·charge를 seal한 뒤에만 결과를 배출하고, 페이지에 넣지 못한 발생의 cursor를 소비하지 않는다. `LiteralInventoryTotals`는 완전한 source summary만 UTF-16 경로 순서·중복·needle identity·expected source 수·안전 정수 overflow를 검사해 합산한다. 누락·부분·미완료·한도 실패는 성공 0이나 BM25 숫자로 대체하지 않는다. needle 1..128(각 UTF-16 4096·합 65536), header 1MiB, summary 16MiB, 페이지 1..256건·1..1MiB를 보정 없이 검증한다. 같은 일치 조건의 발견·집계 대조와 남은 검증 상태는 `engineering-contract`가 소유한다.
 
-BM25의 inverted·위치 posting은 같은 문서 식별자 문자열 할당을 공유해 긴 식별자가 posting 수만큼 중복 상주하지 않게 한다. 이 내부 표현은 삽입·교체·삭제와 legacy/compact 복원에 동일하게 적용하며 metadata·문자열 값 정렬·점수·위치·기존 JSON 형식은 보존한다. 식별자 중복 절감은 전체 색인·JSON peak·RSS의 전역 메모리 상한을 보장하지 않는다.
+BM25의 inverted·위치 posting은 같은 문서 식별자 문자열 할당을 공유한다. 삽입은 토큰 빈도·위치·필드 구간을 한 순회에서 계산하고 단일 발생 위치는 별도 heap 할당 없이 저장한다. 메모리 내 source→문서, 문서→공유 term 원장으로 교체·삭제가 해당 source/문서의 실제 posting만 다루며, legacy·compact 복원도 같은 원장을 재구성한다. metadata·문자열 값 정렬·점수·위치·기존 JSON 형식은 보존한다. worker용 bounded compact 직렬화는 동일 JSON 완성본 또는 UTF-8 상한 초과 시 빈 payload만 반환한다. 식별자 중복 절감과 출력 상한은 전체 색인·파서·RSS의 전역 메모리 상한을 보장하지 않는다.
+
+분할 posting schema v1은 정확한 UTF-8 문서 키의 순서와 token contract에 묶인 독립 binary page다. 페이지별 최대 256문서·1MiB(압축 전후)이며 저장은 독립 raw/deflate다. 역색인/필드/위치만 직렬화하고 원문이나 색인 전체의 정렬·사전을 복제하지 않는다. 복원은 토큰화 없이 헤더/codec/정확 byte 길이·증가하는 문서/term/field/position·전체 위치 수를 검증한다. 순서 있는 문서 ordinal과 term별 압축 posting·위치 배열을 append하고 임시 term lookup을 끝에서 한 번 정렬한다. 전체 페이지/순서 checksum과 base 문서 수를 확인해 seal하기 전에는 후보를 준비 상태로 두지 않는다. 이후 upsert·삭제는 base의 해당 문서만 무효화하고 변경 원장을 순서 있는 overlay로 적용한다. 검색·집계·재직렬화는 동일 UTF-8 순서로 두 표현의 모든 live posting을 제공하며 prefix 범위만 순회하고 사전 절단·partial/lazy serving을 하지 않는다. 변경된 base posting의 위치 배열은 비율 기반으로 회수하고 최초 문서/term 슬롯 크기는 로드한 base에 한정한다. 단일 행이 페이지를 초과하거나 해석 실패하면 불완전 후보를 버리고 호스트가 기존 전량 복원 계약으로 돌아간다. 이는 live Rust index, 브라우저 IndexedDB, WASM peak RSS의 전역 상한이 아니다. manifest/checksum·보관·수명·receipt 및 공개 ACK는 `retrieval-index`가 소유한다.
 
 ## 파일 분류 wire
 

@@ -175,6 +175,17 @@ export class Bm25RuntimeIndex {
         }
     }
     /**
+     * Apply one binary page without tokenizing. Discard the candidate runtime on failure.
+     * @param {Uint8Array | number[]} page
+     * @returns {boolean}
+     */
+    apply_posting_page(page) {
+        const ptr0 = passArray8ToWasm0(page, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.bm25runtimeindex_apply_posting_page(this.__wbg_ptr, ptr0, len0);
+        return ret !== 0;
+    }
+    /**
      * 여러 facet 질의의 검색·집계를 한 번의 bridge 호출로 반환합니다.
      *
      * 입력은 `{"queries":[{"query":"…","limit":N}],
@@ -200,6 +211,15 @@ export class Bm25RuntimeIndex {
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
+    }
+    /**
+     * Seal the validated ordered checkpoint base before applying a delta or serving a query.
+     * @param {number} expected
+     * @returns {boolean}
+     */
+    finish_posting_import(expected) {
+        const ret = wasm.bm25runtimeindex_finish_posting_import(this.__wbg_ptr, expected);
+        return ret !== 0;
     }
     /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
@@ -240,6 +260,17 @@ export class Bm25RuntimeIndex {
         this.__wbg_ptr = ret;
         Bm25RuntimeIndexFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * Export one bounded binary posting page. Empty means EOF, one byte means unsupported.
+     * @param {boolean} reset
+     * @returns {Uint8Array}
+     */
+    next_posting_page(reset) {
+        const ret = wasm.bm25runtimeindex_next_posting_page(this.__wbg_ptr, reset);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
     }
     /**
      * 위치·필드 색인 상태를 JSON 문자열로 반환한다.
@@ -408,6 +439,23 @@ export class Bm25RuntimeIndex {
         let deferred1_1;
         try {
             const ret = wasm.bm25runtimeindex_to_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Returns the complete compact snapshot, or an empty string if it exceeds the UTF-8 cap.
+     * @param {number} max_bytes
+     * @returns {string}
+     */
+    to_json_bounded(max_bytes) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.bm25runtimeindex_to_json_bounded(this.__wbg_ptr, max_bytes);
             deferred1_0 = ret[0];
             deferred1_1 = ret[1];
             return getStringFromWasm0(ret[0], ret[1]);

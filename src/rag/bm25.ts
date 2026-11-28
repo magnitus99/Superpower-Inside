@@ -1,5 +1,11 @@
+import {
+  BM25_POSTING_KEY, BM25_POSTING_STAGE_KEY, BM25_POSTING_CHECKSUM_SEED, bm25PostingKey,
+  bm25PostingPrefix, checksumBm25PostingPage, isBm25PostingId, isBm25PostingManifest,
+  parseBm25PostingWorkerTiming, sameBm25PostingReceipt as sameBm25Receipt,
+  type BM25PostingManifest, type BM25PostingRestoreTiming,
+} from './bm25-posting-checkpoint';
 import Dexie from 'dexie';
-import { isStoreMutationReceipt, readStoreMutationReceipt, stampStoreMutation, type DurabilityMetaRecord, type StoreMutationReceipt } from './durability';
+import { DURABILITY_RECEIPT_KEY, isStoreMutationReceipt, readStoreMutationReceipt, stampStoreMutation, type DurabilityMetaRecord, type StoreMutationReceipt } from './durability';
 import {
   GeneratedArtifactDatabase,
   type GeneratedArtifactBinding,
@@ -194,7 +200,7 @@ interface BM25SnapshotManifest {
 
 interface BM25SnapshotBlock {
   key: string;
-  data: string;
+  data: string | Uint8Array;
 }
 
 interface BM25MutationRecord {
@@ -290,11 +296,13 @@ export class IndexedDbBM25Index {
   private recovery: Promise<void> | null = null;
   private rebuildReplayOperations: BM25PendingOperation[] | null = null;
   private restoreMode: 'snapshot+delta' | 'full' = 'full';
-  private activeManifest: BM25SnapshotManifest | null = null;
+  private postingRestoreTiming: BM25PostingRestoreTiming | null = null;
   private ordersSinceSnapshot = 0;
   private removalsSinceSnapshot = 0;
   private lastSnapshotAt = 0;
   private snapshotCaptureInFlight = false;
+  private postingWorker = false;
+  private preferPostings = false;
   private workerGeneration = 0;
   private closed = false;
   private persistenceQueue: Promise<void> = Promise.resolve();
@@ -389,7 +397,7 @@ export class IndexedDbBM25Index {
     this.boundRevision = revision;
   }
 
-  private async commitMutation<T>(operation: () => Promise<T>, projection?: { revision: number; resets: boolean }): Promise<T> {
+  private async commitMutation<T>(operation: () => Promise<T>, projection?: { revision: number; resets: boolean; orderBeforeCommit: { value?: number } }): Promise<T> {
     this.requireActive();
     const nested = Dexie.currentTransaction?.db === this.db;
     const generation = this.workerGeneration;
@@ -399,11 +407,25 @@ export class IndexedDbBM25Index {
       const result = await operation();
       if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
       const receipt = await stampStoreMutation(this.db.durability);
+      if (projection && typeof result === 'number') {
+        const stored = (await this.db.durability.get(BM25_POSTING_KEY))?.value;
+        if (isBm25PostingManifest(stored) && stored.headOrder === projection.orderBeforeCommit.value &&
+            sameBm25Receipt(stored.headReceipt, previous)) {
+          await this.db.durability.put({ key: BM25_POSTING_KEY, value: { ...stored, headOrder: result, headReceipt: receipt } });
+        }
+      }
       if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
       return { previous, receipt, result };
     });
     if (!nested && generation === this.workerGeneration) this.bindCommittedHead(committed.previous, committed.receipt, projection?.revision, projection?.resets);
     return committed.result;
+  }
+
+  /** Legacy unreceipted rows can seed a derived checkpoint, not a source proof. */
+  private async canUsePostingReceipt(expected: StoreMutationReceipt | null): Promise<boolean> {
+    const stored = await this.db.durability.get(DURABILITY_RECEIPT_KEY);
+    return stored === undefined ? expected === null :
+      isStoreMutationReceipt(stored.value) && sameBm25Receipt(stored.value, expected);
   }
 
   private async readPersistedOrder(): Promise<number> {
@@ -426,7 +448,7 @@ export class IndexedDbBM25Index {
     return order;
   }
 
-  load(onProgress?: (progress: { stage: 'restoring-keyword-snapshot' | 'restoring-keyword-documents'; processedUnits: number | null; totalUnits: number | null; unit: 'documents' | 'steps' }) => void): Promise<void> {
+  load(onProgress?: (progress: { stage: 'restoring-keyword-snapshot' | 'restoring-keyword-documents'; processedUnits: number | null; totalUnits: number | null; unit: 'documents' | 'steps' }) => void, canPublishDerived: () => boolean = () => true): Promise<void> {
     if (this.closed) return Promise.reject(new Error('rag-bm25-session-retired'));
     const generation = ++this.workerGeneration;
     this.loading = true;
@@ -448,7 +470,7 @@ export class IndexedDbBM25Index {
       try { onProgress?.(progress); } catch { /* 관측 오류는 복원을 중단하지 않습니다. */ }
     };
     publish({ stage: 'restoring-keyword-snapshot', processedUnits: 0, totalUnits: 1, unit: 'steps' });
-    const task = this.loadRuntime(generation, publish);
+    const task = this.loadRuntime(generation, publish, canPublishDerived);
     const finish = (): void => {
       if (generation === this.workerGeneration) { this.loading = false; this.loadBarrier = null; }
     };
@@ -460,7 +482,7 @@ export class IndexedDbBM25Index {
     return completion;
   }
 
-  private async loadRuntime(generation: number, publish: (progress: { stage: 'restoring-keyword-snapshot' | 'restoring-keyword-documents'; processedUnits: number | null; totalUnits: number | null; unit: 'documents' | 'steps' }) => void): Promise<void> {
+  private async loadRuntime(generation: number, publish: (progress: { stage: 'restoring-keyword-snapshot' | 'restoring-keyword-documents'; processedUnits: number | null; totalUnits: number | null; unit: 'documents' | 'steps' }) => void, canPublishDerived: () => boolean): Promise<void> {
     this.requireActive();
     if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
     this.runtime?.dispose();
@@ -474,7 +496,9 @@ export class IndexedDbBM25Index {
     this.workerTotalDocs = 0;
     this.loaded = false;
     this.restoreMode = 'full';
-    this.activeManifest = null;
+    this.postingRestoreTiming = null;
+    this.postingWorker = false;
+    this.preferPostings = false;
     const initialReceipt = this.getDurabilityReceipt();
     const existingPending = [...this.pendingOperations];
     let ownerWorker: BM25WorkerRuntime | null = null;
@@ -492,7 +516,7 @@ export class IndexedDbBM25Index {
       this.persistedOrder = order;
       return receipt;
     };
-    const finishBase = async (snapshot: BM25Snapshot, original: StoreMutationReceipt | null, fullRead = false): Promise<void> => {
+    const finishBase = async (snapshot: BM25Snapshot, original: StoreMutationReceipt | null, fullRead = false): Promise<boolean> => {
       const receipt = await this.getDurabilityReceipt();
       requireSession();
       const linked = snapshot.manifest && isStoreMutationReceipt(snapshot.manifest.sourceReceipt) &&
@@ -502,24 +526,68 @@ export class IndexedDbBM25Index {
       requireSession();
       const empty = documents === 0 && await this.db.mutations.count() === 0;
       requireSession();
-      this.prefixValid = this.headContinuity && sameBm25Receipt(receipt, this.boundReceipt) &&
-        (original !== null ? full || !!linked : empty);
+      const stableBase = this.headContinuity && sameBm25Receipt(receipt, this.boundReceipt);
+      this.prefixValid = stableBase && (original !== null ? full || !!linked : empty);
       this.boundReceipt = receipt;
       this.boundRevision = 0;
       this.appliedRevision = 0;
+      return stableBase;
     };
     if (this.workerFactory || canUseBM25Worker()) {
       let restoringSnapshot = false;
+      let restoringPostings = false;
+      let migratePostings = false;
       const worker = new BM25WorkerRuntime(this.workerFactory, undefined, (progress) => {
         if (!this.loading || this.closed || generation !== this.workerGeneration || worker !== this.workerRuntime || worker.isClosed) return;
-        if (restoringSnapshot && progress.processedDocuments === 0) publish({ stage: 'restoring-keyword-snapshot', unit: 'steps', processedUnits: 1, totalUnits: 2 });
+        if (restoringPostings) publish({ stage: 'restoring-keyword-snapshot', unit: 'documents', processedUnits: progress.processedDocuments, totalUnits: progress.expectedDocuments });
+        else if (restoringSnapshot && progress.processedDocuments === 0) publish({ stage: 'restoring-keyword-snapshot', unit: 'steps', processedUnits: 1, totalUnits: 2 });
         else publish({ stage: 'restoring-keyword-documents', unit: 'documents', processedUnits: progress.processedDocuments, totalUnits: progress.expectedDocuments });
       });
       this.workerRuntime = worker;
       ownerWorker = worker;
       const initialization = (async () => {
         const original = await prepareBase();
-        const snapshot = await this.loadSnapshot(requireSession);
+        const postingRecord = await this.db.durability.get(BM25_POSTING_KEY);
+        requireSession();
+        this.preferPostings = postingRecord !== undefined;
+        const posting = postingRecord?.value;
+        if (isBm25PostingManifest(posting) && posting.headOrder === this.persistedOrder &&
+            sameBm25Receipt(posting.headReceipt, original) && await this.canUsePostingReceipt(original)) {
+          const expected = await this.db.documents.count();
+          requireSession();
+          restoringPostings = true;
+          publish({ stage: 'restoring-keyword-snapshot', unit: 'documents', processedUnits: 0, totalUnits: posting.docCount });
+          requireSession();
+          const dispatched = performance.now();
+          const restored = await worker.initialize(this.db.name, '', undefined, expected, posting);
+          const acknowledged = performance.now();
+          requireSession();
+          restoringPostings = false;
+          if (restored.postingVersion === 1 && !restored.postingRejected && restored.totalDocs === expected && restored.tokenizerCurrent) {
+            const current = await this.db.transaction('r', this.db.tables, async () =>
+              await this.canUsePostingReceipt(original) && await this.readPersistedOrder() === posting.headOrder);
+            requireSession();
+            if (!current) throw new Error('rag-bm25-posting-head-changed');
+            this.applyWorkerState(restored);
+            this.postingWorker = true;
+            this.loaded = true;
+            this.restoreMode = 'snapshot+delta';
+            const timing = parseBm25PostingWorkerTiming(restored.postingTiming, posting);
+            if (timing) {
+              const requestRoundTripMs = acknowledged - dispatched;
+              this.postingRestoreTiming = {
+                ...timing, requestRoundTripMs, headRecheckMs: performance.now() - acknowledged,
+                hostDispatchAndDeliveryMs: Math.max(0, requestRoundTripMs - timing.workerMs),
+              };
+            }
+            this.ordersSinceSnapshot = posting.headOrder - posting.lastOrder;
+            this.lastSnapshotAt = Date.now();
+            this.prefixValid = original !== null || expected === 0;
+            return;
+          }
+          this.logger?.warn('BM25 posting checkpoint rejected; restoring durable documents.');
+        }
+        const snapshot: BM25Snapshot = this.preferPostings ? { raw: '', source: 'empty' } : await this.loadSnapshot(requireSession);
         requireSession();
         const raw = snapshot.raw.trim();
         const usableRaw = raw.length > 0 && raw.length <= this.maxSnapshotBytes ? raw : '';
@@ -550,9 +618,9 @@ export class IndexedDbBM25Index {
         }
         requireSession();
         this.applyWorkerState(finalState);
+        this.postingWorker = finalState.postingVersion === 1;
         this.restoreMode = manifest && !state.snapshotRejected ? 'snapshot+delta' : 'full';
         if (manifest && !state.snapshotRejected) {
-          this.activeManifest = manifest;
           this.ordersSinceSnapshot = 0;
           this.removalsSinceSnapshot = 0;
           await this.commitChangedRows(() => this.db.meta.where('key').equals(BM25_SNAPSHOT_KEY).delete());
@@ -564,15 +632,24 @@ export class IndexedDbBM25Index {
           await this.persistSnapshotRaw(raw);
           requireSession();
         }
-        await this.sweepOrphanSnapshotBlocks();
+        if (!this.preferPostings) await this.sweepOrphanSnapshotBlocks();
         requireSession();
-        await finishBase(snapshot, original, state.snapshotRejected === true);
+        const stableBase = await finishBase(snapshot, original, state.snapshotRejected === true);
+        migratePostings = stableBase && (usableRaw.length === 0 || state.snapshotRejected === true) &&
+          this.postingWorker && this.totalDocs > 0 && this.totalDocs === await this.db.documents.count() &&
+          await this.db.mutations.count() === 0;
+        requireSession();
       })();
       // 초기화 중 들어온 파일 변경도 hydration 완료 뒤 같은 worker에 순서대로 적용한다.
       this.workerQueue = initialization;
       if (existingPending.length) this.enqueuePendingProjection(existingPending);
       try {
         await initialization;
+        requireSession();
+        if (migratePostings && canPublishDerived()) {
+          await this.captureSnapshotIfDue(true, { migration: true, canPublish: canPublishDerived });
+          requireSession();
+        }
         return;
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error));
@@ -670,9 +747,11 @@ export class IndexedDbBM25Index {
       return;
     }
     const removalRecords: BM25RemovalRecord[] = [];
+    const orderBeforeCommit: { value?: number } = {};
     const committedOrder = await this.commitMutation(async () => {
-      const recordRemovals = this.workerRuntime !== null || await this.readManifest() !== null;
+      const recordRemovals = this.workerRuntime !== null || await this.readManifest() !== null || (await this.db.durability.get(BM25_POSTING_KEY)) !== undefined;
       let order = await this.readPersistedOrder();
+      orderBeforeCommit.value = order;
       if (order > Number.MAX_SAFE_INTEGER - operations.length) throw new Error('rag-bm25-order-overflow');
       for (const operation of operations) {
         const record = { ...operation.record, order: ++order };
@@ -686,7 +765,7 @@ export class IndexedDbBM25Index {
       if (removalRecords.length > 0) await this.db.removals.bulkPut(removalRecords);
       await this.db.durability.put({ key: 'bm25-order-v1', value: order });
       return order;
-    }, { revision: operations.at(-1)?.revision ?? this.boundRevision, resets: operations.some((operation) => operation.kind === 'mutation' && operation.record.kind === 'clear') });
+    }, { revision: operations.at(-1)?.revision ?? this.boundRevision, resets: operations.some((operation) => operation.kind === 'mutation' && operation.record.kind === 'clear'), orderBeforeCommit });
     if (generation !== this.workerGeneration) throw new Error('rag-bm25-session-retired');
     this.persistedOrder = committedOrder;
     const committed = new Set(operations);
@@ -732,7 +811,6 @@ export class IndexedDbBM25Index {
     this.workerReady = false;
     this.workerTokenizerCurrent = false;
     this.workerTotalDocs = 0;
-    this.activeManifest = null;
     this.ordersSinceSnapshot = 0;
     this.removalsSinceSnapshot = 0;
     this.snapshotCaptureInFlight = false;
@@ -758,7 +836,6 @@ export class IndexedDbBM25Index {
     this.workerReady = false;
     this.workerTokenizerCurrent = false;
     this.workerTotalDocs = 0;
-    this.activeManifest = null;
     this.ordersSinceSnapshot = 0;
     this.removalsSinceSnapshot = 0;
     this.snapshotCaptureInFlight = false;
@@ -799,8 +876,9 @@ export class IndexedDbBM25Index {
     } finally { this.rebuilding = false; }
     if (!this.workerRuntime) this.applyPendingProjection(this.pendingOperations.filter((operation) => operation.revision > this.appliedRevision));
     await this.flush();
-    await this.dropSnapshot();
     if (this.workerFailure) throw this.workerFailure;
+    // The committed clear tombstone protects earlier snapshots until a new prefix is published.
+    await this.captureSnapshotIfDue(true);
   }
 
   async rebuildFrom(createDocuments: () => Promise<readonly BM25DocumentInput[]>): Promise<void> {
@@ -1058,6 +1136,11 @@ export class IndexedDbBM25Index {
     return this.restoreMode;
   }
 
+  /** Successful current posting restore phase timings, with no IDs, terms or source text. */
+  get recoveryTiming(): BM25PostingRestoreTiming | null {
+    return this.restoreMode === 'snapshot+delta' && this.postingRestoreTiming ? { ...this.postingRestoreTiming } : null;
+  }
+
   /** 색인 복원 중이면 읽은 문서 수와 기대 문서 수를 알려줍니다. */
   get restoreProgress(): { processedDocuments: number; expectedDocuments: number | null } | null {
     if (this.isReady) return null;
@@ -1079,7 +1162,7 @@ export class IndexedDbBM25Index {
     );
   }
 
-  async recoverClosedWorker(): Promise<void> {
+  async recoverClosedWorker(canPublishDerived?: () => boolean): Promise<void> {
     this.requireActive();
     // 복구할 작업자가 없으면 초기 적재·변이 대기열에 호출자를 붙잡아 두지 않습니다.
     const worker = this.workerRuntime;
@@ -1100,7 +1183,7 @@ export class IndexedDbBM25Index {
         this.persistenceQueue = saving.catch(() => undefined);
         await saving;
         requireOwner();
-        await this.load();
+        await this.load(undefined, canPublishDerived);
       })
       .finally(() => {
         this.recovery = null;
@@ -1159,8 +1242,9 @@ export class IndexedDbBM25Index {
 
   async getCorpusDocumentsBySourcePaths(
     sourcePaths: readonly string[],
+    options?: { flush?: boolean },
   ): Promise<BM25CorpusDocument[]> {
-    await this.persist();
+    if (options?.flush !== false) await this.persist();
     if (sourcePaths.length === 0) return [];
     const records = await this.db.documents
       .where('sourcePath')
@@ -1442,13 +1526,15 @@ export class IndexedDbBM25Index {
   }
 
   /** 스냅샷 캡처 시점의 order까지 직렬화와 manifest 기록을 마칩니다. */
-  private async captureSnapshotIfDue(force = false): Promise<boolean> {
+  private async captureSnapshotIfDue(force = false, derived?: { migration: true; canPublish: () => boolean }): Promise<boolean> {
     if (!this.workerRuntime || this.workerFailure || !this.loaded || !this.isTokenizerCurrent || this.rebuilding) return false;
-    if (this.batchDepth > 0 || this.snapshotCaptureInFlight || this.pendingOperations.length > 0 || !this.prefixValid || !this.boundReceipt || this.boundRevision !== this.issuedRevision) {
+    if (this.batchDepth > 0 || this.snapshotCaptureInFlight || this.pendingOperations.length > 0 || (!derived && (!this.prefixValid || !this.boundReceipt)) || this.boundRevision !== this.issuedRevision) {
       return false;
     }
     if (!force) {
-      if (this.ordersSinceSnapshot < this.snapshotMinOrders) return false;
+      // Small deltas should not rewrite hundreds of large posting pages every minute.
+      const minimum = this.preferPostings ? Math.max(this.snapshotMinOrders, Math.ceil(this.totalDocs / 50)) : this.snapshotMinOrders;
+      if (this.ordersSinceSnapshot < minimum) return false;
       if (Date.now() - this.lastSnapshotAt < this.snapshotIntervalMs) return false;
     }
     this.snapshotCaptureInFlight = true;
@@ -1459,16 +1545,35 @@ export class IndexedDbBM25Index {
     const generation = this.workerGeneration;
     const worker = this.workerRuntime;
     try {
+      let published = false;
       await this.enqueueWorkerTask(async () => {
-        const serialized = await worker.serializeCheckpoint();
-        if (serialized.sessionId !== worker.sessionId || serialized.appliedRevision !== revision || serialized.pendingRevision !== null) return;
-        const raw = serialized.snapshot;
-        if (raw.length === 0 || raw.length > this.maxSnapshotBytes) {
-          this.lastSnapshotAt = Date.now();
-          return;
+        const current = (): boolean => generation === this.workerGeneration && worker === this.workerRuntime &&
+          !worker.isClosed && worker.appliedRevision === revision && worker.pendingRevision === null &&
+          (derived?.canPublish() ?? true);
+        if (!current()) return;
+        try {
+          const usePostings = derived || (this.postingWorker && (this.preferPostings || await this.db.durability.get(BM25_POSTING_KEY)));
+          if (!current()) return;
+          if (!usePostings && sourceReceipt) {
+            const serialized = await worker.serializeCheckpoint(this.maxSnapshotBytes);
+            if (!current() || serialized.sessionId !== worker.sessionId || serialized.appliedRevision !== revision) return;
+            const raw = serialized.snapshot;
+            if (raw.length > 0 && raw.length <= this.maxSnapshotBytes) {
+              published = await this.commitSnapshot(raw, lastOrder, { receipt: sourceReceipt, sessionId: worker.sessionId, revision });
+              return;
+            }
+          }
+          if (this.postingWorker && this.totalDocs > 0 && current()) {
+            published = await this.commitPostingCheckpoint(worker, sourceReceipt, lastOrder, current);
+          }
+        } catch (error) {
+          if (worker.isClosed || worker.appliedRevision === null) throw error;
+          this.logger?.warn('BM25 checkpoint capture failed; retaining the previous durable state.', { error });
+        } finally {
+          if (generation === this.workerGeneration) this.lastSnapshotAt = Date.now();
         }
-        await this.commitSnapshot(raw, lastOrder, { receipt: sourceReceipt, sessionId: serialized.sessionId, revision });
       });
+      return generation === this.workerGeneration && published;
     } catch (error) {
       this.logger?.warn('BM25 snapshot capture failed; keeping the previous snapshot.', {
         error,
@@ -1477,11 +1582,95 @@ export class IndexedDbBM25Index {
     } finally {
       if (generation === this.workerGeneration) this.snapshotCaptureInFlight = false;
     }
-    return generation === this.workerGeneration && this.activeManifest !== null;
+  }
+
+  /** Staged blocks have no restore authority. The final transaction alone publishes the manifest. */
+  private async commitPostingCheckpoint(
+    worker: BM25WorkerRuntime, receipt: StoreMutationReceipt | null, order: number, current: () => boolean,
+  ): Promise<boolean> {
+    const generation = crypto.randomUUID();
+    const session = this.workerGeneration;
+    const docCount = this.totalDocs;
+    const headMatches = async (): Promise<boolean> => await this.canUsePostingReceipt(receipt) && await this.readPersistedOrder() === order;
+    const ownsStage = async (): Promise<boolean> => (await this.db.durability.get(BM25_POSTING_STAGE_KEY))?.value === generation;
+    const removeBlocks = (id: string): Promise<number> => this.db.snapshotBlocks.where('key').startsWith(bm25PostingPrefix(id)).delete();
+    let claimed = false;
+    let published = false;
+    try {
+      claimed = await this.db.transaction('rw', this.db.tables, async () => {
+        if (!current() || !await headMatches()) return false;
+        const previous = (await this.db.durability.get(BM25_POSTING_STAGE_KEY))?.value;
+        if (isBm25PostingId(previous)) {
+          const active = (await this.db.durability.get(BM25_POSTING_KEY))?.value as { generation?: unknown } | undefined;
+          if (active?.generation !== previous) await removeBlocks(previous);
+        }
+        if (!current()) return false;
+        await this.db.durability.put({ key: BM25_POSTING_STAGE_KEY, value: generation });
+        return true;
+      });
+      if (!claimed) return false;
+      let blockCount = 0;
+      let byteLength = 0;
+      let encodedDocs = 0;
+      let checksum = BM25_POSTING_CHECKSUM_SEED;
+      let finished = false;
+      while (current()) {
+        const response = await worker.readPostingPage(blockCount);
+        const page = response.postingPage;
+        if (!page || !current()) return false;
+        if (page.length === 0) { finished = true; break; }
+        const rows = new DataView(page.buffer, page.byteOffset, page.byteLength).getUint32(8, true);
+        if (rows === 0 || rows > 256 || encodedDocs + rows > docCount) return false;
+        encodedDocs += rows;
+        byteLength += page.byteLength;
+        checksum = checksumBm25PostingPage(checksum, page);
+        const written = await this.db.transaction('rw', this.db.durability, this.db.snapshotBlocks, async () => {
+          if (!await ownsStage() || !await this.canUsePostingReceipt(receipt) || !current()) return false;
+          await this.db.snapshotBlocks.put({ key: bm25PostingKey(generation, blockCount), data: page });
+          return true;
+        });
+        if (!written) return false;
+        blockCount++;
+      }
+      if (!finished || !current() || encodedDocs !== docCount) return false;
+      const manifest: BM25PostingManifest = {
+        version: 1, tokenizerVersion: TOKENIZER_VERSION, generation, sourceReceipt: receipt,
+        lastOrder: order, headReceipt: receipt, headOrder: order, blockCount, byteLength, docCount, checksum,
+      };
+      if (!isBm25PostingManifest(manifest)) return false;
+      published = await this.db.transaction('rw', this.db.tables, async () => {
+        if (!await ownsStage() || !await headMatches() || await this.db.documents.count() !== docCount || !current()) return false;
+        const previous = (await this.db.durability.get(BM25_POSTING_KEY))?.value;
+        const legacy = await this.readManifest();
+        if (isBm25PostingManifest(previous, false)) await removeBlocks(previous.generation);
+        if (legacy) await this.db.snapshotBlocks.where('key').startsWith(`${legacy.generation}:`).delete();
+        await this.db.meta.bulkDelete([BM25_SNAPSHOT_KEY, BM25_SNAPSHOT_MANIFEST_KEY]);
+        await this.db.removals.where('order').belowOrEqual(order).delete();
+        await this.db.durability.put({ key: 'bm25-order-v1', value: order });
+        await this.db.durability.put({ key: BM25_POSTING_KEY, value: manifest });
+        await this.db.durability.delete(BM25_POSTING_STAGE_KEY);
+        if (!current()) throw new Error('rag-bm25-posting-owner-retired');
+        return true;
+      });
+      if (!published) return false;
+      this.preferPostings = true;
+      this.ordersSinceSnapshot = 0;
+      this.removalsSinceSnapshot = 0;
+      this.logger?.debug('BM25 posting checkpoint published.', { data: { docCount, blockCount, byteLength } });
+      return true;
+    } finally {
+      if (claimed && !published && session === this.workerGeneration) {
+        await this.db.transaction('rw', this.db.durability, this.db.snapshotBlocks, async () => {
+          if (!await ownsStage()) return;
+          await removeBlocks(generation);
+          await this.db.durability.delete(BM25_POSTING_STAGE_KEY);
+        }).catch(() => undefined); // A later capture can reclaim the unreferenced staging generation.
+      }
+    }
   }
 
   /** 블록을 먼저 쓰고 manifest 1건을 마지막에 써서 원자적으로 세대를 교체합니다. */
-  private async commitSnapshot(raw: string, lastOrder: number, expected: { receipt: StoreMutationReceipt; sessionId: string; revision: number }): Promise<void> {
+  private async commitSnapshot(raw: string, lastOrder: number, expected: { receipt: StoreMutationReceipt; sessionId: string; revision: number }): Promise<boolean> {
     const ownerGeneration = this.workerGeneration;
     const generation = crypto.randomUUID();
     const blockCount = Math.max(1, Math.ceil(raw.length / BM25_SNAPSHOT_BLOCK_BYTES));
@@ -1496,7 +1685,7 @@ export class IndexedDbBM25Index {
     };
     try {
       await this.commitMutation(async () => {
-        if (!sameBm25Receipt(await this.getDurabilityReceipt(), expected.receipt) || await this.readPersistedOrder() !== lastOrder ||
+        if (await this.db.durability.get(BM25_POSTING_KEY) || !sameBm25Receipt(await this.getDurabilityReceipt(), expected.receipt) || await this.readPersistedOrder() !== lastOrder ||
             this.workerRuntime?.sessionId !== expected.sessionId || this.workerRuntime.appliedRevision !== expected.revision || this.workerRuntime.pendingRevision !== null) {
           throw new Error('rag-bm25-snapshot-stale');
         }
@@ -1516,18 +1705,17 @@ export class IndexedDbBM25Index {
       this.logger?.warn('BM25 snapshot commit failed; keeping the previous snapshot.', {
         error,
       });
-      return;
+      return false;
     }
-    if (ownerGeneration !== this.workerGeneration) return;
-    this.activeManifest = manifest;
+    if (ownerGeneration !== this.workerGeneration) return false;
     this.ordersSinceSnapshot = 0;
     this.removalsSinceSnapshot = 0;
     this.lastSnapshotAt = Date.now();
+    return true;
   }
 
   /** 스냅샷과 tombstone 로그를 버리고 다음 복구를 전량 재구성으로 되돌립니다. */
   private async dropSnapshot(requireSuccess = false): Promise<void> {
-    this.activeManifest = null;
     this.ordersSinceSnapshot = 0;
     this.removalsSinceSnapshot = 0;
     this.restoreMode = 'full';
@@ -1536,7 +1724,7 @@ export class IndexedDbBM25Index {
         const manifest = await this.readManifest();
         const removed = await this.db.meta.where('key').anyOf([BM25_SNAPSHOT_MANIFEST_KEY, BM25_SNAPSHOT_KEY]).delete();
         const blocks = manifest ? await this.db.snapshotBlocks.where('key').startsWith(`${manifest.generation}:`).delete() : 0;
-        const removals = await this.db.removals.toCollection().delete();
+        const removals = await this.db.durability.get(BM25_POSTING_KEY) ? 0 : await this.db.removals.toCollection().delete();
         return removed + blocks + removals;
       });
     } catch (error) {
@@ -1549,7 +1737,9 @@ export class IndexedDbBM25Index {
 
   private async enforceRemovalLogBound(): Promise<void> {
     if (this.removalsSinceSnapshot <= BM25_REMOVAL_LOG_LIMIT) return;
-    if (await this.captureSnapshotIfDue(true)) return;
+    const hasPosting = (await this.db.durability.get(BM25_POSTING_KEY)) !== undefined;
+    if (hasPosting && Date.now() - this.lastSnapshotAt < this.snapshotIntervalMs) return;
+    if (await this.captureSnapshotIfDue(true) || hasPosting || await this.db.durability.get(BM25_POSTING_KEY)) return;
     this.logger?.warn(
       'BM25 snapshot was discarded because the tombstone log grew past its bound.',
       {
@@ -1596,8 +1786,8 @@ export class IndexedDbBM25Index {
         const manifest = await this.readManifest();
         if (!manifest && await this.db.meta.get(BM25_SNAPSHOT_MANIFEST_KEY)) return 0;
         const activeGeneration = manifest?.generation ?? null;
-        const keys = await this.db.snapshotBlocks.toCollection().primaryKeys();
-        const orphans = keys.filter((key) => activeGeneration === null || !key.startsWith(`${activeGeneration}:`));
+        const keys = await this.db.snapshotBlocks.where('key').below('posting:').or('key').above('posting:￿').primaryKeys();
+        const orphans = keys.filter((key) => !key.startsWith('posting:') && (activeGeneration === null || !key.startsWith(`${activeGeneration}:`)));
         return orphans.length ? this.db.snapshotBlocks.where('key').anyOf(orphans).delete() : 0;
       });
       if (removed > 0) this.logger?.warn('BM25 orphan snapshot blocks were removed.', { data: { blocks: removed } });
@@ -1625,6 +1815,7 @@ export class IndexedDbBM25Index {
   }
 
   private async readSnapshotBlocks(manifest: BM25SnapshotManifest): Promise<string | null> {
+    if (manifest.blockCount !== Math.ceil(manifest.byteLength / BM25_SNAPSHOT_BLOCK_BYTES)) return null;
     const keys = Array.from(
       { length: manifest.blockCount },
       (_, index) => `${manifest.generation}:${index}`,
@@ -1690,10 +1881,6 @@ export class IndexedDbBM25Index {
   }
 }
 
-function sameBm25Receipt(left: StoreMutationReceipt | null, right: StoreMutationReceipt | null): boolean {
-  return left === null ? right === null : right !== null && left.incarnation === right.incarnation && left.mutation === right.mutation;
-}
-
 function toCorpusDocument(record: BM25DocumentRecord): BM25CorpusDocument {
   return {
     title: record.title,
@@ -1737,7 +1924,7 @@ async function statLegacyPath(adapter: DataAdapter, path: string) {
 
 function normalizePositiveInteger(value: number | undefined, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-  return Math.max(1, Math.floor(value));
+  return Math.min(0xffff_ffff, Math.max(1, Math.floor(value)));
 }
 
 function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
@@ -1771,7 +1958,7 @@ function normalizeMaxSnapshotBytes(value: number | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return DEFAULT_BM25_SNAPSHOT_MAX_BYTES;
   }
-  return Math.max(1, Math.floor(value));
+  return Math.min(0xffff_ffff, Math.max(1, Math.floor(value)));
 }
 
 function normalizeOperationOrder(record: { order?: number; updated: number }): number {

@@ -37,6 +37,10 @@ export class Bm25RuntimeIndex {
      */
     aggregate_scoped_json(query: string, limit: number, paths_json: string): string;
     /**
+     * Apply one binary page without tokenizing. Discard the candidate runtime on failure.
+     */
+    apply_posting_page(page: Uint8Array | number[]): boolean;
+    /**
      * 여러 facet 질의의 검색·집계를 한 번의 bridge 호출로 반환합니다.
      *
      * 입력은 `{"queries":[{"query":"…","limit":N}],
@@ -48,6 +52,10 @@ export class Bm25RuntimeIndex {
      * rank는 허용 청크 score 목록의 1 기반 순위입니다.
      */
     batch_search_and_aggregate_json(input_json: string): string;
+    /**
+     * Seal the validated ordered checkpoint base before applying a delta or serving a query.
+     */
+    finish_posting_import(expected: number): boolean;
     /**
      * legacy 또는 compact JSON payload에서 runtime index를 만든다.
      */
@@ -64,6 +72,10 @@ export class Bm25RuntimeIndex {
      * 빈 BM25 runtime index를 만든다.
      */
     constructor(tokenizer_version: number);
+    /**
+     * Export one bounded binary posting page. Empty means EOF, one byte means unsupported.
+     */
+    next_posting_page(reset: boolean): Uint8Array;
     /**
      * 위치·필드 색인 상태를 JSON 문자열로 반환한다.
      *
@@ -109,6 +121,10 @@ export class Bm25RuntimeIndex {
      * compact v3 JSON payload로 직렬화한다.
      */
     to_json(): string;
+    /**
+     * Returns the complete compact snapshot, or an empty string if it exceeds the UTF-8 cap.
+     */
+    to_json_bounded(max_bytes: number): string;
     /**
      * tokenizer contract version을 반환한다.
      */
@@ -1334,11 +1350,14 @@ export interface InitOutput {
     readonly bm25runtimeindex_add_new_document: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly bm25runtimeindex_aggregate_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly bm25runtimeindex_aggregate_scoped_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly bm25runtimeindex_apply_posting_page: (a: number, b: number, c: number) => number;
     readonly bm25runtimeindex_batch_search_and_aggregate_json: (a: number, b: number, c: number) => [number, number];
+    readonly bm25runtimeindex_finish_posting_import: (a: number, b: number) => number;
     readonly bm25runtimeindex_from_json: (a: number, b: number, c: number) => number;
     readonly bm25runtimeindex_is_ready: (a: number) => number;
     readonly bm25runtimeindex_is_tokenizer_current: (a: number, b: number) => number;
     readonly bm25runtimeindex_new: (a: number) => number;
+    readonly bm25runtimeindex_next_posting_page: (a: number, b: number) => [number, number];
     readonly bm25runtimeindex_position_index_status_json: (a: number) => [number, number];
     readonly bm25runtimeindex_remove_document: (a: number, b: number, c: number, d: number) => void;
     readonly bm25runtimeindex_remove_source: (a: number, b: number, c: number, d: number) => void;
@@ -1348,6 +1367,7 @@ export interface InitOutput {
     readonly bm25runtimeindex_search_top_relaxed_json: (a: number, b: number, c: number, d: number) => [number, number];
     readonly bm25runtimeindex_source_path_for_doc: (a: number, b: number, c: number) => [number, number];
     readonly bm25runtimeindex_to_json: (a: number) => [number, number];
+    readonly bm25runtimeindex_to_json_bounded: (a: number, b: number) => [number, number];
     readonly bm25runtimeindex_tokenizer_version: (a: number) => number;
     readonly bm25runtimeindex_total_docs: (a: number) => number;
     readonly build_initial_centroids: (a: number, b: number, c: number, d: number) => [number, number];

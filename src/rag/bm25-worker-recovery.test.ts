@@ -363,6 +363,14 @@ describe('BM25 worker snapshot recovery', () => {
     const serialized = await send({ operation: 'serialize' });
     expect(typeof serialized.snapshot).toBe('string');
 
+    const tooLarge = await send({ operation: 'serialize', maxSnapshotBytes: 32 });
+    expect(tooLarge.snapshot).toBe('');
+    expect(tooLarge.appliedRevision).toBe(serialized.appliedRevision);
+    expect(tooLarge.sessionId).toBe(serialized.sessionId);
+    const byteLength = new TextEncoder().encode(serialized.snapshot).length;
+    const bounded = await send({ operation: 'serialize', maxSnapshotBytes: byteLength });
+    expect(bounded.snapshot).toBe(serialized.snapshot);
+
     const emptyDbName = createDbName();
     await seedDb(emptyDbName, {});
     const restored = await send({

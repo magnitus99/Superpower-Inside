@@ -196,9 +196,16 @@ impl<'a> SearchScope<'a> {
 
     /// 사전에 허용 posting이 있는지 확인합니다.
     fn has_term(&self, index: &Bm25IndexData, term: &str) -> bool {
-        index.inverted.get(term).is_some_and(|posting| {
-            self.allowed_docs.is_none() || posting.keys().any(|id| self.contains(id))
-        })
+        let posting = index.posting(term);
+        let count = posting.frequency_count();
+        count > 0
+            && self.allowed_docs.as_ref().is_none_or(|docs| {
+                if docs.len().saturating_mul(16) < count {
+                    docs.iter().any(|id| posting.frequency_for(id).is_some())
+                } else {
+                    posting.frequencies().any(|(id, _)| self.contains(id))
+                }
+            })
     }
 }
 
@@ -562,12 +569,11 @@ fn expand_prefix(index: &Bm25IndexData, prefix: &str, scope: &SearchScope<'_>) -
         return Vec::new();
     }
     index
-        .inverted
-        .keys()
-        .filter(|term| term.starts_with(prefix))
+        .posting_terms(prefix)
+        .take_while(|term| term.starts_with(prefix))
         .filter(|term| scope.allowed_docs.is_none() || scope.has_term(index, term))
         .take(PREFIX_EXPANSION_LIMIT)
-        .cloned()
+        .map(ToString::to_string)
         .collect()
 }
 
@@ -578,12 +584,11 @@ fn expand_fuzzy(index: &Bm25IndexData, term: &str, scope: &SearchScope<'_>) -> V
         return Vec::new();
     }
     index
-        .inverted
-        .keys()
+        .posting_terms("")
         .filter(|candidate| is_within_one_edit(term, candidate))
         .filter(|term| scope.allowed_docs.is_none() || scope.has_term(index, term))
         .take(FUZZY_EXPANSION_LIMIT)
-        .cloned()
+        .map(ToString::to_string)
         .collect()
 }
 
@@ -598,7 +603,7 @@ fn is_within_one_edit(left: &str, right: &str) -> bool {
     if left_length.abs_diff(right_length) > 1 {
         return false;
     }
-    // 사전 전체를 검사하므로 후보마다 문자 배열을 만들지 않는다.
+    // 첫 불일치에서만 길이에 따라 한쪽 또는 양쪽을 전진시킨다.
     let mut left_chars = left.chars().peekable();
     let mut right_chars = right.chars().peekable();
     let mut skipped = false;
@@ -638,19 +643,17 @@ fn score_term(
     scope: &SearchScope<'_>,
     accumulator: &mut Bm25ScoreAccumulator,
 ) {
-    let Some(posting) = index.inverted.get(term) else {
-        return;
-    };
-    let mut matched = Vec::<(String, f64)>::new();
-    for (doc_id, frequency) in posting {
+    let posting = index.posting(term);
+    let mut matched = Vec::new();
+    for (doc_id, (frequency, positions)) in posting.frequency_entries() {
         if !scope.contains(doc_id) {
             continue;
         }
-        let Some(term_frequency) = field_term_frequency(index, term, doc_id, *frequency, field)
+        let Some(term_frequency) = field_term_frequency(index, doc_id, frequency, positions, field)
         else {
             continue;
         };
-        matched.push((doc_id.to_string(), term_frequency));
+        matched.push((doc_id, term_frequency, positions));
     }
     let Some(document_frequency) = usize_to_f64(matched.len()) else {
         return;
@@ -659,16 +662,16 @@ fn score_term(
         return;
     }
     let idf = inverse_document_frequency(scope.total_docs, document_frequency);
-    for (doc_id, term_frequency) in matched {
+    for (doc_id, term_frequency, positions) in matched {
         let relevance = bm25_score_value(
             idf,
             term_frequency,
-            doc_length(index, &doc_id),
+            doc_length(index, doc_id),
             scope.average_length,
         );
         accumulator.add(
-            &doc_id,
-            relevance * field_weight(index, term, &doc_id, field),
+            doc_id,
+            relevance * field_weight(index, positions, doc_id, field),
         );
     }
 }
@@ -678,16 +681,17 @@ fn score_term(
 /// Solr `qf=title^3 heading^2 body^1`처럼 필드별 가중을 주면
 /// 본문에만 스쳐 지나간 문서보다 제목이 맞는 문서가 앞에 온다.
 #[must_use]
-fn field_weight(index: &Bm25IndexData, term: &str, doc_id: &str, field: Option<u8>) -> f64 {
+fn field_weight(
+    index: &Bm25IndexData,
+    positions: Option<&[u32]>,
+    doc_id: &str,
+    field: Option<u8>,
+) -> f64 {
     // 필드를 명시한 질의는 이미 사용자의 의도를 반영하므로 추가 가중하지 않는다.
     if field.is_some() {
         return 1.0;
     }
-    let Some(positions) = index
-        .positions
-        .get(term)
-        .and_then(|by_doc| by_doc.get(doc_id))
-    else {
+    let Some(positions) = positions else {
         return 1.0;
     };
     let Some(runs) = index.doc_field_runs.get(doc_id) else {
@@ -714,9 +718,9 @@ fn field_weight(index: &Bm25IndexData, term: &str, doc_id: &str, field: Option<u
 #[must_use]
 fn field_term_frequency(
     index: &Bm25IndexData,
-    term: &str,
     doc_id: &str,
     frequency: f64,
+    positions: Option<&[u32]>,
     field: Option<u8>,
 ) -> Option<f64> {
     if !frequency.is_finite() || frequency <= 0.0 {
@@ -725,7 +729,7 @@ fn field_term_frequency(
     let Some(field) = field else {
         return Some(frequency);
     };
-    let positions = index.positions.get(term)?.get(doc_id)?;
+    let positions = positions?;
     let runs = index.doc_field_runs.get(doc_id)?;
     let count = positions
         .iter()
@@ -747,9 +751,7 @@ fn score_phrase(
     let Some(first_term) = phrase.terms.first() else {
         return;
     };
-    let Some(first_positions) = index.positions.get(first_term) else {
-        return;
-    };
+    let first_positions = index.posting(first_term).positions();
     let mut matched = Vec::<(String, f64)>::new();
     for (doc_id, positions) in first_positions {
         if !scope.contains(doc_id) {
@@ -827,7 +829,7 @@ fn count_phrase_matches(
     let runs = index.doc_field_runs.get(doc_id)?;
     let mut cursors = Vec::<Peekable<Iter<'_, u32>>>::with_capacity(phrase.terms.len());
     for term in &phrase.terms {
-        let positions = index.positions.get(term)?.get(doc_id)?;
+        let positions = index.posting(term).positions_for(doc_id)?;
         cursors.push(positions.iter().peekable());
     }
     let mut occurrences = 0_usize;
@@ -925,9 +927,6 @@ pub fn aggregate_matches_where(
     query: &str,
     is_allowed: impl Fn(&str) -> bool,
 ) -> Vec<Bm25MatchAggregate> {
-    if index.positions.is_empty() {
-        return Vec::new();
-    }
     let clauses = parse_query(query, true);
     let mut counts = BTreeMap::<String, usize>::new();
     for clause in &clauses {
@@ -936,10 +935,7 @@ pub fn aggregate_matches_where(
                 if term.prefix {
                     continue;
                 }
-                let Some(postings) = index.positions.get(&term.term) else {
-                    continue;
-                };
-                for (doc_id, positions) in postings {
+                for (doc_id, positions) in index.posting(&term.term).positions() {
                     if !is_allowed(doc_id) {
                         continue;
                     }
@@ -955,10 +951,7 @@ pub fn aggregate_matches_where(
                 let Some(first_term) = phrase.terms.first() else {
                     continue;
                 };
-                let Some(postings) = index.positions.get(first_term) else {
-                    continue;
-                };
-                for (doc_id, positions) in postings {
+                for (doc_id, positions) in index.posting(first_term).positions() {
                     if !is_allowed(doc_id) {
                         continue;
                     }

@@ -6,10 +6,12 @@ import type {
   BM25WorkerResponse,
 } from './bm25-worker-runtime';
 import { TOKENIZER_VERSION } from './tokenizer-version';
+import { declaredBm25PostingPageDocuments, isBm25PostingManifest, readBm25PostingPages, type BM25PostingManifest, type BM25PostingWorkerTiming } from './bm25-posting-checkpoint';
 
 export type { BM25WorkerRequest, BM25WorkerResponse } from './bm25-worker-runtime';
 
 const HYDRATION_PROGRESS_INTERVAL = 128;
+const POSTING_PROGRESS_INTERVAL_MS = 250;
 
 let initialized = false;
 let fatalRuntimeError: WebAssembly.RuntimeError | null = null;
@@ -18,6 +20,7 @@ let sessionId: string | null = null;
 let appliedRevision: number | null = null;
 let pendingRevision: number | null = null;
 let nextPart = 0;
+let postingExportNext: number | null = null;
 let processing = Promise.resolve();
 const SESSION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -56,14 +59,16 @@ function validateRequest(request: BM25WorkerRequest): void {
     appliedRevision = null;
     pendingRevision = null;
     nextPart = 0;
+    postingExportNext = null;
     return;
   }
   if (request.sessionId !== sessionId || appliedRevision === null)
     throw new Error('BM25 worker requires initialization.');
   if (isMutation(request.operation)) {
+    postingExportNext = null;
     if (request.revision !== appliedRevision + 1 || request.part !== nextPart)
       throw new Error('Invalid BM25 worker mutation sequence.');
-  } else if (!['serialize', 'search-top', 'search-representatives', 'aggregate', 'batch'].includes(request.operation)) {
+  } else if (!['serialize', 'posting-page', 'search-top', 'search-representatives', 'aggregate', 'batch'].includes(request.operation)) {
     throw new Error('Invalid BM25 worker operation.');
   }
 }
@@ -77,13 +82,16 @@ async function handleMessage(request: BM25WorkerRequest): Promise<void> {
   try {
     if (fatalRuntimeError) throw fatalRuntimeError;
     validateRequest(request);
+    const started = performance.now();
+    let wasmInitMs = 0;
     if (!initialized) {
       if (!request.wasmBase64) throw new Error('BM25 worker WASM payload is missing.');
       initSync({ module: decodeBase64(request.wasmBase64) });
       initialized = true;
+      wasmInitMs = performance.now() - started;
     }
-    const response = await handleRequest(request);
-    if (request.operation === 'initialize') appliedRevision = 0;
+    const response = await handleRequest(request, started, wasmInitMs);
+    if (request.operation === 'initialize') appliedRevision = response.postingRejected ? null : 0;
     else if (isMutation(request.operation)) {
       if (request.finalPart) {
         appliedRevision = request.revision;
@@ -94,7 +102,9 @@ async function handleMessage(request: BM25WorkerRequest): Promise<void> {
         nextPart = request.part + 1;
       }
     }
-    self.postMessage({ id: request.id, ...response, ...proofState() } satisfies BM25WorkerResponse);
+    const outgoing = { id: request.id, ...response, ...proofState() } satisfies BM25WorkerResponse;
+    if (response.postingPage) self.postMessage(outgoing, { transfer: [response.postingPage.buffer as ArrayBuffer] });
+    else self.postMessage(outgoing);
   } catch (error) {
     if (error instanceof WebAssembly.RuntimeError) fatalRuntimeError ??= error;
     appliedRevision = null;
@@ -108,8 +118,18 @@ async function handleMessage(request: BM25WorkerRequest): Promise<void> {
   }
 }
 
-async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25WorkerResponse, 'id'>> {
+async function handleRequest(request: BM25WorkerRequest, started: number, wasmInitMs: number): Promise<Omit<BM25WorkerResponse, 'id'>> {
   if (request.operation === 'initialize') {
+    if (request.posting !== undefined) {
+      if (!request.dbName || request.snapshot || !isBm25PostingManifest(request.posting) ||
+          typeof request.expectedDocs !== 'number' || !Number.isSafeInteger(request.expectedDocs) || request.expectedDocs < 0)
+        throw new Error('Invalid BM25 posting initialization.');
+      const timing = await hydratePostingCheckpoint(request.dbName, request.posting, request.expectedDocs, request.id);
+      return {
+        ...runtimeState(), postingVersion: 1,
+        ...(timing ? { postingTiming: { ...timing, wasmInitMs, workerMs: performance.now() - started } } : { postingRejected: true }),
+      };
+    }
     const snapshot = request.snapshot?.trim() ?? '';
     const sinceOrder = typeof request.sinceOrder === 'number' ? request.sinceOrder : undefined;
     const expectedDocs =
@@ -155,15 +175,32 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
     } else {
       addDocuments(request.documents ?? [], false, request.id);
     }
-    return { ...runtimeState(), ...(rejected ? { snapshotRejected: true } : {}) };
+    return { ...runtimeState(), postingVersion: 1, ...(rejected ? { snapshotRejected: true } : {}) };
   }
   if (request.operation === 'rebuild') {
     replaceRuntime(new Bm25RuntimeIndex(TOKENIZER_VERSION));
     addDocuments(request.documents ?? [], false, request.id);
     return runtimeState();
   }
+  if (request.operation === 'posting-page') {
+    const part = request.postingPart;
+    if (part === undefined || !Number.isSafeInteger(part) || part < 0 ||
+        (part !== 0 && part !== postingExportNext) || pendingRevision !== null ||
+        !ensureRuntime().is_tokenizer_current(TOKENIZER_VERSION)) {
+      postingExportNext = null;
+      return { ...proofState(), postingPart: part, postingRejected: true };
+    }
+    const postingPage = ensureRuntime().next_posting_page(part === 0);
+    postingExportNext = postingPage.length > 1 ? part + 1 : null;
+    return postingPage.length === 1 ? { ...proofState(), postingPart: part, postingRejected: true } : { ...proofState(), postingPart: part, postingPage };
+  }
   if (request.operation === 'serialize') {
-    return { ...runtimeState(), snapshot: ensureRuntime().to_json() };
+    const limit = request.maxSnapshotBytes;
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0 || limit > 0xffff_ffff)) {
+      throw new Error('Invalid BM25 snapshot byte limit.');
+    }
+    const active = ensureRuntime();
+    return { ...runtimeState(), snapshot: limit === undefined ? active.to_json() : active.to_json_bounded(limit) };
   }
   const active = ensureRuntime();
   if (request.operation === 'replace-source') {
@@ -242,20 +279,61 @@ async function handleRequest(request: BM25WorkerRequest): Promise<Omit<BM25Worke
   return runtimeState();
 }
 
+/** Never acknowledge a partially imported or mismatched projection as ready. */
+async function hydratePostingCheckpoint(dbName: string, manifest: BM25PostingManifest, expected: number, requestId: number): Promise<Omit<BM25PostingWorkerTiming, 'wasmInitMs' | 'workerMs'> | null> {
+  replaceRuntime(new Bm25RuntimeIndex(TOKENIZER_VERSION));
+  const active = ensureRuntime();
+  let importMs = 0;
+  let workerProgressMs = 0;
+  let progressMessages = 0;
+  let lastReport = -Infinity;
+  try {
+    const read = await readBm25PostingPages(dbName, manifest, (page, part) => {
+      const applying = performance.now();
+      const pageDocs = declaredBm25PostingPageDocuments(page);
+      if (pageDocs > manifest.docCount - active.total_docs() || !active.apply_posting_page(page)) {
+        throw new Error('Invalid BM25 posting page.');
+      }
+      const applied = performance.now();
+      importMs += applied - applying;
+      if (applied - lastReport >= POSTING_PROGRESS_INTERVAL_MS || part === manifest.blockCount - 1) {
+        postHydrationProgress(requestId, active.total_docs());
+        lastReport = applied;
+        progressMessages++;
+        workerProgressMs += performance.now() - applied;
+      }
+    });
+    const sealing = performance.now();
+    if (!active.finish_posting_import(manifest.docCount)) throw new Error('Invalid BM25 posting base count.');
+    const sealed = performance.now();
+    if (manifest.headOrder > manifest.lastOrder) {
+      await hydratePersistedDelta(dbName, manifest.lastOrder, requestId, manifest.headOrder, false);
+    }
+    if (ensureRuntime().total_docs() !== expected) throw new Error('Invalid BM25 posting head count.');
+    return { ...read, importMs, sealMs: sealed - sealing, deltaMs: performance.now() - sealed, progressMessages, workerProgressMs };
+  } catch (error) {
+    if (error instanceof WebAssembly.RuntimeError) throw error;
+    replaceRuntime(new Bm25RuntimeIndex(TOKENIZER_VERSION));
+    return null;
+  }
+}
+
 /** 스냅샷 이후 순서만 읽어 tombstone 먼저, 원문 업서트를 나중에 적용합니다. */
 async function hydratePersistedDelta(
   dbName: string,
   sinceOrder: number,
   requestId: number,
+  throughOrder?: number,
+  report = true,
 ): Promise<void> {
   let processedDocuments = 0;
   // 삭제 tombstone이 먼저 적용되어야 스냅샷에 남은 문서가 되살아나지 않는다.
-  await readWorkerCursorPages(dbName, 'removals', undefined, sinceOrder, (records) => {
+  await readWorkerCursorPages(dbName, 'removals', undefined, sinceOrder, throughOrder, (records) => {
     for (const record of records) applyRemovalRecord(record);
   });
-  await readWorkerCursorPages(dbName, 'documents', 'order', sinceOrder, (records) => {
+  await readWorkerCursorPages(dbName, 'documents', 'order', sinceOrder, throughOrder, (records) => {
     processedDocuments += addDocumentBatch(records.map(parsePersistedDocument), false);
-    postHydrationProgress(requestId, processedDocuments);
+    if (report) postHydrationProgress(requestId, processedDocuments);
   });
 }
 
@@ -285,8 +363,8 @@ function parseRemovalRecord(value: unknown): BM25RemovalRecord {
   const record = value as Record<string, unknown>;
   const kind = record.kind;
   if (
-    typeof record.order !== 'number' ||
-    typeof record.target !== 'string' ||
+    typeof record.order !== 'number' || !Number.isSafeInteger(record.order) || record.order < 0 ||
+    typeof record.target !== 'string' || record.target.length === 0 ||
     (kind !== 'clear' && kind !== 'remove-doc' && kind !== 'remove-source')
   ) {
     throw new Error('BM25 persisted removal fields are invalid.');
@@ -300,6 +378,7 @@ function readWorkerCursorPages(
   storeName: string,
   indexName: string | undefined,
   sinceOrder: number,
+  throughOrder: number | undefined,
   consume: (records: unknown[]) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -330,11 +409,11 @@ function readWorkerCursorPages(
           transaction.abort();
         }
       };
-      const cursorRequest = source.openCursor(IDBKeyRange.lowerBound(sinceOrder, true));
+      const cursorRequest = source.openCursor(throughOrder === undefined ? IDBKeyRange.lowerBound(sinceOrder, true) : IDBKeyRange.bound(sinceOrder, throughOrder, true));
       cursorRequest.onsuccess = () => {
         if (failure) return;
         const cursor = cursorRequest.result;
-        if (!cursor) return;
+        if (!cursor) { consumeBuffer(); return; }
         buffer.push(cursor.value);
         if (buffer.length >= HYDRATION_PROGRESS_INTERVAL) {
           consumeBuffer();
@@ -345,10 +424,7 @@ function readWorkerCursorPages(
       cursorRequest.onerror = () => {
         failure ??= cursorRequest.error ?? new Error('BM25 worker cursor failed.');
       };
-      transaction.oncomplete = () => {
-        consumeBuffer();
-        finish(failure);
-      };
+      transaction.oncomplete = () => finish(failure);
       transaction.onabort = () =>
         finish(failure ?? transaction.error ?? new Error('BM25 worker delta read aborted.'));
       transaction.onerror = () =>

@@ -369,6 +369,7 @@ describe('IndexedDbBM25Index', () => {
       postMessage: (message) => {
         sent.push(message);
         if (message.operation === 'initialize') queueMicrotask(() => respond?.({ data: { id: message.id, ...applyScriptedPrefix(message), ready: true, tokenizerCurrent: true, totalDocs: 0 } } as MessageEvent<BM25WorkerResponse>));
+        if (message.operation === 'serialize') queueMicrotask(() => respond?.({ data: { id: message.id, ...applyScriptedPrefix(message), ready: true, tokenizerCurrent: true, totalDocs: 1, snapshot: '' } } as MessageEvent<BM25WorkerResponse>));
       }, terminate: vi.fn(), setOnMessage: (handler) => { respond = handler; }, setOnError: vi.fn(),
     }, dispose: vi.fn() }) });
     await index.load();
@@ -1254,6 +1255,20 @@ describe('IndexedDbBM25Index', () => {
     expect([...bm25.search('removeme').keys()]).toEqual([]);
     expect([...bm25.search('keepme').keys()]).toEqual(['new.md::0']);
     expect([...bm25.search('baseline').keys()]).toEqual(['baseline.md::0']);
+  });
+
+  it('publishes a fitting rebuild prefix after DB persistence and actual worker ACK', async () => {
+    const name = createDbName();
+    const worker = createScriptedWorker('{"docs":[]}');
+    const index = new IndexedDbBM25Index(name, undefined, undefined, { workerFactory: worker.factory });
+    try {
+      await index.load();
+      await index.rebuild([{ id: 'synthetic', text: 'synthetic rebuild', sourcePath: 'synthetic.md' }]);
+      expect(worker.requests.map(({ operation }) => operation)).toEqual(['initialize', 'rebuild', 'serialize']);
+      expect(worker.requests.at(-1)?.maxSnapshotBytes).toBe(2 * 1024 * 1024);
+      expect((await readSnapshotState(name)).manifest).toMatchObject({ docCount: 1 });
+      expect((await index.getCheckpoint()).applied).toMatchObject({ revision: 1 });
+    } finally { index.close(); }
   });
 
   it('재시작은 스냅샷과 tombstone 델타만으로 런타임을 복구한다', async () => {

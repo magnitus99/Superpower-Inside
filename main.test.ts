@@ -86,6 +86,33 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it('allows paused cold posting migration without reopening indexing, but retirement revokes publication before drain', async () => {
+    const plugin = await lexicalRuntime();
+    plugin.cancelRagIndexing({ byUser: true });
+    const { RagRuntimeWorkBarrier } = await import('./src/rag/runtime-generation');
+    const runtime = { ...plugin['captureRagRuntimeSnapshot'](), io: new RagRuntimeWorkBarrier(), ragEngine: null };
+    let canPublish: (() => boolean) | undefined;
+    let finish!: () => void;
+    const load = vi.spyOn(runtime.bm25Index!, 'load').mockImplementation((_progress, current) => new Promise<void>((resolve) => {
+      canPublish = current;
+      finish = resolve;
+    }));
+    const recovery = vi.spyOn(runtime.bm25Index!, 'recoverClosedWorker');
+    const close = vi.spyOn(runtime.bm25Index!, 'close');
+    const loading = plugin['startBM25BackgroundLoad'](runtime.bm25Index!, runtime);
+    await vi.waitFor(() => expect(canPublish?.()).toBe(true));
+    runtime.io.invalidate(); // A source event does not change or certify the stored lexical prefix.
+    expect(canPublish?.()).toBe(true);
+    const drain = plugin['drainRagRuntimeSnapshot'](runtime);
+    try {
+      expect(plugin['ragAutoRecoveryPausedByUser']).toBe(true);
+      expect(canPublish?.()).toBe(false);
+      expect(close).not.toHaveBeenCalled();
+      expect(recovery).not.toHaveBeenCalled();
+    } finally { finish(); await loading; await drain; load.mockRestore(); }
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('chat recovery의 실제 Promise와 legacy barrier는 retire까지 store를 보존한다', async () => {
     const plugin = await lexicalRuntime();
     plugin['activeRagRuntime'] = null;
@@ -694,6 +721,36 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       expect(restored['ragRestoreFailure']).toBeFalsy();
     } finally {
       release(); await restoring; read.mockRestore(); collect.mockRestore(); physicalRead.mockRestore();
+      await restored['drainRagRuntimeSnapshot'](restored['captureRagRuntimeSnapshot']());
+      await first['drainRagRuntimeSnapshot'](first['captureRagRuntimeSnapshot']());
+    }
+  });
+
+  it('cold engine-only lease serves lexical before fresh proof settles, without claiming complete', async () => {
+    const first = await lexicalRuntime();
+    const { default: PluginClass } = await import('./main.ts');
+    const restored = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    Object.assign(restored, { app: first.app, manifest: { id: 'superpower-inside' }, settings: structuredClone(first.settings) });
+    const collect = restored['collectRagRuntimeProof'].bind(restored);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const proof = vi.spyOn(restored, 'collectRagRuntimeProof' as never).mockImplementation((async (...args: Parameters<typeof collect>) => {
+      await gate;
+      return collect(...args);
+    }) as never);
+    const acquiring = restored.acquireRagEngineOnlySnapshot();
+    try {
+      await vi.waitFor(() => expect(proof).toHaveBeenCalledOnce());
+      expect(restored.getRagGenerationSnapshot()).toMatchObject({ availability: 'usable', coverage: 'legacy-limited' });
+      const lease = await acquiring;
+      expect(lease).not.toBeNull();
+      lease?.release();
+      expect(restored.embeddingProvider).toBeNull();
+      release();
+      await restored['restorePersistedRagGeneration']();
+      expect(restored.getRagGenerationSnapshot().coverage).toBe('complete');
+    } finally {
+      release(); await acquiring; proof.mockRestore();
       await restored['drainRagRuntimeSnapshot'](restored['captureRagRuntimeSnapshot']());
       await first['drainRagRuntimeSnapshot'](first['captureRagRuntimeSnapshot']());
     }
@@ -2110,12 +2167,51 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
     const { VaultDocumentCorpus } = await import('./src/rag/vault-document-corpus');
     const second = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
     Object.assign(second, { app: first.app, manifest: { id: 'superpower-inside' }, settings: structuredClone(first.settings) });
+    const { IndexedDbBM25Index } = await import('./src/rag/bm25');
+    const load = vi.spyOn(IndexedDbBM25Index.prototype, 'load');
+    const proof = vi.spyOn(second, 'collectRagRuntimeProof' as never);
     const refresh = vi.spyOn(VaultDocumentCorpus.prototype, 'refresh');
     const id = first.getRagGenerationSnapshot().serving?.id;
     await second.initRAG();
     expect(second.getRagGenerationSnapshot().serving?.id).toBe(id);
     expect(refresh).not.toHaveBeenCalled();
-    refresh.mockRestore();
+    expect(load).toHaveBeenCalledOnce();
+    expect(proof).toHaveBeenCalledOnce();
+    load.mockRestore(); proof.mockRestore(); refresh.mockRestore();
+  });
+
+  it('same-generation cold hydrate keeps its shared BM25 alive until both serving owners drain', async () => {
+    const first = await lexicalRuntime();
+    const { default: PluginClass } = await import('./main.ts');
+    const second = Object.create(PluginClass.prototype) as InstanceType<typeof PluginClass>;
+    Object.assign(second, { app: first.app, manifest: { id: 'superpower-inside' }, settings: structuredClone(first.settings) });
+    const collect = second['collectRagRuntimeProof'].bind(second);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const proof = vi.spyOn(second, 'collectRagRuntimeProof' as never).mockImplementation((async (...args: Parameters<typeof collect>) => {
+      await gate;
+      return collect(...args);
+    }) as never);
+    const initializing = second.initRAG();
+    let lease: Awaited<ReturnType<InstanceType<typeof PluginClass>['acquireRagEngineOnlySnapshot']>> = null;
+    try {
+      await vi.waitFor(() => expect(proof).toHaveBeenCalledOnce());
+      const index = second.bm25Index!;
+      const close = vi.spyOn(index, 'close');
+      try {
+        lease = await second.acquireRagEngineOnlySnapshot();
+        expect(lease).not.toBeNull();
+        release(); await initializing;
+        expect(second.bm25Index).toBe(index);
+        await second['drainRagRuntimeSnapshot'](second['captureRagRuntimeSnapshot']());
+        expect(close).not.toHaveBeenCalled();
+        lease?.release();
+        await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      } finally { close.mockRestore(); }
+    } finally {
+      release(); await initializing; lease?.release(); proof.mockRestore();
+      await first['drainRagRuntimeSnapshot'](first['captureRagRuntimeSnapshot']());
+    }
   });
 
   it('cold provider 계약은 동일 binding이면 indexer를 hydrate하고 인증 변경 뒤 cache와 vector 공간을 분리한다', async () => {
@@ -3742,6 +3838,7 @@ describe('SuperpowerInsidePlugin RAG runtime', () => {
       warn: vi.fn(),
       error: vi.fn(),
       debug: vi.fn(),
+      child: vi.fn(),
     };
     const plugin = Object.create(SuperpowerInsidePlugin.prototype) as SuperpowerInsidePlugin & {
       app: ReturnType<typeof createApp>;
